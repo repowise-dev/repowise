@@ -47,7 +47,14 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     if (typeof window === "undefined") return true;
     return window.matchMedia("(min-width: 768px)").matches;
   });
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // The rail defaults to whether the layout can afford it, not to `true`.
+  // Mirrors the 2xl breakpoint the reader uses to place its sections; a manual
+  // toggle wins from then on, same contract as the app sidebar's route-based
+  // collapse.
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.matchMedia("(min-width: 1536px)").matches;
+  });
   const [searchOpen, setSearchOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const searchParams = useSearchParams();
@@ -182,11 +189,26 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     }
   }, [pages]);
 
-  let body: React.ReactNode;
-  if (isLoading) {
-    body = (
-      <div className="flex h-full">
-        <div className="w-full md:w-[300px] border-r border-[var(--color-border-default)] p-3 space-y-2">
+  // The tree panel, rendered at every state so it keeps the full height of the
+  // window rather than starting below a chrome bar. Its skeleton lives here
+  // too, so the layout does not reflow once the pages land.
+  const treePanel = (
+    // No right border. Tree, reading column and rail sit on one plane and are
+    // separated by space; a rule on each side of the reading column made it
+    // read as a trench between two panels.
+    // Below md the tree is a drawer over the reader, not a column beside it.
+    // As a column it would claim the full width and starve the header column
+    // it now sits next to, squashing the view switch into a few pixels.
+    <div
+      className={cn(
+        "bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0 overflow-y-auto",
+        treePanelOpen
+          ? "absolute inset-y-0 left-0 z-30 w-full md:static md:w-[288px]"
+          : "w-0 overflow-hidden",
+      )}
+    >
+      {isLoading ? (
+        <div className="space-y-2 p-3">
           <Skeleton className="h-8 w-full rounded-md" />
           <Skeleton className="h-4 w-3/4 rounded" />
           <Skeleton className="h-4 w-1/2 rounded" />
@@ -195,9 +217,29 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           <Skeleton className="h-4 w-3/4 rounded" />
           <Skeleton className="h-4 w-1/2 rounded" />
         </div>
-        <div className="flex-1 flex items-center justify-center">
-          <Skeleton className="h-8 w-48 rounded" />
-        </div>
+      ) : (
+        <DocsTree
+          pages={pages}
+          selectedPageId={selectedPage?.id ?? null}
+          onSelectPage={(p) => {
+            // DocsTree yields its DocPage type; the elements are the real
+            // PageResponse objects we passed in (they carry the extra
+            // provenance fields), so this narrowing is safe.
+            handleSelectPage(p as unknown as PageResponse);
+            if (typeof window !== "undefined" && !window.matchMedia("(min-width: 768px)").matches) {
+              setTreePanelOpen(false);
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+
+  let body: React.ReactNode;
+  if (isLoading) {
+    body = (
+      <div className="flex-1 flex items-center justify-center">
+        <Skeleton className="h-8 w-48 rounded" />
       </div>
     );
   } else if (pages.length === 0) {
@@ -218,108 +260,91 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     );
   } else {
     body = (
-      <div className="relative flex h-full">
-        {/* Tree sidebar */}
-        <div
-          className={cn(
-            "border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0 relative",
-            treePanelOpen ? "w-full md:w-[300px]" : "w-0 overflow-hidden border-r-0",
-          )}
-        >
-          <DocsTree
-            pages={pages}
-            selectedPageId={selectedPage?.id ?? null}
-            onSelectPage={(p) => {
-              // DocsTree yields its DocPage type; the elements are the real
-              // PageResponse objects we passed in (they carry the extra
-              // provenance fields), so this narrowing is safe.
-              handleSelectPage(p as unknown as PageResponse);
-              if (typeof window !== "undefined" && !window.matchMedia("(min-width: 768px)").matches) {
-                setTreePanelOpen(false);
-              }
-            }}
-          />
-        </div>
-
-        {/* Toggle button */}
-        <button
-          onClick={() => setTreePanelOpen((o) => !o)}
-          aria-label={treePanelOpen ? "Hide pages tree" : "Show pages tree"}
-          aria-expanded={treePanelOpen}
-          className={cn(
-            "absolute top-3 z-20 rounded-r-md border border-l-0 border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors",
-            treePanelOpen ? "hidden md:block left-[300px]" : "left-0",
-          )}
-        >
-          {treePanelOpen ? (
-            <PanelLeftClose className="h-3.5 w-3.5" />
-          ) : (
-            <PanelLeft className="h-3.5 w-3.5" />
-          )}
-        </button>
-
-        {/* Viewer */}
-        <div className={cn("flex-1 min-w-0", treePanelOpen ? "hidden md:block" : "block")}>
-          <DocsViewer
-            page={selectedPage}
-            pages={pages}
-            repoId={repoId}
-            onSelectPage={handleSelectPage}
-            persona={persona}
-            sidebarOpen={sidebarOpen}
-            onGenerated={handleGenerated}
-          />
-        </div>
+      <div className="h-full min-w-0">
+        <DocsViewer
+          page={selectedPage}
+          pages={pages}
+          repoId={repoId}
+          onSelectPage={handleSelectPage}
+          persona={persona}
+          sidebarOpen={sidebarOpen}
+          onGenerated={handleGenerated}
+        />
       </div>
     );
   }
 
+  // Tree beside the chrome, not under it. The header used to span the full
+  // width, which pushed the tree down by its height on every screen and cost
+  // that much of the list for a bar that says "Documentation" on a page whose
+  // route is already /docs. The tree now starts at the top and the bar sits to
+  // the right of it, over the reading column it actually acts on.
   return (
-    <div className="flex flex-col h-full">
-      <DocsHeader>
-        {selectedPage && (
-          <DocsPageActions
-            page={selectedPage}
-            persona={persona}
-            setPersona={setPersona}
-            personaHasEffect={personaHasEffect}
-          />
+    <div className="relative flex h-full">
+      {treePanel}
+
+      <button
+        onClick={() => setTreePanelOpen((o) => !o)}
+        aria-label={treePanelOpen ? "Hide pages tree" : "Show pages tree"}
+        aria-expanded={treePanelOpen}
+        className={cn(
+          "absolute top-3.5 z-20 rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors",
+          treePanelOpen ? "hidden md:block left-[292px]" : "left-1",
         )}
-        {selectedPage && isModelWrittenType(selectedPage.page_type) && (
-          <PageGenerateButton
+      >
+        {treePanelOpen ? (
+          <PanelLeftClose className="h-3.5 w-3.5" />
+        ) : (
+          <PanelLeft className="h-3.5 w-3.5" />
+        )}
+      </button>
+
+      <div className="flex flex-1 min-w-0 flex-col">
+        <DocsHeader>
+          {selectedPage && (
+            <DocsPageActions
+              page={selectedPage}
+              persona={persona}
+              setPersona={setPersona}
+              personaHasEffect={personaHasEffect}
+            />
+          )}
+          {selectedPage && isModelWrittenType(selectedPage.page_type) && (
+            <PageGenerateButton
+              page={selectedPage}
+              repoId={repoId}
+              onGenerated={handleGenerated}
+            />
+          )}
+          {hasStubs && <BulkGenerateButton repoId={repoId} onGenerated={handleGenerated} />}
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
+          >
+            <Search className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Search</span>
+            <kbd className="hidden rounded border border-[var(--color-border-default)] px-1 py-0.5 text-[10px] sm:inline">
+              ⌘K
+            </kbd>
+          </button>
+          <ExportMenu
+            isExporting={isExporting}
+            onExportAll={handleExportAll}
+            zipHref={`/api/repos/${repoId}/export`}
             page={selectedPage}
             repoId={repoId}
-            onGenerated={handleGenerated}
           />
-        )}
-        {hasStubs && <BulkGenerateButton repoId={repoId} onGenerated={handleGenerated} />}
-        <button
-          onClick={() => setSearchOpen(true)}
-          className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
-        >
-          <Search className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Search</span>
-          <kbd className="hidden rounded border border-[var(--color-border-default)] px-1 py-0.5 text-[10px] sm:inline">
-            ⌘K
-          </kbd>
-        </button>
-        <ExportMenu
-          isExporting={isExporting}
-          onExportAll={handleExportAll}
-          zipHref={`/api/repos/${repoId}/export`}
-          page={selectedPage}
-          repoId={repoId}
-        />
-        {presentable && <PresentButton onClick={() => setPresent("deck")} />}
-        {selectedPage && (
-          <SidebarToggle
-            open={sidebarOpen}
-            onToggle={() => setSidebarOpen((o) => !o)}
-          />
-        )}
-      </DocsHeader>
+          {presentable && <PresentButton onClick={() => setPresent("deck")} />}
+          {selectedPage && (
+            <SidebarToggle
+              open={sidebarOpen}
+              onToggle={() => setSidebarOpen((o) => !o)}
+            />
+          )}
+        </DocsHeader>
 
-      <div className="flex-1 min-h-0">{body}</div>
+        <div className="flex-1 min-h-0">{body}</div>
+      </div>
 
       {/* Present mode overlay — full-screen, escapes the dashboard chrome */}
       {presentMode && presentModel && (

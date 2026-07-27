@@ -17,6 +17,15 @@ interface ConfidenceBadgeProps {
   showScore?: boolean;
   staleSince?: string | null;
   className?: string;
+  /**
+   * Drop to the status dot alone below `sm`.
+   *
+   * For crowded chrome rows on a phone. The dot already carries the state —
+   * colour is the whole signal, and the word beside it is the widest thing in
+   * the row. Opt-in, because in a table or a card the label is the readable
+   * part and losing it would be a downgrade.
+   */
+  compact?: boolean;
 }
 
 export function ConfidenceBadge({
@@ -25,6 +34,7 @@ export function ConfidenceBadge({
   showScore = false,
   staleSince,
   className,
+  compact = false,
 }: ConfidenceBadgeProps) {
   const status = (statusProp as FreshnessStatus | undefined) ?? scoreToStatus(score);
   const badgeClasses = statusBadgeClasses(status);
@@ -32,22 +42,30 @@ export function ConfidenceBadge({
 
   const badge = (
     <span
+      {...(compact ? { title: label } : {})}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs font-medium transition-colors",
+        "inline-flex shrink-0 items-center gap-1.5 rounded border py-0.5 text-xs font-medium transition-colors",
+        compact ? "px-1.5 sm:px-2" : "px-2",
         badgeClasses,
         className,
       )}
     >
       <span
         className={cn(
-          "h-1.5 w-1.5 rounded-full",
+          "h-1.5 w-1.5 shrink-0 rounded-full",
           status === "fresh" && "bg-[var(--color-success)]",
           status === "stale" && "animate-pulse bg-[var(--color-warning)]",
           status === "outdated" && "bg-[var(--color-error)]",
         )}
       />
-      {label}
-      {showScore && <span className="opacity-70">· {formatConfidence(score)}</span>}
+      {/* Hidden visually, never from a screen reader: the colour is the signal
+          on a phone, but "Fresh" is still the name of the state. */}
+      <span className={cn(compact && "sr-only sm:not-sr-only")}>{label}</span>
+      {showScore && (
+        <span className={cn("opacity-70", compact && "hidden sm:inline")}>
+          · {formatConfidence(score)}
+        </span>
+      )}
     </span>
   );
 

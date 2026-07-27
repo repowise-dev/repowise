@@ -3,14 +3,7 @@
 import { useCallback } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import {
-  Activity,
-  Network,
-  GitBranch,
-  ArrowRight,
-  Flame,
-  Bug,
-} from "lucide-react";
+import { ArrowRight, Flame, Bug } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { getGitMetadata } from "@/lib/api/git";
 import { summarizeFixHistory } from "@repowise-dev/ui/lib/fix-history";
@@ -74,14 +67,9 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
 
   return (
     <div className="space-y-4">
-      {/* Graph Metrics */}
+      {/* Graph importance. No section header of its own — the rail groups these
+          under one "Signals" label, so the rows speak for themselves. */}
       <div>
-        <div className="flex items-center gap-1.5 mb-2">
-          <Activity className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-          <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-            Importance
-          </span>
-        </div>
         <div className="space-y-2">
           <PercentileBar value={metrics.pagerank_percentile} label="PageRank" />
           <PercentileBar value={metrics.betweenness_percentile} label="Centrality" />
@@ -97,21 +85,17 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
         </div>
       </div>
 
-      {/* Community */}
+      {/* Community — a single value, so it renders as a labelled row like the
+          rest rather than as its own titled section. */}
       {metrics.community_label && (
-        <div>
-          <div className="flex items-center gap-1.5 mb-2">
-            <Network className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-            <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-              Community
-            </span>
-          </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-[var(--color-text-tertiary)]">Community</span>
           <Link
             href={`/repos/${repoId}/architecture?view=graph&colorMode=community`}
-            className="inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline"
+            className="inline-flex items-center gap-1 truncate text-xs text-[var(--color-accent)] hover:underline"
           >
             {metrics.community_label}
-            <ArrowRight className="h-2.5 w-2.5" />
+            <ArrowRight className="h-2.5 w-2.5 shrink-0" />
           </Link>
         </div>
       )}
@@ -119,12 +103,6 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
       {/* Callers/Callees (for symbol pages) */}
       {callData && (callData.caller_count > 0 || callData.callee_count > 0) && (
         <div>
-          <div className="flex items-center gap-1.5 mb-2">
-            <GitBranch className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-            <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-              Call Graph
-            </span>
-          </div>
           {callData.caller_count > 0 && (
             <div className="mb-2">
               <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">Called by ({callData.caller_count})</p>
@@ -179,12 +157,8 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
   );
   return (
     <div>
-      <div className="flex items-center gap-1.5 mb-2">
-        <Flame className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-        <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-          At a glance
-        </span>
-      </div>
+      {/* Leads the Signals list: the chips are the fastest read on the page,
+          and they carry their own meaning without a header over them. */}
       <div className="flex flex-wrap gap-1.5">
         {data.is_hotspot && (
           <Badge variant="outline" className="text-[10px] border-[var(--color-warning)]/40 text-[var(--color-warning)]">
@@ -352,18 +326,23 @@ export function DocsViewer({
       }
       intelligenceSlot={
         hasTargetPath ? (
-          <>
-            <AtAGlance repoId={repoId} targetPath={targetPath} />
-            <DocsSidebar repoId={repoId} targetPath={targetPath} />
-            {isFilePath && (
-              <div>
-                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
-                  Security signals
-                </p>
+          // One "Signals" block, not five. At a glance, Importance, Community,
+          // Call graph and Security each announced themselves with their own
+          // uppercase label over a handful of rows, so the rail was mostly
+          // label. They answer one question between them — what should I know
+          // about this code before I touch it — so they read as one list.
+          <div>
+            <p className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Signals
+            </p>
+            <div className="flex flex-col gap-4">
+              <AtAGlance repoId={repoId} targetPath={targetPath} />
+              <DocsSidebar repoId={repoId} targetPath={targetPath} />
+              {isFilePath && (
                 <SecurityPanelWrapper repoId={repoId} filePath={targetPath} />
-              </div>
-            )}
-          </>
+              )}
+            </div>
+          </div>
         ) : undefined
       }
     />

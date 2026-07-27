@@ -3,13 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   FileText,
-  Clock,
-  Cpu,
   ArrowRight,
   ArrowLeft,
+  ChevronRight,
   Loader2,
   Layers,
-  FileInput,
 } from "lucide-react";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
@@ -27,6 +25,11 @@ import {
   type RelatedReason,
 } from "../wiki/wiki-links-types";
 import { Breadcrumb } from "../shared/breadcrumb";
+
+/** Related entries shown before the "+ N more" line. Five, not eight: the list
+ *  is a suggestion of where to go next, and past about five it reads as a dump
+ *  of everything the graph knows. */
+const RELATED_LIMIT = 5;
 
 const RELATED_REASON_LABELS: Record<RelatedReason, string> = {
   imports: "imports",
@@ -195,6 +198,11 @@ function DocsReaderBody({
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
 
+  // A page with no model behind it. Structural pages are templates by design
+  // and always will be; a model-written page that is still a template has
+  // prose outstanding, which is what the upgrade affordance is for.
+  const isTemplatePage = page.provider_name === "template";
+
   // The reader renders the page title as the H1 above the body, but generated
   // content often opens with its own "# <title>" line (the deterministic
   // templates do), so the same heading shows twice. Drop a leading H1 that
@@ -327,7 +335,14 @@ function DocsReaderBody({
     <div className="flex h-full">
       <div className="flex flex-col flex-1 min-w-0">
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          <div className="px-4 sm:px-6 py-8 max-w-[768px] mx-auto">
+          {/* Centred in the space the rail leaves, with the rail itself flush
+              to the edge. The two alternatives both fail on a wide window:
+              anchoring the column left opens a ~620px hole between it and the
+              rail, and centring the column-plus-rail group as a unit unpins the
+              rail from the edge and strands whitespace to its right. Centring
+              here makes the gap to the rail equal the gap to the tree, so both
+              read as margins rather than as a gap. */}
+          <div className="mx-auto w-full max-w-[720px] px-4 py-8 sm:px-6">
             {/* Hierarchical breadcrumb */}
             <div className="mb-3 overflow-hidden">
               <Breadcrumb
@@ -346,14 +361,33 @@ function DocsReaderBody({
               {page.title}
             </h1>
 
-            {/* One calm metadata line: type + module + layer + freshness. The
-                generation provenance (version, tokens, model) lives in the
-                right rail so the page opens on its content, not its receipt. */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-[var(--color-text-tertiary)] mb-6">
-              <span className="rounded-full bg-[var(--color-bg-elevated)] px-2 py-0.5 uppercase tracking-wider">
+            {/* One quiet provenance line: what kind of page this is, who wrote
+                it, and when. Previously this row carried an accent-filled
+                "Regenerate" pill immediately beside the h1, which read as a
+                statement about the page rather than an action on it and
+                out-shouted the title. The upgrade affordance now sits at the
+                end of the content, where a reader has seen the page is thin.
+
+                "Written by <model>" / "Built from the index" is the Overview
+                page's vocabulary, deliberately: a page can lack prose because
+                its provider call failed, so calling that "deterministic" would
+                be untrue. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px] text-[var(--color-text-tertiary)] mb-5">
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em]">
                 {getPageTypeLabel(page.page_type)}
               </span>
-              {upgradeSlot}
+              <span aria-hidden className="opacity-40">&middot;</span>
+              <span className="text-[var(--color-text-secondary)]">
+                {isTemplatePage
+                  ? "Built from the index"
+                  : page.model_name
+                    ? `Written by ${page.model_name}`
+                    : "Written by a model"}
+              </span>
+              <span aria-hidden className="opacity-40">&middot;</span>
+              <span title={page.updated_at}>
+                updated {formatRelativeTime(page.updated_at)}
+              </span>
               {moduleSeg && (
                 <button
                   onClick={() => goToPageId(moduleSeg.pageId!)}
@@ -377,11 +411,53 @@ function DocsReaderBody({
                     {layerName}
                   </span>
                 ))}
-              <span className="flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                {formatRelativeTime(page.updated_at)}
-              </span>
             </div>
+
+            {/* What this page was written from. The rail carried this as
+                basenames only, below the fold of a narrow column; at the top of
+                the page it frames everything under it, and it is the one piece
+                of provenance a reader wants *before* reading rather than
+                after. Collapsed by default — it answers a question, it does not
+                raise one. */}
+            {sources.length > 0 && (
+              <details className="group mb-6 rounded-lg border border-[var(--color-border-default)]">
+                <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-xs text-[var(--color-text-secondary)]">
+                  <ChevronRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] transition-transform group-open:rotate-90" />
+                  <span>
+                    Built from {sources.length} source{sources.length === 1 ? "" : " files"}
+                  </span>
+                  <span className="ml-auto truncate font-mono text-[10px] text-[var(--color-text-tertiary)]">
+                    {sources
+                      .slice(0, 3)
+                      .map((s) => s.path.split("/").pop())
+                      .join(", ")}
+                    {sources.length > 3 && " …"}
+                  </span>
+                </summary>
+                <ul className="flex flex-col gap-1 border-t border-[var(--color-border-default)] px-3.5 py-2.5">
+                  {sources.map((s) => (
+                    <li key={s.path} className="text-xs">
+                      {s.pageId ? (
+                        <button
+                          onClick={() => goToPageId(s.pageId!)}
+                          className="block w-full truncate text-left font-mono text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
+                          title={`${s.path} (${s.kind})`}
+                        >
+                          {s.path}
+                        </button>
+                      ) : (
+                        <span
+                          className="block truncate font-mono text-[var(--color-text-tertiary)]"
+                          title={`${s.path} (${s.kind})`}
+                        >
+                          {s.path}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
 
             {/* Low-confidence flag */}
             {page.confidence > 0 && page.confidence < 0.5 && (
@@ -401,15 +477,35 @@ function DocsReaderBody({
               </div>
             )}
 
-            {/* Markdown content */}
-            <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
+            {/* Markdown content.
+                No `prose` wrapper: every element the renderer emits is already
+                styled through our own tokens, so the plugin contributed exactly
+                two things — a hardcoded `prose-invert` that fed dark variables
+                to light mode, and `code::before/::after { content: "`" }`, which
+                printed literal backticks around every unresolved inline ref. */}
+            <article className="max-w-none leading-relaxed overflow-hidden">
               <WikiMarkdown
                 content={visibleContent}
                 wikiLinks={wikiLinks}
                 buildHref={(pid) => buildPageHref(pid)}
                 LinkComponent={WikiInlineLink}
+                pages={pages}
               />
             </article>
+
+            {/* The upgrade affordance, at the end of the content rather than
+                beside the title. Someone who has read to here knows the page is
+                thin; someone at the title does not yet, and an accent pill up
+                there competed with the h1 for a decision they could not make. */}
+            {isTemplatePage && upgradeSlot && (
+              <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-[var(--color-border-default)] pt-4">
+                <p className="text-xs text-[var(--color-text-tertiary)]">
+                  This page is built from the index. A model can write the how and
+                  why on top of it.
+                </p>
+                {upgradeSlot}
+              </div>
+            )}
 
             {/* Sibling prev / next */}
             {(nav.prev || nav.next) && (
@@ -471,127 +567,100 @@ function DocsReaderBody({
                 </div>
               )}
 
-            {/* Related pages, bottom strip. The right rail is hidden below
-                lg (vscode webview panels rarely reach lg either), so narrow
-                viewports get the related links here instead. */}
-            {relatedLinks.length > 0 && (
-              <div className="mt-8 lg:hidden">
-                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
-                  Related
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {relatedLinks.slice(0, 8).map((r) => (
-                    <button
-                      key={r.id}
-                      onClick={() => goToPageId(r.id)}
-                      className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:border-[var(--color-accent-primary)] transition-colors"
-                      title={r.reason ? RELATED_REASON_LABELS[r.reason] : r.title}
-                    >
-                      {r.title}
-                    </button>
-                  ))}
+            {/* Where the rail goes when there is no room for a rail.
+                Nothing is dropped at narrow widths, it relocates: the reader
+                already did this for Related, and the same treatment now covers
+                the intelligence sections and the contents. The breakpoint is
+                2xl, not lg — see the rail below for why. */}
+            <div className="mt-10 grid gap-8 border-t border-[var(--color-border-default)] pt-6 sm:grid-cols-2 2xl:hidden">
+              {intelligenceSlot && (
+                <div className="flex flex-col gap-4">{intelligenceSlot}</div>
+              )}
+              {relatedLinks.length > 0 && (
+                <div>
+                  <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                    Related
+                  </p>
+                  <ul className="flex flex-col gap-2">
+                    {relatedLinks.slice(0, RELATED_LIMIT).map((r) => (
+                      <li key={r.id}>
+                        <button
+                          onClick={() => goToPageId(r.id)}
+                          className="block w-full text-left text-xs leading-snug text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
+                        >
+                          {r.title}
+                        </button>
+                        {r.reason && (
+                          <span className="block font-mono text-[10px] text-[var(--color-text-tertiary)]">
+                            {RELATED_REASON_LABELS[r.reason]}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Right intelligence rail — on-page contents, provenance, related,
-          backlinks, then host-supplied data-bound intelligence sections. */}
+      {/* Right rail — three zones, in the order a reader wants them: where am
+          I in this page, what do I need to know about this code, where do I go
+          next. The receipt sits under a hairline at the bottom.
+
+          It used to carry eight blocks behind five uppercase labels, which is
+          mostly label for about a dozen rows, and the intelligence sections
+          each announced themselves separately even when they were three rows
+          long. At a glance, Importance, Community, Call graph and Security are
+          now one Signals list assembled by the host.
+
+          `2xl` (1536px), not `lg` (1024px): the chrome either side of the
+          reading column is 56 + 288 + 300 = 644px, and body copy at 16px wants
+          about 640px to reach 65 characters. At lg the column landed at ~420px,
+          so the rail was switching on some 400px before the layout could pay
+          for it. Below 2xl every section here renders under the article
+          instead. */}
       {sidebarOpen && (
-        <div className="hidden lg:block border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 w-[260px] overflow-auto">
-          <div className="space-y-6 p-4">
+        <div className="hidden 2xl:block shrink-0 w-[300px] overflow-auto">
+          <div className="flex flex-col gap-7 py-8 pl-6 pr-7">
             <TableOfContents content={bodyContent} />
-            {sources.length > 0 && (
-              <div>
-                <div className="flex items-center gap-1.5 mb-2">
-                  <FileInput className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-                  <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                    Built from
-                  </span>
-                </div>
-                <ul className="space-y-1">
-                  {sources.slice(0, 5).map((s) => (
-                    <li key={s.path} className="text-xs">
-                      {s.pageId ? (
-                        <button
-                          onClick={() => goToPageId(s.pageId!)}
-                          className="truncate text-left font-mono text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors w-full"
-                          title={`${s.path} (${s.kind})`}
-                        >
-                          {s.path.split("/").pop()}
-                        </button>
-                      ) : (
-                        <span
-                          className="block truncate font-mono text-[var(--color-text-tertiary)]"
-                          title={`${s.path} (${s.kind})`}
-                        >
-                          {s.path.split("/").pop()}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                {sources.length > 5 && (
-                  <p className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">
-                    + {sources.length - 5} more
-                  </p>
-                )}
-              </div>
-            )}
-            {/* Generation provenance — moved off the title row so the page
-                opens on its content. Model, cost and version answer "how was
-                this made", which is a rail question, not a headline. */}
-            <div>
-              <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
-                Generated
-              </p>
-              <div className="space-y-1 text-[10px] text-[var(--color-text-tertiary)]">
-                {page.model_name && (
-                  <div className="flex items-center gap-1.5 font-mono">
-                    <Cpu className="h-3 w-3 shrink-0" />
-                    <span className="truncate" title={page.model_name}>
-                      {page.model_name}
-                    </span>
-                  </div>
-                )}
-                <div className="font-mono">
-                  {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
-                </div>
-                <div>v{page.version}</div>
-              </div>
-            </div>
+
+            {intelligenceSlot}
+
             {relatedLinks.length > 0 && (
               <div>
-                <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                <p className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                   Related
                 </p>
-                <ul className="space-y-1.5">
-                  {relatedLinks.slice(0, 8).map((r) => (
-                    <li key={r.id} className="text-xs">
+                <ul className="flex flex-col gap-2.5">
+                  {relatedLinks.slice(0, RELATED_LIMIT).map((r) => (
+                    <li key={r.id}>
+                      {/* Wraps rather than truncates. At 260px the old rail
+                          rendered "File: packages/server/src/repowise/s…",
+                          which names nothing. */}
                       <button
                         onClick={() => goToPageId(r.id)}
-                        className="truncate text-left text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors w-full"
-                        title={r.title}
+                        className="block w-full text-left text-xs leading-snug text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
                       >
                         {r.title}
                       </button>
                       {r.reason && (
-                        <span className="block text-[10px] text-[var(--color-text-tertiary)]">
+                        <span className="block font-mono text-[10px] text-[var(--color-text-tertiary)]">
                           {RELATED_REASON_LABELS[r.reason]}
                         </span>
                       )}
                     </li>
                   ))}
                 </ul>
-                {relatedLinks.length > 8 && (
-                  <p className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">
-                    + {relatedLinks.length - 8} more
+                {relatedLinks.length > RELATED_LIMIT && (
+                  <p className="mt-2 text-[10px] text-[var(--color-text-tertiary)]">
+                    + {relatedLinks.length - RELATED_LIMIT} more
                   </p>
                 )}
               </div>
             )}
+
             <BacklinksPanel
               backlinks={getBacklinks(page.metadata)}
               repoId={repoId}
@@ -602,7 +671,20 @@ function DocsReaderBody({
                 </LinkComponent>
               )}
             />
-            {intelligenceSlot}
+
+            {/* How this page was made. A receipt, so it sits at the bottom
+                under a rule rather than above the things you came for. */}
+            <div className="mt-auto flex flex-wrap gap-x-3 gap-y-1 border-t border-[var(--color-border-default)] pt-3.5 font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+              {page.model_name && (
+                <span className="truncate" title={page.model_name}>
+                  {page.model_name}
+                </span>
+              )}
+              <span>
+                {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
+              </span>
+              <span>v{page.version}</span>
+            </div>
           </div>
         </div>
       )}

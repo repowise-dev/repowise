@@ -18,6 +18,7 @@ import {
   getOnboardingSlot,
   getPageTypeIcon,
   getPageTypeLabel,
+  isStubPage,
   type OnboardingSlot,
 } from "../lib/page-types";
 import { RAW_GRAPH_ID, displayLabel, treeLabel } from "./page-labels";
@@ -311,13 +312,27 @@ const SPINE_TYPES = new Set([
 
 const isSpinePage = (page: DocPage) => SPINE_TYPES.has(page.page_type);
 
-// Concept content rows (the modules and cycles nested under a layer) all carry
-// the same folder glyph, so a run of them reads as a column of identical icons
-// that says nothing the indentation does not already say. Dropping the icon on
-// just these rows lets the outline read by its shape. Layers keep their icon as
-// the section anchor, onboarding chapters keep theirs, and the deterministic
-// file tree keeps its file/folder glyphs — only this middle rung goes quiet.
-const CONCEPT_CONTENT_TYPES = new Set(["module_page", "scc_page"]);
+// The whole concept spine goes without icons.
+//
+// This started as a rule for the middle rung only: modules and cycles nested
+// under a layer all carry the same folder glyph, so a run of them reads as a
+// column of identical icons that says nothing the indentation does not already
+// say. The same argument holds one rung up. Every onboarding chapter draws the
+// same compass and every layer the same stack, so the top of the tree was nine
+// rows of near-identical glyphs down the left edge, which is a texture rather
+// than information.
+//
+// Without them the outline reads by its shape — indentation for depth, weight
+// for rank — which is how a table of contents has always worked. The
+// deterministic file tree keeps its file/folder glyphs, where the icon does
+// distinguish one row from the next.
+const CONCEPT_CONTENT_TYPES = new Set([
+  "module_page",
+  "scc_page",
+  "onboarding",
+  "layer_page",
+  "repo_overview",
+]);
 
 const hidesTreeIcon = (page?: DocPage): boolean =>
   page ? CONCEPT_CONTENT_TYPES.has(page.page_type) : false;
@@ -580,7 +595,11 @@ function TreeItem({
           )}
           <span
             className={cn(
-              "truncate font-medium",
+              // Wraps rather than truncates. A section title cut to
+              // "Documentation Generation Engi…" names nothing, and the tree
+              // has the vertical room — it is a list of a few dozen concept
+              // rows, not a viewport-bound table.
+              "min-w-0 text-left font-medium [overflow-wrap:anywhere]",
               // A top-level section is the parent of everything indented under
               // it, so it carries the strongest weight in the tree.
               (node.path === ONBOARDING_DIR_KEY || depth === 0) &&
@@ -589,9 +608,7 @@ function TreeItem({
           >
             {node.name}
           </span>
-          {showFreshness && node.page && (
-            <FreshnessDot status={node.page.freshness_status as FreshnessStatus} />
-          )}
+          <RowMarkers page={node.page} showFreshness={showFreshness} />
         </button>
 
         {isExpanded && hasChildren && (
@@ -640,10 +657,8 @@ function TreeItem({
           )}
         />
       )}
-      <span className="truncate">{node.name}</span>
-      {showFreshness && node.page && (
-        <FreshnessDot status={node.page.freshness_status as FreshnessStatus} />
-      )}
+      <span className="min-w-0 text-left [overflow-wrap:anywhere]">{node.name}</span>
+      <RowMarkers page={node.page} showFreshness={showFreshness} />
     </button>
   );
 }
@@ -665,7 +680,49 @@ function FreshnessDot({ status }: { status: FreshnessStatus }) {
   if (status === "fresh") return null;
   const color =
     status === "stale" ? "bg-[var(--color-warning)]" : "bg-[var(--color-error)]";
-  return <span className={cn("ml-auto h-1.5 w-1.5 rounded-full shrink-0", color)} />;
+  return <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", color)} />;
+}
+
+/**
+ * A page a model is expected to write that has not been written yet.
+ *
+ * Whether a page carries prose was previously only discoverable by opening it
+ * and reading the rail, so "how far does the prose go" took one click per page.
+ * Marking it in the tree answers that while browsing.
+ *
+ * Hollow, and only on stubs — same reasoning as FreshnessDot above. A marker
+ * on every row says nothing; this one means there is something left to do.
+ * Structural pages (files, symbols, contracts) are templates by design and are
+ * never marked.
+ */
+function StubDot({ page }: { page: DocPage }) {
+  if (!isStubPage(page)) return null;
+  return (
+    <span
+      title="Built from the index. A model has not written this page yet."
+      className="h-1.5 w-1.5 shrink-0 rounded-full ring-1 ring-[var(--color-text-tertiary)]"
+    />
+  );
+}
+
+/** Trailing status markers, right-aligned as one group so the two dots do not
+ *  fight over `ml-auto`. */
+function RowMarkers({
+  page,
+  showFreshness,
+}: {
+  page: DocPage | undefined;
+  showFreshness: boolean;
+}) {
+  if (!page) return null;
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1 pl-1">
+      <StubDot page={page} />
+      {showFreshness && (
+        <FreshnessDot status={page.freshness_status as FreshnessStatus} />
+      )}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
