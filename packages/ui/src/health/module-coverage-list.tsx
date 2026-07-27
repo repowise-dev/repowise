@@ -115,7 +115,9 @@ export function ModuleCoverageList({ modules, onSelectModule }: ModuleCoverageLi
         />
       </div>
 
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] divide-y divide-[var(--color-border-default)]">
+      {/* Hairlines, not a card. The rows are the content; a border plus a raised
+          ground around them makes the list read as one object you act on. */}
+      <div className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
         {filtered.map((g) => {
           const expanded = isOpen(g.key);
           return (
@@ -123,7 +125,7 @@ export function ModuleCoverageList({ modules, onSelectModule }: ModuleCoverageLi
               <button
                 type="button"
                 onClick={() => toggle(g.key)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-[var(--color-bg-elevated)]"
+                className="flex w-full items-center gap-3 px-2 py-3 text-left hover:bg-[var(--color-bg-elevated)]"
                 aria-expanded={expanded}
               >
                 <ChevronRight
@@ -148,7 +150,7 @@ export function ModuleCoverageList({ modules, onSelectModule }: ModuleCoverageLi
                     return (
                       <div
                         key={c.module}
-                        className={`flex items-center gap-3 py-2 pl-11 pr-4 ${onSelectModule ? "cursor-pointer hover:bg-[var(--color-bg-elevated)]" : ""}`}
+                        className={`flex items-center gap-3 py-2 pl-9 pr-2 ${onSelectModule ? "cursor-pointer hover:bg-[var(--color-bg-elevated)]" : ""}`}
                         onClick={onSelectModule ? () => onSelectModule(c.module) : undefined}
                       >
                         <span

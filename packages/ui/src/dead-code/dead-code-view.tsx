@@ -1,11 +1,20 @@
 "use client";
 
 /**
- * Dead Code view — the safe-to-delete pile (the "what do I delete" punchline),
- * optional cluster rollups behind progressive disclosure, and the full
- * drill-down table with its single confidence control. Carries the optimistic
- * row patch + Undo toast, bulk resolve, the "Propose cleanup" agent brief, and
+ * Dead Code view, on the section design language.
+ *
+ * The shape is: a lede that leads with the reclaimable line count and says in
+ * prose what confidence means, then the safe-to-delete pile, the optional
+ * cluster rollups, and the full drill-down table. Carries the optimistic row
+ * patch + Undo toast, bulk resolve, the "Propose cleanup" agent brief, and
  * Re-analyze.
+ *
+ * What it replaces: four `MetricCard`s in a grid (two of them holding a stacked
+ * count list inside the value slot), a red gradient hero card that repeated the
+ * headline figure, and a floating chrome row carrying a status dropdown and a
+ * button above all of it. The controls now sit in the header of the section
+ * they operate on, which is also why the status filter can live there safely:
+ * a section header renders whether or not the table underneath it does.
  *
  * Presentation + orchestration only: the host injects data fetching,
  * mutations, links, and navigation through a {@link DeadCodeAdapter}, so web
@@ -26,12 +35,12 @@ import { Trash2 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ApiError } from "../shared/api-error";
-import { CollapsibleSection } from "../shared/collapsible-section";
 import { EmptyState } from "../shared/empty-state";
+import { OverviewSection } from "../overview/section";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildDeadCodeAiPrompt } from "../health/ai-prompt-builder";
 
-import { SummaryBar } from "./summary-bar";
+import { DeadCodeLede } from "./dead-code-lede";
 import { SafeToDeletePile } from "./safe-to-delete-pile";
 import { OwnerLeaderboard } from "./owner-leaderboard";
 import { FindingsBreakdownGrid } from "./findings-breakdown-grid";
@@ -278,50 +287,42 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
     return succeededIds;
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        {/* The way back to an acknowledged or false-positive finding, which was
-            otherwise reachable only from a toast that expires in six seconds.
-            It sits here rather than among the table's own filters because a
-            clean repository swaps the table out for an empty state, and a
-            control living inside it would go with it. */}
-        <div className="flex items-center gap-2">
-          <label htmlFor="finding-status" className="text-xs text-[var(--color-text-secondary)]">
-            Status
-          </label>
-          <select
-            id="finding-status"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as DeadCodeStatus)}
-            className="h-8 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-xs text-[var(--color-text-secondary)]"
-          >
-            {STATUS_ORDER.map((s) => (
-              <option key={s} value={s}>
-                {DEAD_CODE_STATUS_LABELS[s]}
-              </option>
-            ))}
-          </select>
-        </div>
-        <Button size="sm" variant="outline" onClick={handleAnalyze} disabled={analyzing}>
-          {analyzing ? "Analyzing…" : "Re-analyze"}
-        </Button>
-      </div>
+  // The tab's one action, placed under the lede prose. It is the same element
+  // wherever the lede cannot render, so a failed summary still leaves a way to
+  // re-run the pass.
+  const reanalyze = (
+    <Button size="sm" variant="outline" onClick={handleAnalyze} disabled={analyzing}>
+      {analyzing ? "Analyzing…" : "Re-analyze"}
+    </Button>
+  );
 
+  return (
+    <div className="flex flex-col gap-6 sm:gap-8">
       {loadingSummary ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 w-full rounded-lg" />
-          ))}
+        // Shapes and widths match the lede, so nothing reflows when it lands.
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-5 lg:flex-row lg:gap-12">
+            <Skeleton className="h-[92px] w-full rounded-lg lg:w-[220px]" />
+            <Skeleton className="h-[92px] w-full max-w-[62ch] rounded-lg" />
+          </div>
+          <Skeleton className="h-[74px] w-full" />
         </div>
       ) : summary ? (
-        <SummaryBar summary={summary} />
-      ) : summaryError ? (
-        <RetryCard
-          title="Couldn't load summary"
-          error={summaryError}
-          onRetry={() => void mutateSummary()}
+        <DeadCodeLede
+          summary={summary}
+          shownCount={findingsList.length}
+          truncated={truncated}
+          action={reanalyze}
         />
+      ) : summaryError ? (
+        <div className="flex flex-col gap-3">
+          <RetryCard
+            title="Couldn't load summary"
+            error={summaryError}
+            onRetry={() => void mutateSummary()}
+          />
+          <div>{reanalyze}</div>
+        </div>
       ) : null}
 
       {/* Act now: the single "what do I delete" surface. */}
@@ -337,108 +338,122 @@ export function DeadCodeView({ adapter }: { adapter: DeadCodeAdapter }) {
         />
       )}
 
-      {/* Where it clusters — optional rollups, collapsed by default so the spine
-          stays pile → drill-down. */}
+      {/* Where it clusters. No longer behind a disclosure: the accordion existed
+          because this sat among six boxes of equal weight and something had to
+          give, and a hairline plus vertical rhythm now does that job without
+          hiding a rollup the reader has to guess at. */}
       {findingsList.length > 0 && (
-        <CollapsibleSection
+        <OverviewSection
           title="Where it clusters"
-          hint="By owner and confidence × kind"
-          defaultOpen={false}
+          description="The same findings cut two ways: by the person who last owned the code, and by how sure we are against how it was found."
         >
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <div>
-              <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
-                Reclaimable lines per primary contributor — who has the most cleanup leverage.
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                Reclaimable lines by owner
               </p>
               <OwnerLeaderboard findings={findingsList} safeOnly />
             </div>
-            <div>
-              <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
-                Where findings concentrate — start with high-confidence cells.
+            <div className="flex flex-col gap-2">
+              <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                Confidence against kind
               </p>
               <FindingsBreakdownGrid findings={findingsList} />
             </div>
           </div>
-        </CollapsibleSection>
+        </OverviewSection>
       )}
 
-      {/* Everything below routes off the slice actually on screen, not the open
-          fetch: a failed open fetch used to blank the table even when the user
-          had switched the filter to a slice that loaded fine.
+      {/* The drill-down. Its contents route off the slice actually on screen,
+          not the open fetch: a failed open fetch used to blank the table even
+          when the user had switched the filter to a slice that loaded fine.
 
-          A failure with nothing to show has to be the whole story - a table or
-          an empty state underneath it would restate the failure as "clean". */}
-      {tableError && tableFindings.length === 0 && !tableLoading ? (
-        <RetryCard
-          title="Couldn't load findings"
-          error={tableError}
-          onRetry={retryTable}
-        />
-      ) : tableLoading && tableFindings.length === 0 ? (
-        <Skeleton className="h-40 w-full rounded-lg" />
-      ) : /* A clean repository gets said out loud, with the way to re-check it.
-          Keyed off the fetched payload, not the locally filtered list: resolving
-          the last row must not swap the table out for an empty state, because
-          undoing it would then bring the row back into a section that
-          remounted collapsed. Only for the open slice — swapping the table out
-          while reviewing acknowledged findings would take the status filter
-          with it and strand the user there. */
-      statusFilter === "open" && fetched.length === 0 && findingsList.length === 0 ? (
-        <EmptyState
-          icon={<Trash2 className="h-6 w-6" />}
-          title="No dead code found"
-          description="Nothing in this repository is currently flagged as unreachable, unused or zombie. Re-run the analysis after a large refactor."
-          action={{ label: analyzing ? "Analyzing…" : "Re-analyze", onClick: () => void handleAnalyze() }}
-        />
-      ) : (
-      /* Drill-down: the full interactive table, the single confidence control.
-         Rendered only once the findings settle so `defaultOpen` sees the real
-         pile: mounted mid-load it would always read "no pile" and open. */
-      <CollapsibleSection
-        // Remount on a status switch: defaultOpen is read once, so without this
-        // picking "Acknowledged" while the section sits collapsed changes only
-        // the hint text and the filter reads as broken.
-        key={statusFilter}
+          The status control lives in this header rather than among the table's
+          own filters because a clean repository swaps the table out for an
+          empty state, and a control living inside it would go with it. The
+          header renders either way. */}
+      <OverviewSection
         title="All findings"
-        hint={
+        description={
           tableLoading
             ? "Loading…"
             : statusFilter !== "open"
-              ? `${reviewTruncated ? `First ${tableFindings.length}` : tableFindings.length} ${DEAD_CODE_STATUS_LABELS[statusFilter].toLowerCase()}`
+              ? `${reviewTruncated ? `The first ${tableFindings.length}` : tableFindings.length} ${DEAD_CODE_STATUS_LABELS[statusFilter].toLowerCase()} finding${tableFindings.length === 1 ? "" : "s"}. Reopen one to put it back in the working list.`
               : truncated && summary
-                ? `Showing ${findingsList.length} of ${summary.total_findings} findings`
-                : `${findingsList.length} findings`
+                ? `Showing ${findingsList.length} of ${summary.total_findings} open findings. Resolve, acknowledge or flag a false positive; every action is undoable for six seconds.`
+                : `${findingsList.length} open finding${findingsList.length === 1 ? "" : "s"}. Resolve, acknowledge or flag a false positive; every action is undoable for six seconds.`
         }
-        // With no safe pile above it this is the only content on the page, so
-        // a collapsed section reads as an empty screen. A review slice is
-        // always opened: the user asked for it explicitly.
-        defaultOpen={statusFilter !== "open" || safeFindings.length === 0}
-      >
-        {/* A failed refresh over data we already hold: say so, but keep the
-            rows. Replacing a working table with an error card loses the user's
-            place over a transient blip. */}
-        {tableError && (
-          <div className="mb-3">
-            <RetryCard
-              title="Couldn't refresh findings"
-              error={tableError}
-              onRetry={retryTable}
-            />
+        action={
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="finding-status"
+              className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
+            >
+              Status
+            </label>
+            <select
+              id="finding-status"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as DeadCodeStatus)}
+              className="h-8 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-xs text-[var(--color-text-secondary)]"
+            >
+              {STATUS_ORDER.map((s) => (
+                <option key={s} value={s}>
+                  {DEAD_CODE_STATUS_LABELS[s]}
+                </option>
+              ))}
+            </select>
           </div>
+        }
+      >
+        {/* A failure with nothing to show has to be the whole story: a table or
+            an empty state underneath it would restate the failure as "clean". */}
+        {tableError && tableFindings.length === 0 && !tableLoading ? (
+          <RetryCard
+            title="Couldn't load findings"
+            error={tableError}
+            onRetry={retryTable}
+          />
+        ) : tableLoading && tableFindings.length === 0 ? (
+          <Skeleton className="h-40 w-full rounded-lg" />
+        ) : /* A clean repository gets said out loud. Keyed off the fetched
+            payload, not the locally filtered list: resolving the last row must
+            not swap the table out, because undoing it would then bring the row
+            back into a section that had remounted. Only for the open slice:
+            swapping the table out while reviewing acknowledged findings would
+            strand the user there. */
+        statusFilter === "open" && fetched.length === 0 && findingsList.length === 0 ? (
+          <EmptyState
+            icon={<Trash2 className="h-6 w-6" />}
+            title="No dead code found"
+            description="Nothing in this repository is currently flagged as unreachable, unused or zombie. Re-run the analysis after a large refactor, when whole call paths tend to go quiet at once."
+          />
+        ) : (
+          <>
+            {/* A failed refresh over data we already hold: say so, but keep the
+                rows. Replacing a working table with an error card loses the
+                user's place over a transient blip. */}
+            {tableError && (
+              <RetryCard
+                title="Couldn't refresh findings"
+                error={tableError}
+                onRetry={retryTable}
+              />
+            )}
+            <FindingsTable
+              findings={tableFindings}
+              onPatch={handlePatch}
+              onBulkResolve={handleBulkResolve}
+              onGeneratePrompt={handlePropose}
+              fileHref={(p) => adapter.fileHref(p)}
+              onNavigate={(href) => adapter.navigate(href)}
+              {...(adapter.graphHref ? { graphHref: (p: string) => adapter.graphHref!(p) } : {})}
+              status={statusFilter}
+              isLoading={tableLoading}
+            />
+          </>
         )}
-        <FindingsTable
-          findings={tableFindings}
-          onPatch={handlePatch}
-          onBulkResolve={handleBulkResolve}
-          onGeneratePrompt={handlePropose}
-          fileHref={(p) => adapter.fileHref(p)}
-          onNavigate={(href) => adapter.navigate(href)}
-          {...(adapter.graphHref ? { graphHref: (p: string) => adapter.graphHref!(p) } : {})}
-          status={statusFilter}
-          isLoading={tableLoading}
-        />
-      </CollapsibleSection>
-      )}
+      </OverviewSection>
 
       <AiPromptModal
         open={promptIds !== null}

@@ -33,15 +33,19 @@ vi.mock("sonner", () => ({
  * The findings table stacks into a mobile card list beside the real table and
  * lets CSS pick one; jsdom applies no CSS, so a row control matches in both.
  * These scope row queries to the table.
+ *
+ * By caption, not by role alone: the cluster rollups above it are no longer
+ * behind a disclosure, so the page now carries more than one <table>.
  */
+const FINDINGS_TABLE = { name: "Dead code findings" };
 const rowButton = (name: string) =>
-  within(screen.getByRole("table")).getByRole("button", { name });
+  within(screen.getByRole("table", FINDINGS_TABLE)).getByRole("button", { name });
 const queryRowButton = (name: string) => {
-  const table = screen.queryByRole("table");
+  const table = screen.queryByRole("table", FINDINGS_TABLE);
   return table ? within(table).queryByRole("button", { name }) : null;
 };
 const findRowButton = async (name: string) => {
-  await screen.findByRole("table");
+  await screen.findByRole("table", FINDINGS_TABLE);
   return rowButton(name);
 };
 
@@ -151,18 +155,18 @@ describe("DeadCodeView", () => {
   it("renders the summary and the safe-to-delete pile from adapter data", async () => {
     renderView(<DeadCodeView adapter={makeAdapter()} />);
 
-    // Summary headline (total findings) + the safe pile punchline.
+    // The lede's figure, then the safe pile's own sentence.
     expect(await screen.findByText("Propose cleanup")).toBeInTheDocument();
-    expect(screen.getByText("lines in cleanup candidates")).toBeInTheDocument();
+    expect(screen.getByText(/come back high confidence/)).toBeInTheDocument();
     // The safe slice (not the unsafe bootstrap file) drives the pile preview.
-    expect(screen.getByText(/legacy\.ts/)).toBeInTheDocument();
+    expect(screen.getAllByText(/legacy\.ts/).length).toBeGreaterThan(0);
   });
 
   it("Re-analyze calls the adapter and shows a success toast", async () => {
     const adapter = makeAdapter();
     renderView(<DeadCodeView adapter={adapter} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-analyze" }));
 
     await waitFor(() => expect(adapter.analyze).toHaveBeenCalledTimes(1));
     expect(toastSuccess).toHaveBeenCalled();
@@ -203,7 +207,7 @@ describe("DeadCodeView", () => {
     expect(
       screen.queryByText(/No open dead-code findings/),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /All findings/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("table", FINDINGS_TABLE)).not.toBeInTheDocument();
   });
 
   it("reviews and reopens an acknowledged finding, which the toast alone could not", async () => {
@@ -243,8 +247,6 @@ describe("DeadCodeView", () => {
     fireEvent.change(screen.getByLabelText("Status"), { target: { value: "open" } });
 
     expect(screen.queryByText("No dead code found")).not.toBeInTheDocument();
-    // It is cleanup-ready, so a pile now exists and the section mounts closed.
-    fireEvent.click(await screen.findByRole("button", { name: /All findings/ }));
     expect(await findRowButton("Resolve src/old/legacy.ts")).toBeInTheDocument();
   });
 
@@ -262,10 +264,9 @@ describe("DeadCodeView", () => {
     });
     renderView(<DeadCodeView adapter={adapter} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /All findings/ }));
     expect(await findRowButton("Resolve src/old/legacy.ts")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-analyze" }));
 
     // A transient failure on the refresh must not take the working table away
     // and lose the user's place; it reports itself above the rows.
@@ -312,10 +313,10 @@ describe("DeadCodeView", () => {
       ),
     });
     renderView(<DeadCodeView adapter={adapter} />);
-    await screen.findByText("lines in cleanup candidates");
+    await screen.findByText(/come back high confidence/);
 
     const listCallsBefore = (adapter.listFindings as ReturnType<typeof vi.fn>).mock.calls.length;
-    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-analyze" }));
 
     await waitFor(() => expect(adapter.waitForAnalysis).toHaveBeenCalledWith("job-1"));
     resolveJob?.();
@@ -343,7 +344,7 @@ describe("DeadCodeView", () => {
     });
     renderView(<DeadCodeView adapter={adapter} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-analyze" }));
 
     // The job is running; "Couldn't start analysis" would be a false statement.
     await waitFor(() => expect(toastError).toHaveBeenCalled());
@@ -360,7 +361,7 @@ describe("DeadCodeView", () => {
     });
     renderView(<DeadCodeView adapter={adapter} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-analyze" }));
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(String(toastError.mock.calls[0]?.[0])).toMatch(/Another job is already running/);
@@ -370,8 +371,6 @@ describe("DeadCodeView", () => {
     const adapter = makeAdapter();
     renderView(<DeadCodeView adapter={adapter} />);
 
-    // Open the drill-down table (collapsed by default).
-    fireEvent.click(await screen.findByRole("button", { name: /All findings/ }));
     fireEvent.click(await findRowButton("Resolve src/old/legacy.ts"));
     fireEvent.click(await screen.findByRole("button", { name: "Resolve" }));
 

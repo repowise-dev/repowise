@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, type MouseEvent } from "react";
-import { GitBranch } from "lucide-react";
+import type * as React from "react";
+import { CircleSlash, Eye, GitBranch, MoreHorizontal, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { ConfirmDialog } from "../ui/confirm-dialog";
-import { RowActions } from "../shared/row-actions";
-import { AiPromptButton } from "../health/ai-prompt-button";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { formatConfidence } from "../lib/format";
 import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
@@ -175,9 +175,23 @@ export interface FindingRowActionsProps {
 }
 
 /**
- * Per-row status actions: resolve, acknowledge or mark false positive while a
- * finding is open, and the way back once it is not. Reopening used to be
- * reachable only from a toast that expires after six seconds.
+ * Per-row status actions: one verb in the row, the rest behind an overflow.
+ *
+ * This cell used to carry five controls at once — an AI-prompt icon, a graph
+ * link, and `Resolve` / `Ack` / `FP` — inside a 9rem column that then wrapped
+ * them onto two lines. Down a 500-row table that is 2,500 controls at identical
+ * weight, which is rule 10 pointed at actions: if every row shouts, none of
+ * them tells you anything, and the reader has to read a cluster before they can
+ * read a row.
+ *
+ * What stays in the row is `Resolve`, because it is the verb that clears the
+ * working list and the one the bulk control at the top uses, so the row and the
+ * toolbar agree. Acknowledge and false positive keep their real words inside
+ * the menu rather than living in the row as abbreviations only someone who
+ * already knows the model can expand. The graph link and the AI prompt go with
+ * them: both navigate somewhere or write something, neither decides anything
+ * about this record, and mixing the two kinds is what made the cluster read as
+ * a pile rather than a choice.
  */
 export function FindingRowActions({
   finding,
@@ -187,6 +201,7 @@ export function FindingRowActions({
 }: FindingRowActionsProps) {
   const [pending, setPending] = useState(false);
   const [confirmStatus, setConfirmStatus] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const applyPatch = async (status: string) => {
     setPending(true);
@@ -204,54 +219,47 @@ export function FindingRowActions({
 
   const confirmConfig = confirmStatus ? STATUS_LABELS[confirmStatus] : null;
 
+  /** One row of the overflow menu. */
+  const menuItem = (
+    label: string,
+    icon: React.ComponentType<{ className?: string }>,
+    onClick: () => void,
+    tone?: string,
+  ) => {
+    const Icon = icon;
+    return (
+      <button
+        type="button"
+        disabled={pending}
+        onClick={() => {
+          setMenuOpen(false);
+          onClick();
+        }}
+        className={cn(
+          "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] disabled:opacity-50",
+          tone ?? "text-[var(--color-text-secondary)]",
+        )}
+      >
+        <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
+        {label}
+      </button>
+    );
+  };
+
   return (
     <span onClick={(e) => e.stopPropagation()}>
-      <span className="flex flex-wrap items-center justify-end gap-1">
-        {onGeneratePrompt && (
-          <AiPromptButton
-            variant="icon"
-            label={`AI cleanup prompt for ${finding.file_path}`}
-            onClick={() => onGeneratePrompt(finding.id)}
-          />
-        )}
-        {graphHref && (
-          <RowActions
-            actions={[{ icon: GitBranch, label: "Graph", href: graphHref(finding.file_path) }]}
-          />
-        )}
+      <span className="flex items-center justify-end gap-1">
         {finding.status === "open" ? (
-          <>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={pending}
-              onClick={() => setConfirmStatus("resolved")}
-              className="h-6 px-2 text-xs text-[var(--color-success)] hover:text-[var(--color-success)]"
-              aria-label={`Resolve ${finding.file_path}`}
-            >
-              Resolve
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={pending}
-              onClick={() => setConfirmStatus("acknowledged")}
-              className="h-6 px-2 text-xs"
-              aria-label={`Acknowledge ${finding.file_path}`}
-            >
-              Ack
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={pending}
-              onClick={() => setConfirmStatus("false_positive")}
-              className="h-6 px-2 text-xs text-[var(--color-text-tertiary)]"
-              aria-label={`Mark ${finding.file_path} as false positive`}
-            >
-              FP
-            </Button>
-          </>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={pending}
+            onClick={() => setConfirmStatus("resolved")}
+            className="h-6 px-2 text-xs text-[var(--color-success)] hover:text-[var(--color-success)]"
+            aria-label={`Resolve ${finding.file_path}`}
+          >
+            Resolve
+          </Button>
         ) : (
           <Button
             size="sm"
@@ -264,6 +272,43 @@ export function FindingRowActions({
             Reopen
           </Button>
         )}
+
+        <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 w-6 px-0 text-[var(--color-text-tertiary)]"
+              aria-label={`More actions for ${finding.file_path}`}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-56 p-1">
+            {finding.status === "open" && (
+              <>
+                {menuItem("Acknowledge", Eye, () => setConfirmStatus("acknowledged"))}
+                {menuItem("Mark false positive", CircleSlash, () =>
+                  setConfirmStatus("false_positive"),
+                )}
+              </>
+            )}
+            {onGeneratePrompt &&
+              menuItem("Draft AI cleanup prompt", Sparkles, () =>
+                onGeneratePrompt(finding.id),
+              )}
+            {graphHref && (
+              <a
+                href={graphHref(finding.file_path)}
+                onClick={() => setMenuOpen(false)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--color-text-secondary)] no-underline hover:bg-[var(--color-bg-elevated)]"
+              >
+                <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
+                Open in dependency graph
+              </a>
+            )}
+          </PopoverContent>
+        </Popover>
       </span>
       {confirmConfig && (
         <ConfirmDialog

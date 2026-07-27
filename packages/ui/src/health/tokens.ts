@@ -172,6 +172,30 @@ export function coverageColor(pct: number): string {
   return "bg-[var(--color-success)]";
 }
 
+/**
+ * Coverage as a band, at the thresholds {@link coverageColor} already paints.
+ *
+ * One function for the same reason `healthBand()` is one function: the coverage
+ * lede prints the label, the figure takes the colour and the distribution bar
+ * segments by it, and three call sites disagreeing about where "Strong" starts
+ * is worse than the duplication that avoids it.
+ */
+export function coverageBand(pct: number): { color: string; label: string } {
+  if (pct < 30) return { color: "var(--color-error)", label: "Thin" };
+  if (pct < 60) return { color: "var(--color-warning)", label: "Partial" };
+  if (pct < 80) return { color: "var(--color-caution)", label: "Solid" };
+  return { color: "var(--color-success)", label: "Strong" };
+}
+
+/** Tailwind text colour for a coverage figure, on the same bands. */
+export function coverageTextColor(pct: number | null | undefined): string {
+  if (pct == null) return "text-[var(--color-text-primary)]";
+  if (pct < 30) return "text-[var(--color-error)]";
+  if (pct < 60) return "text-[var(--color-warning)]";
+  if (pct < 80) return "text-[var(--color-caution)]";
+  return "text-[var(--color-success)]";
+}
+
 export function deltaColor(delta: number | null | undefined): string {
   if (delta == null || delta === 0) return "text-[var(--color-text-tertiary)]";
   return delta > 0 ? "text-[var(--color-success)]" : "text-[var(--color-error)]";

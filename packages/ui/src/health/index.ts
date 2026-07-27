@@ -36,6 +36,7 @@ export * from "./hot-functions-panel";
 export * from "./hidden-coupling-list";
 export * from "./defect-accuracy-card";
 export * from "./code-health-lede";
+export * from "./coverage-lede";
 export * from "./severity-mark";
 export * from "./code-health-adapter";
 export * from "./triage-view";

@@ -284,7 +284,9 @@ describe("FindingsTable row affordances", () => {
     const onGeneratePrompt = vi.fn();
     renderTable([finding({ id: "a" }), finding({ id: "b" })], { onGeneratePrompt });
 
-    fireEvent.click(inTable().getByRole("button", { name: "AI cleanup prompt for src/a.ts" }));
+    // Per-row: behind the overflow, with Resolve as the row's one visible verb.
+    fireEvent.click(inTable().getByRole("button", { name: "More actions for src/a.ts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Draft AI cleanup prompt" }));
     expect(onGeneratePrompt).toHaveBeenCalledWith(["a"]);
 
     fireEvent.click(screen.getByLabelText("Select all findings"));
@@ -293,10 +295,15 @@ describe("FindingsTable row affordances", () => {
   });
 
   it("renders the graph action from the host's route, and hides it without one", () => {
+    const openMenu = () =>
+      fireEvent.click(inTable().getByRole("button", { name: "More actions for src/a.ts" }));
+    const LINK = { name: "Open in dependency graph" };
+
     const { unmount } = renderTable([finding({ id: "a" })], {
       graphHref: (p: string) => `/repos/repo-1/architecture?node=${encodeURIComponent(p)}`,
     });
-    expect(inTable().getByRole("link", { name: "Graph" })).toHaveAttribute(
+    openMenu();
+    expect(screen.getByRole("link", LINK)).toHaveAttribute(
       "href",
       "/repos/repo-1/architecture?node=src%2Fa.ts",
     );
@@ -305,7 +312,8 @@ describe("FindingsTable row affordances", () => {
     // No graph route on the host (the hosted frontend today) means no action,
     // rather than a link into a page that does not exist there.
     renderTable([finding({ id: "a" })]);
-    expect(screen.queryByRole("link", { name: "Graph" })).not.toBeInTheDocument();
+    openMenu();
+    expect(screen.queryByRole("link", LINK)).not.toBeInTheDocument();
   });
 
   it("reports a rejecting bulk resolve instead of wedging the dialog open", async () => {

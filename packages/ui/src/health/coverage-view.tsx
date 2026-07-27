@@ -1,10 +1,18 @@
 "use client";
 
 /**
- * Coverage view — test-coverage summary, risk × coverage scatter, untested
- * hotspots (with the dependents/commit context from the findings), module
- * rollup, and the per-file table. Rows link to the file page's coverage tab
- * (line-level heatmap).
+ * Coverage view, on the section design language.
+ *
+ * The shape is: a lede that leads with the coverage percentage and says in
+ * prose what it is built from, then the health × coverage map, then the files
+ * where a gap costs something, the module rollup and the per-file table, each
+ * grouped by a hairline rather than boxed. Rows link to the file page's
+ * coverage tab (the line-level heatmap).
+ *
+ * What it replaces: five `MetricCard`s in a grid above a bordered chart, a
+ * tinted warning panel, a bordered module list and a collapsed table section.
+ * Six containers at near-identical weight behind five uppercase labels, which
+ * is the box-soup failure the section style exists to fix.
  *
  * Presentation + orchestration only: the host injects data fetching, links,
  * and navigation through a {@link CodeHealthAdapter}.
@@ -23,10 +31,10 @@ import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { ResultsFooter } from "../shared/results-footer";
-import { MetricCard } from "../shared/metric-card";
-import { CollapsibleSection } from "../shared/collapsible-section";
+import { OverviewSection } from "../overview/section";
 
 import { AiPromptModal } from "./ai-prompt-modal";
+import { CoverageLede } from "./coverage-lede";
 import { CoverageBar } from "./coverage-bar";
 import { ModuleCoverageList } from "./module-coverage-list";
 import {
@@ -65,7 +73,7 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
     adapter.navigate(`${adapter.fileHref(path)}?tab=coverage`);
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6 sm:gap-8">
       {isLoading ? (
         <CoverageSkeleton />
       ) : error ? (
@@ -177,7 +185,15 @@ function CoverageBody({
   const scatterPoints = useMemo(
     () =>
       files
-        .filter((f) => f.health_score != null && f.line_coverage_pct != null)
+        // Same rule as `covOf`: a file with no coverable lines has no coverage
+        // percentage. It used to plot at 0% and pile up empty `__init__` files
+        // against the left edge, exactly where "critical untested" is written.
+        .filter(
+          (f) =>
+            f.health_score != null &&
+            f.line_coverage_pct != null &&
+            f.total_coverable_lines > 0,
+        )
         .map((f) => ({
           file_path: f.file_path,
           health_score: f.health_score!,
@@ -339,86 +355,42 @@ function CoverageBody({
   const activeColumns = columns.filter(
     (c): c is ResponsiveColumn<CoverageFileRow> => c !== null,
   );
-  const uncoveredLines = summary.total_lines - summary.covered_lines;
   const fetchTruncated = summary.file_count > files.length;
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-        <MetricCard
-          label="Files instrumented"
-          value={summary.file_count.toLocaleString()}
-        />
-        <MetricCard
-          label="Line coverage"
-          value={
-            summary.line_coverage_pct == null
-              ? "—"
-              : `${summary.line_coverage_pct.toFixed(1)}%`
-          }
-          distBar={
-            <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-              {summary.covered_lines.toLocaleString()} /{" "}
-              {summary.total_lines.toLocaleString()} lines
-            </span>
-          }
-        />
-        {hasBranch ? (
-          <MetricCard
-            label="Branch coverage"
-            value={
-              summary.branch_coverage_pct == null
-                ? "—"
-                : `${summary.branch_coverage_pct.toFixed(1)}%`
-            }
-          />
-        ) : (
-          <MetricCard
-            label="Uncovered lines"
-            value={uncoveredLines.toLocaleString()}
-            distBar={
-              <span className="text-xs text-[var(--color-text-tertiary)]">
-                lines with no test coverage
-              </span>
-            }
-          />
-        )}
-        <MetricCard
-          label="Source"
-          value={
-            <span className="text-lg uppercase">{summary.source_format ?? "—"}</span>
-          }
-          distBar={
-            <span className="text-xs text-[var(--color-text-tertiary)]">
-              {summary.ingested_at
-                ? new Date(summary.ingested_at).toLocaleString()
-                : "never"}
-            </span>
-          }
-        />
-      </div>
+    <div className="flex flex-col gap-6 sm:gap-8">
+      <CoverageLede summary={summary} files={files} moduleCount={modules.length} />
 
-      <RiskCoverageScatter points={scatterPoints} onSelect={(p) => onOpenFile(p.file_path)} />
+      <OverviewSection
+        title="Health against coverage"
+        description="Every instrumented file placed by its defect-risk score and its line coverage, sized by lines of code. The bottom-left quadrant is the one that costs money: code we score as weak, with no test watching it. Click a file to open its line-level heatmap."
+      >
+        <RiskCoverageScatter
+          points={scatterPoints}
+          onSelect={(p) => onOpenFile(p.file_path)}
+        />
+      </OverviewSection>
 
       {untested.length > 0 ? (
-        <UntestedHotspotWarning entries={untested} onSelect={onOpenFile} />
+        <OverviewSection
+          title="Untested hotspots"
+          description="Files that change often or that much of the codebase depends on, with little or no coverage. A gap here is worth more than the same gap in code nobody touches."
+        >
+          <UntestedHotspotWarning entries={untested} onSelect={onOpenFile} />
+        </OverviewSection>
       ) : null}
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
-          Module coverage
-        </h2>
-        <ModuleCoverageList modules={modules} />
-      </section>
-
-      <CollapsibleSection
-        title={`Files (${summary.file_count.toLocaleString()})`}
-        defaultOpen={false}
+      <OverviewSection
+        title="Module coverage"
+        description="Directories rolled up under their top-level package, weighted by coverable lines and worst covered first. A directory with no coverable lines reads as no data rather than as a red zero."
       >
-        <div className="flex items-center gap-2">
-          <span className="mr-auto text-xs text-[var(--color-text-tertiary)]">
-            Per-file coverage — click a row for the line-level heatmap.
-          </span>
+        <ModuleCoverageList modules={modules} />
+      </OverviewSection>
+
+      <OverviewSection
+        title="Every file"
+        description="Sorted worst first. Click a row for the line-level heatmap, or the prompt icon to draft a brief that has your AI agent write the missing tests."
+        action={
           <input
             value={search}
             onChange={(e) => {
@@ -426,10 +398,12 @@ function CoverageBody({
               setVisible(PAGE);
             }}
             placeholder="Filter path…"
-            className="text-xs px-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-56 focus:outline-none focus:border-[var(--color-border-strong)]"
+            aria-label="Filter files by path"
+            className="w-48 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-xs focus:border-[var(--color-border-strong)] focus:outline-none sm:w-56"
           />
-        </div>
-        <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
+        }
+      >
+        <div className="border-t border-[var(--color-border-default)]">
           <ResponsiveTable
             columns={activeColumns}
             rows={visibleFiles}
@@ -460,48 +434,53 @@ function CoverageBody({
         {fetchTruncated ? (
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Showing {files.length.toLocaleString()} of{" "}
-            {summary.file_count.toLocaleString()} instrumented files (capped for
-            performance).
+            {summary.file_count.toLocaleString()} instrumented files, capped so one
+            tab does not pull the whole repository.
           </p>
         ) : null}
-      </CollapsibleSection>
+      </OverviewSection>
     </div>
   );
 }
 
+/**
+ * Says what will fill the page, not that something is missing. The two commands
+ * are the whole setup, so they are the content rather than a footnote under a
+ * dashed placeholder box.
+ */
 function NoCoverageState() {
   return (
-    <div className="rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-8">
-      <div className="max-w-xl mx-auto text-center space-y-3">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
-          No coverage data ingested yet
-        </h2>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Run your test suite with coverage enabled, then ingest the report.
-          You&apos;ll see a risk × coverage map, untested-hotspot warnings, and a
-          per-module breakdown.
-        </p>
-        <pre className="inline-block px-4 py-2 rounded bg-[var(--color-bg-muted)] text-left text-xs font-mono">
-          pytest --cov --cov-report=lcov{"\n"}
-          repowise coverage add coverage.lcov
-        </pre>
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          Supported formats: LCOV · Cobertura · Clover.
-        </p>
-      </div>
+    <div className="flex max-w-[62ch] flex-col gap-3">
+      <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
+        No coverage report ingested yet
+      </h2>
+      <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+        Run your test suite with coverage on and hand us the report. This tab then
+        plots every file by health against coverage, names the files where a gap
+        actually costs something, and rolls the numbers up per directory. Nothing is
+        inferred: we read the lines your tests really executed.
+      </p>
+      <pre className="w-fit overflow-x-auto rounded-md bg-[var(--color-bg-muted)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)]">
+        pytest --cov --cov-report=lcov{"\n"}
+        repowise coverage add coverage.lcov
+      </pre>
+      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        LCOV · Cobertura · Clover
+      </p>
     </div>
   );
 }
 
+/** Shapes and widths match the real layout, so nothing reflows when data lands. */
 function CoverageSkeleton() {
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {Array.from({ length: 4 }).map((_, i) => (
-        <Skeleton key={i} className="h-24 w-full rounded-lg" />
-        ))}
+    <div className="flex flex-col gap-6 sm:gap-8">
+      <div className="flex flex-col gap-5 lg:flex-row lg:gap-12">
+        <Skeleton className="h-[92px] w-full rounded-lg lg:w-[220px]" />
+        <Skeleton className="h-[92px] w-full max-w-[62ch] rounded-lg" />
       </div>
-      <Skeleton className="h-72 w-full rounded-lg" />
+      <Skeleton className="h-[74px] w-full" />
+      <Skeleton className="h-[340px] w-full rounded-lg" />
       <Skeleton className="h-48 w-full rounded-lg" />
     </div>
   );

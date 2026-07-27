@@ -346,7 +346,9 @@ export function FindingsTable({
         key: "actions",
         header: <span className="sr-only">Actions</span>,
         mobileLabel: "Actions",
-        headerClassName: "w-36",
+        // Two controls, not five: the cell no longer has to reserve room for a
+        // cluster that wrapped onto a second line at this width.
+        headerClassName: "w-24",
         align: "right",
         render: (f) => (
           <FindingRowActions
