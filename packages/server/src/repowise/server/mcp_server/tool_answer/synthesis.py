@@ -280,6 +280,32 @@ def _synthesis_failure_note(exc: BaseException, provider, timeout_s: float, time
     )
 
 
+def _empty_completion_note(provider, response) -> str:
+    """Note for a call that succeeded and returned no text.
+
+    Measured against a local reasoning model on ollama: it spent all 1024
+    tokens thinking and emitted an empty content block. The call did not fail,
+    so nothing marked it degraded, and get_answer shipped a blank answer as a
+    normal result. That is the same silent empty answer #1119 was reported as,
+    reached from the other side.
+    """
+    who = (
+        f"provider={getattr(provider, 'provider_name', None) or '?'}, "
+        f"model={getattr(provider, 'model_name', None) or '?'}"
+    )
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        return (
+            f"DEGRADED: the model used its entire {_SYNTHESIS_MAX_TOKENS}-token "
+            f"budget without emitting an answer ({who}). Reasoning models spend "
+            "that budget on hidden thinking; try a non-reasoning model for "
+            "synthesis. Read the listed files to answer meanwhile."
+        )
+    return (
+        f"DEGRADED: the model returned an empty completion ({who}). "
+        "Read the listed files to answer."
+    )
+
+
 async def synthesize(provider, system_prompt: str, user_prompt: str) -> tuple[str, str | None]:
     """Run one synthesis call. Returns ``(answer_text, failure_note)``.
 
@@ -320,7 +346,8 @@ async def synthesize(provider, system_prompt: str, user_prompt: str) -> tuple[st
         timed_out = True
         response, failure = None, exc
     if failure is None:
-        return (getattr(response, "content", None) or "").strip(), None
+        text = (getattr(response, "content", None) or "").strip()
+        return (text, None) if text else ("", _empty_completion_note(provider, response))
 
     _log.warning(
         "get_answer LLM call failed (provider=%s, model=%s, budget=%.1fs, timed_out=%s): %s",

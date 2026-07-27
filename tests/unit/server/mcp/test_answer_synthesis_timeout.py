@@ -323,14 +323,46 @@ async def test_a_non_timeout_failure_is_not_reported_as_a_budget_overrun():
     assert _TIMEOUT_ENV not in note
 
 
-async def test_an_empty_completion_is_not_mistaken_for_a_failure():
+async def test_an_empty_completion_is_reported_rather_than_shipped_blank():
+    """A call can succeed and still produce nothing usable.
+
+    Measured on ollama: a local reasoning model spent all 1024 tokens on hidden
+    thinking and returned an empty content block. Nothing raised, so this used
+    to reach the agent as an ordinary answer that happened to be blank.
+    """
+
     class _Empty(_SlowProvider):
         async def generate(self, **kwargs):
-            return SimpleNamespace(content=None)
+            return SimpleNamespace(content=None, stop_reason=None)
 
     answer, note = await synthesize(_Empty(duration=0, budget=30.0), "sys", "user")
     assert answer == ""
-    assert note is None
+    assert note is not None
+    assert "empty completion" in note
+    assert "slowprov" in note
+
+
+async def test_a_reasoning_model_that_burned_its_budget_is_named_as_such():
+    """ "Empty" and "spent 1024 tokens thinking" need different remedies."""
+
+    class _AllThinking(_SlowProvider):
+        async def generate(self, **kwargs):
+            return SimpleNamespace(content="", stop_reason="max_tokens")
+
+    answer, note = await synthesize(_AllThinking(duration=0, budget=30.0), "sys", "user")
+    assert answer == ""
+    assert str(_SYNTHESIS_MAX_TOKENS) in note
+    assert "reasoning" in note.lower()
+
+
+async def test_whitespace_only_completion_counts_as_empty():
+    class _Blank(_SlowProvider):
+        async def generate(self, **kwargs):
+            return SimpleNamespace(content="   \n  ", stop_reason="end_turn")
+
+    answer, note = await synthesize(_Blank(duration=0, budget=30.0), "sys", "user")
+    assert answer == ""
+    assert note is not None
 
 
 # --- the degraded payload both failure modes share -------------------------
