@@ -2,12 +2,6 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
-## 0.36.1
-
-### Added
-- `/repowise:security` — full-history secret scan via `repowise security scan
-  --history` (working-tree scanning still runs during init/update).
-
 ## 0.35.0
 
 ### Changed
