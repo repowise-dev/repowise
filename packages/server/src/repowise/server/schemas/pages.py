@@ -8,12 +8,55 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
-class PageResponse(BaseModel):
+def _summary_fields(obj: object) -> dict:
+    """The part of a page row that costs nothing to send.
+
+    Shared by both response models so a field added to one can never go
+    missing from the other.
+    """
+    return dict(
+        id=obj.id,  # type: ignore[attr-defined]
+        repository_id=obj.repository_id,  # type: ignore[attr-defined]
+        page_type=obj.page_type,  # type: ignore[attr-defined]
+        title=obj.title,  # type: ignore[attr-defined]
+        target_path=obj.target_path,  # type: ignore[attr-defined]
+        source_hash=obj.source_hash,  # type: ignore[attr-defined]
+        model_name=obj.model_name,  # type: ignore[attr-defined]
+        provider_name=obj.provider_name,  # type: ignore[attr-defined]
+        input_tokens=obj.input_tokens,  # type: ignore[attr-defined]
+        output_tokens=obj.output_tokens,  # type: ignore[attr-defined]
+        cached_tokens=obj.cached_tokens,  # type: ignore[attr-defined]
+        generation_level=obj.generation_level,  # type: ignore[attr-defined]
+        version=obj.version,  # type: ignore[attr-defined]
+        confidence=obj.confidence,  # type: ignore[attr-defined]
+        freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
+        content_chars=len(obj.content or ""),  # type: ignore[attr-defined]
+        human_notes=obj.human_notes,  # type: ignore[attr-defined]
+        parent_page_id=obj.parent_page_id,  # type: ignore[attr-defined]
+        display_order=obj.display_order,  # type: ignore[attr-defined]
+        section_number=obj.section_number,  # type: ignore[attr-defined]
+        structural_key=obj.structural_key,  # type: ignore[attr-defined]
+        created_at=obj.created_at,  # type: ignore[attr-defined]
+        updated_at=obj.updated_at,  # type: ignore[attr-defined]
+    )
+
+
+class PageSummaryResponse(BaseModel):
+    """A page row without its two heavy fields.
+
+    On a 5,485-page wiki a full listing is ~67 MB, of which ``content`` and
+    ``metadata`` are 95%. Nothing that draws a list of pages — the docs tree,
+    breadcrumbs, the command palette — reads either one, so ``GET /api/pages``
+    can serve this instead when the caller asks for ``fields=summary``.
+
+    ``content_chars`` stands in for the one thing a list genuinely wanted the
+    body for: ranking pages by how much was written.
+    """
+
     id: str
     repository_id: str
     page_type: str
     title: str
-    content: str
     target_path: str
     source_hash: str
     model_name: str
@@ -25,7 +68,7 @@ class PageResponse(BaseModel):
     version: int
     confidence: float
     freshness_status: str
-    metadata: dict
+    content_chars: int
     human_notes: str | None = None
     # Position in the wiki outline. Older rows carry no placement, which reads
     # as a flat wiki and is what those rows actually describe.
@@ -37,33 +80,20 @@ class PageResponse(BaseModel):
     updated_at: datetime
 
     @classmethod
+    def from_orm(cls, obj: object) -> PageSummaryResponse:
+        return cls(**_summary_fields(obj))
+
+
+class PageResponse(PageSummaryResponse):
+    content: str
+    metadata: dict
+
+    @classmethod
     def from_orm(cls, obj: object) -> PageResponse:
-        metadata = json.loads(obj.metadata_json)  # type: ignore[attr-defined]
         return cls(
-            id=obj.id,  # type: ignore[attr-defined]
-            repository_id=obj.repository_id,  # type: ignore[attr-defined]
-            page_type=obj.page_type,  # type: ignore[attr-defined]
-            title=obj.title,  # type: ignore[attr-defined]
+            **_summary_fields(obj),
             content=obj.content,  # type: ignore[attr-defined]
-            target_path=obj.target_path,  # type: ignore[attr-defined]
-            source_hash=obj.source_hash,  # type: ignore[attr-defined]
-            model_name=obj.model_name,  # type: ignore[attr-defined]
-            provider_name=obj.provider_name,  # type: ignore[attr-defined]
-            input_tokens=obj.input_tokens,  # type: ignore[attr-defined]
-            output_tokens=obj.output_tokens,  # type: ignore[attr-defined]
-            cached_tokens=obj.cached_tokens,  # type: ignore[attr-defined]
-            generation_level=obj.generation_level,  # type: ignore[attr-defined]
-            version=obj.version,  # type: ignore[attr-defined]
-            confidence=obj.confidence,  # type: ignore[attr-defined]
-            freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
-            metadata=metadata,
-            human_notes=obj.human_notes,  # type: ignore[attr-defined]
-            parent_page_id=obj.parent_page_id,  # type: ignore[attr-defined]
-            display_order=obj.display_order,  # type: ignore[attr-defined]
-            section_number=obj.section_number,  # type: ignore[attr-defined]
-            structural_key=obj.structural_key,  # type: ignore[attr-defined]
-            created_at=obj.created_at,  # type: ignore[attr-defined]
-            updated_at=obj.updated_at,  # type: ignore[attr-defined]
+            metadata=json.loads(obj.metadata_json),  # type: ignore[attr-defined]
         )
 
 

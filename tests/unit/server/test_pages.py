@@ -54,6 +54,45 @@ async def test_list_pages_with_data(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_pages_defaults_to_full_rows(client: AsyncClient, app) -> None:
+    """No `fields` means what it always meant — content and metadata included."""
+    repo_id, _ = await _create_page(client, app.state.session_factory)
+    resp = await client.get("/api/pages", params={"repo_id": repo_id})
+    assert resp.status_code == 200
+    row = resp.json()[0]
+    assert row["content"] == "# Main module\n\nEntry point."
+    assert "metadata" in row
+
+
+@pytest.mark.asyncio
+async def test_list_pages_summary_drops_the_heavy_fields(
+    client: AsyncClient, app
+) -> None:
+    repo_id, page_id = await _create_page(client, app.state.session_factory)
+    resp = await client.get(
+        "/api/pages", params={"repo_id": repo_id, "fields": "summary"}
+    )
+    assert resp.status_code == 200
+    row = resp.json()[0]
+    assert "content" not in row
+    assert "metadata" not in row
+    # Everything a list actually renders is still there.
+    assert row["id"] == page_id
+    assert row["title"] == "main.py"
+    assert row["target_path"] == "src/main.py"
+    assert row["content_chars"] == len("# Main module\n\nEntry point.")
+
+
+@pytest.mark.asyncio
+async def test_list_pages_rejects_unknown_fields(client: AsyncClient, app) -> None:
+    repo_id, _ = await _create_page(client, app.state.session_factory)
+    resp = await client.get(
+        "/api/pages", params={"repo_id": repo_id, "fields": "titles"}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_get_page_by_path(client: AsyncClient, app) -> None:
     _, page_id = await _create_page(client, app.state.session_factory)
     resp = await client.get(f"/api/pages/{page_id}")

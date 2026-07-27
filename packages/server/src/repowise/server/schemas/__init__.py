@@ -152,6 +152,7 @@ from .ownership import (
 from .pages import (
     JobResponse,
     PageResponse,
+    PageSummaryResponse,
     PageVersionResponse,
 )
 from .pagination import Paginated
@@ -314,6 +315,7 @@ __all__ = [
     "OwnerProfileResponse",
     "OwnershipEntry",
     "PageResponse",
+    "PageSummaryResponse",
     "PageVersionResponse",
     "Paginated",
     "RepoCreate",
