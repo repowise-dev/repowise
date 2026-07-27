@@ -22,7 +22,7 @@ Connect repowise to Claude Code, Codex, Cursor, Cline, or any MCP-compatible edi
 
 ## Overview
 
-The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. It registers 17 tools: a curated 11-tool default surface in a single repository, two additional default tools in workspace mode, and four opt-in tools. Once connected, your editor's AI can query your codebase wiki for synthesized answers, symbols, docs, ownership, risk signals, dependency paths, and architectural decisions.
+The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. It registers 17 tools: a curated 11-tool default surface in a single repository (ten flagship tools plus `list_repos`), two additional default tools in workspace mode, and four opt-in tools. Once connected, your editor's AI can query your codebase wiki for synthesized answers, symbols, docs, ownership, file and change-risk signals, code health, and architectural decisions.
 
 Start the server with:
 
@@ -170,7 +170,10 @@ Clients connect to `http://localhost:7338/sse` and receive server-sent events.
 
 ---
 
-## The single-repo tools
+## The default single-repo tools
+
+The ten flagship tools below, plus `list_repos`, are on by default in a
+single-repo server. Full reference: [MCP_TOOLS.md](https://github.com/repowise-dev/repowise/blob/main/docs/agent/MCP_TOOLS.md).
 
 ### `get_answer(question, scope?)`
 
@@ -355,27 +358,49 @@ search_codebase(query="how database connections are pooled")
 
 ---
 
-### `get_dependency_path(source, target)`
+### `get_change_risk(revspec?, extensions?, exclude_patterns?, baseline?)`
 
-Finds the dependency path between two files or modules through the graph.
+Live risk scoring for one commit or a `base..head` range. Unlike `get_risk`
+(indexed files), this scores the shape of the live diff and needs no index
+refresh.
 
 **Parameters:**
-- `source` (string) — starting file/module
-- `target` (string) — destination file/module
+- `revspec` (optional, string) — commit or `base..head` (default `"HEAD"`)
+- `extensions` (optional) — file suffixes to count (e.g. `[".py", ".ts"]`)
+- `exclude_patterns` (optional) — gitignore-style paths; combined with root `.riskignore`
+- `baseline` (optional, int) — recent commits for percentile ranking (default `200`)
 
-**Returns:** The shortest path with edge types (imports, calls). When no direct path exists, returns nearest common ancestors, shared neighbors, and bridge suggestions.
+**Returns:** Corpus-calibrated `score` / `probability` / `level`, repo-relative
+`risk_percentile`, `review_priority`, `classification`, plus `impacted_tests`
+when a per-test coverage map is ingested (`repowise coverage add`).
 
-**When to use:** When tracing how modules connect, understanding blast radius, or planning refactors.
+**When to use:** Before merging a commit or PR range.
 
 **Example:**
 ```
-get_dependency_path(
-  source="packages/cli/src/repowise/cli/commands/init_cmd.py",
-  target="packages/core/src/repowise/core/persistence/db.py"
-)
+get_change_risk(revspec="main..HEAD", extensions=[".py"], exclude_patterns=["tests/"])
+```
 
-→ init_cmd.py → orchestrator.py → persistence/writer.py → db.py
-  (3 hops, all import edges)
+---
+
+### `get_health(targets?, include?, limit?)`
+
+Code-health marker scores (defect risk, maintainability, performance) — the
+same deterministic markers as `repowise health`. Zero LLM calls.
+
+**Parameters:**
+- `targets` (optional) — file paths, or `module:foo`; empty = dashboard mode
+- `include` (optional) — opt-in blocks such as `"biomarkers"`, `"refactoring"`,
+  `"trend"`, `"coverage"`, `"accuracy"`, `"signals"`, `"churn_complexity"`
+- `limit` (optional, int) — max lowest-scoring files (default 20)
+
+**When to use:** Self-check a change before opening a PR, or find the worst
+files before refactoring. Pair with `get_risk` on hotspots.
+
+**Example:**
+```
+get_health()
+get_health(targets=["src/api/server.py"], include=["signals"])
 ```
 
 ---
@@ -394,6 +419,43 @@ Returns a tiered report of unused code.
 
 **When to use:** Before any cleanup or removal tasks. Gives confirmed unused code rather than guesses.
 
+Also always on by default: `list_repos()` (repo aliases for the `repo=` parameter
+on other tools). See [Supplementary tools](#supplementary-tools) below.
+
+Full parameter tables and return shapes live in the repo guide:
+[docs/agent/MCP_TOOLS.md](https://github.com/repowise-dev/repowise/blob/main/docs/agent/MCP_TOOLS.md).
+
+---
+
+## Supplementary tools
+
+### `list_repos()` (default)
+
+Lists the repos this server is serving. In workspace mode returns every
+configured alias; in single-repo mode a single `"default"` alias.
+
+### Workspace-only (default in a workspace)
+
+When the server starts inside a workspace, two more tools appear automatically:
+
+| Tool | Purpose |
+|------|---------|
+| `get_architecture()` | Whole-system coupling, cyclic core, 1–10 architecture score |
+| `get_blast_radius(targets, …)` | Cross-repo downstream impact of changing a service |
+
+### Opt-in tools (off by default)
+
+Registered everywhere but not advertised until enabled via
+`mcp.tools: ["+name"]` in `.repowise/config.yaml`, the dashboard Settings page,
+or `repowise mcp --tools "+name"`:
+
+| Tool | Purpose |
+|------|---------|
+| `get_dependency_path(source, target)` | Shortest graph path between two files/modules |
+| `get_execution_flows(…)` | Top entry points and call traces |
+| `generate_refactoring_code(…)` | Code for a ranked refactoring plan from `get_health` |
+| `get_conformance(…)` | Architecture-rule violations (useful in workspace mode) |
+
 ---
 
 ## How AI editors use these tools
@@ -403,8 +465,9 @@ The tools are designed to form a decision workflow:
 1. **Before any task** → `get_overview()` to orient
 2. **Before reading a file** → `get_context(targets=[...])` instead of reading raw source
 3. **Before editing a file** → `get_risk(targets=[...])` to assess impact
-4. **When facing an architectural question** → `get_why(query="...")` before changing structure
-5. **When locating code** → `search_codebase(query="...")` before grep
-6. **After making changes** → `get_why(query="...")` to confirm the change aligns with recorded architectural decisions
+4. **Before merging a commit / PR** → `get_change_risk(revspec="main..HEAD")`
+5. **Before refactoring** → `get_health()` (and `get_dead_code` for cleanup)
+6. **When facing an architectural question** → `get_why(query="...")` before changing structure
+7. **When locating code** → `search_codebase(query="...")` before grep
 
 The [CLAUDE.md generator](claude-md-generator) writes these instructions directly into your project's CLAUDE.md, so Claude Code follows this workflow automatically. Codex setup writes the same workflow into managed `AGENTS.md`.

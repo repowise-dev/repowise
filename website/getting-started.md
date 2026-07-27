@@ -47,7 +47,7 @@ Scripting it instead? Name the mode and skip the questions: `repowise init --no-
 <details markdown="block"><summary><b>Claude Code</b></summary>
 
 ```bash
-# Plugin (adds 9 tools + slash commands + skills):
+# Plugin (MCP tools + slash commands + skills):
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
 
