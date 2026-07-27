@@ -469,7 +469,12 @@
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */
   --color-canvas-dot: rgba(255, 255, 255, 0.05);
-  --color-bg-glass: rgba(35, 35, 37, 0.72);
+  /* Tracks --color-bg-surface. It was rgba(35,35,37,.72) — the #232325 that
+     bg-surface used to be, left behind when the dark ramp moved in July 2026 —
+     so every glass chip on every canvas was painting a graphite that exists
+     nowhere else in the app, and read as a lighter plane floating over the new
+     near-black. Same alpha, current colour. */
+  --color-bg-glass: rgba(20, 20, 22, 0.72);
   --color-bg-wash: rgba(255, 255, 255, 0.04);
   --color-bg-wash-hover: rgba(255, 255, 255, 0.08);
 

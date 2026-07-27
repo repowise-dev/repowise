@@ -11,7 +11,7 @@
  * and hosted render the same view from one source.
  */
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { Plus, Flame } from "lucide-react";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
@@ -24,8 +24,23 @@ import { BlastRadiusResults } from "./blast-radius-results";
 import type { ImpactAdapter } from "./impact-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 
-export function ImpactView({ adapter }: { adapter: ImpactAdapter }) {
-  const [selected, setSelected] = useState<string[]>([]);
+export function ImpactView({
+  adapter,
+  initialFiles,
+}: {
+  adapter: ImpactAdapter;
+  /**
+   * Files to seed the selection with, and analyze on arrival.
+   *
+   * Nobody browses to this view: every route into it is a per-file CTA — the
+   * "Blast Radius" button on a file card, "View blast radius for X" in the
+   * symbol drawer. Both already know the path, and without this they landed on
+   * an empty picker and asked the reader to retype the path they had just
+   * clicked. Undefined keeps the blank analyzer, for a direct visit.
+   */
+  initialFiles?: string[];
+}) {
+  const [selected, setSelected] = useState<string[]>(initialFiles ?? []);
   const [maxDepth, setMaxDepth] = useState(3);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,24 +72,46 @@ export function ImpactView({ adapter }: { adapter: ImpactAdapter }) {
     addPaths(hotspotSuggestions.map((h) => h.file_path));
   };
 
-  const handleAnalyze = async () => {
-    if (selected.length === 0) {
-      setError("Add at least one file path.");
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    try {
-      const data = await adapter.analyze({ changedFiles: selected, maxDepth });
-      setResult(data);
-      setAnalyzedFiles(selected);
-    } catch (err) {
-      setError(toFriendlyMessage(err, "Analysis failed."));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const runAnalysis = useCallback(
+    async (files: string[]) => {
+      if (files.length === 0) {
+        setError("Add at least one file path.");
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      setResult(null);
+      try {
+        const data = await adapter.analyze({ changedFiles: files, maxDepth });
+        setResult(data);
+        setAnalyzedFiles(files);
+      } catch (err) {
+        setError(toFriendlyMessage(err, "Analysis failed."));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [adapter, maxDepth],
+  );
+
+  const handleAnalyze = () => void runAnalysis(selected);
+
+  // Analyze a seeded selection on arrival, so following a file card's "Blast
+  // Radius" button lands on the answer rather than on a filled-in form still
+  // waiting for a click. Keyed by the seed so navigating from one file to
+  // another re-runs it, and guarded by a ref so re-renders (and the depth
+  // control, which `runAnalysis` depends on) do not re-fire it.
+  const seedKey = (initialFiles ?? []).join("\n");
+  const analyzedSeed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!seedKey || analyzedSeed.current === seedKey) return;
+    analyzedSeed.current = seedKey;
+    const files = seedKey.split("\n");
+    setSelected(files);
+    void runAnalysis(files);
+    // runAnalysis is deliberately not a dependency; see the ref guard above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedKey]);
 
   return (
     <div className="space-y-6">

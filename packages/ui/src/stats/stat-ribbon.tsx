@@ -4,6 +4,17 @@ export interface RibbonStat {
   label: string;
   value: string;
   hint?: string;
+  /**
+   * Tailwind text-colour class for the value. Only for figures that carry a
+   * band — a health grade, a risk tercile — never to brighten a plain count.
+   * Added for Code Health, where a 3.1 and a 9.4 in the same row read as the
+   * same news without it.
+   */
+  valueColor?: string | undefined;
+  /** A quiet second line under the value — a delta, a comparison, a filename. */
+  sub?: string | undefined;
+  /** Tailwind text-colour class for `sub`. Same rule as `valueColor`. */
+  subColor?: string | undefined;
   /** Optional jump to the page that owns this figure. Added because the
    *  Overview replaced a strip of *linked* KPI tiles with this component, and
    *  without it Files and Symbols lost their only entry point from that page. */
@@ -67,7 +78,11 @@ export function StatRibbon({
               <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                 {s.label}
               </dt>
-              <dd className="mt-1 text-xl font-semibold tabular-nums text-[var(--color-text-primary)] group-hover:text-[var(--color-accent-primary)]">
+              <dd
+                className={`mt-1 text-xl font-semibold tabular-nums group-hover:text-[var(--color-accent-primary)] ${
+                  s.valueColor ?? "text-[var(--color-text-primary)]"
+                }`}
+              >
                 {s.value}
               </dd>
             </A>
@@ -76,9 +91,22 @@ export function StatRibbon({
               <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                 {s.label}
               </dt>
-              <dd className="mt-1 text-xl font-semibold tabular-nums text-[var(--color-text-primary)]">
+              <dd
+                className={`mt-1 text-xl font-semibold tabular-nums ${
+                  s.valueColor ?? "text-[var(--color-text-primary)]"
+                }`}
+              >
                 {s.value}
               </dd>
+              {s.sub && (
+                <dd
+                  className={`mt-0.5 text-xs tabular-nums ${
+                    s.subColor ?? "text-[var(--color-text-tertiary)]"
+                  }`}
+                >
+                  {s.sub}
+                </dd>
+              )}
             </>
           )}
         </div>

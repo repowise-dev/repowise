@@ -9,6 +9,7 @@
  */
 
 import useSWR from "swr";
+import { useSearchParams } from "next/navigation";
 import { ImpactView, type ImpactAdapter } from "@repowise-dev/ui/blast-radius";
 import { ReviewerSuggestions } from "@repowise-dev/ui/git/reviewer-suggestions";
 import { analyzeBlastRadius } from "@/lib/api/blast-radius";
@@ -38,6 +39,13 @@ function ReviewersPanel({ repoId, files }: { repoId: string; files: string[] }) 
 }
 
 export function ImpactTab({ repoId }: { repoId: string }) {
+  // `?file=` is how every route into this view arrives: the file card's "Blast
+  // Radius" button and the symbol drawer's CTA both link here with the path
+  // already chosen. Nothing read the param before, so those links landed on an
+  // empty picker and asked for the path back.
+  const searchParams = useSearchParams();
+  const seeded = searchParams.getAll("file").filter(Boolean);
+
   const adapter: ImpactAdapter = {
     cacheKey: repoId,
     listHotspots: (limit) => getHotspots(repoId, limit),
@@ -50,5 +58,5 @@ export function ImpactTab({ repoId }: { repoId: string }) {
     renderReviewers: (files) => <ReviewersPanel repoId={repoId} files={files} />,
   };
 
-  return <ImpactView adapter={adapter} />;
+  return <ImpactView adapter={adapter} {...(seeded.length > 0 ? { initialFiles: seeded } : {})} />;
 }

@@ -8,6 +8,7 @@
  */
 
 import { useCallback } from "react";
+import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   TriageView,
@@ -33,19 +34,27 @@ export function TriageTab({
   trend,
   overlay = "health",
   onOverlayChange,
+  lenses,
   mapFiles,
   overlayLoading,
+  hotspotsSlot,
+  trendSlot,
 }: {
   repoId: string;
-  /** Trend fetched once at the page level — feeds the KPI sparklines. */
+  /** Trend fetched once at the page level. */
   trend?: HealthTrendResponse;
   /** Active map lens, owned by the page so the spine is shared across tabs. */
   overlay?: CodeHealthOverlay;
   onOverlayChange?: (overlay: CodeHealthOverlay) => void;
+  /** Lenses offered in the switcher, including any the page joined in. */
+  lenses?: CodeHealthOverlay[];
   /** Map files fetched once at the page level (shared across overlays). */
   mapFiles?: HealthFilesResponse;
   /** The active lens's per-file signal is still loading (e.g. churn). */
   overlayLoading?: boolean;
+  /** Sections composed by the page and rendered under the map. */
+  hotspotsSlot?: ReactNode;
+  trendSlot?: ReactNode;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -94,10 +103,13 @@ export function TriageTab({
       trend={trend}
       overlay={overlay}
       onOverlayChange={onOverlayChange}
+      lenses={lenses}
       mapFiles={mapFiles}
       overlayLoading={overlayLoading}
       pillar={pillar}
       onPillarChange={onPillarChange}
+      hotspotsSlot={hotspotsSlot}
+      trendSlot={trendSlot}
     />
   );
 }

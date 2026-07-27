@@ -43,9 +43,9 @@ export function TrendSlopeChart({ points, height = 320, max = 18 }: TrendSlopeCh
 
   if (data.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-tertiary)]">
+      <p className="text-sm text-[var(--color-text-secondary)]">
         No per-file score changes to plot yet.
-      </div>
+      </p>
     );
   }
 
@@ -61,7 +61,8 @@ export function TrendSlopeChart({ points, height = 320, max = 18 }: TrendSlopeCh
   const yScale = (score: number) => padT + ((10 - Math.max(0, Math.min(10, score))) / 10) * plotH;
 
   return (
-    <div className="relative rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
+    // No card: the section heading above already frames this.
+    <div className="relative">
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label="Score change slope chart">
         {/* Axis columns */}
         <line x1={xBefore} y1={padT} x2={xBefore} y2={H - padB} stroke="currentColor" strokeOpacity={0.15} />

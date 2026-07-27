@@ -21,6 +21,22 @@ export interface PageLedeProps {
   children: React.ReactNode;
   /** Optional jump into the page that owns the subject. */
   action?: React.ReactNode;
+  /**
+   * Where the prose sits.
+   *
+   * `"stacked"` (default) puts it under the figure — right for a lede that
+   * shares its row with something else, which is how Overview uses it.
+   * `"beside"` puts it in a column to the right, for a page whose lede owns the
+   * full width: at three paragraphs the stacked version pushes everything below
+   * it off the fold while leaving most of the row empty.
+   */
+  layout?: "stacked" | "beside";
+  /**
+   * Rendered directly under the figure, inside its column. For a second read
+   * that belongs to the number itself — a distribution bar, a sparkline — not
+   * for another statistic.
+   */
+  figureFooter?: React.ReactNode;
 }
 
 /**
@@ -44,9 +60,13 @@ export function PageLede({
   band,
   children,
   action,
+  layout = "stacked",
+  figureFooter,
 }: PageLedeProps) {
-  return (
-    <div className="flex flex-col">
+  const beside = layout === "beside";
+
+  const figure = (
+    <div className={beside ? "flex shrink-0 flex-col" : "flex flex-col"}>
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {label}
       </p>
@@ -80,11 +100,45 @@ export function PageLede({
         )}
       </div>
 
-      <div className="mt-3.5 max-w-[54ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-        {children}
-      </div>
+      {figureFooter && <div className="mt-4">{figureFooter}</div>}
+    </div>
+  );
 
+  const prose = (
+    <div
+      className={
+        beside
+          ? // Two columns from xl. Three paragraphs in one 62ch column runs tall
+            // enough to push the page's actual subject below the fold while
+            // leaving half the row empty; flowed into two ~48ch columns it is
+            // about half the height and fills the space it was already taking
+            // up. Paragraphs are kept whole so a sentence never splits across
+            // the gap.
+            "max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty] xl:max-w-[102ch] xl:columns-2 xl:gap-10 xl:[&>p]:break-inside-avoid"
+          : "max-w-[62ch] text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]"
+      }
+    >
+      {children}
       {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
+
+  if (beside) {
+    return (
+      // The figure column is fixed so the prose starts at the same x whatever
+      // the number is; without it a 7.5 and a 10.0 indent the paragraph
+      // differently and the block looks unaligned between repos.
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-12">
+        <div className="lg:w-[220px]">{figure}</div>
+        {prose}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {figure}
+      <div className="mt-3.5">{prose}</div>
     </div>
   );
 }

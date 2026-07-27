@@ -3,74 +3,87 @@
 /**
  * Code Health — `/repos/[id]/code-health`.
  *
- * One living map + a thin drill-down. The galaxy map is the page spine; a lens
- * switcher recolors the same field (health / coverage / churn — the three lenses
- * backed by per-file map data) so the cross-tab redundancy collapses. Dead-code
- * and security have no per-file map signal and stay on their own tabs. Surviving
- * tabs — Triage
- * (the map spine), Hotspots, Coverage, Dead code, Impact, Security — are
- * URL-synced via `?tab=`; the active lens via `?lens=`. Modules folded into the
- * map's hub layer and Trend into a compact section.
+ * One living map, a lede that says what the score means, and a thin drill-down.
+ * The galaxy map is the page spine; a lens switcher recolors the same field
+ * (health / maintainability / performance / churn) so the cross-tab redundancy
+ * collapses.
+ *
+ * Six tabs, down from seven. Hotspots is gone: it rendered a *second* galaxy map
+ * on the churn lens directly under this page's, so churn became a lens here and
+ * what the lens cannot say — bus factor, the ranked table — became a section
+ * under the map. Blast radius keeps its `impact` tab id (existing file-card and
+ * symbol-drawer deep links point at it) but is labelled for what it is.
+ *
+ * Tabs carry their count where one is cheap to get, so a clean repo says so
+ * before you spend a click. Findings rides on the overview request the page
+ * already makes and dead code dedupes onto the key its own tab uses. Security
+ * has no count endpoint (only a findings list), and blast radius is a tool you
+ * operate rather than a pile you read, so neither is numbered.
  */
 
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { HeartPulse, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
-import { CollapsibleSection } from "@repowise-dev/ui/shared/collapsible-section";
+import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
 import type { CodeHealthOverlay } from "@repowise-dev/ui/health";
+import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 import { TriageTab } from "@/components/code-health/triage-tab";
+import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { FindingsTab } from "@/components/code-health/findings-tab";
 import { CoverageTab } from "@/components/code-health/coverage-tab";
 import { TrendSection } from "@/components/code-health/trend-tab";
-import { HotspotsTab } from "@/components/risk/hotspots-tab";
 import { DeadCodeTab } from "@/components/risk/dead-code-tab";
 import { ImpactTab } from "@/components/risk/impact-tab";
 import { SecurityTab } from "@/components/risk/security-tab";
+import { getDeadCodeSummary } from "@/lib/api/dead-code";
 import {
+  getChurnComplexity,
+  getHealthCoverage,
   getHealthOverview,
   getHealthTrend,
   listHealthFiles,
+  type ChurnComplexityResponse,
+  type HealthCoverageResponse,
   type HealthOverviewResponse,
   type HealthTrendResponse,
   type HealthFilesResponse,
 } from "@/lib/api/code-health";
 
-const TABS = ["triage", "findings", "hotspots", "coverage", "dead-code", "impact", "security"] as const;
+const TABS = ["triage", "findings", "coverage", "dead-code", "security", "impact"] as const;
 type TabId = (typeof TABS)[number];
 
 const TAB_LABELS: Record<TabId, string> = {
   triage: "Overview",
   findings: "Findings",
-  hotspots: "Hotspots",
   coverage: "Coverage",
   "dead-code": "Dead code",
-  impact: "Impact",
   security: "Security",
+  impact: "Blast radius",
 };
 
 /**
- * Legacy tab ids → their new home. `heatmap` was the old churn tab; `modules`
- * folded into the map's hub layer; `trend` folded into the compact section that
- * lives under Triage.
+ * Legacy tab ids → their new home. `heatmap` was the old churn tab and
+ * `hotspots` its successor; both now land on the map, whose churn lens replaced
+ * them. `modules` folded into the map's hub layer, `trend` into the section
+ * under it.
  */
 const TAB_ALIASES: Record<string, TabId> = {
-  heatmap: "hotspots",
+  heatmap: "triage",
+  hotspots: "triage",
   modules: "triage",
   trend: "triage",
 };
 
 /**
- * Lenses selectable on the map: the three co-equal health signals (defect /
- * maintainability / performance), all backed by a per-file score in the map
- * payload. An unrecognized `?lens=` (including the retired `coverage`/`churn`/
- * `dead-code`/`security` values, which live on their own tabs) falls back to
- * `health` so a stale URL never renders an all-grey map.
+ * Lenses on the map. The three co-equal health signals ride on the map payload
+ * itself; churn arrives on its own request and is joined in below, which is why
+ * it is listed here rather than in the map component's default.
  */
-const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance"];
+const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance", "churn"];
 
 export default function CodeHealthPage() {
   const params = useParams<{ id: string }>();
@@ -89,7 +102,8 @@ export default function CodeHealthPage() {
     ? (rawLens as CodeHealthOverlay)
     : "health";
 
-  // Shares the SWR key with TriageTab — the meta line costs no extra request.
+  // Shares the SWR key with TriageView — the meta line and the findings count
+  // cost no extra request.
   const { data: overview } = useSWR<HealthOverviewResponse>(
     `code-health-overview:${repoId}`,
     () => getHealthOverview(repoId, 25),
@@ -98,8 +112,7 @@ export default function CodeHealthPage() {
   const meta = overview?.meta;
 
   // Refresh revalidates every SWR key for this repo (overview + each tab's own
-  // keys — coverage, findings, hotspots…), so the button works on whichever
-  // tab is active, not just the shared overview.
+  // keys), so the button works on whichever tab is active.
   const { mutate: mutateAll } = useSWRConfig();
   const [refreshing, setRefreshing] = useState(false);
   const refresh = useCallback(async () => {
@@ -115,8 +128,7 @@ export default function CodeHealthPage() {
     }
   }, [mutateAll, repoId]);
 
-  // Trend fetched ONCE here, fed to both the KPI sparklines (Triage) and the
-  // folded Trend section — no second fetch, no second SWR key.
+  // Trend fetched ONCE here, fed to the folded Trend section — no second fetch.
   const { data: trend, isLoading: trendLoading, error: trendError } =
     useSWR<HealthTrendResponse>(
       `code-health-trend:${repoId}`,
@@ -124,18 +136,60 @@ export default function CodeHealthPage() {
       { revalidateOnFocus: false },
     );
 
-  // Every file (NLOC-first) for the circle-packing map — one big pull, shared
-  // across overlays so switching the lens never refetches.
+  // Every file (NLOC-first) for the map — one big pull, shared across overlays
+  // so switching the lens never refetches.
   const { data: mapFiles } = useSWR<HealthFilesResponse>(
     `code-health-map-files:${repoId}`,
     () => listHealthFiles(repoId, { limit: 2000, sort: "nloc", order: "desc" }),
     { revalidateOnFocus: false },
   );
 
-  // The maintainability + performance lenses recolor by per-file scores that
-  // already ride along on the map payload (the `/files` rows carry
-  // `maintainability_score` / `performance_score`), so no second fetch or merge
-  // is needed — the lens switch is a pure recolor.
+  // Churn percentiles for the churn lens. Fetched only once that lens is
+  // selected: it is a second request, and the other three lenses color from
+  // fields already on the map payload.
+  const churnWanted = overlay === "churn";
+  const { data: churn, isLoading: churnLoading } = useSWR<ChurnComplexityResponse>(
+    churnWanted ? `health-churn-complexity:${repoId}` : null,
+    () => getChurnComplexity(repoId),
+    { revalidateOnFocus: false, keepPreviousData: true },
+  );
+
+  // Join churn onto the map rows by path. Until it lands every node would be
+  // neutral, so the legend is told it is loading rather than letting an
+  // all-grey field read as "no churn anywhere".
+  const mapFilesWithChurn: HealthFilesResponse | undefined = useMemo(() => {
+    if (!mapFiles || !churn) return mapFiles;
+    const byPath = new Map(churn.points.map((p) => [p.file_path, p.churn_percentile]));
+    return {
+      ...mapFiles,
+      files: mapFiles.files.map((file) => ({
+        ...file,
+        churn_percentile: byPath.get(file.file_path) ?? null,
+      })),
+    };
+  }, [mapFiles, churn]);
+
+  // ---- Tab counts ----
+  // Dead code uses the same key + fetcher as its own tab, so this is a prefetch
+  // rather than a duplicate request.
+  const { data: deadCode } = useSWR<DeadCodeSummary>(
+    `dead-code-summary:${repoId}`,
+    () => getDeadCodeSummary(repoId),
+    { revalidateOnFocus: false },
+  );
+  // Coverage's own tab pulls 5,000 file rows; this asks for the summary alone,
+  // on its own key, so a badge never drags the heavy payload onto page load.
+  const { data: coverage } = useSWR<HealthCoverageResponse>(
+    `code-health-coverage-summary:${repoId}`,
+    () => getHealthCoverage(repoId, { limit: 1 }),
+    { revalidateOnFocus: false },
+  );
+  const coveragePct = coverage?.summary.line_coverage_pct;
+
+  const badges: Partial<Record<TabId, number | string>> = {};
+  if (overview) badges.findings = overview.summary.open_findings;
+  if (deadCode) badges["dead-code"] = deadCode.total_findings;
+  if (coveragePct != null) badges.coverage = `${Math.round(coveragePct)}%`;
 
   const setTab = useCallback(
     (next: string) => {
@@ -161,21 +215,24 @@ export default function CodeHealthPage() {
 
   return (
     <PageShell
-      title="Code Health"
+      title="Code health"
       icon={<HeartPulse className="h-5 w-5 text-[var(--color-success)]" />}
-      description="Per-file health scores from complexity, duplication, coverage, churn, and ownership markers — ranked into a fix-next queue."
+      // No description: the lede below opens with what the score is built from,
+      // and a header that says it first only says it twice.
+      //
+      // "wide" rather than the style's usual 1280 — a deliberate divergence. At
+      // 1280 the map keeps ~900px beside its 320px inspector; the extra width
+      // goes entirely to the field, which is this page's whole subject.
       maxWidth="wide"
       actions={
         <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
-          <RotateCw
-            className={`h-3.5 w-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`}
-          />{" "}
+          <RotateCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />{" "}
           {refreshing ? "Refreshing…" : "Refresh"}
         </Button>
       }
     >
       {meta ? (
-        <p className="-mt-3 text-xs text-[var(--color-text-tertiary)]">
+        <p className="-mt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {meta.last_indexed_at
             ? `Indexed ${new Date(meta.last_indexed_at).toLocaleString()}`
             : "Not indexed yet"}
@@ -185,30 +242,39 @@ export default function CodeHealthPage() {
       ) : null}
 
       <ViewTabs
-        tabs={TABS.map((id) => ({ id, label: TAB_LABELS[id] }))}
+        tabs={TABS.map((id) => ({
+          id,
+          label: TAB_LABELS[id],
+          ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
+        }))}
         value={activeTab}
         onValueChange={setTab}
       >
         {activeTab === "triage" && (
-          <div className="space-y-6">
-            <TriageTab
-              repoId={repoId}
-              trend={trend}
-              overlay={overlay}
-              onOverlayChange={setOverlay}
-              mapFiles={mapFiles}
-            />
-            <CollapsibleSection title="Health trend" defaultOpen={false}>
-              <TrendSection data={trend} isLoading={trendLoading} error={trendError} />
-            </CollapsibleSection>
-          </div>
+          <TriageTab
+            repoId={repoId}
+            trend={trend}
+            overlay={overlay}
+            onOverlayChange={setOverlay}
+            lenses={OVERLAYS}
+            mapFiles={mapFilesWithChurn}
+            overlayLoading={churnWanted && churnLoading && !churn}
+            hotspotsSlot={<HotspotsSection repoId={repoId} />}
+            trendSlot={
+              <OverviewSection
+                title="Health trend"
+                description="How the scores have moved across indexed snapshots."
+              >
+                <TrendSection data={trend} isLoading={trendLoading} error={trendError} />
+              </OverviewSection>
+            }
+          />
         )}
         {activeTab === "findings" && <FindingsTab repoId={repoId} />}
-        {activeTab === "hotspots" && <HotspotsTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}
-        {activeTab === "impact" && <ImpactTab repoId={repoId} />}
         {activeTab === "security" && <SecurityTab repoId={repoId} />}
+        {activeTab === "impact" && <ImpactTab repoId={repoId} />}
       </ViewTabs>
     </PageShell>
   );

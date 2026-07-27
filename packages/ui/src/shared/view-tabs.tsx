@@ -6,7 +6,9 @@ import { cn } from "../lib/cn";
 export interface ViewTab {
   id: string;
   label: string;
-  badge?: number;
+  /** How much is behind this tab, so a clean one says so before it is clicked.
+   *  A string carries a unit where the figure needs one ("61%"). */
+  badge?: number | string;
   /** Optional leading icon. Lets a host carry a canonical icon for a tab (e.g.
    *  the Architecture/Knowledge-Graph surface) so both apps render the same
    *  glyph from one tab definition instead of hand-rolling their own toggle.
@@ -101,8 +103,11 @@ export function ViewTabs({
                 </span>
               )}
               {tab.label}
-              {typeof tab.badge === "number" && (
-                <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs font-medium tabular-nums text-[var(--color-text-secondary)]">
+              {/* Mono text, no ground. A filled pill on every tab is a ground
+                  that does not respond to anything — the count is a figure, and
+                  figures the machine produced are set in mono. */}
+              {tab.badge !== undefined && (
+                <span className="font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
                   {tab.badge}
                 </span>
               )}
