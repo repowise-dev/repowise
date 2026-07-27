@@ -65,7 +65,7 @@ From this, repowise builds a **dependency graph** using NetworkX. Nodes are file
 
 **Why it matters for you:** The dependency graph powers risk analysis, cascade detection, and architecture diagrams. When you ask "what does this module affect?", the answer comes from this layer.
 
-**Supported languages:** Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Kotlin, Ruby, C#, Swift, Scala, PHP. 14 languages with full AST support.
+**Supported languages:** Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Kotlin, Ruby, C#, Swift, Scala, PHP, Dart, Shell. **16 languages** parsed to a full AST (11 at the Full tier with code-health markers). See [Language Support](https://github.com/repowise-dev/repowise/blob/main/docs/layers/LANGUAGE_SUPPORT.md).
 
 ---
 
