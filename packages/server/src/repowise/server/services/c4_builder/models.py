@@ -177,6 +177,11 @@ class C4Model:
     external_systems: list[ExternalSystemView]
     container_relations: list[Relation]
     component_relations: list[Relation]
+    #: Actor→system edges. Their own field rather than part of
+    #: ``container_relations`` because they belong to no level's box graph and
+    #: must survive every include/exclude flag — a person with no edge to the
+    #: system is not drawn at all in a context view.
+    actor_relations: list[Relation] = field(default_factory=list)
     #: Health, ownership and layer membership, keyed by container/component id.
     #: Empty when the repo has none of it — an export must degrade to plain C4
     #: rather than emitting placeholders.

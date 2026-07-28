@@ -133,23 +133,33 @@ def _system_for(repo: Repository | None, repo_id: str) -> System:
 # ---------------------------------------------------------------------------
 
 
+async def _actors_for(
+    session: AsyncSession, repo_id: str, system: System
+) -> tuple[list[Person], list[Relation]]:
+    """The actor set and its edges into the system.
+
+    The two travel together on purpose. A person with no edge to the system is
+    an orphan: Structurizr's context view includes the system plus what is
+    related to it, so an unconnected actor is simply not drawn, and the batched
+    build used to produce exactly that by deriving the people alone.
+
+    Actors are derived from how the system is actually entered (CLI user, API
+    client, scheduled job …) rather than a lone hardcoded "User".
+    """
+    actors = derive_actors(await _curated_entry_points(session, repo_id))
+    people = [
+        Person(id=a.id, name=a.name, description=a.description, kind=a.kind) for a in actors
+    ]
+    relations = [Relation(source_id=a.id, target_id=system.id, label=a.verb) for a in actors]
+    return people, relations
+
+
 async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
     repo = await load_repo(session, repo_id)
     system = _system_for(repo, repo_id)
     externals, _ = await _external_views(session, repo_id)
 
-    # Derive the actor set from how the system is actually entered (CLI user,
-    # API client, scheduled job …) rather than a lone hardcoded "User".
-    entry_points = await _curated_entry_points(session, repo_id)
-    actors = derive_actors(entry_points)
-    people = [
-        Person(id=a.id, name=a.name, description=a.description, kind=a.kind)
-        for a in actors
-    ]
-
-    relations: list[Relation] = [
-        Relation(source_id=a.id, target_id=system.id, label=a.verb) for a in actors
-    ]
+    people, relations = await _actors_for(session, repo_id, system)
     for ext in externals:
         relations.append(
             Relation(source_id=system.id, target_id=ext.id, label=ext.category)
@@ -273,11 +283,7 @@ async def build_model(
     containers = await detect_containers(session, repo_id, root_name=repo.name if repo else None)
     externals_all, _ = await _external_views(session, repo_id)
 
-    entry_points = await _curated_entry_points(session, repo_id)
-    people = [
-        Person(id=a.id, name=a.name, description=a.description, kind=a.kind)
-        for a in derive_actors(entry_points)
-    ]
+    people, actor_relations = await _actors_for(session, repo_id, system)
 
     file_to_container = await _file_to_container_map(session, repo_id, containers)
     file_to_external = await external_node_to_system_id(session, repo_id)
@@ -332,6 +338,7 @@ async def build_model(
         external_systems=externals,
         container_relations=container_relations,
         component_relations=component_relations,
+        actor_relations=actor_relations,
         box_signals=box_signals,
         tour=await _tour_steps(session, repo_id),
     )

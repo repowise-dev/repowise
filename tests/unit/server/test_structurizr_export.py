@@ -23,7 +23,7 @@ from repowise.server.services.c4_builder.models import (
     System,
     TourStep,
 )
-from repowise.server.services.c4_builder.structurizr import to_dsl
+from repowise.server.services.c4_builder.structurizr import system_identifier, to_dsl
 from repowise.server.services.c4_builder.structurizr.identifiers import (
     identifiers_for,
     sanitize,
@@ -496,6 +496,31 @@ def test_two_packages_presenting_as_the_same_name_do_not_collide() -> None:
     assert "Vite" in declared
     assert "react" in declared
     assert "@xyflow/react" in declared
+
+
+def test_every_person_is_connected_to_the_system() -> None:
+    """An unconnected person is left out of the context view entirely.
+
+    ``systemContext ... { include * }`` pulls in the system plus what is
+    related to it, so a person nothing points at is simply not drawn — while
+    the product's own L1 view shows the same actor connected.
+    """
+    model = _model(
+        actor_relations=[
+            Relation(
+                source_id="person:cli",
+                target_id="sys:repo-1",
+                label="uses",
+                edge_count=1,
+                edge_types=(),
+                coupling="",
+            )
+        ]
+    )
+    for components in (False, True):
+        dsl = to_dsl(model, include_components=components)
+        system_ref = system_identifier(model, include_components=components)
+        assert f"person_cli -> {system_ref}" in dsl, components
 
 
 def test_a_comment_can_never_span_lines() -> None:

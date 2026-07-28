@@ -269,7 +269,10 @@ def to_dsl(
             for external in sorted(externals, key=lambda e: e.name):
                 write_external(writer, external, references[external.id], names[external.id])
 
-        relations = list(model.container_relations)
+        # Actor edges first and unconditionally: they belong to no level's box
+        # graph, and a person nothing points at is left out of the context view
+        # rather than drawn unconnected.
+        relations = list(model.actor_relations) + list(model.container_relations)
         if include_components:
             # Structurizr derives a container→container relationship from any
             # component→component one that crosses a boundary, so emitting our
@@ -280,11 +283,15 @@ def to_dsl(
                 for container in model.containers
                 if not model.components_by_container.get(container.id)
             }
-            relations = list(model.component_relations) + [
-                r
-                for r in model.container_relations
-                if r.source_id in componentless or r.target_id in componentless
-            ]
+            relations = (
+                list(model.actor_relations)
+                + list(model.component_relations)
+                + [
+                    r
+                    for r in model.container_relations
+                    if r.source_id in componentless or r.target_id in componentless
+                ]
+            )
         writer.blank()
         writer.comment("Relationships")
         write_relationships(writer, relations, references)

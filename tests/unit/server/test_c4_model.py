@@ -18,7 +18,7 @@ from repowise.core.persistence import (
     bulk_upsert_external_systems,
     link_graph_nodes_to_external_systems,
 )
-from repowise.server.services.c4_builder import build_l2, build_l3, build_model
+from repowise.server.services.c4_builder import build_l1, build_l2, build_l3, build_model
 
 
 async def _create_repo(client: AsyncClient) -> dict:
@@ -261,3 +261,25 @@ async def test_empty_repo_builds_an_empty_model(client: AsyncClient, app) -> Non
     assert model.components_by_container == {}
     assert model.external_systems == []
     assert model.system.name == "test-repo"
+
+
+async def test_actor_relations_match_the_per_level_build(client: AsyncClient, app) -> None:
+    """People without an edge to the system are orphans in every view.
+
+    Structurizr's ``systemContext`` includes the system plus what is *related*
+    to it, so a person nothing points at is simply absent — while the product's
+    own L1 view shows the same actor connected. build_model derived the people
+    and then dropped the edges that make them mean anything.
+    """
+    repo_id = await _seed(client, app)
+    async with app.state.session_factory() as session:
+        l1 = await build_l1(session, repo_id)
+        model = await build_model(session, repo_id)
+
+    assert model.people == l1.people
+    assert model.people, "fixture has no actors — the test proves nothing"
+
+    person_ids = {p.id for p in model.people}
+    expected = [r for r in l1.relations if r.source_id in person_ids]
+    assert model.actor_relations == expected
+    assert {r.target_id for r in model.actor_relations} == {model.system.id}
