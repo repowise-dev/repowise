@@ -26,6 +26,7 @@ import { ZoomBreadcrumb } from "@/components/zoom/zoom-breadcrumb";
 import { ZoomSearch } from "@/components/zoom/zoom-search";
 import { ZoomDetailPanel } from "@/components/zoom/zoom-detail-panel";
 import { ZoomHint } from "@/components/zoom/zoom-hint";
+import { ZoomExportButton } from "@/components/zoom/zoom-export-button";
 
 export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: repoId } = use(params);
@@ -66,6 +67,10 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
       title="Knowledge Graph"
       icon={<ScanSearch className="h-5 w-5 text-[var(--color-accent-primary)]" />}
       description="Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs."
+      // The export has its own endpoint and does not need the zoom map, but a
+      // map that failed to load is the cheapest signal that this repo has
+      // nothing indexed to export either.
+      actions={<ZoomExportButton repoId={repoId} disabled={isLoading || !!error} />}
       maxWidth="wide"
     >
       {/* Full-bleed canvas (no framing border): the map blends into the page.
