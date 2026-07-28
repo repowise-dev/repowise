@@ -129,9 +129,7 @@ def _display_names(model: C4Model, externals: list) -> dict[str, str]:
             if names[external.id] == model.system.name:
                 names[external.id] = f"{external.name} ({external.ecosystem or 'external'})"
 
-    names.update(
-        _disambiguate(list(model.containers), lambda c: c.name, lambda c: c.path)
-    )
+    names.update(_disambiguate(list(model.containers), lambda c: c.name, lambda c: c.path))
     for container in model.containers:
         components = model.components_by_container.get(container.id, [])
         names.update(
@@ -200,6 +198,45 @@ def _write_tour(writer: Writer, model: C4Model) -> None:
     writer.comment()
 
 
+def _choose_relations(model: C4Model, *, include_components: bool) -> list:
+    """The relations to emit, with everything Structurizr derives left out.
+
+    Actor edges come first and unconditionally: they belong to no level's box
+    graph, and a person nothing points at is dropped from the context view
+    rather than drawn unconnected.
+
+    With components on, Structurizr derives a container-level relationship from
+    any component-level one that crosses a boundary. The derivation walks up
+    *both* ends' parents, so it applies to an edge leaving our system too: a
+    component pointing at an external implies its container pointing there.
+    Emitting ours as well is a duplicate the parser rejects outright.
+
+    So a container relation survives only when nothing derives it — when
+    neither end has a component carrying the same pair. That keeps an external
+    reached solely at container level connected, without duplicating one the
+    components already reach.
+    """
+    if not include_components:
+        return list(model.actor_relations) + list(model.container_relations)
+
+    container_of: dict[str, str] = {
+        component.id: container_id
+        for container_id, components in model.components_by_container.items()
+        for component in components
+    }
+
+    def _box(node_id: str) -> str:
+        """The container level of a box: a component maps up to its parent."""
+        return container_of.get(node_id, node_id)
+
+    derived = {(_box(r.source_id), _box(r.target_id)) for r in model.component_relations}
+    return (
+        list(model.actor_relations)
+        + list(model.component_relations)
+        + [r for r in model.container_relations if (r.source_id, r.target_id) not in derived]
+    )
+
+
 def to_dsl(
     model: C4Model,
     *,
@@ -230,6 +267,8 @@ def to_dsl(
     if not include_externals:
         for external in model.external_systems:
             references.pop(external.id, None)
+
+    relations = _choose_relations(model, include_components=include_components)
 
     def write_model_body() -> None:
         for person in sorted(model.people, key=lambda p: p.name):
@@ -269,36 +308,6 @@ def to_dsl(
             for external in sorted(externals, key=lambda e: e.name):
                 write_external(writer, external, references[external.id], names[external.id])
 
-        # Actor edges first and unconditionally: they belong to no level's box
-        # graph, and a person nothing points at is left out of the context view
-        # rather than drawn unconnected.
-        relations = list(model.actor_relations) + list(model.container_relations)
-        if include_components:
-            # Structurizr derives a container→container relationship from any
-            # component→component one that crosses a boundary, so emitting our
-            # container-level edges as well is a duplicate the parser rejects.
-            # Only containers that produced no components need theirs kept.
-            componentless = {
-                container.id
-                for container in model.containers
-                if not model.components_by_container.get(container.id)
-            }
-
-            external_ids = {e.id for e in model.external_systems}
-
-            def _still_needed(relation) -> bool:
-                # Nothing is derived for an edge that leaves our boundary: an
-                # external system has no components to carry it. Dropping these
-                # left the external declared with nothing pointing at it.
-                if relation.source_id in external_ids or relation.target_id in external_ids:
-                    return True
-                return relation.source_id in componentless or relation.target_id in componentless
-
-            relations = (
-                list(model.actor_relations)
-                + list(model.component_relations)
-                + [r for r in model.container_relations if _still_needed(r)]
-            )
         writer.blank()
         writer.comment("Relationships")
         write_relationships(writer, relations, references)

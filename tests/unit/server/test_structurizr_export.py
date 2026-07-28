@@ -220,8 +220,7 @@ def _shuffled(model: C4Model, seed: int) -> C4Model:
         container_relations=_mix(model.container_relations),
         component_relations=_mix(model.component_relations),
         components_by_container={
-            cid: _mix(components)
-            for cid, components in model.components_by_container.items()
+            cid: _mix(components) for cid, components in model.components_by_container.items()
         },
     )
 
@@ -238,9 +237,7 @@ def test_emission_does_not_depend_on_input_order(standalone, components) -> None
     base = _signals_model()
     expected = to_dsl(base, standalone=standalone, include_components=components)
     for seed in range(5):
-        again = to_dsl(
-            _shuffled(base, seed), standalone=standalone, include_components=components
-        )
+        again = to_dsl(_shuffled(base, seed), standalone=standalone, include_components=components)
         assert again == expected, seed
 
 
@@ -738,6 +735,7 @@ def test_two_containers_with_the_same_basename_do_not_collide() -> None:
     which Structurizr rejects outright, the same way it rejects two externals
     sharing a name.
     """
+
     def _container(path: str, language: str) -> Container:
         return Container(
             id=f"pkg:{path}",
@@ -822,6 +820,7 @@ def test_the_same_component_name_in_two_containers_is_left_alone() -> None:
     Disambiguating across containers would churn names for no reason, and the
     long form is worse to read.
     """
+
     def _container(path: str) -> Container:
         return Container(
             id=f"pkg:{path}",
@@ -939,3 +938,72 @@ def test_a_relation_with_no_label_falls_back_to_a_verb() -> None:
         )
     )
     assert '"depends on"' in dsl
+
+
+def test_a_container_edge_a_component_already_implies_is_not_repeated() -> None:
+    """Structurizr derives the container edge from the component one.
+
+    The derivation walks up both ends' parents, so it applies to an edge
+    leaving our system too. Emitting ours alongside it is a duplicate the
+    parser rejects — this repo's own export died on exactly that, with the
+    root container and a package both reaching one npm dependency.
+    """
+    core = Container(
+        id="pkg:packages/core",
+        name="core",
+        path="packages/core",
+        language="python",
+        file_count=5,
+        symbol_count=9,
+    )
+    ingestion = Component(
+        id="cmp:packages/core/ingestion",
+        name="ingestion",
+        path="packages/core/ingestion",
+        container_id=core.id,
+        file_count=5,
+        symbol_count=9,
+    )
+    to_external = Relation(source_id=ingestion.id, target_id="ext:fastapi", label="imports")
+    dsl = to_dsl(
+        _model(
+            containers=[core],
+            components_by_container={core.id: [ingestion]},
+            # The same dependency, seen at both levels — which is what the
+            # builder produces for any container whose files import it.
+            container_relations=[
+                Relation(source_id=core.id, target_id="ext:fastapi", label="imports")
+            ],
+            component_relations=[to_external],
+        ),
+        include_components=True,
+    )
+
+    pairs = re.findall(r"^\s*([\w.]+) -> ([\w.]+)", dsl, re.M)
+    assert len(pairs) == len(set(pairs)), [p for p in pairs if pairs.count(p) > 1]
+    # The component keeps the edge; the container's copy of it is dropped
+    # because Structurizr will derive it.
+    assert ("cmp_packages_core_ingestion", "ext_fastapi") in pairs
+    assert ("pkg_packages_core", "ext_fastapi") not in pairs
+
+
+def test_a_container_edge_nothing_derives_is_kept() -> None:
+    """A container with no components has nothing to carry its edges."""
+    core = Container(
+        id="pkg:packages/core",
+        name="core",
+        path="packages/core",
+        language="python",
+        file_count=1,
+        symbol_count=1,
+    )
+    model = _model(
+        containers=[core],
+        components_by_container={core.id: []},
+        container_relations=[Relation(source_id=core.id, target_id="ext:fastapi", label="imports")],
+        component_relations=[],
+    )
+    dsl = to_dsl(model, include_components=True)
+    assert "pkg_packages_core -> ext_fastapi" in dsl
+    # And the external it points at is still declared.
+    assert "= softwareSystem" in dsl and "FastAPI" in dsl
