@@ -481,15 +481,31 @@ code-health merge-gate judges it on.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
 | `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
+| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode` and `_meta` always survive. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
-| `limit` | int | No | Max rows in the lowest-scoring file list (default 20, capped at 50) |
+| `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50) |
 
-**Returns:** Dashboard mode (no `targets`) returns repo-level KPIs (hotspot
-health, average health, worst performer, maintainability / performance pillar
-averages), the lowest-scoring files, and a per-module NLOC-weighted rollup.
-Targeted mode returns per-file marker findings with severity, per-dimension
-scores, and the score breakdown. Each finding carries a `dimension`
+**Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
+(hotspot health, average health, worst performer, maintainability / performance
+pillar averages), the lowest-scoring files, and a per-module NLOC-weighted
+rollup. Targeted mode returns per-file marker findings with severity,
+per-dimension scores, and the score breakdown. Each finding carries a `dimension`
 (`defect` / `maintainability` / `performance`).
+
+**Lead with `directive`.** Dashboard mode opens with the single file to fix
+first, its dominant finding, `recovers_points` / `share_of_repo_gap_pct` (what
+fixing it buys the headline), and `then`, the next two by leverage. Every other
+block ranks and describes; this one recommends. Same role as `get_risk`'s
+`directive`. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
+
+**Nothing is dropped silently.** Any `targets` entry that matched nothing is
+named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
+`no_such_path`, `excluded`, `no_such_module`; a missed module name also returns
+`known_modules`), so an empty `findings` list means healthy and nothing else. A
+target set that resolves to nothing still answers in targeted mode rather than
+falling back to the repo dashboard. Every capped list carries a `*_total`
+sibling, and `_meta.health_analyzed_at` dates the health pass, which is separate
+from indexing and can lag it.
 
 **Leverage, not just lowness.** `average_health` is NLOC-weighted (the number the
 badge and dashboard surface), so a few large low-scoring files hold it down. To
@@ -531,9 +547,11 @@ The opt-in enrichments:
   plans on the files that move the headline surface first; `refactoring_plans_total`
   reports the full count behind the cap. Each plan echoes its
   `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
-- **dimension filter** narrows the returned findings to one pillar. Pair with
-  `"biomarkers"` for the full (uncapped) finding set, e.g.
+- **dimension filter** narrows the returned findings to one pillar, e.g.
   `include=["biomarkers", "performance"]`.
+- **`refactoring`** also emits `suggestion_legend`: `biomarker_type` → the prose
+  suggestion for that type, once per response rather than per finding. Join on
+  `biomarker_type`.
 
 **When to use:** Before opening a PR, to self-check the files you changed
 (`targets=[...], include=["signals"]`) and confirm you are not regressing the
@@ -544,11 +562,13 @@ hotspots.
 **Example calls:**
 
 ```
-get_health()                                          # kpis, gap_analysis, worst + high_leverage files
+get_health(only=["directive"])                        # cheapest useful call: what to fix first
+get_health()                                          # directive, kpis, gap_analysis, worst + high_leverage files
 get_health(include=["accuracy", "churn_complexity"])
 get_health(include=["biomarkers", "performance"])     # only performance findings
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(targets=["module:src.api"], include=["trend", "refactoring"])
+get_health(include=["accuracy"], only=["defect_accuracy"])   # the block, without the dashboard again
 ```
 
 ---

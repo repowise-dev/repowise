@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -202,6 +203,77 @@ def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
     return out
 
 
+def _unresolved_targets(
+    *,
+    file_targets: list[str],
+    module_targets: list[str],
+    matched_modules: set[str],
+    resolved_paths: set[str],
+    excluded_paths: set[str],
+    repo_root: Any,
+) -> list[dict[str, str]]:
+    """Name every requested target that produced no rows, with a reason.
+
+    A dropped target is otherwise indistinguishable from a clean file: an
+    empty ``findings`` list reads as "this file is healthy", which is the most
+    damaging default this tool can have. The reason is the actionable part —
+    ``not_indexed`` means run ``repowise update``, ``no_such_path`` means the
+    target was a typo, ``excluded`` means the repo config drops it on purpose.
+    """
+    out: list[dict[str, str]] = []
+    for t in file_targets:
+        if t in resolved_paths:
+            continue
+        if t in excluded_paths:
+            reason = "excluded"
+        else:
+            try:
+                on_disk = (Path(repo_root) / t).exists()
+            except (OSError, ValueError):
+                on_disk = False
+            reason = "not_indexed" if on_disk else "no_such_path"
+        out.append({"target": t, "reason": reason})
+    out.extend(
+        {"target": f"module:{name}", "reason": "no_such_module"}
+        for name in module_targets
+        if name not in matched_modules
+    )
+    return out
+
+
+def _directive(
+    by_leverage: list[HealthFileMetric],
+    leads: dict[str, dict[str, Any]],
+    gap_points: int,
+) -> dict[str, Any] | None:
+    """The one file to fix first, and what fixing it buys.
+
+    Every other block here ranks and describes; none of them recommends. That
+    gap is why a correct finding can sit at position 12 of an undifferentiated
+    list and change nobody's behaviour. Same role as ``get_risk``'s
+    ``directive``: lead with the call, keep the evidence underneath.
+
+    Ranked by ``weighted_deficit`` (not ``score``, which floors at 1.0), so
+    this names the file that actually moves the repo average.
+    """
+    if not by_leverage:
+        return None
+    top = by_leverage[0]
+    recovers = round(max(HEALTHY_MIN - top.score, 0.0) * max(top.nloc, 1))
+    lead = leads.get(top.file_path) or {}
+    return {
+        "fix_first": top.file_path,
+        "reason": lead.get("primary_reason") or f"scores {round(top.score, 2)}",
+        # Points the repo headline recovers if this one file reaches Healthy,
+        # and what share of the total gap that is — the "few files, not the
+        # long tail" argument made concrete for a single file.
+        "recovers_points": recovers,
+        "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
+        "then": [m.file_path for m in by_leverage[1:3]],
+        "plan_via": "get_health(include=['refactoring'])",
+    }
+
+
 def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | None:
     """NLOC-weighted headline over a per-dimension score attribute.
 
@@ -338,32 +410,35 @@ async def get_health(
     include: list[str] | None = None,
     repo: str | None = None,
     limit: int = 20,
+    only: list[str] | None = None,
 ) -> dict:
     """Code-health scores and findings — self-check a file before/after editing.
 
-    No ``targets`` → repo dashboard (KPIs, worst files, ``high_leverage_files``
-    ranked by ``weighted_deficit`` = the files that actually move the repo
-    average). With ``targets`` → per-file scores + findings for those paths.
+    No ``targets`` → repo dashboard, led by a ``directive`` naming the one file
+    to fix first. With ``targets`` → per-file scores + findings. Rank by
+    ``weighted_deficit``, not ``score``: the score floors at 1.0 and cannot
+    separate the worst band.
 
     Three co-equal dimensions per file: ``score`` (defect risk, the headline),
-    ``maintainability_score`` (readability/change-cost smells), and
-    ``performance_score`` (static I/O-in-loop / N+1 RISK, high-precision /
-    low-recall, never blended into the defect headline). Each finding carries
-    its ``dimension``; a performance finding's ``details`` name the
-    ``boundary_kind`` (db/network/filesystem/subprocess/lock) and, for
-    cross-function N+1, the caller→sink ``path``.
+    ``maintainability_score``, and ``performance_score`` (static I/O-in-loop /
+    N+1 risk, never blended into the defect headline). Each finding carries its
+    ``dimension``.
 
     Args:
-        targets: file paths or ``module:<name>``. Empty → dashboard mode.
-        include: opt-in blocks (default stays lean): ``biomarkers`` (findings
-            in dashboard mode) | ``refactoring`` (deterministic suggestion per
-            finding) | ``trend`` | ``coverage`` | ``accuracy`` (does the score
-            rank the buggy files first) | ``signals`` (per-file churn/owners/
-            degree, targeted mode) | ``churn_complexity`` (danger-zone
-            quadrant) | ``performance``/``defect``/``maintainability``
-            (filter findings to one dimension).
+        targets: file paths or ``module:<name>``. Empty → dashboard mode. Any
+            target matching nothing is named in ``unresolved`` with a reason
+            (``not_indexed`` → run ``repowise update`` | ``no_such_path`` |
+            ``excluded`` | ``no_such_module``), so an empty ``findings`` means
+            healthy and nothing else.
+        include: opt-in blocks: ``biomarkers`` | ``refactoring`` | ``trend`` |
+            ``coverage`` | ``accuracy`` | ``signals`` | ``churn_complexity`` |
+            ``performance``/``defect``/``maintainability`` (filter findings to
+            one dimension).
+        only: keep just these top-level keys. ``include`` adds blocks, ``only``
+            subtracts them — pass ``["directive"]`` for the cheapest useful call.
         repo: usually omitted.
-        limit: max rows in ranked lists (capped at 50).
+        limit: max rows in every ranked list (capped at 50); each carries a
+            ``*_total`` sibling so truncation is never silent.
     """
     limit = min(max(limit, 1), 50)
     include_set = set(include or [])
@@ -373,7 +448,9 @@ async def get_health(
     # belonging to those modules.
     raw_targets = list(targets or [])
     module_targets = [t.split(":", 1)[1] for t in raw_targets if t.startswith("module:")]
-    file_targets = [t for t in raw_targets if not t.startswith("module:")]
+    # Stored paths are POSIX-separated. Normalize so a Windows caller passing
+    # ``packages\core\x.py`` matches instead of coming back ``no_such_path``.
+    file_targets = [t.replace("\\", "/") for t in raw_targets if not t.startswith("module:")]
 
     ctx = await _resolve_repo_context(repo)
     # Performance headline inputs (dashboard mode): filled inside the session.
@@ -386,22 +463,32 @@ async def get_health(
             HealthFileMetric.repository_id == repository.id
         )
         exclude_spec = _get_exclude_spec(ctx.path)
-        all_metrics = filter_rows_by_attr(
-            list((await session.execute(all_metrics_q)).scalars().all()),
-            "file_path",
-            exclude_spec,
-        )
+        indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
+        all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
+        # Paths the index knows about but the exclude config drops. Kept so an
+        # unresolved target can report "excluded" (a config decision) rather
+        # than "no_such_path" (a typo) — the two need different responses.
+        excluded_paths = {m.file_path for m in indexed_rows} - {m.file_path for m in all_metrics}
 
+        matched_modules: set[str] = set()
         if module_targets:
             module_set = set(module_targets)
             for m in all_metrics:
                 if m.module in module_set:
+                    matched_modules.add(m.module)
                     file_targets.append(m.file_path)
             file_targets = sorted(set(file_targets))
 
-        effective_targets = file_targets if (raw_targets) else []
+        # A non-empty ``targets`` means the caller asked for a scope, and that
+        # holds even when nothing resolves. Keying the mode off the *resolved*
+        # paths let ``targets=["module:typo"]`` fall through to dashboard mode
+        # and answer a module-scoped question with repo-wide numbers — an
+        # answer that reads as scoped and is not.
+        scoped = bool(raw_targets)
+        effective_targets = file_targets if scoped else []
+        nothing_resolved = scoped and not effective_targets
 
-        if effective_targets:
+        if scoped:
             metric_rows = [
                 m
                 for m in sorted(all_metrics, key=lambda r: r.score)
@@ -414,7 +501,7 @@ async def get_health(
             HealthFinding.repository_id == repository.id,
             HealthFinding.status == "open",
         )
-        if effective_targets:
+        if scoped:
             finding_q = finding_q.where(HealthFinding.file_path.in_(effective_targets))
         finding_q = finding_q.order_by(HealthFinding.health_impact.desc())
         finding_rows = filter_rows_by_attr(
@@ -426,7 +513,7 @@ async def get_health(
         # Dashboard perf headline: coverage (how much of the analyzed code the
         # perf pass ran on) + open performance-finding count. finding_rows in
         # dashboard mode is the complete open set, so the count is exact.
-        if not effective_targets:
+        if not scoped:
             lang_by_path = await get_file_language_map(session, repository.id)
             perf_coverage = coverage_for_metrics(all_metrics, lang_by_path)
             perf_findings_count = sum(
@@ -436,12 +523,12 @@ async def get_health(
         # Structured refactoring plans (Extract Class, ...) — loaded only when
         # asked for, scoped to the same targets, exclude-filtered like findings.
         refactoring_rows: list[Any] = []
-        if "refactoring" in include_set:
+        if "refactoring" in include_set and not nothing_resolved:
             refactoring_rows = filter_rows_by_attr(
                 await get_refactoring_suggestions(
                     session,
                     repository.id,
-                    file_paths=list(effective_targets) if effective_targets else None,
+                    file_paths=list(effective_targets) if scoped else None,
                 ),
                 "file_path",
                 exclude_spec,
@@ -449,10 +536,12 @@ async def get_health(
 
         coverage_rows: list[Any] = []
         coverage_summary: dict[str, Any] = {}
-        if "coverage" in include_set:
+        if "coverage" in include_set and not nothing_resolved:
             coverage_rows = filter_rows_by_attr(
+                # ``effective_targets``, not ``targets`` — a raw ``module:foo``
+                # target is not a file path and matched nothing here.
                 await load_coverage_for_repo(
-                    session, repository.id, file_paths=list(targets) if targets else None
+                    session, repository.id, file_paths=list(effective_targets) if scoped else None
                 ),
                 "file_path",
                 exclude_spec,
@@ -480,7 +569,7 @@ async def get_health(
         # Churn x complexity quadrant for the whole repo (dashboard mode). One
         # git-metadata query joined against the already-loaded metrics.
         churn_points: list[dict[str, Any]] = []
-        if "churn_complexity" in include_set and not effective_targets:
+        if "churn_complexity" in include_set and not scoped:
             git_meta_by_path = await get_all_git_metadata(session, repository.id)
             churn_points = [
                 asdict(p) for p in churn_complexity_points(all_metrics, git_meta_by_path)[:limit]
@@ -490,11 +579,11 @@ async def get_health(
         # per-file trajectory we attach in targeted mode ("should I touch this
         # file" context for agents).
         snapshots: list[Any] = []
-        if "trend" in include_set or effective_targets:
+        if "trend" in include_set or scoped:
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
     kpis = _compute_kpis(
-        metric_rows if effective_targets else all_metrics,
+        metric_rows if scoped else all_metrics,
         performance_findings=perf_findings_count,
         coverage=perf_coverage,
     )
@@ -502,7 +591,7 @@ async def get_health(
     # findings are scoped to the targets; dashboard findings cover every file).
     leads = _leads_by_file(finding_rows)
 
-    if effective_targets:
+    if scoped:
         metric_payload: list[dict[str, Any]] = []
         for m in metric_rows:
             row = _serialize_metric(m, leads.get(m.file_path))
@@ -513,8 +602,25 @@ async def get_health(
             "mode": "targets",
             "targets": raw_targets,
             "metrics": metric_payload,
-            "findings": [_serialize_finding(f) for f in finding_rows],
+            # Capped like every other ranked list, with the total alongside so
+            # the truncation is visible rather than inferred from the length.
+            "findings": [_serialize_finding(f) for f in finding_rows[:limit]],
+            "findings_total": len(finding_rows),
         }
+        unresolved = _unresolved_targets(
+            file_targets=file_targets,
+            module_targets=module_targets,
+            matched_modules=matched_modules,
+            resolved_paths={m.file_path for m in metric_rows},
+            excluded_paths=excluded_paths,
+            repo_root=ctx.path,
+        )
+        if unresolved:
+            result["unresolved"] = unresolved
+            if any(u["reason"] == "no_such_module" for u in unresolved):
+                # ``module:`` has no discovery call of its own, so a bad name
+                # would otherwise cost a full dashboard round-trip to correct.
+                result["known_modules"] = sorted({m.module for m in all_metrics if m.module})
         # Per-file score trajectory for each target — silent (omitted) when a
         # file has < 2 snapshots of history rather than a misleading flat line.
         trends = []
@@ -534,8 +640,8 @@ async def get_health(
         if trends:
             result["trends"] = trends
         if module_targets:
-            scoped = [m for m in all_metrics if m.module in set(module_targets)]
-            result["modules"] = _module_rollups(scoped)
+            in_modules = [m for m in all_metrics if m.module in set(module_targets)]
+            result["modules"] = _module_rollups(in_modules)
     else:
         # Dashboard mode — top-N worst files + headline findings + the
         # per-module rollup so the overview page doesn't need a second
@@ -550,13 +656,18 @@ async def get_health(
             key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
             reverse=True,
         )
+        all_modules = _module_rollups(all_metrics)
+        gap = _gap_analysis(all_metrics)
         result = {
             "mode": "dashboard",
+            # Lead with the call, not the data. Every block below ranks and
+            # describes; this one recommends.
+            "directive": _directive(by_leverage, leads, gap.get("weighted_gap_points") or 0),
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
             # Where the gap to Healthy concentrates — the "few files, not the
             # long tail" reframe that turns a repo-wide number into a short list.
-            "gap_analysis": _gap_analysis(all_metrics),
+            "gap_analysis": gap,
             "worst_files": [
                 _serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]
             ],
@@ -564,7 +675,11 @@ async def get_health(
                 _serialize_metric(m, leads.get(m.file_path)) for m in by_leverage[:limit]
             ],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
-            "modules": _module_rollups(all_metrics),
+            "top_findings_total": len(finding_rows),
+            # Worst-first, so the cap keeps the modules worth looking at. On a
+            # monorepo the tail is dozens of single-file buckets.
+            "modules": all_modules[:limit],
+            "modules_total": len(all_modules),
         }
         if "churn_complexity" in include_set:
             result["churn_complexity"] = churn_points
@@ -609,24 +724,16 @@ async def get_health(
             for r in ranked[:limit]
         ]
         result["refactoring_plans_total"] = len(refactoring_rows)
-        # Attach the deterministic prose suggestion to every finding as the
-        # fallback for biomarkers without a structured detector yet. Surfaces
-        # on the dashboard cards too so both consumers stay in sync.
-        for field in ("findings", "top_findings"):
-            rows = result.get(field)
-            if rows:
-                result[field] = [
-                    {**row, "suggestion": suggestion_for(row.get("biomarker_type", ""))}
-                    for row in rows
-                ]
-        if "findings" not in result and "top_findings" not in result:
-            result["findings"] = [
-                {
-                    **_serialize_finding(f),
-                    "suggestion": suggestion_for(f.biomarker_type),
-                }
-                for f in finding_rows
-            ]
+        # The deterministic prose suggestion is the fallback for biomarkers
+        # that have no structured detector yet. It is emitted once per
+        # biomarker type as ``suggestion_legend`` (built below, after the
+        # dimension filter) rather than copied onto every finding: the text is
+        # keyed purely by type, so the per-row form repeated one ~40-word
+        # string up to 10x in a single response.
+        #
+        # (The old no-findings-anywhere fallback here was unreachable: targeted
+        # mode always sets ``findings`` and dashboard mode always sets
+        # ``top_findings``.)
 
     if "trend" in include_set:
         summary = diff_snapshots(snapshots)
@@ -686,7 +793,42 @@ async def get_health(
                     r for r in rows if (r.get("dimension") or "defect") in dimension_filter
                 ]
 
+    # One entry per biomarker type actually present in the findings this
+    # response carries. Built last so the dimension filter above has already
+    # narrowed the rows the caller will join against.
+    if "refactoring" in include_set:
+        present_types = {
+            row.get("biomarker_type")
+            for field in ("findings", "top_findings")
+            for row in result.get(field) or ()
+        }
+        result["suggestion_legend"] = {
+            bt: suggestion_for(bt) for bt in sorted(t for t in present_types if t)
+        }
+
+    # Projection. ``include`` could only ever add blocks, so asking for one
+    # extra block re-shipped the whole dashboard with it; ``only`` is the
+    # subtract half. Applied last so it can drop anything above, and ``mode`` /
+    # ``_meta`` always survive — a response the caller cannot orient in is not
+    # a saving.
+    if only:
+        keep = set(only) | {"mode"}
+        # A key that does not exist in this response is named rather than
+        # quietly yielding an empty one — same rule as ``unresolved`` above.
+        # A misspelled projection is otherwise indistinguishable from a block
+        # the repo genuinely has no data for.
+        unknown = sorted(k for k in only if k not in result)
+        result = {k: v for k, v in result.items() if k in keep}
+        if unknown:
+            result["unknown_only_keys"] = unknown
+
     # Targeted mode scopes the stale signal to the asked-about files; the
     # dashboard (no targets) keeps the repo-level warning.
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
+    # When the health pass last ran, which is a separate pass from indexing and
+    # can lag it. ``_build_meta``'s fields all describe the *index*, so a stale
+    # health row was previously invisible.
+    analyzed = [m.updated_at for m in all_metrics if getattr(m, "updated_at", None)]
+    if analyzed:
+        result["_meta"]["health_analyzed_at"] = max(analyzed).isoformat()
     return result

@@ -122,6 +122,147 @@ async def test_get_health_targeted(setup_mcp, health_data):
 
 
 @pytest.mark.asyncio
+async def test_get_health_names_unresolved_targets(setup_mcp, health_data):
+    """A target that matched nothing is named with a reason, never dropped."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src/auth/service.py", "does/not/exist.py", "module:nope"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    by_target = {u["target"]: u["reason"] for u in result["unresolved"]}
+    assert by_target == {
+        "does/not/exist.py": "no_such_path",
+        "module:nope": "no_such_module",
+    }
+    # A bad module name is correctable without a second dashboard round-trip.
+    assert set(result["known_modules"]) == {"auth", "db"}
+
+
+@pytest.mark.asyncio
+async def test_get_health_unmatched_module_stays_scoped(setup_mcp, health_data):
+    """A module target that resolves to nothing must not become a repo dashboard.
+
+    Falling through to dashboard mode answered a module-scoped question with
+    repo-wide numbers, which reads as scoped and is not.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:nope"])
+    assert result["mode"] == "targets"
+    assert result["metrics"] == []
+    assert result["findings"] == []
+    assert result["unresolved"] == [{"target": "module:nope", "reason": "no_such_module"}]
+    # None of the repo-wide blocks leak into a scoped answer.
+    assert not {"kpis", "worst_files", "gap_analysis", "distribution"} & set(result)
+
+
+@pytest.mark.asyncio
+async def test_get_health_module_target_resolves_to_its_files(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["module:auth"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_health_findings_capped_with_honest_total(setup_mcp, health_data):
+    """limit governs findings too, and the total says what was cut."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src/auth/service.py"], limit=2)
+    assert len(result["findings"]) == 2
+    assert result["findings_total"] == 4
+
+    dash = await get_health(limit=2)
+    assert len(dash["top_findings"]) == 2
+    assert dash["top_findings_total"] == 4
+
+
+@pytest.mark.asyncio
+async def test_get_health_modules_capped_with_honest_total(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(limit=1)
+    assert len(result["modules"]) == 1
+    assert result["modules_total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_health_suggestion_text_emitted_once_as_legend(setup_mcp, health_data):
+    """Suggestion prose is keyed by biomarker type, so it ships once, not per row."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(include=["refactoring"])
+    rows = result["top_findings"]
+    assert rows, "fixture should produce findings"
+    assert not any("suggestion" in r for r in rows)
+    legend = result["suggestion_legend"]
+    # Exactly the types present — every row can be joined, nothing spare.
+    assert set(legend) == {r["biomarker_type"] for r in rows}
+    assert all(isinstance(v, str) and v for v in legend.values())
+
+
+@pytest.mark.asyncio
+async def test_get_health_dashboard_leads_with_a_directive(setup_mcp, health_data):
+    """The dashboard recommends, not just ranks — the D2 gap."""
+    from repowise.server.mcp_server import get_health
+
+    d = (await get_health())["directive"]
+    # Ranked by weighted_deficit, so the big low-scoring file leads.
+    assert d["fix_first"] == "src/auth/service.py"
+    assert d["reason"] == "authenticate has cyclomatic complexity 15"
+    assert d["recovers_points"] == 700  # (8.0 - 4.5) * 200
+    # 700 of the repo's 675 net gap points: the healthy file's surplus is
+    # credited in the denominator, so one file can exceed 100%.
+    assert d["share_of_repo_gap_pct"] == pytest.approx(103.7)
+    assert d["then"] == []  # only one below-target file in the fixture
+
+
+@pytest.mark.asyncio
+async def test_get_health_only_projects_the_response(setup_mcp, health_data):
+    """``only`` subtracts blocks; ``include`` could only ever add them."""
+    from repowise.server.mcp_server import get_health
+
+    full = await get_health()
+    assert len(full) > 4
+
+    slim = await get_health(only=["directive"])
+    # mode and _meta always survive — a response you cannot orient in is not
+    # a saving.
+    assert set(slim) == {"directive", "mode", "_meta"}
+    assert slim["directive"] == full["directive"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_only_names_unknown_keys(setup_mcp, health_data):
+    """A misspelled projection is named, not silently answered with nothing."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(only=["directive", "kpiz"])
+    assert result["unknown_only_keys"] == ["kpiz"]
+    assert "directive" in result
+
+
+@pytest.mark.asyncio
+async def test_get_health_meta_stamps_when_health_last_ran(setup_mcp, health_data):
+    """Health is a separate pass from indexing and can lag it."""
+    from repowise.server.mcp_server import get_health
+
+    meta = (await get_health())["_meta"]
+    assert isinstance(meta["health_analyzed_at"], str)
+
+
+@pytest.mark.asyncio
+async def test_get_health_accepts_windows_separators(setup_mcp, health_data):
+    """A backslash path is the same file, not a no_such_path."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src\\auth\\service.py"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result
+
+
+@pytest.mark.asyncio
 async def test_get_health_metric_carries_dominant_cause_and_magnitude(setup_mcp, health_data):
     """Metric rows lead with the worst finding + the pre-floor deduction sum."""
     from repowise.server.mcp_server import get_health
