@@ -131,16 +131,27 @@ def glob_narrowed_by_gitignore_semantics(pattern: str) -> bool:
 
     Split out from the logging call so the rule itself is testable.
 
-    Two things make a pattern safe:
+    Three things make a pattern safe:
 
     * **No path separator.** ``*.generated.ts`` matches at any depth under
       both engines.
     * **A ``**`` earlier in the pattern.** Once ``**`` has taken care of the
       directories, a later single ``*`` cannot narrow the match — which is
       what makes the common ``**/*.spec.ts`` idiom fine.
+    * **A trailing ``*``.** ``src/legacy/*`` names the directory's entries,
+      and gitignore excludes everything under an excluded directory, so it
+      still covers the whole subtree. Both engines agree, and warning about
+      it told people to rewrite a rule that was never broken — the commonest
+      shape there is.
+
+    What does narrow is a lone ``*`` with pattern text after it: ``src/*.py``
+    stops matching ``src/a/b.py``, and ``src/*/x.py`` stops matching
+    ``src/a/b/x.py``.
     """
+    if "/" not in pattern:
+        return False
     head = pattern.split("**", 1)[0]
-    return "/" in pattern and bool(_LONE_STAR.search(head))
+    return any(match.end() != len(pattern) for match in _LONE_STAR.finditer(head))
 
 
 def _compile_glob(pattern: str) -> Any:
@@ -160,6 +171,21 @@ def _compile_glob(pattern: str) -> Any:
         GitWildMatchPattern,
         GitWildMatchPatternError,
     )
+
+    if pattern.startswith("!"):
+        # In a .gitignore a leading "!" re-includes something an earlier line
+        # excluded, so it only means anything relative to other lines. Each
+        # rule here compiles to its own single-pattern spec, so a negation
+        # matches nothing at all — the rule silently never applies. Say so.
+        log.warning(
+            "health_rules_negated_glob",
+            pattern=pattern,
+            hint=(
+                "a leading '!' has nothing to negate in a per-rule glob and "
+                "matches nothing — write the paths you do want instead"
+            ),
+        )
+        return pathspec.PathSpec([])
 
     try:
         return pathspec.PathSpec([GitWildMatchPattern(pattern)])

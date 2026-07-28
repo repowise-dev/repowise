@@ -134,23 +134,39 @@ async def detect_components_for_all(
     """
     containers = list(containers)
     all_files = await _files_in(session, repository_id, "")
-    by_path: dict[str, list[GraphNode]] = defaultdict(list)
-    for node in all_files:
-        by_path[node.node_id].append(node)
-
     roots = [c.path for c in containers if c.path]
+
+    # One pass over the files rather than one per container. Walking every
+    # container per file made a large monorepo do millions of prefix checks in
+    # the function whose whole point is being the cheap path.
+    by_root = {c.path: c for c in containers}
+    owned: dict[str, list[GraphNode]] = defaultdict(list)
+    catch_all = next((c for c in containers if not c.path), None)
+    for node in all_files:
+        matches = _matching_roots(node.node_id, roots)
+        if len(matches) == 1:
+            owned[by_root[matches[0]].id].append(node)
+        elif not matches and catch_all is not None:
+            owned[catch_all.id].append(node)
+        # Two roots claiming one file means a container nested inside another,
+        # where the sibling-prefix rule leaves the file unowned. Kept exactly
+        # as the per-container path resolves it: this function's contract is
+        # to agree with it element for element, so the nesting gap is one
+        # decision to take in one place, not a difference between the two.
+
     out: dict[str, tuple[list[Component], dict[str, str]]] = {}
     for container in containers:
-        sibling_prefixes = tuple(
-            r + "/" for r in roots if r and r != container.path
+        out[container.id] = _bucket_into_components(
+            owned.get(container.id, []), container.path, root_label
         )
-        owned = [
-            n
-            for n in all_files
-            if _owned_by(n.node_id, container.path, sibling_prefixes)
-        ]
-        out[container.id] = _bucket_into_components(owned, container.path, root_label)
     return out
+
+
+def _matching_roots(node_id: str, roots: list[str]) -> list[str]:
+    """Every container path that prefixes *node_id*."""
+    return [
+        root for root in roots if node_id == root or node_id.startswith(root + "/")
+    ]
 
 
 def _owned_by(node_id: str, container_path: str, sibling_prefixes: tuple[str, ...]) -> bool:

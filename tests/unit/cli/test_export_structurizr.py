@@ -250,3 +250,12 @@ def test_an_empty_model_fails_instead_of_writing_a_useless_file(
     assert code == 1
     assert "No containers" in capsys.readouterr().out
     assert not (tmp_path / FRAGMENT_FILENAME).exists()
+
+
+def test_an_uppercase_dsl_suffix_is_still_a_file(tmp_path) -> None:
+    """``--out MODEL.DSL`` used to create a directory of that name."""
+    from repowise.cli.commands.export_structurizr import _resolve_output
+
+    resolved = _resolve_output(str(tmp_path / "MODEL.DSL"), tmp_path, standalone=False)
+    assert resolved.name == "MODEL.DSL"
+    assert resolved.parent == tmp_path.resolve()

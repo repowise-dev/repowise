@@ -34,7 +34,9 @@ def _resolve_output(output: str | None, repo_path: Path, *, standalone: bool) ->
     if output is None:
         return repo_path / default_name
     candidate = Path(output).resolve()
-    if candidate.suffix == ".dsl":
+    # Case-insensitive: --out MODEL.DSL meant a directory called MODEL.DSL,
+    # and the file landed inside it.
+    if candidate.suffix.lower() == ".dsl":
         return candidate
     return candidate / default_name
 
@@ -82,7 +84,30 @@ def _counts(model, *, include_components: bool, include_externals: bool) -> str:
         parts.append(f"{total} components")
     if include_externals:
         parts.append(f"{len(model.external_systems)} external systems")
-    relations = model.component_relations if include_components else model.container_relations
+    # Count what the file will hold, not one of the two lists it draws from:
+    # the actor edges are always written, and with components on the container
+    # edges that cross our boundary are kept alongside the component ones.
+    relations = set()
+    for relation in model.actor_relations:
+        relations.add((relation.source_id, relation.target_id))
+    for relation in model.component_relations if include_components else ():
+        relations.add((relation.source_id, relation.target_id))
+    external_ids = {e.id for e in model.external_systems}
+    componentless = {
+        container.id
+        for container in model.containers
+        if not model.components_by_container.get(container.id)
+    }
+    for relation in model.container_relations:
+        keeps = (
+            not include_components
+            or relation.source_id in external_ids
+            or relation.target_id in external_ids
+            or relation.source_id in componentless
+            or relation.target_id in componentless
+        )
+        if keeps:
+            relations.add((relation.source_id, relation.target_id))
     parts.append(f"{len(relations)} relations")
     return ", ".join(parts)
 

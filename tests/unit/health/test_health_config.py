@@ -292,9 +292,26 @@ class TestGitignoreGlobSemantics:
         Loading one logs a warning naming the pattern; the rule behind that
         warning is what is pinned here, since the log call is one line and
         structlog's sink is reconfigured by other suites.
+
+        What narrows is a lone ``*`` with pattern text after it — the star
+        stops crossing ``/``, so anything the pattern still demands beyond it
+        can no longer be reached.
         """
-        assert glob_narrowed_by_gitignore_semantics("src/legacy/*")
         assert glob_narrowed_by_gitignore_semantics("packages/*/tests")
+        assert glob_narrowed_by_gitignore_semantics("src/*.py")
+        assert glob_narrowed_by_gitignore_semantics("src/*/x.py")
+
+    def test_a_trailing_star_is_not_a_narrowing(self) -> None:
+        """The commonest shape, and the warning was wrong about it.
+
+        ``src/legacy/*`` names the directory's entries, and gitignore excludes
+        everything under an excluded directory — so it still covers the whole
+        subtree, exactly as fnmatch did. Verified against both engines:
+        ``src/legacy/a/b.py`` matches under each. Telling people to rewrite it
+        sent them after a rule that was never broken.
+        """
+        assert not glob_narrowed_by_gitignore_semantics("src/legacy/*")
+        assert not glob_narrowed_by_gitignore_semantics("src/*")
 
     def test_a_malformed_glob_does_not_take_down_the_config(self) -> None:
         """The loader is documented as never raising, and this file is hand-written.
@@ -393,3 +410,23 @@ class TestAMalformedFieldNeverRaises:
         assert HealthConfig._from_refactoring_block(
             {"detectors": {"disabled": "extract_class"}}
         ).disabled_refactorings == []
+
+    def test_a_negated_glob_is_flagged_rather_than_silently_dead(self) -> None:
+        """A leading '!' has nothing to negate when each rule is its own spec.
+
+        In a .gitignore it re-includes what an earlier line excluded. Here
+        every rule compiles alone, so it matches nothing and the rule quietly
+        never applies — the user's biomarkers stay on and nothing says why.
+        """
+        config = HealthConfig.from_dict(
+            {
+                "rules": [
+                    {"path": "!src/keep/**", "disabled_biomarkers": ["complex_method"]},
+                    {"path": "src/legacy/**", "disabled_biomarkers": ["dry_violation"]},
+                ]
+            }
+        )
+        disabled = config.per_file_disabled(["src/keep/a.py", "src/legacy/b.py"])
+        assert "src/keep/a.py" not in disabled
+        # The good rule beside it is unaffected.
+        assert disabled["src/legacy/b.py"] == {"dry_violation"}

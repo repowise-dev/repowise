@@ -221,3 +221,23 @@ def test_a_directory_named_like_the_root_marker_is_skipped_not_fatal() -> None:
     assert "fine" in names
     assert not any("#root" in c.path for c in components)
     assert "pkg/odd#root/a.py" not in file_index
+
+
+def test_the_batched_and_per_container_paths_agree_on_a_nested_container() -> None:
+    """A container inside another is where the two ownership rules could drift.
+
+    ``detect_components`` rejects a file matching any sibling root's prefix, so
+    with containers ``apps`` and ``apps/web`` a file under ``apps/web`` is
+    claimed by neither. That is a real gap, but the batched path's contract is
+    to agree with the per-container one element for element — so it must
+    reproduce it rather than quietly improving on it.
+    """
+    from repowise.server.services.c4_builder.components import _matching_roots, _owned_by
+
+    roots = ["apps", "apps/web"]
+    for node_id in ("apps/x.ts", "apps/web/y.ts", "other/z.ts"):
+        batched = _matching_roots(node_id, roots)
+        for root in roots:
+            siblings = tuple(r + "/" for r in roots if r != root)
+            per_container = _owned_by(node_id, root, siblings)
+            assert per_container is (batched == [root]), (node_id, root)
