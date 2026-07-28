@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "repowise-augment",
+            "command": "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment; fi",
             "timeout": 10,
             "statusMessage": "Loading repowise context..."
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "repowise-augment",
+            "command": "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment; fi",
             "timeout": 10,
             "statusMessage": "Checking codebase context..."
           }

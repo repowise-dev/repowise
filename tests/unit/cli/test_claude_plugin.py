@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
+
+import pytest
 
 from repowise.cli.editor_integrations import claude_config
 
@@ -50,8 +53,10 @@ def test_claude_plugin_hooks_match_installer() -> None:
             for h in entry["hooks"]
         ]
 
-    assert rows("PostToolUse") == [(claude_config._AUGMENT_MATCHER, "repowise-augment")]
-    assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, "repowise-augment")]
+    command = claude_config._AUGMENT_HOOK_COMMAND
+
+    assert rows("PostToolUse") == [(claude_config._AUGMENT_MATCHER, command)]
+    assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, command)]
 
     commands = [
         hook["command"]
@@ -59,7 +64,57 @@ def test_claude_plugin_hooks_match_installer() -> None:
         for entry in entries
         for hook in entry["hooks"]
     ]
-    assert commands == ["repowise-augment"] * 2
+    assert commands == [command] * 2
+
+
+def _posix_bash() -> str | None:
+    """Path to a POSIX bash, or None.
+
+    On Windows ``shutil.which("bash")`` finds ``system32\\bash.exe`` first — the
+    WSL launcher, which is not the shell Claude Code runs hooks with and does
+    not behave like one here. Prefer Git Bash explicitly, which is what a hook
+    actually gets on this platform.
+    """
+    import shutil
+
+    if os.name == "nt":
+        for candidate in (
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        ):
+            if Path(candidate).is_file():
+                return candidate
+        found = shutil.which("bash")
+        return None if found is None or "system32" in found.lower() else found
+    return shutil.which("bash")
+
+
+def test_the_augment_hook_is_silent_when_the_console_script_is_absent(tmp_path: Path) -> None:
+    """The plugin installs independently of the CLI, so the script may not exist.
+
+    An unguarded command name makes that state print ``command not found`` on
+    every matched tool call — non-blocking noise the user cannot act on and
+    cannot escape short of disabling the plugin. Run the real command with a
+    PATH that resolves nothing: it must say nothing and exit 0.
+    """
+    import subprocess
+
+    bash = _posix_bash()
+    if bash is None:  # pragma: no cover - hooks need a shell to run at all
+        pytest.skip("no POSIX bash available to execute a hook command")
+
+    # An empty PATH would also strip the variables process creation needs on
+    # Windows; an empty *directory* is the honest "script isn't installed" state.
+    proc = subprocess.run(
+        [bash, "-c", claude_config._AUGMENT_HOOK_COMMAND],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": str(tmp_path)},
+    )
+
+    assert proc.returncode == 0, f"exited {proc.returncode}: {proc.stderr!r}"
+    assert proc.stdout == ""
+    assert proc.stderr == ""
 
 
 def test_claude_plugin_skills_have_metadata() -> None:

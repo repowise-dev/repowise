@@ -220,6 +220,18 @@ _LEGACY_AUGMENT_MATCHERS = (
 # and re-emitting it there would double it up.
 _SESSION_START_MATCHER = "startup|resume|clear"
 
+#: Hook commands run through a shell, so absence of the console script is a
+#: ``command not found`` on *every* matched tool call — non-blocking, but
+#: repeated forever. The plugin ships these hooks independently of the CLI, so
+#: "installed the plugin, never installed repowise" is a supported state, not a
+#: broken one; a partially-written install (Windows holds ``repowise.exe`` open
+#: while an MCP server runs, so uv can abort mid-install) reaches it too.
+#: ``augment_hook`` already exits 0 silently on any internal failure — this
+#: extends the same courtesy to the script not being there at all.
+_AUGMENT_HOOK_COMMAND = (
+    "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment; fi"
+)
+
 
 def _session_start_entry() -> dict:
     return {
@@ -227,7 +239,7 @@ def _session_start_entry() -> dict:
         "hooks": [
             {
                 "type": "command",
-                "command": "repowise-augment",
+                "command": _AUGMENT_HOOK_COMMAND,
                 "timeout": 10,
                 "statusMessage": "Loading repowise context...",
             }
@@ -249,7 +261,7 @@ def install_claude_code_hooks() -> Path | None:
         "hooks": [
             {
                 "type": "command",
-                "command": "repowise-augment",
+                "command": _AUGMENT_HOOK_COMMAND,
                 "timeout": 10,
                 "statusMessage": "Checking codebase context...",
             }
@@ -492,8 +504,11 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
     for entry in hook_list:
         for hook in entry.get("hooks", []):
             cmd = hook.get("command", "")
-            if cmd == "repowise augment":
-                hook["command"] = "repowise-augment"
+            # Both the old subcommand form and the unguarded console script
+            # migrate to the guarded command, so an install predating the guard
+            # stops emitting "command not found" without needing a re-init.
+            if cmd in ("repowise augment", "repowise-augment"):
+                hook["command"] = _AUGMENT_HOOK_COMMAND
                 changed = True
         matcher = entry.get("matcher", "")
         only_repowise = entry.get("hooks") and all(_is_repowise_hook(h) for h in entry["hooks"])

@@ -414,9 +414,11 @@ def test_install_claude_code_hooks_creates_missing_file(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
-    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
+    assert _session_start_repowise_entries(saved) == [
+        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+    ]
 
 
 def test_install_claude_code_hooks_preserves_user_pretool_hooks(
@@ -452,7 +454,7 @@ def test_install_claude_code_hooks_preserves_user_pretool_hooks(
     assert saved["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo read"
     # PostToolUse now has the repowise hook.
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -498,7 +500,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -538,7 +540,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -594,7 +596,7 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
     # Idempotent: a second run finds nothing to do.
@@ -632,7 +634,7 @@ def test_migrate_claude_code_hooks_widens_legacy_matchers(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -647,11 +649,17 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
         json.dumps(
             {
                 "hooks": {
+                    # Commands are already in the guarded shape, so the only
+                    # migration that could fire here is the matcher widening
+                    # this test is about.
                     "PostToolUse": [
                         {
                             "matcher": "Bash|Grep|Glob",
                             "hooks": [
-                                {"type": "command", "command": "repowise-augment"},
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                },
                                 {"type": "command", "command": "my-linter"},
                             ],
                         }
@@ -661,7 +669,12 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                     "SessionStart": [
                         {
                             "matcher": "startup|resume|clear",
-                            "hooks": [{"type": "command", "command": "repowise-augment"}],
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
                         }
                     ],
                 }
@@ -716,18 +729,21 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
+    # The guarded command, not the bare script name: a bare name is now a
+    # legacy shape the migration rewrites, so using it here would assert a
+    # no-op that must not happen.
     payload = {
         "hooks": {
             "PostToolUse": [
                 {
                     "matcher": claude_config._AUGMENT_MATCHER,
-                    "hooks": [{"type": "command", "command": "repowise-augment"}],
+                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
                 }
             ],
             "SessionStart": [
                 {
                     "matcher": "startup|resume|clear",
-                    "hooks": [{"type": "command", "command": "repowise-augment"}],
+                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
                 }
             ],
         }
@@ -768,7 +784,9 @@ def test_migrate_claude_code_hooks_backfills_session_start(
 
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
+    assert _session_start_repowise_entries(saved) == [
+        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+    ]
     # Idempotent on the second pass.
     assert claude_config.migrate_claude_code_hooks() is False
 
@@ -829,7 +847,9 @@ def test_migrate_claude_code_hooks_preserves_user_session_start(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     session = saved["hooks"]["SessionStart"]
     assert session[0]["hooks"][0]["command"] == "echo mine"
-    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
+    assert _session_start_repowise_entries(saved) == [
+        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+    ]
 
 
 def test_migrate_claude_code_hooks_silent_when_settings_missing(
@@ -866,8 +886,12 @@ def test_plugin_hooks_json_mirrors_settings_entries(repo_root: Path) -> None:
             for h in entry["hooks"]
         ]
 
-    assert rows("PostToolUse") == [(claude_config._AUGMENT_MATCHER, "repowise-augment")]
-    assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, "repowise-augment")]
+    assert rows("PostToolUse") == [
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+    assert rows("SessionStart") == [
+        (claude_config._SESSION_START_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
 
 
 def test_install_claude_code_hooks_rejects_invalid_existing_file(

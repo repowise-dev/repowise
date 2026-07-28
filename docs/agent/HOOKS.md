@@ -199,11 +199,31 @@ and `.codex/hooks.json` (Codex when `--codex` is passed):
 
 | Client | Hook type | Matcher | Command |
 |--------|-----------|---------|---------|
-| Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` |
-| Claude Code | `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` |
+| Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` [^guard] |
+| Claude Code | `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` [^guard] |
 | Claude Code | `PreToolUse` (opt-in) | `Bash\|PowerShell` | `repowise-rewrite` |
 | Codex | `SessionStart` / `UserPromptSubmit` | lifecycle | context reminder |
 | Codex | `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | staleness check |
+
+[^guard]: The command is written wrapped in a presence check rather than as the
+    bare name:
+
+    ```sh
+    if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment; fi
+    ```
+
+    The Claude Code plugin ships these hooks independently of the CLI, so
+    "plugin installed, `repowise` not installed" is a supported state — and a
+    partially written install reaches it too (on Windows an MCP server holds
+    `repowise.exe` open, so an installer can abort after writing only some
+    console scripts). Unguarded, either state prints `command not found` on
+    every matched tool call: non-blocking, unactionable, and endless. The guard
+    is POSIX (`command -v` + `exec`, verified under `sh`, `bash` and `dash`) and
+    forwards stdin unchanged, so the hook behaves identically when the script is
+    present. An older install carrying the bare name is rewritten on the next
+    `repowise init`. Codex hooks keep the bare name: their execution model is
+    not documented as shell-based, and a directly `exec`'d guard would try to
+    run a binary named `if`.
 
 `SessionStart` deliberately excludes `compact`: the block usually survives
 compaction in the summary, and re-emitting it there would double it up. `init`
