@@ -44,7 +44,10 @@ def write_relationships(
             continue
         emitted.append((source, target, relation))
 
-    emitted.sort(key=lambda row: (row[0], row[1], row[2].label))
+    # Coupling is part of the key: two relations alike in every other respect
+    # emit different bodies, so leaving it out let their order fall back to
+    # however the caller happened to build the list.
+    emitted.sort(key=lambda row: (row[0], row[1], row[2].label or "", row[2].coupling or ""))
     for source, target, relation in emitted:
         header = f"{source} -> {target} {quote(relation.label or 'depends on')}"
         tag = _COUPLING_TAGS.get(relation.coupling)

@@ -8,7 +8,9 @@ rather than being implied by a golden file.
 
 from __future__ import annotations
 
+import random
 import re
+from dataclasses import replace
 
 import pytest
 
@@ -196,9 +198,68 @@ def test_there_is_no_timestamp_in_the_output() -> None:
     assert not re.search(r"\d{2}:\d{2}:\d{2}", dsl)
 
 
-def test_emission_is_deterministic() -> None:
-    model = _model()
-    assert to_dsl(model) == to_dsl(model)
+def _shuffled(model: C4Model, seed: int) -> C4Model:
+    """The same model with every list rebuilt in a different order.
+
+    Nothing here changes what the model *says* — only the order the builder
+    happened to produce its lists in, which is exactly what an emitter must
+    not be sensitive to.
+    """
+    rng = random.Random(seed)
+
+    def _mix(items):
+        out = list(items)
+        rng.shuffle(out)
+        return out
+
+    return replace(
+        model,
+        people=_mix(model.people),
+        containers=_mix(model.containers),
+        external_systems=_mix(model.external_systems),
+        container_relations=_mix(model.container_relations),
+        component_relations=_mix(model.component_relations),
+        components_by_container={
+            cid: _mix(components)
+            for cid, components in model.components_by_container.items()
+        },
+    )
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+@pytest.mark.parametrize("components", [False, True])
+def test_emission_does_not_depend_on_input_order(standalone, components) -> None:
+    """The property a committed file needs: same model in, same bytes out.
+
+    Comparing ``to_dsl(model)`` with itself proves nothing — one object has
+    one list order. Every sort in the emitter could be deleted and that test
+    would still pass. These build the same model several ways round.
+    """
+    base = _signals_model()
+    expected = to_dsl(base, standalone=standalone, include_components=components)
+    for seed in range(5):
+        again = to_dsl(
+            _shuffled(base, seed), standalone=standalone, include_components=components
+        )
+        assert again == expected, seed
+
+
+def test_relations_alike_but_for_coupling_still_have_a_stable_order() -> None:
+    """The sort key left out the one field that changes what is emitted."""
+    pair = [
+        Relation(
+            source_id="pkg:packages/web",
+            target_id="pkg:packages/core",
+            label="imports",
+            edge_count=1,
+            edge_types=("imports",),
+            coupling=coupling,
+        )
+        for coupling in ("tight", "loose")
+    ]
+    assert to_dsl(_model(container_relations=pair)) == to_dsl(
+        _model(container_relations=list(reversed(pair)))
+    )
 
 
 def test_containers_and_externals_are_emitted() -> None:
