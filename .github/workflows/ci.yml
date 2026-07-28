@@ -171,7 +171,11 @@ jobs:
           filters: |
             emitter:
               - 'packages/server/src/repowise/server/services/c4_builder/**'
+              # Every C4 id is rendered through this, so a change here changes
+              # every identifier in the emitted file.
+              - 'packages/core/src/repowise/core/ids.py'
               - 'scripts/emit_sample_dsl.py'
+              - 'tests/unit/server/test_structurizr_export.py'
               - '.github/workflows/ci.yml'
 
       - name: Install uv
