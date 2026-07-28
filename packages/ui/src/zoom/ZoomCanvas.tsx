@@ -22,7 +22,8 @@ import { type Camera, clampCamera, fitRoot, panByScreen, zoomAbout } from "./cam
 import { type FlyOptions, ZoomRenderer, type FrameStats } from "./renderer";
 import { buildScene } from "./scene";
 import { resolveZoomPalette } from "./theme";
-import type { ZoomMap, ZoomNode } from "./types";
+import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
+import { describeRelations, summarizeRelations } from "./relation-summary";
 import { useThemeVersion } from "../shared/use-theme-tokens";
 
 export interface ZoomCanvasHandle {
@@ -42,6 +43,17 @@ export interface ZoomCanvasProps {
   initialFocusId?: string;
   /** Show a small live frame-stat overlay (drawn/culled/fps). Dev aid. */
   showStats?: boolean;
+  /**
+   * Draw only relations carrying this verb, or every relation when unset.
+   * See `DrawOptions.relationVerb` for why this is one verb and not a set.
+   */
+  relationVerb?: string | null;
+  /**
+   * Relations incident to a node, for the hover card's one-line summary. The
+   * host already indexes these for its detail panel, so it passes the lookup in
+   * rather than the canvas walking the relation list a second time.
+   */
+  relationsByNode?: Map<string, ZoomRelation[]>;
 }
 
 const WHEEL_ZOOM_RATE = 0.0015;
@@ -69,7 +81,16 @@ function usePrefersReducedMotion(): boolean {
 }
 
 export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function ZoomCanvas(
-  { data, className, onSelect, onFocusChange, initialFocusId, showStats },
+  {
+    data,
+    className,
+    onSelect,
+    onFocusChange,
+    initialFocusId,
+    showStats,
+    relationVerb = null,
+    relationsByNode,
+  },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -140,6 +161,10 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
   useEffect(() => {
     rendererRef.current?.setScene(scene);
   }, [scene]);
+
+  useEffect(() => {
+    rendererRef.current?.setRelationVerb(relationVerb);
+  }, [relationVerb]);
 
   // One-shot: jump to the URL-provided focus node once the canvas has done its
   // initial fit (it needs a real viewport size before a node rect can be framed).
@@ -332,7 +357,13 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
         className="h-full w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
         style={{ cursor: "grab" }}
       />
-      {hover && <HoverCard hover={hover} canvas={canvasRef.current} />}
+      {hover && (
+        <HoverCard
+          hover={hover}
+          canvas={canvasRef.current}
+          relations={relationsByNode?.get(hover.node.id)}
+        />
+      )}
       {showStats && stats && <StatsOverlay stats={stats} laidOut={scene.laidOutCount} />}
     </div>
   );
@@ -347,11 +378,23 @@ const HOVER_KIND_LABEL: Record<ZoomNode["kind"], string> = {
 };
 
 /**
- * A deliberately light tooltip: kind, name, path and a one-line summary. The
- * full metric breakdown lives in the side panel (open on click), so the hover
- * stays calm and premium instead of dumping numbers.
+ * A deliberately light tooltip: kind, name, path, a one-line summary and, when
+ * the host supplies the index, what this box's arrows mean. The full metric
+ * breakdown lives in the side panel (open on click), so the hover stays calm
+ * and premium instead of dumping numbers.
+ *
+ * The relation line is here because the arrows appear on hover: naming them
+ * anywhere else would explain a thing the reader is no longer looking at.
  */
-function HoverCard({ hover, canvas }: { hover: HoverState; canvas: HTMLCanvasElement | null }) {
+function HoverCard({
+  hover,
+  canvas,
+  relations,
+}: {
+  hover: HoverState;
+  canvas: HTMLCanvasElement | null;
+  relations: ZoomRelation[] | undefined;
+}) {
   const { node } = hover;
   // Flip the card toward the interior when the cursor is near the right/bottom
   // edge, so it never spills off-canvas (N2).
@@ -366,7 +409,7 @@ function HoverCard({ hover, canvas }: { hover: HoverState; canvas: HTMLCanvasEle
       className="pointer-events-none absolute z-10 max-w-[16rem] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2 text-xs shadow-xl"
       style={{ left: hover.sx, top: hover.sy, transform: `translate(${tx}, ${ty})` }}
     >
-      <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
+      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {HOVER_KIND_LABEL[node.kind]}
       </div>
       <div className="mt-0.5 font-semibold text-[var(--color-text-primary)]">{node.name}</div>
@@ -375,6 +418,11 @@ function HoverCard({ hover, canvas }: { hover: HoverState; canvas: HTMLCanvasEle
       )}
       {node.summary && (
         <div className="mt-1 line-clamp-2 text-[var(--color-text-secondary)]">{node.summary}</div>
+      )}
+      {relations && relations.length > 0 && (
+        <div className="mt-1.5 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)] tabular-nums">
+          {describeRelations(summarizeRelations(relations))}
+        </div>
       )}
     </div>
   );

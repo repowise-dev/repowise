@@ -1,20 +1,35 @@
 "use client";
 
 /**
- * Detail panel for the selected zoom node. A self-contained inspector (metadata,
- * rolled-up metrics, summary) plus a "zoom here" action that flies the camera
- * into the node. Kept lightweight and decoupled from the architecture-view
- * selection store so the zoom canvas owns its own selection lifecycle.
+ * Detail panel for the selected zoom node: what this box is, how healthy it is,
+ * what it holds, and what its arrows mean.
+ *
+ * It is a *rail beside the canvas*, not a floating card on it. Chrome goes
+ * around a canvas, never on it: a diagram is the one thing on its page that
+ * cannot be read past, so anything on top of it competes with the subject. The
+ * old panel was pinned `absolute right-3 top-3` and landed on top of the search
+ * box, which shares that corner.
+ *
+ * Inside, figures are hairline rows rather than a grid of bordered mini-cards.
+ * A card means "a discrete object you can act on" and a file count is not that;
+ * at 288px wide, eight bordered boxes read as box soup with no lead. Every
+ * number is `tabular-nums` because a column of figures that reflows as digits
+ * change fails to line up.
  */
 
 import Link from "next/link";
 import { FileCode, ScanSearch, X } from "lucide-react";
-import type { ZoomNode } from "@repowise-dev/ui/zoom";
-import { scoreTextColor } from "@repowise-dev/ui/health";
+import type { ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
+import { describeCap, describeRelations, summarizeRelations } from "@repowise-dev/ui/zoom";
+import { healthBand } from "@repowise-dev/ui/overview";
 
 interface ZoomDetailPanelProps {
   node: ZoomNode;
   repoId: string;
+  /** Relations incident to this node, in either direction. */
+  relations: ZoomRelation[];
+  /** The verb the map is currently filtered to, or null for all of them. */
+  relationVerb: string | null;
   onClose: () => void;
   onZoom: (id: string) => void;
 }
@@ -34,42 +49,90 @@ const KIND_LABEL: Record<ZoomNode["kind"], string> = {
   file: "File",
 };
 
-function Stat({ label, value, tone }: { label: string; value: number; tone?: string }) {
+/** A micro-label: mono, because it labels something a machine produced. */
+function Micro({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] px-2.5 py-1.5">
-      <div className={`text-sm font-semibold ${tone ?? "text-[var(--color-text-primary)]"}`}>
-        {value}
-      </div>
-      <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">{label}</div>
+    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+      {children}
+    </span>
+  );
+}
+
+/** One figure as a hairline row, not a card. */
+function Row({ label, value, tone }: { label: string; value: number; tone?: string }) {
+  return (
+    <div className="flex items-baseline justify-between border-t border-[var(--color-border-default)] py-1.5">
+      <Micro>{label}</Micro>
+      <span
+        className={`text-[15px] font-medium tabular-nums ${tone ?? "text-[var(--color-text-primary)]"}`}
+      >
+        {value.toLocaleString()}
+      </span>
     </div>
   );
 }
 
-export function ZoomDetailPanel({ node, repoId, onClose, onZoom }: ZoomDetailPanelProps) {
+/**
+ * A state marker as a dot plus the word. Colour alone cannot carry a name, and
+ * a filled pill spends a ground, a border and coloured text on one token that
+ * repeats down a panel.
+ */
+function Mark({ color, children }: { color: string; children: React.ReactNode }) {
+  return (
+    <span className="flex items-center gap-1 text-[11px] font-medium text-[var(--color-text-secondary)]">
+      <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+      {children}
+    </span>
+  );
+}
+
+export function ZoomDetailPanel({
+  node,
+  repoId,
+  relations,
+  relationVerb,
+  onClose,
+  onZoom,
+}: ZoomDetailPanelProps) {
   const m = node.metrics;
   const isFile = node.kind === "file";
+  const band = node.health_score === null ? null : healthBand(node.health_score);
+  // The description covers the whole box; the cap has to be measured against
+  // what the map is *drawing*, or a filtered view still claims to be showing
+  // "the 10 strongest" while two arrows are on screen.
+  const summary = summarizeRelations(relations);
+  const drawn = summarizeRelations(
+    relationVerb === null ? relations : relations.filter((r) => r.label === relationVerb),
+  );
+  const cap = describeCap(drawn);
+
   return (
-    <aside className="absolute right-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-72 flex-col overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] shadow-xl">
-      <header className="flex items-start justify-between gap-2 border-b border-[var(--color-border-default)] px-3 py-2.5">
+    /* Height follows content, capped at the canvas: a panel stretched to a
+       full-height rail leaves a dead gutter under a short node's figures, and
+       pins its actions a long way from the thing they act on. */
+    <aside className="flex max-h-full min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
+      <header className="flex items-start justify-between gap-2 px-4 pb-3 pt-3.5">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="rounded bg-[var(--color-bg-canvas)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
-              {KIND_LABEL[node.kind]}
-            </span>
-            {node.is_entry_point && (
-              <span className="text-[10px] font-medium text-[var(--color-success)]">entry</span>
-            )}
-            {node.on_flow && !node.is_entry_point && (
-              <span className="text-[10px] font-medium text-[var(--color-accent-secondary)]">on flow</span>
-            )}
-          </div>
-          <h2 className="mt-1 truncate text-sm font-semibold text-[var(--color-text-primary)]" title={node.name}>
+          <Micro>{KIND_LABEL[node.kind]}</Micro>
+          {/* A real size step, so hierarchy comes from the type scale rather
+              than from another border. */}
+          <h2 className="mt-1 text-[18px] font-semibold leading-tight text-[var(--color-text-primary)]">
             {node.name}
           </h2>
           {node.path && node.path !== node.name && (
-            <p className="truncate text-xs text-[var(--color-text-tertiary)]" title={node.path}>
+            /* Scrolls, never truncates: an ellipsis in the primary column
+               reports a layout decision to the reader as missing content. */
+            <p className="mt-1 overflow-x-auto whitespace-nowrap font-mono text-[11px] text-[var(--color-text-tertiary)]">
               {node.path}
             </p>
+          )}
+          {(node.is_entry_point || node.on_flow) && (
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              {node.is_entry_point && <Mark color="var(--color-success)">Entry point</Mark>}
+              {node.on_flow && !node.is_entry_point && (
+                <Mark color="var(--color-accent-secondary)">On an execution flow</Mark>
+              )}
+            </div>
           )}
         </div>
         <button
@@ -82,45 +145,81 @@ export function ZoomDetailPanel({ node, repoId, onClose, onZoom }: ZoomDetailPan
         </button>
       </header>
 
-      <div className="flex-1 overflow-auto px-3 py-3">
-        {node.summary && (
-          <p className="mb-3 text-xs leading-relaxed text-[var(--color-text-secondary)]">{node.summary}</p>
-        )}
-        <div className="grid grid-cols-2 gap-2">
-          {node.health_score !== null && (
-            <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] px-2.5 py-1.5">
-              <div className={`text-sm font-semibold ${scoreTextColor(node.health_score)}`}>
+      <div className="min-h-0 shrink overflow-auto px-4 pb-4">
+        {band && node.health_score !== null && (
+          <div className="border-t border-[var(--color-border-default)] pt-3">
+            <div className="flex items-baseline gap-2">
+              <span
+                className="text-[32px] font-bold leading-none tabular-nums"
+                style={{ color: band.color }}
+              >
                 {node.health_score.toFixed(1)}
-              </div>
-              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
-                {isFile ? "health" : "health (avg)"}
-              </div>
+              </span>
+              <span className="text-[15px] font-medium" style={{ color: band.color }}>
+                {band.label}
+              </span>
             </div>
-          )}
-          {!isFile && <Stat label="files" value={m.file_count} />}
+            {/* A figure alone is not readable. Say what it measures. */}
+            <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+              Code health out of 10
+              {isFile ? "" : ", averaged across this subtree weighted by size"}.
+            </p>
+          </div>
+        )}
+
+        {node.summary && (
+          <p className="mt-3 border-t border-[var(--color-border-default)] pt-3 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+            {node.summary}
+          </p>
+        )}
+
+        <div className="mt-3">
+          {!isFile && <Row label="Files" value={m.file_count} />}
           {m.hotspot_count > 0 && (
-            <Stat label="hotspots" value={m.hotspot_count} tone="text-[var(--color-risk-high)]" />
+            <Row label="Hotspots" value={m.hotspot_count} tone="text-[var(--color-risk-high)]" />
           )}
           {m.entry_point_count > 0 && (
-            <Stat label="entry points" value={m.entry_point_count} tone="text-[var(--color-success)]" />
+            <Row
+              label="Entry points"
+              value={m.entry_point_count}
+              tone="text-[var(--color-success)]"
+            />
           )}
-          {m.on_flow_count > 0 && <Stat label="on flow" value={m.on_flow_count} />}
-          {m.dead_count > 0 && <Stat label="dead" value={m.dead_count} />}
+          {m.on_flow_count > 0 && <Row label="On flow" value={m.on_flow_count} />}
+          {m.dead_count > 0 && <Row label="Dead" value={m.dead_count} />}
         </div>
+
+        {/* What the arrows mean. The verb was on the wire and drawn nowhere,
+            so nothing on this surface said whether a line meant "imports" or
+            "changes at the same time as". */}
+        <div className="mt-3 border-t border-[var(--color-border-default)] pt-3">
+          <Micro>Relations</Micro>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-text-secondary)] tabular-nums">
+            {describeRelations(summary)}
+          </p>
+          {cap && (
+            /* A surface that bounds its own coverage has to say so, or the
+               partial view reads as the whole one. */
+            <p className="mt-1 text-[12px] text-[var(--color-text-tertiary)] tabular-nums">
+              {cap} on the map.
+            </p>
+          )}
+        </div>
+
         {node.language && (
-          <div className="mt-3 text-xs text-[var(--color-text-tertiary)]">
-            Language: <span className="text-[var(--color-text-secondary)]">{node.language}</span>
+          <div className="mt-3 border-t border-[var(--color-border-default)] pt-3 text-[13px] text-[var(--color-text-secondary)]">
+            <Micro>Language</Micro> <span className="ml-1">{node.language}</span>
           </div>
         )}
       </div>
 
       {(node.children.length > 0 || isFile) && (
-        <footer className="flex flex-col gap-2 border-t border-[var(--color-border-default)] p-2">
+        <footer className="flex flex-col gap-2 border-t border-[var(--color-border-default)] p-3">
           {node.children.length > 0 && (
             <button
               type="button"
               onClick={() => onZoom(node.id)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-on-accent)] hover:opacity-90"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--color-accent-primary)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-on-accent)] hover:opacity-90"
             >
               <ScanSearch className="h-3.5 w-3.5" />
               Zoom in
@@ -129,7 +228,7 @@ export function ZoomDetailPanel({ node, repoId, onClose, onZoom }: ZoomDetailPan
           {isFile && node.path && (
             <Link
               href={fileHref(repoId, node.path)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
             >
               <FileCode className="h-3.5 w-3.5" />
               Open file page

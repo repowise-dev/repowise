@@ -20,6 +20,15 @@ export { focusChain, focusId } from "./focus-path";
 export { buildScene, childNodes } from "./scene";
 export type { ZoomScene } from "./scene";
 
+export {
+  CO_CHANGES,
+  describeCap,
+  describeRelations,
+  indexRelationsByNode,
+  summarizeRelations,
+} from "./relation-summary";
+export type { RelationSummary, VerbCount } from "./relation-summary";
+
 export { drawScene, pickNode } from "./draw-tree";
 export type { DrawOptions, DrawStats, PickEntry } from "./draw-tree";
 

@@ -75,6 +75,7 @@ export class ZoomRenderer {
 
   private selectedId: string | null = null;
   private hoveredId: string | null = null;
+  private relationVerb: string | null = null;
   private lowDetailFrames = 0;
   private tween: Tween | null = null;
   private lastFocusId: string | null = null;
@@ -125,6 +126,13 @@ export class ZoomRenderer {
   setHovered(id: string | null): void {
     if (id === this.hoveredId) return;
     this.hoveredId = id;
+    this.invalidate();
+  }
+
+  /** Restrict drawn relations to one verb, or null for all of them. */
+  setRelationVerb(verb: string | null): void {
+    if (verb === this.relationVerb) return;
+    this.relationVerb = verb;
     this.invalidate();
   }
 
@@ -252,6 +260,7 @@ export class ZoomRenderer {
         hoveredId: this.hoveredId,
         lowDetail,
         paper: this.paper,
+        relationVerb: this.relationVerb,
       });
       if (this.onStats) {
         this.onStats({

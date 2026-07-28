@@ -15,12 +15,25 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 # Raw edge-type token -> the verb a reader expects on a C4 arrow.
+#
+# Every token the extractors actually emit must appear here. A missing one is
+# silent: `relation_label` falls through to "depends on", which is the label
+# reserved for a *wholly unknown* set, so a real, nameable dependency gets
+# reported as the vaguest word we have. That is what happened to `framework`
+# and `dynamic_uses`, which between them covered 1,351 of the 13,165 file-level
+# edges on a live index (10%) and rendered as "depends on" for their whole life.
+# `extends` is the token the extractors emit; `inherits` never was one.
 _EDGE_VERB: dict[str, str] = {
     "imports": "imports",
     "dynamic_imports": "imports",
     "calls": "calls",
+    "extends": "inherits from",
     "inherits": "inherits from",
     "implements": "implements",
+    # A lazy/registry import and a framework-convention link (a test file to its
+    # conftest) are both real dependencies that no static import expresses.
+    "dynamic_uses": "uses",
+    "framework": "uses",
     "references": "references",
     "contains": "contains",
     "co_changes": "co-changes",
@@ -34,6 +47,9 @@ _VERB_PRIORITY: tuple[str, ...] = (
     "inherits from",
     "implements",
     "imports",
+    # Below "imports": where a pair has both, the static import is the more
+    # precise description of the same dependency.
+    "uses",
     "references",
     "contains",
     "co-changes",
