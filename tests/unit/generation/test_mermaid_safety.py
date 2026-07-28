@@ -135,3 +135,64 @@ def test_output_is_stable_across_runs() -> None:
 def test_a_non_graph_diagram_is_still_left_untouched() -> None:
     body = _block("sequenceDiagram\n  A->>B: calls src/main.py")
     assert sanitize_mermaid(body) == body
+
+
+class TestThePassNeverMakesADiagramWorse:
+    """The module promises it can only improve a block. Three ways it did not."""
+
+    def test_a_pipe_edge_label_is_not_slugged(self) -> None:
+        """``-->|yes/no|`` is a label, not a node id.
+
+        Labels between pipes are never quoted, so the pathy-token pass ran over
+        them and rewrote ordinary words. ``read/write``, ``true/false`` and
+        ``A/B`` are all everyday edge labels.
+        """
+        md = "```mermaid\ngraph LR\nA -->|yes/no| B\nC -->|read/write| D\n```"
+        out = sanitize_mermaid(md)
+        assert "|yes/no|" in out
+        assert "|read/write|" in out
+        assert "yes_no" not in out
+
+    def test_a_pipe_label_does_not_stop_ids_being_slugged(self) -> None:
+        """Protecting the label must not protect the endpoints around it."""
+        md = "```mermaid\ngraph LR\nsrc/a.py -->|calls| src/b.py\n```"
+        out = sanitize_mermaid(md)
+        assert "|calls|" in out
+        assert "src_a_py" in out
+        assert "src_b_py" in out
+
+    def test_an_init_directive_survives(self) -> None:
+        """``%%{init: ...}%%`` is a directive, not a rhombus label.
+
+        ``{`` is a shape opener, so the directive body was read as a label and
+        its quotes were entity-escaped — turning a diagram that rendered into
+        one that does not.
+
+        The directive is placed after the graph line because that is the case
+        that corrupts: with it on the first line the whole block fails the
+        graph-directive check and is skipped untouched.
+        """
+        md = '```mermaid\ngraph LR\n%%{init: {"theme":"dark"}}%%\nA --> B\n```'
+        out = sanitize_mermaid(md)
+        assert '%%{init: {"theme":"dark"}}%%' in out
+        assert "&quot;" not in out
+
+    def test_a_comment_line_is_left_alone(self) -> None:
+        """``%%`` starts a comment, so nothing in it is diagram syntax."""
+        md = "```mermaid\ngraph LR\n%% see src/main.py for the (real) entry point\nA --> B\n```"
+        out = sanitize_mermaid(md)
+        assert "%% see src/main.py for the (real) entry point" in out
+
+    def test_a_slug_cannot_collide_with_an_id_already_in_the_diagram(self) -> None:
+        """Two distinct nodes must not be merged into one.
+
+        Collisions were only resolved among the ids being slugged, so a slug
+        landing on an identifier that was already legal silently merged the two
+        nodes and turned a real edge into a self-loop.
+        """
+        md = "```mermaid\ngraph LR\nsrc_main_py[Existing]\nsrc/main.py --> src_main_py\n```"
+        out = sanitize_mermaid(md)
+        edge = next(line for line in out.split("\n") if "-->" in line)
+        source, target = (part.strip() for part in edge.split("-->"))
+        assert source != target, edge
+        assert "src_main_py[Existing]" in out

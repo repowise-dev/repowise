@@ -65,6 +65,20 @@ _PATHY_TOKEN_RE = re.compile(
 # Label characters that force quoting.
 _LABEL_NEEDS_QUOTE_RE = re.compile(r"[()\[\]{}\"<>|/]")
 
+# A comment or a directive. ``%%`` opens a comment for the rest of the line,
+# and ``%%{...}%%`` is a configuration directive — neither is diagram syntax,
+# and the ``{`` in a directive would otherwise read as a rhombus label.
+_DIRECTIVE_OR_COMMENT_RE = re.compile(r"^\s*%%")
+
+# The text between a pair of pipes on an edge (``A -->|yes/no| B``). It is a
+# label like any other, but it is never bracketed, so both passes below have
+# to be told to leave it alone.
+_PIPE_LABEL_RE = re.compile(r"\|[^|\n]*\|")
+
+# An identifier that mermaid already accepts as-is. Used to reserve names so a
+# slug can never land on a node that is already in the diagram.
+_BARE_ID_RE = re.compile(r"(?<![\w./\\])([A-Za-z_][A-Za-z0-9_]*)(?![\w./\\])")
+
 
 def _slug(raw: str) -> str:
     """Turn an illegal node ID into a clean ``[A-Za-z0-9_]`` slug."""
@@ -110,6 +124,35 @@ def _split_on_quotes(text: str) -> list[tuple[str, bool]]:
     return segments
 
 
+def _protected_runs(line: str) -> list[tuple[str, bool]]:
+    """Split *line* into ``(segment, is_protected)`` runs.
+
+    Protected means "this is label text, not diagram syntax": a quoted string,
+    or the text between a pair of pipes on an edge. Neither may be slugged —
+    ``A -->|read/write| B`` is an ordinary edge label, and rewriting it to
+    ``read_write`` corrupts a diagram that rendered perfectly well.
+    """
+    runs: list[tuple[str, bool]] = []
+    for segment, is_quoted in _split_on_quotes(line):
+        if is_quoted:
+            runs.append((segment, True))
+            continue
+        pos = 0
+        for match in _PIPE_LABEL_RE.finditer(segment):
+            if match.start() > pos:
+                runs.append((segment[pos : match.start()], False))
+            runs.append((match.group(0), True))
+            pos = match.end()
+        if pos < len(segment):
+            runs.append((segment[pos:], False))
+    return runs
+
+
+def _is_skippable(line: str) -> bool:
+    """True for a line that carries no diagram syntax at all."""
+    return bool(_DIRECTIVE_OR_COMMENT_RE.match(line))
+
+
 def _disambiguator(raw: str) -> str:
     """A short suffix derived from the id, for slugs that collide.
 
@@ -123,21 +166,28 @@ def _disambiguator(raw: str) -> str:
 def _build_id_map(body: str) -> dict[str, str]:
     """Map every illegal (path/dotted) node ID in *body* to a unique slug.
 
-    Only unquoted text is considered — a path inside a label is prose, and
+    Only unprotected text is considered — a path inside a label is prose, and
     rewriting it there is what used to turn a readable ``A["src/main.py"]``
     into ``A["src_main_py"]``.
     """
     raw_ids: list[str] = []
     seen: set[str] = set()
+    # Identifiers that were already legal. A slug landing on one of these would
+    # merge two distinct nodes into a single box, so they reserve their name
+    # even though they need no rewriting themselves.
+    already_legal: set[str] = set()
     for line in body.split("\n"):
-        for segment, is_quoted in _split_on_quotes(line):
-            if is_quoted:
+        if _is_skippable(line):
+            continue
+        for segment, is_protected in _protected_runs(line):
+            if is_protected:
                 continue
             for match in _PATHY_TOKEN_RE.finditer(segment):
                 raw = match.group(1)
                 if raw not in seen:
                     seen.add(raw)
                     raw_ids.append(raw)
+            already_legal.update(_BARE_ID_RE.findall(segment))
 
     by_slug: dict[str, list[str]] = {}
     for raw in raw_ids:
@@ -145,7 +195,7 @@ def _build_id_map(body: str) -> dict[str, str]:
 
     id_map: dict[str, str] = {}
     for slug, owners in by_slug.items():
-        if len(owners) == 1:
+        if len(owners) == 1 and slug not in already_legal:
             id_map[owners[0]] = slug
             continue
         # Every owner is suffixed, not just the ones after the first: which id
@@ -218,11 +268,13 @@ def _quote_labels(body: str) -> str:
                 i += 1
         return "".join(out)
 
-    return "\n".join(_process(line) for line in body.split("\n"))
+    return "\n".join(
+        line if _is_skippable(line) else _process(line) for line in body.split("\n")
+    )
 
 
 def _rewrite_ids(body: str, id_map: dict[str, str]) -> str:
-    """Replace illegal node IDs with their slugs, outside quoted labels only."""
+    """Replace illegal node IDs with their slugs, outside label text only."""
     if not id_map:
         return body
     patterns = [
@@ -239,9 +291,12 @@ def _rewrite_ids(body: str, id_map: dict[str, str]) -> str:
 
     out_lines: list[str] = []
     for line in body.split("\n"):
+        if _is_skippable(line):
+            out_lines.append(line)
+            continue
         pieces: list[str] = []
-        for segment, is_quoted in _split_on_quotes(line):
-            if not is_quoted:
+        for segment, is_protected in _protected_runs(line):
+            if not is_protected:
                 for pattern, slug in patterns:
                     segment = pattern.sub(slug, segment)
             pieces.append(segment)
