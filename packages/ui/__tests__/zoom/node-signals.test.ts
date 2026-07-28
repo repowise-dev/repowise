@@ -1,33 +1,55 @@
 import { describe, it, expect } from "vitest";
 import { hasRole, healthBandLabel, nodeRoles } from "../../src/zoom/node-signals";
-import type { ZoomNode } from "../../src/zoom/types";
+import type { ZoomMetrics, ZoomNode } from "../../src/zoom/types";
 
-function node(over: Partial<ZoomNode> = {}): ZoomNode {
+const METRICS: ZoomMetrics = {
+  file_count: 0,
+  descendant_count: 0,
+  hotspot_count: 0,
+  entry_point_count: 0,
+  on_flow_count: 0,
+  dead_count: 0,
+};
+
+/**
+ * `metrics` merges rather than replaces, so a fixture names only the counts its
+ * assertion is about. Requiring all six meant every new field in `ZoomMetrics`
+ * broke every fixture that set any of them, which is what happened to
+ * `descendant_count`.
+ *
+ * The return is not cast. The `as ZoomNode` that used to sit here accepted an
+ * object that did not describe a `ZoomNode` at all: `metrics` was missing
+ * `descendant_count`, `summary` was null against a `string`, `importance` and
+ * `sibling_rank` were absent, and `rect` is not a field (the node's box is
+ * `layout`). Only the one override call site ever errored, and only in the
+ * type-check job, which does not run on pull requests.
+ */
+function node(
+  over: Omit<Partial<ZoomNode>, "metrics"> & { metrics?: Partial<ZoomMetrics> } = {},
+): ZoomNode {
+  const { metrics, ...rest } = over;
   return {
     id: "n",
     parent_id: null,
+    level: 0,
     kind: "file",
     name: "n",
     path: "n",
-    language: null,
-    summary: null,
     children: [],
-    rect: { x: 0, y: 0, w: 1, h: 1 },
-    metrics: {
-      file_count: 0,
-      hotspot_count: 0,
-      entry_point_count: 0,
-      on_flow_count: 0,
-      dead_count: 0,
-    },
+    importance: 0,
+    sibling_rank: 0,
+    layout: null,
+    summary: "",
+    language: null,
     health_score: null,
     is_entry_point: false,
     is_hotspot: false,
     is_dead: false,
     is_test: false,
     on_flow: false,
-    ...over,
-  } as ZoomNode;
+    ...rest,
+    metrics: { ...METRICS, ...metrics },
+  };
 }
 
 describe("nodeRoles", () => {
@@ -46,13 +68,7 @@ describe("nodeRoles", () => {
   it("inherits a role from the subtree, matching what the card's dot tests", () => {
     const container = node({
       kind: "folder",
-      metrics: {
-        file_count: 9,
-        hotspot_count: 2,
-        entry_point_count: 0,
-        on_flow_count: 0,
-        dead_count: 0,
-      },
+      metrics: { file_count: 9, hotspot_count: 2 },
     });
     expect(nodeRoles(container)).toEqual(["Hotspot"]);
     expect(hasRole(container)).toBe(true);
