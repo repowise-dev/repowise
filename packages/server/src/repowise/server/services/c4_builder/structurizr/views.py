@@ -8,6 +8,8 @@ the person who has no workspace yet and wants a picture from one command.
 from __future__ import annotations
 
 from ..models import C4Model
+from .identifiers import identifiers_for
+from .metadata import layer_tag
 from .writer import Writer, quote
 
 #: Above roughly this many boxes a Structurizr view stops being readable, so a
@@ -91,18 +93,22 @@ def _write_layer_views(writer: Writer, model: C4Model, references: dict[str, str
 
     This is the grouping that is ours rather than C4's, and a filtered view is
     the only way it survives into someone else's toolchain.
+
+    Layer names are curated prose, so neither the key nor the filter can take
+    them as they are. Keys go through the same collision-safe allocator the
+    element identifiers use, because two names that reduce to one key is a
+    workspace Structurizr refuses. The filter goes through ``quote`` and is
+    built from :func:`layer_tag`, so it always spells the tag the elements
+    were actually given.
     """
     layers = sorted({layer for signals in model.box_signals.values() for layer in signals.layers})
     if not layers:
         return
     system_ref = references[model.system.id]
+    keys = identifiers_for(layers)
     for layer in layers:
         writer.blank()
-        key = f"layer_{_slug(layer)}"
+        key = _view_key("layer", keys[layer])
         with writer.block(f"container {system_ref} {quote(key)}"):
-            writer.line(f'include "element.tag==Layer: {layer}"')
+            writer.line(f"include {quote(f'element.tag=={layer_tag(layer)}')}")
             writer.line("autolayout lr")
-
-
-def _slug(text: str) -> str:
-    return "".join(char if char.isalnum() else "_" for char in text).strip("_") or "layer"

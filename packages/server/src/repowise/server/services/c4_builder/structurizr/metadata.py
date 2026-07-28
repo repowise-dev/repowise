@@ -31,6 +31,17 @@ _NAMESPACE = "repowise"
 _LAYER_TAG_PREFIX = "Layer: "
 
 
+def layer_tag(name: str) -> str:
+    """The tag text a layer is emitted under.
+
+    Shared with the view filter in :mod:`.views`: a filter that selects on a
+    string the element was never tagged with parses fine and then matches
+    nothing, which is harder to spot than a parse error. One function means
+    they cannot drift.
+    """
+    return f"{_LAYER_TAG_PREFIX}{name}"
+
+
 def tags_for(signals: BoxSignals | None) -> list[str]:
     """Tags for one box, in a stable order.
 
@@ -44,7 +55,7 @@ def tags_for(signals: BoxSignals | None) -> list[str]:
         tags.append("Hotspot")
     if signals.dead_count:
         tags.append("Dead")
-    tags.extend(f"{_LAYER_TAG_PREFIX}{name}" for name in signals.layers)
+    tags.extend(layer_tag(name) for name in signals.layers)
     return tags
 
 

@@ -498,6 +498,81 @@ def test_two_packages_presenting_as_the_same_name_do_not_collide() -> None:
     assert "@xyflow/react" in declared
 
 
+def _layer_view_keys(dsl: str) -> list[str]:
+    return [
+        line.split('"')[1]
+        for line in dsl.splitlines()
+        if line.strip().startswith("container ") and '"layer_' in line
+    ]
+
+
+def _layer_filters(dsl: str) -> list[str]:
+    return [
+        line.strip().split("element.tag==", 1)[1].rstrip('"')
+        for line in dsl.splitlines()
+        if "element.tag==" in line
+    ]
+
+
+def _emitted_tags(dsl: str) -> set[str]:
+    tags: set[str] = set()
+    for line in dsl.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("tags "):
+            tags.update(re.findall(r'"([^"]*)"', stripped))
+    return tags
+
+
+def test_two_layer_names_that_slug_alike_get_different_view_keys() -> None:
+    """A view key must be unique; the layer name it comes from need not be.
+
+    ``Data Access`` and ``Data-Access`` both reduced to ``layer_Data_Access``,
+    and Structurizr rejects a workspace with two views under one key.
+    """
+    dsl = to_dsl(
+        _signals_model(
+            box_signals={
+                "pkg:packages/core": BoxSignals(layers=("Data Access",)),
+                "pkg:packages/web": BoxSignals(layers=("Data-Access",)),
+            }
+        ),
+        standalone=True,
+    )
+    keys = _layer_view_keys(dsl)
+    assert len(keys) == 2, keys
+    assert len(set(keys)) == 2, keys
+
+
+def test_a_layer_name_with_a_quote_cannot_break_the_filter() -> None:
+    """The filter is a string literal, so an unescaped quote ends it early."""
+    dsl = to_dsl(
+        _signals_model(box_signals={"pkg:packages/core": BoxSignals(layers=('Data "Access"',))}),
+        standalone=True,
+    )
+    filter_lines = [line for line in dsl.splitlines() if "element.tag==" in line]
+    assert len(filter_lines) == 1
+    assert filter_lines[0].count('"') == 2, filter_lines[0]
+
+
+def test_a_layer_filter_matches_the_tag_that_was_actually_emitted() -> None:
+    """Quoting rewrites the tag, so the filter has to be rewritten identically.
+
+    Otherwise a layer name carrying a quote yields a view that parses and then
+    selects nothing, which is worse than failing.
+    """
+    dsl = to_dsl(
+        _signals_model(
+            box_signals={
+                "pkg:packages/core": BoxSignals(layers=('Data "Access"', "Multi   spaced"))
+            }
+        ),
+        standalone=True,
+    )
+    emitted = _emitted_tags(dsl)
+    for selector in _layer_filters(dsl):
+        assert selector in emitted, (selector, emitted)
+
+
 def _declared(dsl: str, keyword: str) -> list[str]:
     """The display names of every element declared with *keyword*."""
     return [
