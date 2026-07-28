@@ -408,3 +408,51 @@ def test_unreadable_knowledge_graph_file_returns_none(tmp_path: Path) -> None:
     good = tmp_path / "good.json"
     good.write_text('{"layers": []}')
     assert _load_knowledge_graph(str(good)) == {"layers": []}
+
+
+def test_a_knowledge_graph_of_the_wrong_shape_falls_through(tmp_path: Path) -> None:
+    """Valid JSON is not enough — the cascade needs an object with lists in it.
+
+    The loader caught syntax errors but never checked the shape, so a file
+    holding a bare string reached ``kg.get("layers")`` and surfaced as a 500 on
+    the architecture view, which is the thing the loader guard exists to stop.
+    """
+    from repowise.server.services.c4_builder.architecture import _load_knowledge_graph
+
+    for payload in ('"broken"', "[]", "5", "null", "true"):
+        path = tmp_path / f"kg-{abs(hash(payload))}.json"
+        path.write_text(payload)
+        assert _load_knowledge_graph(str(path)) is None, payload
+
+
+def test_malformed_layers_and_tour_entries_are_skipped_not_raised() -> None:
+    """A layer list holding scalars, or a layers value that is not a list.
+
+    Both survive a JSON parse and both used to reach ``.get`` on an int.
+    """
+    from repowise.server.services.c4_builder.architecture import (
+        _layers_from_knowledge_graph,
+        _tour_from_knowledge_graph,
+    )
+
+    assert _layers_from_knowledge_graph({"layers": "abc"}, set()) == []
+    assert _layers_from_knowledge_graph({"layers": [1, 2]}, set()) == []
+    assert _tour_from_knowledge_graph({"tour": "abc"}) == []
+    assert _tour_from_knowledge_graph({"tour": [1, 2]}) == []
+
+    # A good entry beside a bad one still loads.
+    layers = _layers_from_knowledge_graph(
+        {"layers": [7, {"id": "layer:api", "name": "API", "nodeIds": ["file:a.py"]}]},
+        {"a.py"},
+    )
+    assert [layer["id"] for layer in layers] == ["layer:api"]
+    assert layers[0]["node_ids"] == ["a.py"]
+
+
+def test_a_layer_whose_node_ids_are_not_a_list_is_skipped() -> None:
+    from repowise.server.services.c4_builder.architecture import _layers_from_knowledge_graph
+
+    layers = _layers_from_knowledge_graph(
+        {"layers": [{"id": "layer:api", "name": "API", "nodeIds": 5}]}, {"a.py"}
+    )
+    assert layers[0]["node_ids"] == []

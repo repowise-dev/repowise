@@ -162,31 +162,53 @@ def _load_knowledge_graph(path: str) -> dict | None:
     The file is user-visible and hand-editable, so a trailing comma in it
     must not become a 500 on the architecture view — returning ``None``
     drops through to the community/directory rungs of the layer cascade.
+
+    Parsing is not enough: ``"broken"`` and ``[]`` are valid JSON, and the
+    readers below expect an object, so the shape is checked here rather than
+    at every ``.get`` that follows.
     """
     if not path or not os.path.isfile(path):
         return None
     try:
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         logger.warning("kg_file_unreadable path=%s", path, exc_info=True)
         return None
+    if not isinstance(data, dict):
+        logger.warning("kg_file_not_an_object path=%s found=%s", path, type(data).__name__)
+        return None
+    return data
 
 
-def _file_paths(node_ids: list) -> list[str]:
+def _entries(raw: object) -> list[dict]:
+    """The dict entries of a curated list, dropping anything that is not one.
+
+    Every list in the artifact is hand-editable, so a scalar where an object
+    belongs is a shape a user can produce. Skipping the bad entry keeps the
+    rest of their curation.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
+
+
+def _file_paths(node_ids: object) -> list[str]:
     """Curated KG node ids to repo-relative file paths.
 
     KG ids carry a ``file:`` prefix the dependency graph does not use, and a
     layer's member list can also hold non-file ids — those resolve to nothing
     and are dropped rather than passed through as if they were paths.
     """
+    if not isinstance(node_ids, list):
+        return []
     return [p for p in (file_path_of(str(nid)) for nid in node_ids) if p]
 
 
-def _sub_groups_from_raw(raw_sub_groups: list[dict] | None, node_ids: set[str]) -> list[dict]:
+def _sub_groups_from_raw(raw_sub_groups: object, node_ids: set[str]) -> list[dict]:
     """Map curated subGroups to plain dicts, dropping ids absent from the graph."""
     groups: list[dict] = []
-    for sg in raw_sub_groups or []:
+    for sg in _entries(raw_sub_groups):
         mapped = _file_paths(sg.get("nodeIds", sg.get("node_ids", [])))
         matched = [nid for nid in mapped if nid in node_ids]
         if matched:
@@ -205,9 +227,8 @@ def _layers_from_knowledge_graph(
     node_ids: set[str],
 ) -> list[dict]:
     layers = []
-    for i, layer in enumerate(kg.get("layers", [])):
-        raw_ids = layer.get("nodeIds", [])
-        mapped = _file_paths(raw_ids)
+    for i, layer in enumerate(_entries(kg.get("layers"))):
+        mapped = _file_paths(layer.get("nodeIds"))
         matched = [nid for nid in mapped if nid in node_ids]
         layers.append(
             {
@@ -271,8 +292,8 @@ def _layers_from_directories(nodes: list[GraphNode]) -> list[dict]:
 
 def _tour_from_knowledge_graph(kg: dict) -> list[ArchTourStep]:
     steps = []
-    for entry in kg.get("tour", []):
-        node_ids = _file_paths(entry.get("nodeIds", []))
+    for entry in _entries(kg.get("tour")):
+        node_ids = _file_paths(entry.get("nodeIds"))
         target_path = entry.get("target_path")
         if not node_ids and target_path:
             # Curated steps address one file by path, not a nodeIds list.
