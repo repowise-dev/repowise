@@ -386,6 +386,11 @@ async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, di
             node_ids = json.loads(layer.node_ids_json or "[]")
         except (ValueError, TypeError):
             continue
+        # Only a decode failure was guarded, but a column holding a valid JSON
+        # string or object parses fine and then iterates: a bare `"abc"` would
+        # yield the file paths "a", "b", "c", and an object its keys.
+        if not isinstance(node_ids, list):
+            continue
         for node_id in node_ids:
             path = file_path_of(str(node_id))
             if path:

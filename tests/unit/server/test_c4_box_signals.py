@@ -92,15 +92,20 @@ def test_missing_signals_stay_none_rather_than_becoming_zero() -> None:
     assert box.primary_owner_pct is None
 
 
-def test_a_zero_bus_factor_from_a_file_with_no_history_is_not_a_real_minimum() -> None:
-    """The caller filters those out; this pins that 0 is never invented here.
+def test_a_bus_factor_of_zero_is_taken_at_face_value_here() -> None:
+    """This function trusts its input; dropping the seeded 0 is the caller's job.
 
-    A bus factor is at least 1 whenever it was computed at all, so a 0
-    reaching this function would drag every box's minimum to 0 and read as
-    "nobody owns this".
+    The name this test used to carry claimed it pinned the "0 means unknown"
+    rule, but it never passed a 0 — so it would have passed with that rule
+    deleted. The rule lives in ``_per_file_signals``, and
+    ``test_c4_model.py`` exercises it there. What is worth pinning *here* is
+    that a 0 arriving is not silently reinterpreted, because that is what
+    makes the caller's filter the single place the decision is made.
     """
-    signals = build_box_signals(FILES, file_bus_factors={"pkg/a.py": 2, "pkg/b.py": 3})
-    assert signals["box:one"].min_bus_factor == 2
+    signals = build_box_signals(
+        FILES, file_bus_factors={"pkg/a.py": 0, "pkg/b.py": 3}
+    )
+    assert signals["box:one"].min_bus_factor == 0
 
 
 def test_ownership_percentage_divides_by_the_whole_box() -> None:

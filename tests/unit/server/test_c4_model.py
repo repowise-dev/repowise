@@ -283,3 +283,131 @@ async def test_actor_relations_match_the_per_level_build(client: AsyncClient, ap
     expected = [r for r in l1.relations if r.source_id in person_ids]
     assert model.actor_relations == expected
     assert {r.target_id for r in model.actor_relations} == {model.system.id}
+
+
+async def test_a_seeded_zero_bus_factor_is_read_as_unknown(client: AsyncClient, app) -> None:
+    """The indexer seeds bus_factor at 0 and overwrites it only where there is history.
+
+    So a 0 reaching the rollup would drag every box's minimum to 0 and the
+    export would say "nobody owns this" about a repo it simply has no commit
+    data for. The filter lives in the builder, and nothing exercised it.
+    """
+    from repowise.core.persistence.models import GitMetadata
+
+    repo_id = await _seed(client, app)
+    async with app.state.session_factory() as session:
+        session.add_all(
+            [
+                GitMetadata(
+                    id="gm-zero",
+                    repository_id=repo_id,
+                    file_path="packages/core/setup.py",
+                    bus_factor=0,
+                    primary_owner_name="Ada",
+                ),
+                GitMetadata(
+                    id="gm-real",
+                    repository_id=repo_id,
+                    file_path="packages/core/src/ingestion/parser.py",
+                    bus_factor=2,
+                    primary_owner_name="Ada",
+                ),
+            ]
+        )
+        await session.commit()
+        model = await build_model(session, repo_id)
+
+    core = next(c for c in model.containers if c.path == "packages/core")
+    assert model.box_signals[core.id].min_bus_factor == 2
+
+
+async def test_a_layer_whose_member_list_is_not_a_list_is_skipped(
+    client: AsyncClient, app
+) -> None:
+    """A bare JSON string parses fine and then iterates into single letters.
+
+    Only a decode failure was guarded, so ``"abc"`` produced three file paths
+    called "a", "b" and "c", each carrying the layer's name.
+    """
+    from repowise.core.persistence.models import KnowledgeGraphLayer
+    from repowise.server.services.c4_builder import _per_file_signals
+
+    repo_id = await _seed(client, app)
+    async with app.state.session_factory() as session:
+        session.add_all(
+            [
+                KnowledgeGraphLayer(
+                    id="kl-str",
+                    repository_id=repo_id,
+                    layer_id="layer:str",
+                    name="FromString",
+                    node_ids_json='"abc"',
+                    display_order=0,
+                ),
+                KnowledgeGraphLayer(
+                    id="kl-obj",
+                    repository_id=repo_id,
+                    layer_id="layer:obj",
+                    name="FromObject",
+                    node_ids_json='{"packages/core/setup.py": 1}',
+                    display_order=1,
+                ),
+                KnowledgeGraphLayer(
+                    id="kl-good",
+                    repository_id=repo_id,
+                    layer_id="layer:good",
+                    name="Ingestion",
+                    node_ids_json='["file:packages/core/src/ingestion/parser.py"]',
+                    display_order=2,
+                ),
+            ]
+        )
+        await session.commit()
+        signals = await _per_file_signals(session, repo_id)
+
+    file_layers = signals["file_layers"]
+    assert file_layers == {"packages/core/src/ingestion/parser.py": "Ingestion"}
+
+
+async def test_the_tour_is_ordered_and_carries_its_layer_name(
+    client: AsyncClient, app
+) -> None:
+    """Steps arrive unordered and name a layer by id, not by its display name."""
+    from repowise.core.persistence.models import KnowledgeGraphLayer, KnowledgeGraphTourStep
+
+    repo_id = await _seed(client, app)
+    async with app.state.session_factory() as session:
+        session.add(
+            KnowledgeGraphLayer(
+                id="kl-1",
+                repository_id=repo_id,
+                layer_id="layer:ingestion",
+                name="Ingestion",
+                node_ids_json="[]",
+                display_order=0,
+            )
+        )
+        session.add_all(
+            [
+                KnowledgeGraphTourStep(
+                    id="ts-2",
+                    repository_id=repo_id,
+                    step_order=2,
+                    title="Then ingestion",
+                    layer_id="layer:ingestion",
+                ),
+                KnowledgeGraphTourStep(
+                    id="ts-1",
+                    repository_id=repo_id,
+                    step_order=1,
+                    title="Start here",
+                    layer_id=None,
+                ),
+            ]
+        )
+        await session.commit()
+        model = await build_model(session, repo_id)
+
+    assert [step.title for step in model.tour] == ["Start here", "Then ingestion"]
+    assert model.tour[1].layer_name == "Ingestion"
+    assert model.tour[0].layer_name is None
