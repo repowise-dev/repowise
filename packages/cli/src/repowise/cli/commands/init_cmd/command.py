@@ -1153,7 +1153,7 @@ def init_command(
         # wiki below rather than in a question or a crash.
         try:
             provider = resolve_provider(provider_name, model, repo_path)
-        except click.ClickException:
+        except click.ClickException as exc:
             # Nothing configured anywhere. Workspace init, workspace update
             # and the OSS server all render a template wiki in this exact
             # situation rather than refusing to run (#999); single-repo init
@@ -1171,6 +1171,12 @@ def init_command(
                 "[dim]Set a key (or pass --provider) and run [bold]repowise "
                 "update --full[/bold] to have a model write it.[/dim]"
             )
+            # A provider that was configured but could not be built is a
+            # different problem from none being configured at all, and the
+            # message above would otherwise send the user to set a key they
+            # have already set.
+            if "Could not set up" in str(exc):
+                console.print(f"  [dim]{exc}[/dim]")
         # resolve_provider / interactive provider selection may have just set
         # the API key in os.environ. Re-resolve the embedder so the
         # display (and the embed path below) honors the key the user just

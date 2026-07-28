@@ -184,6 +184,26 @@ def test_an_unusable_ollama_url_is_rejected_rather_than_probing_localhost(
     assert provider_selection._detect_ollama_status() is False
 
 
+def test_a_broken_provider_config_is_a_click_error_not_a_traceback(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    """Everything the provider constructor reads is user input. httpx raises
+    InvalidURL for a typo'd OLLAMA_BASE_URL, and that escaped every caller's
+    handler and killed `repowise init` outright."""
+    import click
+
+    from repowise.cli.helpers import resolve_provider
+
+    for var in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:abc")
+
+    with pytest.raises(click.ClickException) as caught:
+        resolve_provider("ollama", None, tmp_path)
+
+    assert "Could not set up the ollama provider" in str(caught.value)
+
+
 def test_an_unusable_ollama_url_says_so_instead_of_blaming_the_daemon(
     monkeypatch: Any,
 ) -> None:

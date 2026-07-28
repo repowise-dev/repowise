@@ -698,7 +698,21 @@ def resolve_provider(
         config_base_url = _config_base_url(name)
         if config_base_url:
             kwargs.setdefault("base_url", config_base_url)
-        return get_provider(name, **kwargs)
+        try:
+            return get_provider(name, **kwargs)
+        except click.ClickException:
+            raise
+        except Exception as exc:
+            # Everything this constructor reads is user input: env vars and
+            # .repowise/config.yaml, base_url above all. A typo there is a
+            # configuration error, not a repowise bug, but it used to surface
+            # as a raw traceback that escaped every caller's handler —
+            # OLLAMA_BASE_URL=http://localhost:abc makes httpx raise
+            # InvalidURL, which killed `init` outright.
+            raise click.ClickException(
+                f"Could not set up the {name} provider: {exc}. Check its "
+                "settings in your environment and .repowise/config.yaml."
+            ) from exc
 
     if provider_name is not None:
         # Validate configuration before attempting to create provider
