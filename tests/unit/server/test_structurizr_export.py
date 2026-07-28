@@ -883,3 +883,59 @@ def test_an_external_sharing_the_repo_name_is_disambiguated() -> None:
         if "= softwareSystem " in line
     ]
     assert len(declared) == len(set(declared)), declared
+
+
+# ---------------------------------------------------------------------------
+# The degenerate inputs. Each of these reached the emitter untested, and each
+# writes something a parser has to accept.
+# ---------------------------------------------------------------------------
+
+
+def test_a_single_non_ascii_name_still_gets_a_usable_identifier() -> None:
+    """Sanitising a non-ASCII name leaves nothing, so the allocator carries it.
+
+    With two such names the hash suffixes make them unique; with *one* there is
+    no collision to resolve, and it is declared under the bare fallback.
+    """
+    identifier = sanitize("\u6a21\u5757")
+    assert identifier and not identifier[0].isdigit()
+    mapping = identifiers_for(["pkg:\u6a21\u5757", "pkg:\u30d1\u30c3\u30b1\u30fc\u30b8"])
+    assert len(set(mapping.values())) == 2, mapping
+
+
+def test_an_external_with_nothing_to_say_still_parses() -> None:
+    """No category, ecosystem or version — the description literal is empty."""
+    dsl = to_dsl(
+        _model(
+            external_systems=[
+                ExternalSystemView(
+                    id="ext:bare", name="bare", display_name="bare", category="", ecosystem=""
+                )
+            ],
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    assert 'softwareSystem "bare" ""' in dsl
+    body = "\n".join(line for line in dsl.splitlines() if not line.strip().startswith("#"))
+    assert body.count('"') % 2 == 0
+
+
+def test_a_relation_with_no_label_falls_back_to_a_verb() -> None:
+    """An unlabelled edge still needs a description; the slot is not optional."""
+    dsl = to_dsl(
+        _model(
+            container_relations=[
+                Relation(
+                    source_id="pkg:packages/web",
+                    target_id="pkg:packages/core",
+                    label="",
+                    edge_count=1,
+                    edge_types=(),
+                    coupling="",
+                )
+            ],
+            component_relations=[],
+        )
+    )
+    assert '"depends on"' in dsl

@@ -259,3 +259,20 @@ def test_an_uppercase_dsl_suffix_is_still_a_file(tmp_path) -> None:
     resolved = _resolve_output(str(tmp_path / "MODEL.DSL"), tmp_path, standalone=False)
     assert resolved.name == "MODEL.DSL"
     assert resolved.parent == tmp_path.resolve()
+
+
+async def test_a_database_with_no_tables_reads_as_not_indexed(tmp_path) -> None:
+    """The path a fresh clone with a stray .repowise/ dir takes.
+
+    Every other CLI test stubs ``_build`` wholesale, so this branch — the one
+    that turns a raw "no such table: repositories" traceback into the message
+    naming the command that fixes it — had never run.
+    """
+    from repowise.cli.commands.export_structurizr import _build
+
+    repo = tmp_path / "repo"
+    (repo / ".repowise").mkdir(parents=True)
+    # An empty file where the index belongs: opens as SQLite, has no tables.
+    (repo / ".repowise" / "wiki.db").touch()
+
+    assert await _build(repo, include_components=False) is None

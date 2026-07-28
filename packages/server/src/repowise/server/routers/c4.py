@@ -165,6 +165,13 @@ async def get_c4_structurizr(
 
     Built on demand from the persisted graph, like the other C4 endpoints —
     nothing is written at index time.
+
+    An unknown ``repo_id`` returns 200 and an empty-but-valid model rather
+    than 404, matching the l1/l2/mermaid routes beside it: they all build from
+    whatever rows the id matches, and none of them looks the repository up
+    first. Deliberate rather than drift — a lone 404 here would make this the
+    one C4 route with its own contract. The CLI does guard the case, because
+    there a wrong path is a typo worth naming.
     """
     model = await c4_builder.build_model(session, repo_id, include_components=components)
     dsl = to_dsl(
