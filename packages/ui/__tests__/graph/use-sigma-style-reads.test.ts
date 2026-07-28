@@ -64,6 +64,29 @@ function options(graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) {
   };
 }
 
+describe("hub disc label ink", () => {
+  it("is resolved from the base fill, so dimming never brightens a label", () => {
+    const graph = makeGraph();
+    renderHook(() => useSigmaRenderer(options(graph)));
+
+    // The colour pass must stamp the ink onto the node. If it did not, the
+    // drawer would fall back to deriving ink from `data.color` — which Sigma
+    // hands over POST-reducer, i.e. already dimmed. In dark mode every dimmed
+    // fill lands near-black, so the luminance pick would flip to the light ink
+    // and a dimmed hub's label would render brighter than an undimmed one:
+    // the exact inverse of what dimming is for.
+    const hubs = graph.filterNodes((_id, attrs) => attrs.nodeType === "hub");
+    expect(hubs.length).toBeGreaterThan(0);
+
+    for (const id of hubs) {
+      const attrs = graph.getNodeAttributes(id);
+      expect(attrs.labelInk, `hub ${id} has no labelInk`).toBeTruthy();
+      // Ink must contrast with the node's own undimmed fill.
+      expect(attrs.labelInk).not.toBe(attrs.color);
+    }
+  });
+});
+
 describe("useSigmaRenderer style reads", () => {
   it("resolves tokens a constant number of times, not once per node", () => {
     const graph = makeGraph();

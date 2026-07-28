@@ -98,14 +98,15 @@ function discInkFor(fill: string): string {
 }
 
 /**
- * Hub/core disc-label drawer, built per palette. Hub/core labels render centered
- * *inside* the disc (ROBOTICS-style) with a soft halo ring in the family hue;
- * everything else falls through to Sigma's stock side-label drawer. Factored out
- * of the init effect so the theme effect can re-set it on light/dark toggle
- * (the closure must NOT capture a stale palette).
+ * Hub/core disc-label drawer. Hub/core labels render centered *inside* the disc
+ * (ROBOTICS-style) with a soft halo ring in the family hue; everything else
+ * falls through to Sigma's stock side-label drawer.
+ *
+ * Takes no palette: every colour it paints comes off the node itself (the halo
+ * from `haloColor`, the ink from `labelInk`), both resolved by the colour pass.
+ * That is what lets it survive a theme flip without being rebuilt.
  */
 function makeDrawNodeLabel(
-  theme: VizPalette,
   drawDisc: typeof drawDiscNodeLabel,
 ): NodeLabelDrawingFunction {
   return (context, data, settings) => {
@@ -143,10 +144,13 @@ function makeDrawNodeLabel(
     }
     context.textAlign = "center";
     context.textBaseline = "middle";
-    // Ink is chosen from the disc fill's own luminance, not the theme — see
-    // discInkFor. Core discs take the same path: their fill is a bg token, so
-    // the picker lands on the theme-appropriate ink anyway.
-    context.fillStyle = discInkFor(data.color);
+    // Pre-resolved from the node's BASE fill by the color pass. Deriving it
+    // here from `data.color` would be wrong: `data` is post-reducer, so a
+    // dimmed hub would pick ink against its dimmed fill and come out brighter
+    // than an undimmed one — dimming would make labels louder, not quieter.
+    // The fallback only covers a node the color pass has not reached yet,
+    // whose color is therefore still an undimmed placeholder.
+    context.fillStyle = (extra.labelInk as string) || discInkFor(data.color);
     context.fillText(label, data.x, data.y);
   };
 }
@@ -457,10 +461,18 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
   // Mirror of `viz` readable from Sigma's reducers, which run outside React.
   const vizRef = useRef<VizPalette>(viz);
 
+  // Point `dimColor` at the new canvas plane during render, not in the effect
+  // below. Sigma renders on its own schedule, so a frame driven by mouse or
+  // camera motion can land between commit and passive-effect flush; doing this
+  // in the effect would let that frame blend toward the previous theme's plane
+  // using caches keyed to it. `viz` is memoized, so this fires once per theme
+  // change rather than once per render.
+  if (activeBg !== viz.bg) {
+    activeBg = viz.bg;
+    clearColorCaches();
+  }
+
   const sigmaRef = useRef<Sigma | null>(null);
-  // Sigma's stock disc-label drawer, captured from the dynamic import in the
-  // init effect so the theme effect can rebuild the label drawer factory.
-  const drawDiscRef = useRef<typeof drawDiscNodeLabel | null>(null);
   const [sigmaReady, setSigmaReady] = useState<Sigma | null>(null);
   const selectedRef = useRef<string | null>(null);
   const highlightedPathRef = useRef<Set<string>>(new Set());
@@ -524,14 +536,22 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         if (attrs.nodeType === "hub") {
           const family = communityFamilies(attrs.communityId);
           color = family.hub;
-          const next = { ...attrs, color, haloColor: family.satellite || family.hub };
-          if (attrs.color === color && attrs.haloColor === next.haloColor) return attrs;
-          return next;
+          const haloColor = family.satellite || family.hub;
+          const labelInk = discInkFor(color);
+          if (
+            attrs.color === color &&
+            attrs.haloColor === haloColor &&
+            attrs.labelInk === labelInk
+          ) {
+            return attrs;
+          }
+          return { ...attrs, color, haloColor, labelInk };
         }
         if (attrs.nodeType === "core") {
           color = coreColor;
-          if (attrs.color === color) return attrs;
-          return { ...attrs, color };
+          const labelInk = discInkFor(color);
+          if (attrs.color === color && attrs.labelInk === labelInk) return attrs;
+          return { ...attrs, color, labelInk };
         }
         if (cm === "language") {
           // Modules aggregate many languages and carry none themselves — fall
@@ -560,7 +580,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         if (attrs.color === color) return attrs;
         return { ...attrs, color };
       },
-      { attributes: ["color"] },
+      { attributes: ["color", "haloColor", "labelInk"] },
     );
   }, [options.colorMode, options.graph, viz, communityFamilies]);
 
@@ -587,15 +607,12 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
   // theme until remount.
   useEffect(() => {
     vizRef.current = viz;
-    activeBg = viz.bg;
-    clearColorCaches();
     const sigma = sigmaRef.current;
     if (!sigma) return;
     sigma.setSetting("labelColor", { color: viz.label });
-    const drawDisc = drawDiscRef.current;
-    if (drawDisc) {
-      sigma.setSetting("defaultDrawNodeLabel", makeDrawNodeLabel(viz, drawDisc));
-    }
+    // Only the hover drawer needs rebuilding: it paints the tooltip card from
+    // the palette. The disc-label drawer takes its colours off the node and is
+    // theme-independent, so it is built once at init.
     sigma.setSetting("defaultDrawNodeHover", makeDrawNodeHover(viz));
     sigma.refresh();
   }, [viz]);
@@ -621,7 +638,6 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
       const EdgeLineProgram = sigmaRendering.EdgeLineProgram;
       const EdgeArrowProgram = sigmaRendering.EdgeArrowProgram;
       const drawDiscNodeLabel = sigmaRendering.drawDiscNodeLabel;
-      drawDiscRef.current = drawDiscNodeLabel;
 
       if (cancelled) return;
 
@@ -651,12 +667,13 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         hideEdgesOnMove: true,
         zIndex: true,
 
-        // Hub/core disc labels + hover tooltips. Built per palette via
-        // module-level factories so the theme effect can re-set them on
-        // light/dark toggle without remount (single source of truth — no
-        // duplicated drawer logic). Read through the ref: this effect only
-        // depends on the container, so its `viz` closure would go stale.
-        defaultDrawNodeLabel: makeDrawNodeLabel(vizRef.current, drawDiscNodeLabel),
+        // Hub/core disc labels + hover tooltips. The label drawer is
+        // theme-independent (it reads colours off the node) and is built once.
+        // The hover drawer paints from the palette, so the theme effect re-sets
+        // it on light/dark toggle without a remount; it is read through the ref
+        // here because this effect depends only on the container, which would
+        // otherwise leave its `viz` closure stale.
+        defaultDrawNodeLabel: makeDrawNodeLabel(drawDiscNodeLabel),
         defaultDrawNodeHover: makeDrawNodeHover(vizRef.current),
 
         // --- nodeReducer: ONLY handles interaction state (selection, search, path) ---
@@ -790,7 +807,10 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
   // only on the container — so a scope switch or a "load more" step to a much
   // larger graph would otherwise keep the mount-time values and label-spam the
   // canvas. `sigmaReady` is in the deps so this also applies once the async init
-  // resolves. Both setters are no-ops when the value is unchanged.
+  // resolves. `setSetting` has no equality check of its own — it revalidates and
+  // schedules a refresh on every call — but this only fires when the graph
+  // identity actually changes, and the graph-swap effect above already refreshes
+  // and resets the camera, so the extra schedule coalesces into that frame.
   useEffect(() => {
     const sigma = sigmaRef.current;
     const graph = options.graph;

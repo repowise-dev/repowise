@@ -44,6 +44,11 @@ export interface SigmaNodeAttributes {
   languages?: string[] | undefined;
   /** Family hub hue for the soft halo ring drawn around hub discs. */
   haloColor?: string | undefined;
+  /** Ink for the label drawn *inside* a hub/core disc, resolved from the node's
+   *  BASE fill. Must not be derived in the drawer: by then the reducers have
+   *  already dimmed `color`, and picking against a dimmed fill inverts the ink
+   *  so dimmed labels come out brighter than undimmed ones. */
+  labelInk?: string | undefined;
   /** Render the label even when density culling would hide it (hubs/core). */
   forceLabel?: boolean | undefined;
 

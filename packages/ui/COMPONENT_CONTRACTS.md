@@ -720,10 +720,8 @@ Returns `null` when fewer than two headings are found.
 ## `graph/*` — Graph layout, presentation, and chrome
 
 Presentational graph pieces — chrome (toolbar/legend/sidebar/menu),
-ELK layout primitives, `@xyflow/react` node/edge components, and the
-floating `GraphTooltip`. The `GraphContext` provider also lives here
-so node/edge components can be consumed independently of the
-`graph-flow` data-fetching host.
+ELK layout primitives, and `@xyflow/react` node/edge components.
+State reaches the canvas as props; there is no graph context.
 
 `graph-flow` and the panels (`graph-doc-panel`, `graph-community-panel`,
 `path-finder-panel`) live HERE as presentational shells; `packages/web`
@@ -732,19 +730,18 @@ the datasets in. The canvas renders via Sigma (`graph/sigma/`), not
 `@xyflow/react` (the xyflow node/edge components remain for the module
 browser and embedded views).
 
-### `graph/context` — `GraphContext`, `GraphProvider`, `useGraphContext`, `GraphContextValue`
+### `graph/context` — `Signal`
 
-Standalone context module. Node and edge components consume it to
-read selection / hover / highlight state without depending on the
-`graph-flow` host implementation. Hosts wrap their tree in
-`<GraphProvider value={...}>`.
+Shared graph vocabulary. `Signal` is the overlay-toggle union
+(`"dead" | "hot" | "architecture" | "hideTests"`).
 
-| Export | Type | Notes |
-|--------|------|-------|
-| `GraphContext` | `React.Context<GraphContextValue>` | Default value renders inert. |
-| `GraphProvider` | `React.Provider<GraphContextValue>` | Alias of `GraphContext.Provider`. |
-| `useGraphContext` | `() => GraphContextValue` | Sugar for `useContext(GraphContext)`. |
-| `GraphContextValue` | interface | `highlightedPath`, `highlightedEdges`, `colorMode`, `riskScores`, `hoveredNodeId`, `connectedNodeIds`, `connectedEdgeIds`, `selectedNodeId`, `searchDimmedNodes`. |
+This module used to export a `GraphContext` / `GraphProvider` /
+`useGraphContext` / `GraphContextValue` trio mirroring ~18 fields of
+`graph-flow`'s state. It had no consumers — every field already reaches
+the canvas as a prop, and Sigma owns hover and highlight itself — so the
+provider only re-rendered the shell and rebuilt an 18-key object on every
+interaction. Removed rather than kept "just in case": a second path to
+the same state would only drift from the props.
 
 ### `graph/elk-layout` and `graph/use-elk-layout`
 
@@ -758,24 +755,13 @@ Pure layout primitives. Functions: `layoutFileGraph`,
 ### `graph/nodes/*`, `graph/edges/*`
 
 `FileNode`, `ModuleGroupNode`, `DependencyEdge` — `@xyflow/react`
-node/edge renderers. Consume `GraphContext` for selection / hover /
-path-highlight state. Wear `FileNodeData` / `ModuleNodeData` /
-`DependencyEdgeData` types from `graph/elk-layout`.
+node/edge renderers. Receive selection / path-highlight state as props.
+Wear `FileNodeData` / `ModuleNodeData` / `DependencyEdgeData` types from
+`graph/elk-layout`.
 
-### `graph/graph-tooltip` — `GraphTooltip`
-
-Floating tooltip over a focused node, smart-positioned against the
-viewport edges. Renders file or module metadata depending on
-`nodeType`.
-
-| Prop | Type | Required |
-|------|------|----------|
-| `nodeId` | `string` | yes |
-| `nodeType` | `string` (`fileNode` / `moduleGroup`) | yes |
-| `data` | `Record<string, unknown>` (cast to `FileNodeData` or `ModuleNodeData`) | yes |
-| `x`, `y` | `number` | yes |
-| `onClose` / `onViewDocs` | `() => void` | yes |
-| `onExplore` | `() => void` | no — when omitted, the action button is hidden |
+There is no React tooltip component. The hover card users see on the
+Sigma canvas is painted by `defaultDrawNodeHover` in
+`graph/sigma/use-sigma.ts`, not rendered as DOM.
 
 ### `graph/graph-context-menu` â€” `GraphContextMenu`
 

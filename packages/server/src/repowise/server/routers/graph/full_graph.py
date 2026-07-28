@@ -136,6 +136,12 @@ async def export_graph(
     # superset of what `node_to_response` reads plus `node_id`: a deferred
     # column accessed under asyncio raises MissingGreenlet rather than lazily
     # loading, so adding a field there means adding it here.
+    #
+    # Caveat worth knowing before trusting the saving: on the truncated path
+    # `crud.get_top_entry_points` runs its own unnarrowed query over every
+    # symbol node to read `community_meta_json`. Those rows are already in the
+    # identity map, so SQLAlchemy back-fills their deferred columns and the
+    # saving applies only to file nodes there. Correctness is unaffected.
     node_result = await session.execute(
         select(GraphNode)
         .options(
