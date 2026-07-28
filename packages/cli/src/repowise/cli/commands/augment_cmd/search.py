@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
+
 from ._shared import _extract_output_text, _find_repo_root
 
 # Tunables — fixed thresholds keep the fire pattern predictable across
@@ -440,7 +442,9 @@ async def _rescue(
     # Build a small set of token variants. Cheap; helps catch case-style
     # drift without a heavy similarity index.
     variants = _name_variants(clean)
-    like_clauses = [WikiSymbol.name.ilike(f"%{v}%") for v in variants]
+    like_clauses = [
+        WikiSymbol.name.ilike(f"%{escape_like(v)}%", escape=LIKE_ESCAPE) for v in variants
+    ]
     sym_stmt = (
         select(WikiSymbol.name, WikiSymbol.kind, WikiSymbol.file_path, WikiSymbol.start_line)
         .where(WikiSymbol.repository_id == repo_id, or_(*like_clauses))
@@ -521,7 +525,7 @@ async def _triage(
         select(WikiSymbol.file_path)
         .where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.name.ilike(f"%{clean}%"),
+            WikiSymbol.name.ilike(f"%{escape_like(clean)}%", escape=LIKE_ESCAPE),
         )
         .distinct()
         .limit(50)
@@ -533,7 +537,7 @@ async def _triage(
         .where(
             GraphNode.repository_id == repo_id,
             GraphNode.node_type == "file",
-            GraphNode.node_id.ilike(f"%{clean}%"),
+            GraphNode.node_id.ilike(f"%{escape_like(clean)}%", escape=LIKE_ESCAPE),
         )
         .limit(50)
     )

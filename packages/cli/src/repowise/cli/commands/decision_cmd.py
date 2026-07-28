@@ -50,9 +50,12 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
     from sqlalchemy import select
 
     from repowise.core.persistence.models import DecisionRecord
+    from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 
     result = await session.execute(
-        select(DecisionRecord.id).where(DecisionRecord.id.like(f"{decision_id}%")).limit(2)
+        select(DecisionRecord.id)
+        .where(DecisionRecord.id.like(f"{escape_like(decision_id)}%", escape=LIKE_ESCAPE))
+        .limit(2)
     )
     ids = [row[0] for row in result.all()]
     if len(ids) > 1:

@@ -458,7 +458,7 @@ async def _resolve_symbol(session, repo_id: str, symbol_id: str) -> list[WikiSym
     #    boundary, on the bare leaf name. Mirrors get_context's basename ladder
     #    so both tools accept the same shorthand instead of a dead "not found".
     if file_path and name:
-        from repowise.server.mcp_server._helpers import escape_like
+        from repowise.server.mcp_server._helpers import LIKE_ESCAPE, escape_like
 
         esc = escape_like(file_path.strip("/").replace("\\", "/"))
         bare = _bare_name(name)
@@ -468,7 +468,7 @@ async def _resolve_symbol(session, repo_id: str, symbol_id: str) -> list[WikiSym
                 WikiSymbol.name == bare,
                 or_(
                     WikiSymbol.file_path == file_path.strip("/").replace("\\", "/"),
-                    WikiSymbol.file_path.like(f"%/{esc}", escape="\\"),
+                    WikiSymbol.file_path.like(f"%/{esc}", escape=LIKE_ESCAPE),
                 ),
             )
         )

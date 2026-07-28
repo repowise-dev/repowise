@@ -15,6 +15,7 @@ from repowise.core.persistence.models import (
     GraphNode,
     Repository,
 )
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
 )
@@ -202,15 +203,23 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
 
     base = os.path.splitext(os.path.basename(target))[0]
     ext = os.path.splitext(target)[1].lstrip(".")
-    # Build a LIKE pattern broad enough to catch test_<base>, <base>_test, <base>.spec.*
-    patterns = [f"%test_{base}%", f"%{base}_test%", f"%{base}.spec.{ext}%"]
+    # Build a LIKE pattern broad enough to catch test_<base>, <base>_test,
+    # <base>.spec.*. Escaped whole: the underscores are ours and meant
+    # literally, and *base* is a filename, where an underscore is the norm.
+    # Unescaped, "%test_my_module%" also matches "testXmyXmodule", and a false
+    # hit here reports a file as tested when nothing tests it.
+    patterns = [
+        f"%{escape_like(f'test_{base}')}%",
+        f"%{escape_like(f'{base}_test')}%",
+        f"%{escape_like(f'{base}.spec.{ext}')}%",
+    ]
     for pat in patterns:
         res = await session.execute(
             select(GraphNode)
             .where(
                 GraphNode.repository_id == repo_id,
                 GraphNode.is_test == True,  # noqa: E712
-                GraphNode.node_id.like(pat),
+                GraphNode.node_id.like(pat, escape=LIKE_ESCAPE),
             )
             .limit(1)
         )

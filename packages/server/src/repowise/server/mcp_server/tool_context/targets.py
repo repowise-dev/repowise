@@ -170,9 +170,9 @@ async def _resolve_one_target(
                         Page.page_type == "module_page",
                         or_(
                             Page.target_path == clean_target,
-                            Page.target_path.like(f"%/{esc}", escape="\\"),
-                            Page.target_path.like(f"{esc}/%", escape="\\"),
-                            Page.target_path.like(f"%/{esc}/%", escape="\\"),
+                            Page.target_path.like(f"%/{esc}", escape=LIKE_ESCAPE),
+                            Page.target_path.like(f"{esc}/%", escape=LIKE_ESCAPE),
+                            Page.target_path.like(f"%/{esc}/%", escape=LIKE_ESCAPE),
                         ),
                     )
                 )
@@ -200,7 +200,7 @@ async def _resolve_one_target(
                     select(WikiSymbol)
                     .where(
                         WikiSymbol.repository_id == repo_id,
-                        WikiSymbol.name.ilike(f"%{escape_like(target)}%", escape="\\"),
+                        WikiSymbol.name.ilike(f"%{escape_like(target)}%", escape=LIKE_ESCAPE),
                     )
                     .limit(10)
                 )

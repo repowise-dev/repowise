@@ -206,3 +206,44 @@ def test_classify_bus_factor_unknown_team_size_keeps_behaviour():
     from repowise.server.mcp_server.tool_risk import _classify_risk_type
 
     assert _classify_risk_type(_bus_factor_meta(), dep_count=1, team_size=None) == "bus-factor-risk"
+
+
+@pytest.mark.asyncio
+async def test_test_gap_pattern_treats_an_underscore_as_a_literal(session, repo_id):
+    """``_`` is a LIKE wildcard, so an unescaped pattern matched the wrong file.
+
+    The probe builds ``%test_<base>%``. Unescaped, that also matches
+    ``testXbase`` — and for a source file named ``my_module.py`` it matches
+    ``testXmyXmodule`` too. A false hit here makes the tool report a file as
+    tested when nothing tests it, in the directive block reviewers read first.
+    """
+    from repowise.core.persistence.models import GraphNode
+    from repowise.server.mcp_server.tool_risk.assessment import _check_test_gap
+
+    session.add(
+        GraphNode(
+            id="gn-decoy",
+            repository_id=repo_id,
+            node_id="tests/testXmy_module.py",
+            node_type="file",
+            language="python",
+            is_test=True,
+        )
+    )
+    await session.flush()
+
+    # Nothing named test_my_module.py exists, so this is a genuine gap.
+    assert await _check_test_gap(session, repo_id, "src/my_module.py") is True
+
+    session.add(
+        GraphNode(
+            id="gn-real",
+            repository_id=repo_id,
+            node_id="tests/test_my_module.py",
+            node_type="file",
+            language="python",
+            is_test=True,
+        )
+    )
+    await session.flush()
+    assert await _check_test_gap(session, repo_id, "src/my_module.py") is False
