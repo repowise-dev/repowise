@@ -365,10 +365,6 @@ def run_repo_generation(
 
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids
-    # What the run actually spent, for the completion panel. The user was shown
-    # an estimate before the run and a live cost column during it; reporting
-    # only tokens at the end left the one number they were promised unanswered.
-    result.llm_cost_usd = cost_tracker.session_cost if cost_tracker is not None else 0.0
 
     if failed_page_ids:
         type_counts = Counter(pid.split(":")[0] for pid in failed_page_ids)
@@ -399,4 +395,13 @@ def run_repo_generation(
             verbose=verbose,
         )
         flush_cost_tracker(cost_tracker)
+
+    # What the run actually spent, for the completion panel. The user was shown
+    # an estimate before the run and a live cost column during it; reporting
+    # only tokens at the end left the one number they were promised unanswered.
+    #
+    # Read AFTER enrichment, not before: layer naming and the guided tour are
+    # real model calls billed through this same tracker, so capturing it any
+    # earlier would print a figure the llm_costs table disagrees with.
+    result.llm_cost_usd = cost_tracker.session_cost if cost_tracker is not None else 0.0
     return generated_pages

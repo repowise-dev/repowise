@@ -113,6 +113,32 @@ def ollama_base_url() -> str:
     return os.environ.get("OLLAMA_BASE_URL") or _OLLAMA_DEFAULT_BASE_URL
 
 
+def _ollama_endpoint() -> tuple[str, int] | None:
+    """``(host, port)`` for the configured Ollama URL, or ``None`` if unusable.
+
+    A bare ``host:port`` is accepted, since that is a natural thing to put in
+    ``OLLAMA_BASE_URL`` and urlparse would otherwise read the host as a scheme.
+    Anything with no host left after that (``unix://…``, plain junk with a
+    scheme) has no TCP endpoint to probe, and must not silently fall back to
+    localhost: that reports someone's typo'd remote box as ready and defers the
+    failure to the first generation call.
+    """
+    raw = ollama_base_url().strip()
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    try:
+        parsed = urlparse(raw)
+        host = parsed.hostname
+        # A property, and it raises rather than returning None for a
+        # non-numeric or out-of-range port.
+        port = parsed.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    return host, port or (443 if parsed.scheme == "https" else 11434)
+
+
 def _detect_ollama_status() -> bool:
     """Return ``True`` if something is listening at the Ollama endpoint.
 
@@ -121,12 +147,13 @@ def _detect_ollama_status() -> bool:
     unavailable and then asked to paste a key that does not exist. A TCP
     connect is the cheapest honest answer.
     """
-    parsed = urlparse(ollama_base_url())
-    port = parsed.port or (443 if parsed.scheme == "https" else 11434)
+    endpoint = _ollama_endpoint()
+    if endpoint is None:
+        return False
     try:
-        with socket.create_connection(
-            (parsed.hostname or "localhost", port), timeout=_OLLAMA_PROBE_TIMEOUT_S
-        ):
+        # gaierror and timeout are both OSError subclasses, so a bad host or a
+        # black-holed address ends up here rather than escaping.
+        with socket.create_connection(endpoint, timeout=_OLLAMA_PROBE_TIMEOUT_S):
             return True
     except OSError:
         return False
@@ -191,14 +218,23 @@ def _opencode_setup_lines() -> list[str]:
 
 def _ollama_setup_lines() -> list[str]:
     base_url = ollama_base_url()
-    return [
-        "  [bold]ollama[/bold] runs models on your machine. No key needed.",
-        "",
+    lines = ["  [bold]ollama[/bold] runs models on your machine. No key needed.", ""]
+    if _ollama_endpoint() is None:
+        # The URL never resolved to a host and port, so "nothing is listening"
+        # would name the wrong problem.
+        lines.append(
+            f"  [{WARN}]OLLAMA_BASE_URL is set to {base_url!r}, which is not a "
+            f"host repowise can reach.[/] Expected something like "
+            f"[{BRAND}]http://localhost:11434[/]."
+        )
+        return lines
+    lines.append(
         f"  [{WARN}]Nothing is listening at {base_url}.[/] Start it with "
         f"[{BRAND}]ollama serve[/], pull a model with [{BRAND}]ollama pull qwen3.5:4b[/], "
-        "then retry.",
-        "  [dim]Set OLLAMA_BASE_URL if it listens somewhere else.[/dim]",
-    ]
+        "then retry."
+    )
+    lines.append("  [dim]Set OLLAMA_BASE_URL if it listens somewhere else.[/dim]")
+    return lines
 
 
 # Providers with no API key to paste: they authenticate out of band or run

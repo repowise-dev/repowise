@@ -10,18 +10,24 @@ from rich.progress import ProgressColumn, Task
 from rich.text import Text
 
 from repowise.cli.ui.brand import ERR, WARN, print_phase_header
-from repowise.core.pipeline.progress import STAGE_ANALYSIS, STAGE_INGESTION
 
 # Top-level stage → (phase number, title, subtitle). The pipeline announces the
 # stage; how it is numbered and worded is the screen's business, and the screen
 # is the only side that knows generation and persistence follow.
+#
+# The keys are spelled out rather than imported from
+# ``repowise.core.pipeline.progress``: that module's package eagerly imports the
+# orchestrator, which every other CLI call site is careful to defer into a
+# function body, and paying ~170ms of pipeline import on ``repowise --help`` or
+# on each post-commit hook run to read two string constants is a bad trade.
+# ``test_init_ux`` pins these against the core constants so they cannot drift.
 _STAGE_HEADERS: dict[str, tuple[int, str, str]] = {
-    STAGE_INGESTION: (
+    "ingestion": (
         1,
         "Ingestion",
         "Walking the tree, parsing files, building the dependency graph",
     ),
-    STAGE_ANALYSIS: (2, "Analysis", "Dead code, code health, architectural decisions"),
+    "analysis": (2, "Analysis", "Dead code, code health, architectural decisions"),
 }
 
 

@@ -115,6 +115,67 @@ def test_run_repo_generation_reports_failures(tmp_path, monkeypatch):
     assert "repowise init --resume" in output
 
 
+def test_recorded_cost_includes_the_knowledge_graph_enrichment(tmp_path, monkeypatch):
+    """Layer naming and the guided tour are real model calls billed through the
+    same tracker as the pages, so the figure the completion panel prints has to
+    be read after enrichment. Capturing it earlier printed a number the
+    llm_costs table disagreed with."""
+    jobs_dir = tmp_path / ".repowise" / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    JobSystem(jobs_dir).create_job(str(tmp_path), SimpleNamespace(max_concurrency=1), "m", "m")
+
+    class _Tracker:
+        def __init__(self):
+            self.session_cost = 1.00
+
+    tracker = _Tracker()
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.console.print", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.run_async",
+        lambda coro: [_page("file_page:a")],
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.build_cost_tracker",
+        lambda *a, **k: tracker,
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.flush_cost_tracker", lambda t: None
+    )
+
+    # Enrichment spends another $0.25 through the same tracker.
+    def _enrich(**_kwargs):
+        tracker.session_cost += 0.25
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation._enrich_knowledge_graph", _enrich
+    )
+
+    result = SimpleNamespace(
+        repo_name="test_repo",
+        parsed_files=[],
+        source_map={},
+        graph_builder=MagicMock(),
+        repo_structure=MagicMock(),
+        git_meta_map={},
+    )
+
+    run_repo_generation(
+        repo_path=tmp_path,
+        result=result,
+        provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+        gen_config=SimpleNamespace(max_concurrency=1, deterministic=False),
+        concurrency=1,
+        embedder_name_resolved="mock",
+        resume=False,
+        verbose=False,
+    )
+
+    assert result.llm_cost_usd == 1.25
+
+
 @pytest.mark.parametrize("verbose_flag", [True, False])
 def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
     """When no pages fail, run_repo_generation prints success summary only when verbose, stays silent otherwise."""

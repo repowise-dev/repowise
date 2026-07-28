@@ -10,6 +10,7 @@ from __future__ import annotations
 from io import StringIO
 from typing import Any
 
+import pytest
 from rich.console import Console
 from rich.progress import Progress, TextColumn
 
@@ -93,6 +94,30 @@ def test_emit_stage_reaches_through_a_wrapping_callback() -> None:
     assert seen == [STAGE_ANALYSIS]
 
 
+def test_stage_header_keys_match_the_core_stage_constants() -> None:
+    """progress.py spells the keys out rather than importing them, to keep the
+    pipeline package off the CLI's import path. This is what stops that from
+    becoming a silent drift."""
+    from repowise.cli.ui.progress import _STAGE_HEADERS
+
+    assert set(_STAGE_HEADERS) == {STAGE_INGESTION, STAGE_ANALYSIS}
+
+
+def test_the_progress_module_does_not_drag_in_the_pipeline_package() -> None:
+    """``repowise.core.pipeline.__init__`` eagerly imports the orchestrator and
+    persist layer. Every CLI call site defers it into a function body; importing
+    it at module scope to read two string constants put ~170ms on the front of
+    every ``repowise`` invocation, including the post-commit hook."""
+    import subprocess
+    import sys
+
+    probe = "import repowise.cli.ui.progress, sys; print('repowise.core.pipeline' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False", (
+        "importing repowise.cli.ui.progress pulled in repowise.core.pipeline"
+    )
+
+
 # --- keyless provider detection --------------------------------------------
 
 
@@ -117,6 +142,55 @@ def test_ollama_is_not_ready_when_nothing_is_listening(monkeypatch: Any) -> None
 def test_ollama_base_url_honours_the_env_var(monkeypatch: Any) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:9999")
     assert provider_selection.ollama_base_url() == "http://gpu-box:9999"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("http://localhost:11434", ("localhost", 11434)),
+        ("http://gpu-box:9999", ("gpu-box", 9999)),
+        ("http://gpu-box", ("gpu-box", 11434)),
+        ("https://ollama.internal", ("ollama.internal", 443)),
+        # A bare host:port is a natural thing to export; urlparse would
+        # otherwise read "localhost" as the scheme.
+        ("localhost:11434", ("localhost", 11434)),
+    ],
+)
+def test_ollama_endpoint_parses_the_usable_forms(
+    monkeypatch: Any, base_url: str, expected: tuple[str, int]
+) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", base_url)
+    assert provider_selection._ollama_endpoint() == expected
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:abc",  # ValueError from the .port property
+        "http://localhost:99999",  # port out of range, also ValueError
+        "unix:///var/run/ollama.sock",  # no TCP host to probe
+        "http://",  # nothing left after the scheme
+    ],
+)
+def test_an_unusable_ollama_url_is_rejected_rather_than_probing_localhost(
+    monkeypatch: Any, base_url: str
+) -> None:
+    """``parsed.port`` raises rather than returning None, and falling back to
+    localhost would report someone's typo'd remote box as ready and defer the
+    failure to the first generation call."""
+    monkeypatch.setenv("OLLAMA_BASE_URL", base_url)
+    assert provider_selection._ollama_endpoint() is None
+    # Must not raise, and must not claim the local daemon on this machine.
+    assert provider_selection._detect_ollama_status() is False
+
+
+def test_an_unusable_ollama_url_says_so_instead_of_blaming_the_daemon(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:abc")
+    rendered = "\n".join(provider_selection._ollama_setup_lines())
+    assert "not a host repowise can reach" in rendered
+    assert "Nothing is listening" not in rendered
 
 
 def test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt() -> None:
