@@ -21,6 +21,7 @@ from repowise.core.ids import (
     SystemId,
     file_path_of,
     is_external,
+    kg_file_path_of,
     parse,
     render,
 )
@@ -229,3 +230,23 @@ def test_the_shared_fixture_holds_in_python(case) -> None:
     assert file_path_of(raw) == case["file_path"], raw
     assert _symbol_name_of(raw) == case["symbol_name"], raw
     assert is_external(raw) is case["is_external"], raw
+
+
+def test_kg_file_path_of_accepts_only_a_prefixed_file_id() -> None:
+    """The knowledge-graph artifact holds more than file ids in its lists.
+
+    ``module:``, ``layer:`` and ``dir:`` are real namespaces in this codebase
+    and none is in the prefix table, so each parses as a bare path — which the
+    permissive helper hands back as if it named a file. The layer and tour
+    readers looked those up in PageRank and named them in a prompt.
+    """
+    assert kg_file_path_of("file:src/main.py") == "src/main.py"
+    for raw in (
+        "module:core-ingestion",
+        "layer:api",
+        "dir:packages/core",
+        "src/main.py",
+        "src/main.py::run",
+        "external:react",
+    ):
+        assert kg_file_path_of(raw) is None, raw

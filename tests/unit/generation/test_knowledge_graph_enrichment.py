@@ -445,3 +445,34 @@ class TestEnrichmentSplit:
         assert result.layers[0]["name"] == "Renamed Core"
         # …but the snapshot generation already holds is untouched.
         assert snapshot["layers"][0]["name"] == "heuristic-core"
+
+
+def test_only_file_ids_become_tour_files() -> None:
+    """A layer's member list can hold ids that name no file.
+
+    ``module:``, ``layer:`` and ``dir:`` are all real namespaces here, and none
+    is a known prefix — so each parses as a bare path and the permissive
+    helper handed it back as a file. It then got looked up in PageRank and
+    offered as a tour stop, which is a path that does not exist.
+    """
+    from repowise.core.generation.knowledge_graph import build_deterministic_tour
+
+    layers = [
+        {
+            "id": "layer:api",
+            "name": "API",
+            "nodeIds": [
+                "module:core-ingestion",
+                "layer:api",
+                "dir:packages/core",
+                "file:packages/core/api.py",
+            ],
+        }
+    ]
+    steps = build_deterministic_tour(
+        pagerank={"packages/core/api.py": 0.9, "module:core-ingestion": 0.99},
+        entry_points=[],
+        layers=layers,
+    )
+    named = [nid for step in steps for nid in step.get("nodeIds", [])]
+    assert named == ["file:packages/core/api.py"], named

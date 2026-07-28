@@ -264,6 +264,23 @@ def is_external(raw: str) -> bool:
     return isinstance(parse(raw), ExternalId | FrameworkId)
 
 
+def kg_file_path_of(raw: str) -> str | None:
+    """The path of a knowledge-graph file id (``file:a.py``), or ``None``.
+
+    Stricter than :func:`file_path_of`, and deliberately so. The KG artifact
+    spells every file id with the ``file:`` prefix, and its layers and tour
+    steps can also hold ``module:``, ``layer:`` and ``dir:`` ids. Those
+    prefixes are not in the table here, so they parse as bare paths — which
+    means the permissive helper hands them back as if they named files, and
+    they go on to be looked up in PageRank and named in a prompt.
+
+    Use this wherever the old code spelled the rule as
+    ``if nid.startswith("file:")``.
+    """
+    node = parse(raw)
+    return node.path if isinstance(node, KgFileId) else None
+
+
 def file_path_of(raw: str) -> str | None:
     """The file path *raw* refers to, or ``None`` if it names no file.
 
