@@ -25,6 +25,26 @@ export function elkSkipReason(order: number): string {
   return `Hierarchical layout is limited to ${ELK_MAX_NODES} nodes — this view has ${order.toLocaleString()}. Switch to the Modules scope or narrow the view to use it.`;
 }
 
+/**
+ * Write computed positions onto the graph in ONE pass. Graphology emits an
+ * event per `setNodeAttribute`, so the obvious `forEachNode` + two setters
+ * fired 2 events per node — 3,000 for a 500-node ELK run's worth of listeners
+ * to walk. `updateEachNodeAttributes` with an explicit attribute hint emits a
+ * single `eachNodeAttributesUpdated` instead.
+ */
+function applyPositions(
+  graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+  positions: Map<string, { x: number; y: number }>,
+): void {
+  graph.updateEachNodeAttributes(
+    (nodeId, attrs) => {
+      const pos = positions.get(nodeId);
+      return pos ? { ...attrs, x: pos.x, y: pos.y } : attrs;
+    },
+    { attributes: ["x", "y"] },
+  );
+}
+
 export interface UseElkSigmaLayoutOptions {
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
   sigma: Sigma | null;
@@ -73,23 +93,11 @@ export function useElkSigmaLayout(
             moduleEdges,
           );
           if (computeIdRef.current !== computeId) return;
-          graph.forEachNode((nodeId) => {
-            const pos = positions.get(nodeId);
-            if (pos) {
-              graph.setNodeAttribute(nodeId, "x", pos.x);
-              graph.setNodeAttribute(nodeId, "y", pos.y);
-            }
-          });
+          applyPositions(graph, positions);
         } else if (fileNodes && fileEdges) {
           const result = await computeElkFilePositions(fileNodes, fileEdges);
           if (computeIdRef.current !== computeId) return;
-          graph.forEachNode((nodeId) => {
-            const pos = result.positions.get(nodeId);
-            if (pos) {
-              graph.setNodeAttribute(nodeId, "x", pos.x);
-              graph.setNodeAttribute(nodeId, "y", pos.y);
-            }
-          });
+          applyPositions(graph, result.positions);
         }
         sigma.refresh();
         sigma.getCamera().animatedReset({ duration: 500 });

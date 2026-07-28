@@ -23,7 +23,6 @@ import { useSigmaRenderer } from "./use-sigma";
 import { useFA2Layout } from "./use-fa2-layout";
 import { useElkSigmaLayout } from "./use-elk-sigma-layout";
 import { SigmaControls } from "./sigma-controls";
-import { SigmaMinimap } from "./sigma-minimap";
 import { DepthRings } from "./depth-rings";
 
 export interface SigmaCanvasProps {
@@ -32,7 +31,6 @@ export interface SigmaCanvasProps {
   layoutMode: "force" | "hierarchical" | "radial";
   viewMode: ViewMode;
   selectedNodeId: string | null;
-  hoveredNodeId: string | null;
   highlightedPath: Set<string>;
   highlightedEdges: Set<string>;
   searchDimmedNodes: Set<string> | null;
@@ -47,7 +45,6 @@ export interface SigmaCanvasProps {
   moduleNodes?: ModuleNodeResponse[] | undefined;
   moduleEdges?: ModuleEdgeResponse[] | undefined;
   onNodeClick?: ((nodeId: string, nodeType: string) => void) | undefined;
-  onNodeHover?: ((nodeId: string | null) => void) | undefined;
   onNodeContextMenu?:
     | ((event: MouseEvent, nodeId: string, nodeType: string) => void)
     | undefined;
@@ -85,7 +82,6 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       container,
       graph: props.graph,
       selectedNodeId: props.selectedNodeId,
-      hoveredNodeId: props.hoveredNodeId,
       highlightedPath: props.highlightedPath,
       highlightedEdges: props.highlightedEdges,
       searchDimmedNodes: props.searchDimmedNodes,
@@ -119,13 +115,11 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
     // Keep callback refs up to date so Sigma event handlers always use latest props
     const onNodeClickRef = useRef(props.onNodeClick);
     const onStageClickRef = useRef(props.onStageClick);
-    const onNodeHoverRef = useRef(props.onNodeHover);
     const onNodeContextMenuRef = useRef(props.onNodeContextMenu);
     const onNodeDoubleClickRef = useRef(props.onNodeDoubleClick);
     useEffect(() => {
       onNodeClickRef.current = props.onNodeClick;
       onStageClickRef.current = props.onStageClick;
-      onNodeHoverRef.current = props.onNodeHover;
       onNodeContextMenuRef.current = props.onNodeContextMenu;
       onNodeDoubleClickRef.current = props.onNodeDoubleClick;
     });
@@ -144,14 +138,15 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
         onStageClickRef.current?.();
       };
 
-      const handleEnterNode = ({ node }: { node: string }) => {
-        onNodeHoverRef.current?.(node);
-        if (container)
-          container.style.cursor = "pointer";
+      // Cursor affordance only. Sigma draws its own hover highlight, so hover
+      // never needs to reach React — an `onNodeHover` callback used to publish
+      // it into shell state that nothing read, re-rendering the whole shell on
+      // every hover transition.
+      const handleEnterNode = () => {
+        if (container) container.style.cursor = "pointer";
       };
 
       const handleLeaveNode = () => {
-        onNodeHoverRef.current?.(null);
         if (container) container.style.cursor = "grab";
       };
 
@@ -248,7 +243,6 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
           isLayoutRunning={props.layoutMode === "force" ? isLayoutRunning : isElkComputing}
           onToggleLayout={props.layoutMode === "force" ? toggleLayout : undefined}
         />
-        <SigmaMinimap sigma={sigma} graphTheme={props.graphTheme} />
       </div>
     );
   },

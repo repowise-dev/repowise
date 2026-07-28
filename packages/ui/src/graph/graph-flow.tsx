@@ -12,10 +12,9 @@ import { useTheme } from "next-themes";
 import { ChevronRight, Home, X } from "lucide-react";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
-import { GraphProvider, type GraphContextValue, type Signal } from "./context";
+import { type Signal } from "./context";
 import { groupNodesAsModules, type FileNodeData, type ModuleNodeData } from "./elk-layout";
 
-const EMPTY_STRING_SET = new Set<string>();
 // Resting zoom when easing the camera onto a constellation hub. Looser than the
 // default file-node focus (0.15) so the hub *and* its surrounding cluster stay
 // visible instead of the disc filling the whole viewport.
@@ -310,8 +309,9 @@ export function GraphFlow(props: GraphFlowProps) {
   const [pathFrom, setPathFrom] = useState("");
   const [pathTo, setPathTo] = useState("");
 
-  // Hover & selection
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  // Selection. There is deliberately no hover state: Sigma draws its own hover
+  // highlight on the canvas, so mirroring it into React only re-rendered this
+  // whole shell on every hover transition for nothing.
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   // Execution flows
@@ -911,31 +911,6 @@ export function GraphFlow(props: GraphFlowProps) {
     sigmaRef.current?.focusNode(firstNode);
   }, [activeFlowIdx, executionFlows, sigmaGraph]);
 
-  // Context value (hover fields use static empty sets — highlighting handled by Sigma reducers)
-  const ctxValue = useMemo<GraphContextValue>(
-    () => ({
-      highlightedPath,
-      highlightedEdges,
-      colorMode,
-      viewMode,
-      hoveredNodeId,
-      connectedNodeIds: EMPTY_STRING_SET,
-      connectedEdgeIds: EMPTY_STRING_SET,
-      selectedNodeId,
-      searchDimmedNodes,
-      communityDimmedNodes,
-      layoutMode,
-      graphTheme,
-      maxPagerank: 0,
-      medianPagerank: 0,
-      expandedModules,
-      activeSignals,
-      egoDepth,
-      visibleEdgeTypes,
-    }),
-    [highlightedPath, highlightedEdges, colorMode, viewMode, hoveredNodeId, selectedNodeId, searchDimmedNodes, communityDimmedNodes, layoutMode, graphTheme, expandedModules, activeSignals, egoDepth, visibleEdgeTypes],
-  );
-
   // ---- Handlers ----
 
   // Unified grammar — DOUBLE CLICK = drill deeper (all views):
@@ -1223,399 +1198,395 @@ export function GraphFlow(props: GraphFlowProps) {
     (isModuleView && !isDrilledDown && !hasExpandedModules && !moduleHintDismissed) ||
     (showOverlayCounts && !!overlayStats);
 
+  // The canvas is what the reader came for, so it sits on the page plane
+  // rather than below it (rule 8). Dark mode used to paint
+  // `--color-bg-inset`, which the July ramp move took a full step darker than
+  // the `--color-bg-root` page around it, so the graph read as a hole cut in
+  // the app. Light mode never painted anything and has always looked right;
+  // this makes dark do what light already did. Same call the knowledge-graph
+  // canvas made in `zoom/theme.ts`.
   return (
-    <GraphProvider value={ctxValue}>
-      {/* The canvas is what the reader came for, so it sits on the page plane
-          rather than below it (rule 8). Dark mode used to paint
-          `--color-bg-inset`, which the July ramp move dropped to #0a0a0b — a
-          full step darker than the #0e0e0f page around it, so the graph read
-          as a hole cut in the app. Light mode never painted anything and has
-          always looked right; this makes dark do what light already did. Same
-          call the knowledge-graph canvas made in `zoom/theme.ts`. */}
-      <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-root)" } : {}) }} aria-label="Dependency graph">
-        {sigmaGraph && sigmaGraph.order > 0 ? (
-          <SigmaCanvas
-            ref={sigmaRef}
-            graph={sigmaGraph}
-            layoutMode={layoutMode}
-            viewMode={viewMode}
-            selectedNodeId={selectedNodeId}
-            hoveredNodeId={hoveredNodeId}
-            highlightedPath={highlightedPath}
-            highlightedEdges={highlightedEdges}
-            searchDimmedNodes={searchDimmedNodes}
-            communityDimmedNodes={communityDimmedNodes}
-            expandDimmedNodes={isConstellation ? expandDimmedNodes : null}
-            colorMode={colorMode}
-            activeSignals={activeSignals}
-            graphTheme={graphTheme}
-            fileNodes={fileGraphData?.nodes}
-            fileEdges={fileGraphData?.links}
-            moduleNodes={isModuleView ? moduleGraph?.nodes : undefined}
-            moduleEdges={isModuleView ? moduleGraph?.edges : undefined}
-            onNodeClick={handleSigmaNodeClick}
-            onNodeDoubleClick={handleSigmaDoubleClick}
-            onNodeHover={setHoveredNodeId}
-            onNodeContextMenu={handleSigmaNodeContextMenu}
-            onStageClick={() => setSelectedNodeId(null)}
-            onLayoutSkipped={setLayoutNotice}
-            hiddenNodes={isEgoActive ? hiddenNodes : undefined}
-            visibleEdgeTypes={visibleEdgeTypes}
-            depthRingRadii={isConstellation ? constellationRingRadii : null}
-          />
-        ) : !isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <EmptyState
-              title={overlayEmptyState?.title ?? "No graph data"}
-              description={
-                overlayEmptyState?.description ??
-                "This scope came back with nothing to draw. Try another scope, or re-index the repo if it was added recently."
-              }
-            />
-          </div>
-        ) : null}
-
-        {/* Canvas status, top-left. One panel with hairline rows, matching the
-            toolbar, the legend and the zoom controls — this corner could
-            otherwise stack four independently-bordered, independently-shadowed
-            chips (breadcrumb, expanded-modules, loading, tip, overlay counts)
-            over the diagram at once. Rendered only when it has something to
-            say, so an idle canvas carries no chrome here at all (rule 10). */}
-        {hasCanvasStatus && (
-        <div className={`absolute top-3 left-3 z-10 flex flex-col items-stretch overflow-hidden ${canvasPanelClass}`}>
-        {isEgoActive && selectedNodeId ? (
-          <div>
-            <div className={canvasRowClass}>
-              <span className="text-[10px] text-[var(--color-accent-primary)]">
-                Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
-                <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
-              </span>
-              <button
-                onClick={() => setEgoDepth(0)}
-                className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] text-[10px]"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        ) : isModuleView && isDrilledDown ? (
-          <div>
-            <div className={canvasRowClass}>
-              <button
-                onClick={() => handleBreadcrumbClick(-1)}
-                className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)] transition-colors"
-              >
-                <Home className="w-3 h-3" />
-                <span>Root</span>
-              </button>
-              {modulePath.map((fullPrefix, i) => {
-                const prevPrefix = i > 0 ? modulePath[i - 1] + "/" : "";
-                const label = fullPrefix.slice(prevPrefix.length);
-                const isLast = i === modulePath.length - 1;
-                return (
-                  <span key={i} className="flex items-center gap-1">
-                    <ChevronRight className="w-3 h-3 text-[var(--color-text-tertiary)]" />
-                    <button
-                      onClick={() => !isLast && handleBreadcrumbClick(i)}
-                      className={`text-xs font-mono transition-colors ${
-                        isLast
-                          ? "text-[var(--color-text-primary)] font-medium cursor-default"
-                          : "text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)]"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-
-        {/* Expanded-modules chip: count + collapse-all. */}
-        {isModuleView && !isDrilledDown && hasExpandedModules && (
-          <div className={canvasRowClass}>
-            <span className="text-[10px] text-[var(--color-text-secondary)]">
-              {expandedModules.size} module{expandedModules.size === 1 ? "" : "s"} expanded
-            </span>
-            <button
-              onClick={collapseAll}
-              className="text-[10px] font-medium text-[var(--color-accent-primary)] hover:underline"
-            >
-              Collapse all
-            </button>
-          </div>
-        )}
-
-        {/* Expansion needs the file-level graph — surface the fetch instead of
-            letting the double-click look like it silently did nothing. */}
-        {isModuleView && hasExpandedModules && !fullGraph && isLoadingFullGraph && (
-          <div role="status" aria-live="polite" className={canvasRowClass}>
-            <span className="text-[10px] text-[var(--color-text-secondary)]">
-              Loading files for expanded module…
-            </span>
-          </div>
-        )}
-
-        {/* One-time interaction hint for the modules scope. */}
-        {isModuleView && !isDrilledDown && !hasExpandedModules && !moduleHintDismissed && (
-          <div className={canvasRowClass}>
-            <span className="text-[10px] text-[var(--color-text-secondary)]">
-              Tip: double-click a module to see its files
-            </span>
-            <button
-              onClick={dismissModuleHint}
-              aria-label="Dismiss hint"
-              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
-        {/* Overlay coverage: how many flagged files are actually in view. The
-            totals come from the backend when it provides them; without totals
-            we still report the in-view count so the overlay never reads as
-            silently doing nothing. */}
-        {showOverlayCounts && overlayStats && (
-          <>
-            {isDeadView && (
-              <OverlayCountChip
-                kind="dead"
-                inView={overlayStats.deadInView}
-                total={deadTotal}
-              />
-            )}
-            {isHotView && (
-              <OverlayCountChip
-                kind="hot"
-                inView={overlayStats.hotInView}
-                total={hotTotal}
-              />
-            )}
-          </>
-        )}
-        </div>
-        )}
-
-        {/* Layout-skipped notice: the hierarchical toggle must never look
-            active while silently doing nothing. */}
-        {layoutNotice && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex max-w-[min(28rem,calc(100vw-6rem))] items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm px-3 py-1.5 shadow-sm"
-          >
-            <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
-            <button
-              onClick={() => setLayoutNotice(null)}
-              aria-label="Dismiss layout notice"
-              className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
-        {/* Toolbar */}
-        <div className="absolute top-3 right-3 z-10">
-          <GraphToolbar
-            viewMode={viewMode}
-            onViewChange={handleViewChange}
-            colorMode={colorMode}
-            onColorModeChange={setColorMode}
-            hideTests={hideTests}
-            onHideTestsChange={(v) => {
-              setActiveSignals(prev => {
-                const next = new Set(prev);
-                v ? next.add("hideTests") : next.delete("hideTests");
-                return next;
-              });
-            }}
-            onFitView={handleFitView}
-            showPathFinder={showPathFinder}
-            pathFinderAvailable={Boolean(renderPathFinder)}
-            onTogglePathFinder={() => {
-              // Path finder and flows share the same overlay slot — opening
-              // one always closes the other.
-              setShowPathFinder((s) => !s);
-              setShowFlows(false);
-              setActiveFlowIdx(null);
-            }}
-            showFlows={showFlows}
-            onToggleFlows={() => {
-              setShowFlows((s) => !s);
-              setActiveFlowIdx(null);
-              setShowPathFinder(false);
-            }}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            searchMatchCount={searchResults.length}
-            searchTotalCount={sigmaGraph?.order ?? 0}
-            onSearchKeyDown={handleSearchKeyDown}
-            layoutMode={layoutMode}
-            onLayoutModeChange={handleLayoutModeChange}
-            onToggleHelp={handleToggleShortcutHelp}
-            availableScopes={availableScopes}
-            showExternals={showExternals}
-            onShowExternalsChange={setShowExternals}
-            externalCount={externalCount}
+    <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-root)" } : {}) }} aria-label="Dependency graph">
+      {sigmaGraph && sigmaGraph.order > 0 ? (
+        <SigmaCanvas
+          ref={sigmaRef}
+          graph={sigmaGraph}
+          layoutMode={layoutMode}
+          viewMode={viewMode}
+          selectedNodeId={selectedNodeId}
+          highlightedPath={highlightedPath}
+          highlightedEdges={highlightedEdges}
+          searchDimmedNodes={searchDimmedNodes}
+          communityDimmedNodes={communityDimmedNodes}
+          expandDimmedNodes={isConstellation ? expandDimmedNodes : null}
+          colorMode={colorMode}
+          activeSignals={activeSignals}
+          graphTheme={graphTheme}
+          fileNodes={fileGraphData?.nodes}
+          fileEdges={fileGraphData?.links}
+          moduleNodes={isModuleView ? moduleGraph?.nodes : undefined}
+          moduleEdges={isModuleView ? moduleGraph?.edges : undefined}
+          onNodeClick={handleSigmaNodeClick}
+          onNodeDoubleClick={handleSigmaDoubleClick}
+          onNodeContextMenu={handleSigmaNodeContextMenu}
+          onStageClick={() => setSelectedNodeId(null)}
+          onLayoutSkipped={setLayoutNotice}
+          hiddenNodes={isEgoActive ? hiddenNodes : undefined}
+          visibleEdgeTypes={visibleEdgeTypes}
+          depthRingRadii={isConstellation ? constellationRingRadii : null}
+        />
+      ) : !isLoading ? (
+        <div className="flex items-center justify-center h-full">
+          <EmptyState
+            title={overlayEmptyState?.title ?? "No graph data"}
+            description={
+              overlayEmptyState?.description ??
+              "This scope came back with nothing to draw. Try another scope, or re-index the repo if it was added recently."
+            }
           />
         </div>
+      ) : null}
 
-        {/* Path Finder */}
-        {showPathFinder && renderPathFinder && (
-          <div className="absolute top-14 right-3 z-10">
-            {renderPathFinder({
-              initialFrom: pathFrom,
-              initialTo: pathTo,
-              onPathFound: handlePathFound,
-              onClear: handlePathClear,
-              onClose: () => setShowPathFinder(false),
-            })}
+      {/* Canvas status, top-left. One panel with hairline rows, matching the
+          toolbar, the legend and the zoom controls — this corner could
+          otherwise stack four independently-bordered, independently-shadowed
+          chips (breadcrumb, expanded-modules, loading, tip, overlay counts)
+          over the diagram at once. Rendered only when it has something to
+          say, so an idle canvas carries no chrome here at all (rule 10). */}
+      {hasCanvasStatus && (
+      <div className={`absolute top-3 left-3 z-10 flex flex-col items-stretch overflow-hidden ${canvasPanelClass}`}>
+      {isEgoActive && selectedNodeId ? (
+        <div>
+          <div className={canvasRowClass}>
+            <span className="text-[10px] text-[var(--color-accent-primary)]">
+              Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
+              <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
+            </span>
+            <button
+              onClick={() => setEgoDepth(0)}
+              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] text-[10px]"
+            >
+              Clear
+            </button>
           </div>
-        )}
-
-        {/* Execution Flows Panel */}
-        {showFlows && executionFlows && executionFlows.flows.length > 0 && (
-          <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
-            <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm shadow-lg shadow-black/20 p-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-[var(--color-text-primary)]">
-                  Execution Flows
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                    {executionFlows.flows.length} entry points
-                  </span>
-                  {/* Same close affordance as the Path Finder panel above. */}
+        </div>
+      ) : isModuleView && isDrilledDown ? (
+        <div>
+          <div className={canvasRowClass}>
+            <button
+              onClick={() => handleBreadcrumbClick(-1)}
+              className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)] transition-colors"
+            >
+              <Home className="w-3 h-3" />
+              <span>Root</span>
+            </button>
+            {modulePath.map((fullPrefix, i) => {
+              const prevPrefix = i > 0 ? modulePath[i - 1] + "/" : "";
+              const label = fullPrefix.slice(prevPrefix.length);
+              const isLast = i === modulePath.length - 1;
+              return (
+                <span key={i} className="flex items-center gap-1">
+                  <ChevronRight className="w-3 h-3 text-[var(--color-text-tertiary)]" />
                   <button
-                    onClick={() => {
-                      setShowFlows(false);
-                      setActiveFlowIdx(null);
-                    }}
-                    aria-label="Close"
-                    title="Close"
-                    className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-1 max-h-60 overflow-y-auto">
-                {executionFlows.flows.map((flow, idx) => (
-                  <button
-                    key={flow.entry_point}
-                    onClick={() => setActiveFlowIdx(activeFlowIdx === idx ? null : idx)}
-                    className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
-                      activeFlowIdx === idx
-                        ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
-                        : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"
+                    onClick={() => !isLast && handleBreadcrumbClick(i)}
+                    className={`text-xs font-mono transition-colors ${
+                      isLast
+                        ? "text-[var(--color-text-primary)] font-medium cursor-default"
+                        : "text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)]"
                     }`}
                   >
-                    <div className="font-mono truncate">{flow.entry_point_name}</div>
-                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
-                      <span>depth {flow.depth}</span>
-                      <span>{flow.trace.length} nodes</span>
-                      {flow.crosses_community && (
-                        <span className="text-yellow-500">cross-community</span>
-                      )}
-                    </div>
+                    {label}
                   </button>
-                ))}
-              </div>
-              {activeFlowMissingCount > 0 && (
-                <p className="mt-2 text-[10px] leading-snug text-[var(--color-warning)]">
-                  This flow includes {activeFlowMissingCount} node
-                  {activeFlowMissingCount === 1 ? "" : "s"} not in the loaded
-                  view — load more nodes to see the full trace.
-                </p>
-              )}
-            </div>
+                </span>
+              );
+            })}
           </div>
-        )}
-
-        {/* Legend — on phones the inspection bottom sheet covers this corner,
-            so yield to it instead of stacking underneath. */}
-        <div className={`absolute bottom-3 left-3 z-10 ${selectedNodeId ? "hidden sm:block" : ""}`}>
-          <GraphLegend
-            nodeCount={sigmaGraph?.order ?? 0}
-            edgeCount={sigmaGraph?.size ?? 0}
-            colorMode={colorMode}
-            viewMode={viewMode}
-            {...(communityLabels ? { communityLabels } : {})}
-            onCommunityClick={openCommunityPanel}
-            activeCommunities={activeCommunities ?? undefined}
-            onCommunityToggle={handleCommunityToggle}
-            onToggleAllCommunities={handleToggleAllCommunities}
-            visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}
-            onEdgeTypeToggle={isConstellation ? undefined : handleEdgeTypeToggle}
-            graphTheme={graphTheme}
-            constellationEntries={isConstellation ? constellationLegend : undefined}
-            onConstellationHubClick={handleConstellationHubClick}
-          />
         </div>
+      ) : null}
 
-        {/* Keyboard shortcut help (toggled with ?) */}
-        {showShortcutHelp && (
-          <GraphShortcutHelp onClose={() => setShowShortcutHelp(false)} />
-        )}
+      {/* Expanded-modules chip: count + collapse-all. */}
+      {isModuleView && !isDrilledDown && hasExpandedModules && (
+        <div className={canvasRowClass}>
+          <span className="text-[10px] text-[var(--color-text-secondary)]">
+            {expandedModules.size} module{expandedModules.size === 1 ? "" : "s"} expanded
+          </span>
+          <button
+            onClick={collapseAll}
+            className="text-[10px] font-medium text-[var(--color-accent-primary)] hover:underline"
+          >
+            Collapse all
+          </button>
+        </div>
+      )}
 
-        {/* Context menu */}
-        {ctxMenu && (
-          <GraphContextMenu
-            x={ctxMenu.x}
-            y={ctxMenu.y}
-            nodeId={ctxMenu.nodeId}
-            isModule={ctxMenu.nodeType === "moduleGroup"}
-            onViewDocs={handleCtxViewDocs}
-            onExplore={handleCtxExplore}
-            onPathFrom={handleCtxPathFrom}
-            onPathTo={handleCtxPathTo}
-          />
-        )}
+      {/* Expansion needs the file-level graph — surface the fetch instead of
+          letting the double-click look like it silently did nothing. */}
+      {isModuleView && hasExpandedModules && !fullGraph && isLoadingFullGraph && (
+        <div role="status" aria-live="polite" className={canvasRowClass}>
+          <span className="text-[10px] text-[var(--color-text-secondary)]">
+            Loading files for expanded module…
+          </span>
+        </div>
+      )}
 
-        {/* Community detail panel */}
-        {communityPanelId !== null && renderCommunityPanel &&
-          renderCommunityPanel({
-            communityId: communityPanelId,
-            onClose: () => setCommunityPanelId(null),
-            onExpandOnCanvas: () => handleConstellationHubToggle(communityPanelId),
-          })}
+      {/* One-time interaction hint for the modules scope. */}
+      {isModuleView && !isDrilledDown && !hasExpandedModules && !moduleHintDismissed && (
+        <div className={canvasRowClass}>
+          <span className="text-[10px] text-[var(--color-text-secondary)]">
+            Tip: double-click a module to see its files
+          </span>
+          <button
+            onClick={dismissModuleHint}
+            aria-label="Dismiss hint"
+            className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
 
-        {/* Inspection panel — works for both file and module nodes */}
-        {selectedNodeId && (() => {
-          const fileNd = effectiveNodeDataMap.get(selectedNodeId);
-          const modNd = effectiveModuleDataMap.get(selectedNodeId);
-          const nd = fileNd ?? modNd;
-          if (!nd) return null;
-          return (
-            <GraphInspectionPanel
-              nodeId={selectedNodeId}
-              data={nd}
-              graph={sigmaGraph}
-              allNodes={effectiveNodeDataMap}
-              communityLabel={fileNd ? communityLabels?.get(fileNd.communityId) : undefined}
-              onClose={() => { setSelectedNodeId(null); }}
-              onNavigateToNode={handleInspectNavigate}
-              onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
-              onViewSymbols={
-                fileNd && onNodeViewSymbols
-                  ? () => { onNodeViewSymbols(selectedNodeId); }
-                  : undefined
-              }
-              filePageHref={fileNd ? fileHrefFor?.(selectedNodeId) : undefined}
-              onFindPath={handleInspectFindPath}
-              onExpandModule={modNd ? handleInspectExpandModule : undefined}
-              isModuleExpanded={modNd ? expandedModules.has(selectedNodeId) : false}
-              egoDepth={egoDepth}
-              onEgoDepthChange={setEgoDepth}
-              egoVisibleCount={egoVisibleCount}
+      {/* Overlay coverage: how many flagged files are actually in view. The
+          totals come from the backend when it provides them; without totals
+          we still report the in-view count so the overlay never reads as
+          silently doing nothing. */}
+      {showOverlayCounts && overlayStats && (
+        <>
+          {isDeadView && (
+            <OverlayCountChip
+              kind="dead"
+              inView={overlayStats.deadInView}
+              total={deadTotal}
             />
-          );
-        })()}
+          )}
+          {isHotView && (
+            <OverlayCountChip
+              kind="hot"
+              inView={overlayStats.hotInView}
+              total={hotTotal}
+            />
+          )}
+        </>
+      )}
       </div>
-    </GraphProvider>
+      )}
+
+      {/* Layout-skipped notice: the hierarchical toggle must never look
+          active while silently doing nothing. */}
+      {layoutNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex max-w-[min(28rem,calc(100vw-6rem))] items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm px-3 py-1.5 shadow-sm"
+        >
+          <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
+          <button
+            onClick={() => setLayoutNotice(null)}
+            aria-label="Dismiss layout notice"
+            className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div className="absolute top-3 right-3 z-10">
+        <GraphToolbar
+          viewMode={viewMode}
+          onViewChange={handleViewChange}
+          colorMode={colorMode}
+          onColorModeChange={setColorMode}
+          hideTests={hideTests}
+          onHideTestsChange={(v) => {
+            setActiveSignals(prev => {
+              const next = new Set(prev);
+              v ? next.add("hideTests") : next.delete("hideTests");
+              return next;
+            });
+          }}
+          onFitView={handleFitView}
+          showPathFinder={showPathFinder}
+          pathFinderAvailable={Boolean(renderPathFinder)}
+          onTogglePathFinder={() => {
+            // Path finder and flows share the same overlay slot — opening
+            // one always closes the other.
+            setShowPathFinder((s) => !s);
+            setShowFlows(false);
+            setActiveFlowIdx(null);
+          }}
+          showFlows={showFlows}
+          onToggleFlows={() => {
+            setShowFlows((s) => !s);
+            setActiveFlowIdx(null);
+            setShowPathFinder(false);
+          }}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          searchMatchCount={searchResults.length}
+          searchTotalCount={sigmaGraph?.order ?? 0}
+          onSearchKeyDown={handleSearchKeyDown}
+          layoutMode={layoutMode}
+          onLayoutModeChange={handleLayoutModeChange}
+          onToggleHelp={handleToggleShortcutHelp}
+          availableScopes={availableScopes}
+          showExternals={showExternals}
+          onShowExternalsChange={setShowExternals}
+          externalCount={externalCount}
+        />
+      </div>
+
+      {/* Path Finder */}
+      {showPathFinder && renderPathFinder && (
+        <div className="absolute top-14 right-3 z-10">
+          {renderPathFinder({
+            initialFrom: pathFrom,
+            initialTo: pathTo,
+            onPathFound: handlePathFound,
+            onClear: handlePathClear,
+            onClose: () => setShowPathFinder(false),
+          })}
+        </div>
+      )}
+
+      {/* Execution Flows Panel */}
+      {showFlows && executionFlows && executionFlows.flows.length > 0 && (
+        <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
+          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm shadow-lg shadow-black/20 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-[var(--color-text-primary)]">
+                Execution Flows
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                  {executionFlows.flows.length} entry points
+                </span>
+                {/* Same close affordance as the Path Finder panel above. */}
+                <button
+                  onClick={() => {
+                    setShowFlows(false);
+                    setActiveFlowIdx(null);
+                  }}
+                  aria-label="Close"
+                  title="Close"
+                  className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {executionFlows.flows.map((flow, idx) => (
+                <button
+                  key={flow.entry_point}
+                  onClick={() => setActiveFlowIdx(activeFlowIdx === idx ? null : idx)}
+                  className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
+                    activeFlowIdx === idx
+                      ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+                      : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"
+                  }`}
+                >
+                  <div className="font-mono truncate">{flow.entry_point_name}</div>
+                  <div className="flex items-center gap-2 mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
+                    <span>depth {flow.depth}</span>
+                    <span>{flow.trace.length} nodes</span>
+                    {flow.crosses_community && (
+                      <span className="text-yellow-500">cross-community</span>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+            {activeFlowMissingCount > 0 && (
+              <p className="mt-2 text-[10px] leading-snug text-[var(--color-warning)]">
+                This flow includes {activeFlowMissingCount} node
+                {activeFlowMissingCount === 1 ? "" : "s"} not in the loaded
+                view — load more nodes to see the full trace.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Legend — on phones the inspection bottom sheet covers this corner,
+          so yield to it instead of stacking underneath. */}
+      <div className={`absolute bottom-3 left-3 z-10 ${selectedNodeId ? "hidden sm:block" : ""}`}>
+        <GraphLegend
+          nodeCount={sigmaGraph?.order ?? 0}
+          edgeCount={sigmaGraph?.size ?? 0}
+          colorMode={colorMode}
+          viewMode={viewMode}
+          {...(communityLabels ? { communityLabels } : {})}
+          onCommunityClick={openCommunityPanel}
+          activeCommunities={activeCommunities ?? undefined}
+          onCommunityToggle={handleCommunityToggle}
+          onToggleAllCommunities={handleToggleAllCommunities}
+          visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}
+          onEdgeTypeToggle={isConstellation ? undefined : handleEdgeTypeToggle}
+          graphTheme={graphTheme}
+          constellationEntries={isConstellation ? constellationLegend : undefined}
+          onConstellationHubClick={handleConstellationHubClick}
+        />
+      </div>
+
+      {/* Keyboard shortcut help (toggled with ?) */}
+      {showShortcutHelp && (
+        <GraphShortcutHelp onClose={() => setShowShortcutHelp(false)} />
+      )}
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <GraphContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          nodeId={ctxMenu.nodeId}
+          isModule={ctxMenu.nodeType === "moduleGroup"}
+          onViewDocs={handleCtxViewDocs}
+          onExplore={handleCtxExplore}
+          onPathFrom={handleCtxPathFrom}
+          onPathTo={handleCtxPathTo}
+        />
+      )}
+
+      {/* Community detail panel */}
+      {communityPanelId !== null && renderCommunityPanel &&
+        renderCommunityPanel({
+          communityId: communityPanelId,
+          onClose: () => setCommunityPanelId(null),
+          onExpandOnCanvas: () => handleConstellationHubToggle(communityPanelId),
+        })}
+
+      {/* Inspection panel — works for both file and module nodes */}
+      {selectedNodeId && (() => {
+        const fileNd = effectiveNodeDataMap.get(selectedNodeId);
+        const modNd = effectiveModuleDataMap.get(selectedNodeId);
+        const nd = fileNd ?? modNd;
+        if (!nd) return null;
+        return (
+          <GraphInspectionPanel
+            nodeId={selectedNodeId}
+            data={nd}
+            graph={sigmaGraph}
+            allNodes={effectiveNodeDataMap}
+            communityLabel={fileNd ? communityLabels?.get(fileNd.communityId) : undefined}
+            onClose={() => { setSelectedNodeId(null); }}
+            onNavigateToNode={handleInspectNavigate}
+            onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
+            onViewSymbols={
+              fileNd && onNodeViewSymbols
+                ? () => { onNodeViewSymbols(selectedNodeId); }
+                : undefined
+            }
+            filePageHref={fileNd ? fileHrefFor?.(selectedNodeId) : undefined}
+            onFindPath={handleInspectFindPath}
+            onExpandModule={modNd ? handleInspectExpandModule : undefined}
+            isModuleExpanded={modNd ? expandedModules.has(selectedNodeId) : false}
+            egoDepth={egoDepth}
+            onEgoDepthChange={setEgoDepth}
+            egoVisibleCount={egoVisibleCount}
+          />
+        );
+      })()}
+    </div>
   );
 }
 
