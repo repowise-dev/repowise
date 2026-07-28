@@ -35,7 +35,7 @@ import { useZoomMap } from "@/lib/hooks/use-graph";
 import { ZoomBreadcrumb } from "@/components/zoom/zoom-breadcrumb";
 import { ZoomSearch } from "@/components/zoom/zoom-search";
 import { ZoomDetailPanel } from "@/components/zoom/zoom-detail-panel";
-import { ZoomArrowKey } from "@/components/zoom/zoom-arrow-key";
+import { ZoomMapKey } from "@/components/zoom/zoom-map-key";
 import { ZoomHint } from "@/components/zoom/zoom-hint";
 import { ZoomExportButton } from "@/components/zoom/zoom-export-button";
 
@@ -131,7 +131,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
               to zoom, so a reader whose pointer is over the map cannot scroll
               down to find it. */}
           <div
-            className={`grid h-[calc(100vh-19rem)] min-h-[420px] gap-4 ${
+            className={`grid h-[calc(100vh-21.5rem)] min-h-[400px] gap-4 ${
               selected ? "xl:grid-cols-[minmax(0,1fr)_320px]" : "grid-cols-1"
             }`}
           >
@@ -162,7 +162,7 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
             )}
           </div>
 
-          <ZoomArrowKey
+          <ZoomMapKey
             verb={relationVerb}
             onVerbChange={setRelationVerb}
             coChangeCount={coChangeCount}

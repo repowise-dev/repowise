@@ -17,6 +17,7 @@
 import { ALERT_MAX, HEALTHY_MIN } from "@repowise-dev/types/health";
 
 import type { Rect } from "./camera";
+import { hasRole } from "./node-signals";
 import { ARROW_SIZE_PX, EDGE_LINE_PX } from "./constants";
 import type { EdgeRoute } from "./edges";
 import type { ZoomPalette } from "./theme";
@@ -173,13 +174,22 @@ function drawPaperTexture(
   ctx.restore();
 }
 
-/** The single most salient role color for a node's status dot, or null. */
+/**
+ * The role dot's colour, or null when a node carries no role.
+ *
+ * One hue, deliberately. This used to return a different colour per role from
+ * `palette.entry` / `.hotspot` / `.dead` / `.flow`, which collided head-on with
+ * the health dot in the footer: `palette.entry` and `palette.healthHealthy` are
+ * both `--color-success`, so a green dot meant "has an entry point" in the
+ * top-right corner and "healthy" in the bottom-left one, forty pixels apart on
+ * the same card. Green/amber/red carry a band and belong to health.
+ *
+ * The role dot now says only "there is something here"; `nodeRoles` in
+ * `node-signals.ts` says what, in words, on hover and in the detail panel —
+ * where it can name every applicable role rather than a cascade's winner.
+ */
 function roleColor(node: ZoomNode, palette: ZoomPalette): string | null {
-  if (node.is_entry_point || node.metrics.entry_point_count > 0) return palette.entry;
-  if (node.is_hotspot || node.metrics.hotspot_count > 0) return palette.hotspot;
-  if (node.is_dead || node.metrics.dead_count > 0) return palette.dead;
-  if (node.on_flow || node.metrics.on_flow_count > 0) return palette.flow;
-  return null;
+  return hasRole(node) ? palette.accent : null;
 }
 
 function roundRectPath(ctx: CanvasRenderingContext2D, r: Rect, radius: number): void {

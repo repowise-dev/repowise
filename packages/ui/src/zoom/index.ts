@@ -29,6 +29,8 @@ export {
 } from "./relation-summary";
 export type { RelationSummary, VerbCount } from "./relation-summary";
 
+export { hasRole, healthBandLabel, nodeRoles } from "./node-signals";
+
 export { drawScene, pickNode } from "./draw-tree";
 export type { DrawOptions, DrawStats, PickEntry } from "./draw-tree";
 

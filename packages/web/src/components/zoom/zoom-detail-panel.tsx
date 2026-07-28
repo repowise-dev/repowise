@@ -20,8 +20,15 @@
 import Link from "next/link";
 import { FileCode, ScanSearch, X } from "lucide-react";
 import type { ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
-import { describeCap, describeRelations, summarizeRelations } from "@repowise-dev/ui/zoom";
-import { healthBand } from "@repowise-dev/ui/overview";
+import {
+  describeCap,
+  describeRelations,
+  healthBandLabel,
+  nodeRoles,
+  summarizeRelations,
+} from "@repowise-dev/ui/zoom";
+import { bandForScore } from "@repowise-dev/types/health";
+import { healthBandTextColor } from "@repowise-dev/ui/health";
 
 interface ZoomDetailPanelProps {
   node: ZoomNode;
@@ -73,14 +80,18 @@ function Row({ label, value, tone }: { label: string; value: number; tone?: stri
 }
 
 /**
- * A state marker as a dot plus the word. Colour alone cannot carry a name, and
- * a filled pill spends a ground, a border and coloured text on one token that
- * repeats down a panel.
+ * A role as the accent dot plus the word. The dot matches the one on the card,
+ * so the panel reads as the card's caption; the word is what the card cannot
+ * say. A filled pill would spend a ground, a border and coloured text on one
+ * token that repeats down a panel.
  */
-function Mark({ color, children }: { color: string; children: React.ReactNode }) {
+function Mark({ children }: { children: React.ReactNode }) {
   return (
     <span className="flex items-center gap-1 text-[11px] font-medium text-[var(--color-text-secondary)]">
-      <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+      <span
+        aria-hidden
+        className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent-primary)]"
+      />
       {children}
     </span>
   );
@@ -96,7 +107,13 @@ export function ZoomDetailPanel({
 }: ZoomDetailPanelProps) {
   const m = node.metrics;
   const isFile = node.kind === "file";
-  const band = node.health_score === null ? null : healthBand(node.health_score);
+  // The canonical 3-band scale, so the panel agrees with the dot on the card
+  // beside it. The 5-step Excellent/Good ladder the scan surfaces use would
+  // call a 6.9 "Good" while the card paints it amber.
+  const band = healthBandLabel(node.health_score);
+  const bandClass =
+    node.health_score === null ? "" : healthBandTextColor(bandForScore(node.health_score));
+  const roles = nodeRoles(node);
   // The description covers the whole box; the cap has to be measured against
   // what the map is *drawing*, or a filtered view still claims to be showing
   // "the 10 strongest" while two arrows are on screen.
@@ -126,12 +143,13 @@ export function ZoomDetailPanel({
               {node.path}
             </p>
           )}
-          {(node.is_entry_point || node.on_flow) && (
-            <div className="mt-2 flex flex-wrap items-center gap-3">
-              {node.is_entry_point && <Mark color="var(--color-success)">Entry point</Mark>}
-              {node.on_flow && !node.is_entry_point && (
-                <Mark color="var(--color-accent-secondary)">On an execution flow</Mark>
-              )}
+          {/* Every role the card's accent dot stands for, not just the one a
+              priority cascade would have picked. */}
+          {roles.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+              {roles.map((role) => (
+                <Mark key={role}>{role}</Mark>
+              ))}
             </div>
           )}
         </div>
@@ -148,16 +166,11 @@ export function ZoomDetailPanel({
       <div className="min-h-0 shrink overflow-auto px-4 pb-4">
         {band && node.health_score !== null && (
           <div className="border-t border-[var(--color-border-default)] pt-3">
-            <div className="flex items-baseline gap-2">
-              <span
-                className="text-[32px] font-bold leading-none tabular-nums"
-                style={{ color: band.color }}
-              >
+            <div className={`flex items-baseline gap-2 ${bandClass}`}>
+              <span className="text-[32px] font-bold leading-none tabular-nums">
                 {node.health_score.toFixed(1)}
               </span>
-              <span className="text-[15px] font-medium" style={{ color: band.color }}>
-                {band.label}
-              </span>
+              <span className="text-[15px] font-medium">{band}</span>
             </div>
             {/* A figure alone is not readable. Say what it measures. */}
             <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">

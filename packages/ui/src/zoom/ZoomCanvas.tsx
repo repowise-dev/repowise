@@ -24,6 +24,7 @@ import { buildScene } from "./scene";
 import { resolveZoomPalette } from "./theme";
 import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
 import { describeRelations, summarizeRelations } from "./relation-summary";
+import { healthBandLabel, nodeRoles } from "./node-signals";
 import { useThemeVersion } from "../shared/use-theme-tokens";
 
 export interface ZoomCanvasHandle {
@@ -396,6 +397,8 @@ function HoverCard({
   relations: ZoomRelation[] | undefined;
 }) {
   const { node } = hover;
+  const roles = nodeRoles(node);
+  const band = healthBandLabel(node.health_score);
   // Flip the card toward the interior when the cursor is near the right/bottom
   // edge, so it never spills off-canvas (N2).
   const w = canvas?.clientWidth ?? 0;
@@ -418,6 +421,21 @@ function HoverCard({
       )}
       {node.summary && (
         <div className="mt-1 line-clamp-2 text-[var(--color-text-secondary)]">{node.summary}</div>
+      )}
+      {/* The two dots on the card, in words. They are drawn in the corners with
+          no key of their own, so the moment the pointer is on the card is the
+          cheapest place to say what they mean. */}
+      {(roles.length > 0 || band) && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[var(--color-text-secondary)]">
+          {roles.length > 0 && (
+            <span className="text-[var(--color-accent-primary)]">{roles.join(" · ")}</span>
+          )}
+          {band && (
+            <span className="tabular-nums">
+              Health {node.health_score!.toFixed(1)} {band}
+            </span>
+          )}
+        </div>
       )}
       {relations && relations.length > 0 && (
         <div className="mt-1.5 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)] tabular-nums">
