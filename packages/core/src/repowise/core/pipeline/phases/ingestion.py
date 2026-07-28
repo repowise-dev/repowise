@@ -76,6 +76,13 @@ _SKIP_REASONS: tuple[tuple[str, str], ...] = (
 
 _TOP_LANGUAGES_SHOWN = 6
 
+# Files at or above which the graph build is slow enough to be worth warning
+# about. Below it the build finishes in around a second, so the Ctrl-C
+# reassurance would be noise on a run that never gets a chance to be
+# interrupted. Measured against a 157-file repo (0.8s) and the calibration
+# behind the pre-scan estimate, roughly 2 min per 1k source files end to end.
+_SLOW_GRAPH_BUILD_FILES = 2000
+
 
 def _emit_traversal_summary(
     progress: ProgressCallback | None,
@@ -418,9 +425,12 @@ async def _run_ingestion(
     # from inside GraphBuilder.build(); the orchestrator drives metrics/
     # communities/flows below so the longest-running step is no longer an
     # opaque "graph 0/1" spinner.
-    if progress:
-        # The longest silent stretch of the run, so this is the one line that
-        # has to be readable as reassurance rather than as another stat.
+    if progress and len(file_infos) >= _SLOW_GRAPH_BUILD_FILES:
+        # Reassurance before the longest silent stretch of the run, so it is
+        # warning-weight rather than another dim stat — which is also why it is
+        # gated: on a small repo the build is over in under a second, and a
+        # yellow "this may take several minutes" there is a false alarm made
+        # louder.
         progress.on_message(
             "warning",
             "Graph build can take several minutes on a first run. Safe to Ctrl-C — "
