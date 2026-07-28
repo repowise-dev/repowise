@@ -109,3 +109,49 @@ def test_test_files_never_score_as_entry_points():
     report = trace_execution_flows(g, {}, FlowConfig(min_flow_depth=1))
     assert report.total_entry_points_scored == 0
     assert report.entry_point_scores == {}
+
+
+class TestWhatCountsAsAnExcludedNode:
+    """Only symbol nodes carry ``file_path``; everything else falls back to its id.
+
+    That fallback used to be the empty string, so a file node and an
+    unresolved call target were never excluded however they were named —
+    the opposite of what this filter is for.
+    """
+
+    @staticmethod
+    def _graph(node_id: str, **attrs):
+        import networkx as nx
+
+        g = nx.DiGraph()
+        g.add_node(node_id, **attrs)
+        return g
+
+    def test_a_symbol_node_is_judged_on_its_declared_file(self) -> None:
+        from repowise.core.analysis.execution_flows import _is_excluded_node
+
+        g = self._graph("tests/test_a.py::helper", file_path="tests/test_a.py")
+        assert _is_excluded_node(g, "tests/test_a.py::helper")
+
+        g = self._graph("src/main.py::run", file_path="src/main.py")
+        assert not _is_excluded_node(g, "src/main.py::run")
+
+    def test_a_file_node_is_judged_on_its_own_id(self) -> None:
+        """A file node has no ``file_path`` attribute — its id is the path."""
+        from repowise.core.analysis.execution_flows import _is_excluded_node
+
+        assert _is_excluded_node(self._graph("scripts/build.py"), "scripts/build.py")
+        assert _is_excluded_node(self._graph("tests/test_a.py"), "tests/test_a.py")
+        assert not _is_excluded_node(self._graph("src/main.py"), "src/main.py")
+
+    def test_an_unresolved_call_target_is_judged_on_its_bare_name(self) -> None:
+        """A mis-resolved edge into a test fake is what this filter is for."""
+        from repowise.core.analysis.execution_flows import _is_excluded_node
+
+        assert _is_excluded_node(self._graph("test_helper"), "test_helper")
+        assert not _is_excluded_node(self._graph("fetchall"), "fetchall")
+
+    def test_an_external_is_not_a_path_and_is_never_excluded(self) -> None:
+        from repowise.core.analysis.execution_flows import _is_excluded_node
+
+        assert not _is_excluded_node(self._graph("external:pytest"), "external:pytest")
