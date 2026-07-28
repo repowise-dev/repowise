@@ -208,5 +208,12 @@ jobs:
       - name: Render every view
         if: steps.changed.outputs.emitter == 'true'
         run: |
+          # The image runs as uid 65532, which cannot write into a checkout
+          # owned by the runner. Give the render its own world-writable
+          # directory rather than letting it write beside the DSL.
+          mkdir -m 777 dsl-sample/rendered
           docker run --rm -v "$PWD/dsl-sample:/work" \
-            structurizr/structurizr:latest export -workspace /work/workspace.dsl -format mermaid
+            structurizr/structurizr:latest export -workspace /work/workspace.dsl \
+            -format mermaid -output /work/rendered
+          # An exporter that wrote nothing also exits 0.
+          test "$(find dsl-sample/rendered -name '*.mmd' | wc -l)" -gt 0
