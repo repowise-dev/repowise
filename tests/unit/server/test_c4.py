@@ -181,3 +181,22 @@ async def test_structurizr_endpoint_on_an_empty_repo(client: AsyncClient) -> Non
     resp = await client.get(f"/api/graph/{repo['id']}/c4/structurizr")
     assert resp.status_code == 200
     assert "softwareSystem" in resp.text
+
+
+def test_an_awkward_directory_name_still_yields_a_usable_id() -> None:
+    """A directory named ``a::b`` is legal on POSIX and reaches these helpers.
+
+    The path is repo-derived and lands on the request path with no handler
+    above it, so a raise here would be a 500 on the C4 endpoints and a hard
+    abort of the export. Prefixed ids are unambiguous whatever they contain,
+    so these round-trip instead.
+    """
+    from repowise.core.ids import ComponentId, ContainerId, parse
+    from repowise.server.services.c4_builder.components import component_id
+    from repowise.server.services.c4_builder.containers import container_id
+
+    assert parse(container_id("weird::pkg")) == ContainerId("weird::pkg")
+    assert parse(component_id("weird::dir")) == ComponentId("weird::dir")
+    assert parse(component_id("weird::dir", is_root_bucket=True)) == ComponentId(
+        "weird::dir", is_root_bucket=True
+    )
