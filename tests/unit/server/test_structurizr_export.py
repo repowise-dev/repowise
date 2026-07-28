@@ -498,6 +498,145 @@ def test_two_packages_presenting_as_the_same_name_do_not_collide() -> None:
     assert "@xyflow/react" in declared
 
 
+def _declared(dsl: str, keyword: str) -> list[str]:
+    """The display names of every element declared with *keyword*."""
+    return [
+        line.split(f"{keyword} ", 1)[1].split('"')[1]
+        for line in dsl.splitlines()
+        if f"= {keyword} " in line
+    ]
+
+
+def test_two_containers_with_the_same_basename_do_not_collide() -> None:
+    """A container name only has to be unique inside its software system.
+
+    Container names are the leaf directory, so any monorepo holding both
+    ``apps/api`` and ``services/api`` produced two ``container "api"`` blocks —
+    which Structurizr rejects outright, the same way it rejects two externals
+    sharing a name.
+    """
+    def _container(path: str, language: str) -> Container:
+        return Container(
+            id=f"pkg:{path}",
+            name=path.split("/")[-1],
+            path=path,
+            language=language,
+            file_count=3,
+            symbol_count=1,
+        )
+
+    dsl = to_dsl(
+        _model(
+            containers=[
+                _container("apps/api", "typescript"),
+                _container("services/api", "go"),
+                _container("apps/web", "typescript"),
+            ],
+            components_by_container={},
+            container_relations=[],
+            component_relations=[],
+        )
+    )
+    declared = _declared(dsl, "container")
+    assert len(declared) == len(set(declared)), declared
+    # The unique one keeps the short name; the colliding pair falls back to the
+    # path, which is unique by construction.
+    assert "web" in declared
+    assert "apps/api" in declared
+    assert "services/api" in declared
+
+
+def test_two_components_in_one_container_with_the_same_basename_do_not_collide() -> None:
+    """``src`` and ``lib`` are both pass-through directories.
+
+    So ``packages/ui/src/health`` and ``packages/ui/lib/health`` both name a
+    component "health" inside one container, which the parser rejects.
+    """
+    container = Container(
+        id="pkg:packages/ui",
+        name="ui",
+        path="packages/ui",
+        language="typescript",
+        file_count=4,
+        symbol_count=2,
+    )
+
+    def _component(path: str) -> Component:
+        return Component(
+            id=f"cmp:{path}",
+            name=path.split("/")[-1],
+            path=path,
+            container_id=container.id,
+            file_count=2,
+            symbol_count=1,
+        )
+
+    dsl = to_dsl(
+        _model(
+            containers=[container],
+            components_by_container={
+                container.id: [
+                    _component("packages/ui/src/health"),
+                    _component("packages/ui/lib/health"),
+                    _component("packages/ui/src/costs"),
+                ]
+            },
+            container_relations=[],
+            component_relations=[],
+        ),
+        include_components=True,
+    )
+    declared = _declared(dsl, "component")
+    assert len(declared) == len(set(declared)), declared
+    assert "costs" in declared
+    assert "src/health" in declared
+    assert "lib/health" in declared
+
+
+def test_the_same_component_name_in_two_containers_is_left_alone() -> None:
+    """A component name only has to be unique inside its own container.
+
+    Disambiguating across containers would churn names for no reason, and the
+    long form is worse to read.
+    """
+    def _container(path: str) -> Container:
+        return Container(
+            id=f"pkg:{path}",
+            name=path.split("/")[-1],
+            path=path,
+            language="python",
+            file_count=2,
+            symbol_count=1,
+        )
+
+    one, two = _container("packages/core"), _container("packages/server")
+
+    def _component(container: Container, leaf: str) -> Component:
+        path = f"{container.path}/{leaf}"
+        return Component(
+            id=f"cmp:{path}",
+            name=leaf,
+            path=path,
+            container_id=container.id,
+            file_count=2,
+            symbol_count=1,
+        )
+
+    dsl = to_dsl(
+        _model(
+            containers=[one, two],
+            components_by_container={
+                one.id: [_component(one, "health")],
+                two.id: [_component(two, "health")],
+            },
+            container_relations=[],
+            component_relations=[],
+        ),
+        include_components=True,
+    )
+    assert _declared(dsl, "component") == ["health", "health"]
+
+
 def test_an_external_sharing_the_repo_name_is_disambiguated() -> None:
     dsl = to_dsl(
         _model(

@@ -72,29 +72,52 @@ def _reference_map(model: C4Model, *, include_components: bool) -> dict[str, str
     return references
 
 
-def _display_names(model: C4Model, externals: list) -> dict[str, str]:
-    """Names for the top-level elements, made unique.
-
-    Structurizr rejects two top-level elements sharing a name, and display
-    names are not unique: ``react``, ``@xyflow/react`` and
-    ``@radix-ui/react-dialog`` can all present as "React". The package name
-    behind them always is unique — it is what the builder deduplicates on —
-    so a colliding group falls back to it.
+def _disambiguate(items: list, label_of, fallback_of) -> dict[str, str]:
+    """Map each item's id to a name unique within *items*.
 
     Every member of a colliding group falls back, not just the ones after the
-    first, so which package keeps the pretty name cannot depend on ordering.
+    first, so which item keeps the short name cannot depend on ordering. The
+    fallback is expected to be unique by construction — a package name, a repo
+    path — so one pass settles it.
     """
     counts: dict[str, int] = {}
-    for external in externals:
-        label = external.display_name or external.name
-        counts[label] = counts.get(label, 0) + 1
+    for item in items:
+        counts[label_of(item)] = counts.get(label_of(item), 0) + 1
+    return {
+        item.id: (fallback_of(item) if counts[label_of(item)] > 1 else label_of(item))
+        for item in items
+    }
 
+
+def _display_names(model: C4Model, externals: list) -> dict[str, str]:
+    """Element names, made unique within each scope that requires it.
+
+    Structurizr enforces uniqueness per parent: two top-level elements, two
+    containers in one software system, or two components in one container may
+    not share a name. Our names are not unique in any of those scopes:
+
+    * ``react``, ``@xyflow/react`` and ``@radix-ui/react-dialog`` all present
+      as "React", so they fall back to the package name.
+    * A container is named for its leaf directory, so ``apps/api`` and
+      ``services/api`` both present as "api"; they fall back to the path.
+    * ``src`` and ``lib`` are both pass-through directories, so
+      ``packages/ui/src/health`` and ``packages/ui/lib/health`` both present as
+      "health"; they fall back to the path within their container.
+
+    Components are disambiguated per container, not globally — the same name in
+    two different containers is legal, and widening it would churn names and
+    read worse for no gain.
+    """
     names: dict[str, str] = {model.system.id: model.system.name}
     for person in model.people:
         names[person.id] = person.name
-    for external in externals:
-        label = external.display_name or external.name
-        names[external.id] = external.name if counts[label] > 1 else label
+    names.update(
+        _disambiguate(
+            externals,
+            lambda e: e.display_name or e.name,
+            lambda e: e.name,
+        )
+    )
 
     # The repository's own name is a top-level element too, so an external
     # sharing it would collide just as loudly.
@@ -105,6 +128,21 @@ def _display_names(model: C4Model, externals: list) -> dict[str, str]:
         for external in externals:
             if names[external.id] == model.system.name:
                 names[external.id] = f"{external.name} ({external.ecosystem or 'external'})"
+
+    names.update(
+        _disambiguate(list(model.containers), lambda c: c.name, lambda c: c.path)
+    )
+    for container in model.containers:
+        components = model.components_by_container.get(container.id, [])
+        names.update(
+            _disambiguate(
+                list(components),
+                lambda c: c.name,
+                lambda c, prefix=f"{container.path}/": (
+                    c.path[len(prefix) :] if c.path.startswith(prefix) else c.path
+                ),
+            )
+        )
     return names
 
 
@@ -223,6 +261,7 @@ def to_dsl(
                     components,
                     {c.id: references[c.id] for c in components},
                     model.box_signals if include_metadata else None,
+                    names,
                 )
 
         if externals:

@@ -73,16 +73,22 @@ def write_container(
     components: list[Component],
     component_identifiers: dict[str, str],
     signals: dict[str, BoxSignals] | None = None,
+    names: dict[str, str] | None = None,
 ) -> None:
     """One ``container`` block, with its components nested inside it.
 
     A container with nothing to nest and nothing to say is written as a
     one-line element rather than an empty block — the shape a person would
     write by hand.
+
+    *names* is resolved by the caller, which is the only place that can see
+    whether two containers, or two components inside this one, present under
+    the same name.
     """
     signals = signals or {}
+    names = names or {}
     header = (
-        f"{identifier} = container {quote(container.name)} "
+        f"{identifier} = container {quote(names.get(container.id, container.name))} "
         f"{quote(container_description(container))}"
     )
     if container.language:
@@ -102,6 +108,7 @@ def write_container(
                 component,
                 component_identifiers[component.id],
                 signals.get(component.id),
+                names.get(component.id),
             )
 
 
@@ -110,9 +117,10 @@ def write_component(
     component: Component,
     identifier: str,
     signals: BoxSignals | None = None,
+    name: str | None = None,
 ) -> None:
     header = (
-        f"{identifier} = component {quote(component.name)} "
+        f"{identifier} = component {quote(name or component.name)} "
         f"{quote(component_description(component))}"
     )
     if not _has_metadata(signals):
