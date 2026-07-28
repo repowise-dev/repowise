@@ -397,6 +397,10 @@ async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, di
         "file_layers": file_layers,
         "file_owners": file_owners,
         "file_bus_factors": file_bus_factors,
+        # No git metadata at all means churn was never measured — every
+        # indexed repo with history has rows here. Without this an
+        # index-only run would report every box as hotspot-free.
+        "churn_measured": bool(git_rows),
     }
 
 

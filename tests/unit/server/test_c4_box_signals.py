@@ -65,10 +65,16 @@ def test_an_ownership_tie_breaks_by_name_so_re_exports_do_not_churn() -> None:
     assert first == again == "Zoe"
 
 
-def test_the_owner_percentage_counts_only_files_we_know_an_owner_for() -> None:
+def test_the_owner_percentage_counts_every_file_in_the_box() -> None:
+    """This used to divide by the attributed files and so always neared 100.
+
+    A reader takes ``repowise.ownerPct`` as "this person owns that much of the
+    box". Dividing by the files git resolved an owner for answers a different
+    question and reads as a much stronger claim than the data supports.
+    """
     signals = build_box_signals(FILES, file_owners={"pkg/a.py": "Ada"})
     assert signals["box:one"].primary_owner == "Ada"
-    assert signals["box:one"].primary_owner_pct == 100.0
+    assert signals["box:one"].primary_owner_pct == 33.3
 
 
 def test_bus_factor_is_the_worst_case_not_the_average() -> None:
@@ -95,3 +101,46 @@ def test_a_zero_bus_factor_from_a_file_with_no_history_is_not_a_real_minimum() -
     """
     signals = build_box_signals(FILES, file_bus_factors={"pkg/a.py": 2, "pkg/b.py": 3})
     assert signals["box:one"].min_bus_factor == 2
+
+
+def test_ownership_percentage_divides_by_the_whole_box() -> None:
+    """The denominator is the box, not the files git happened to attribute.
+
+    Dividing by files-with-a-known-owner made one attributed file out of four
+    read as "one person owns 100% of this" — a fabricated number, which is
+    worse than the missing one the module's own rule asks for.
+    """
+    signals = build_box_signals(
+        {f"pkg/f{i}.py": "pkg:a" for i in range(4)},
+        file_owners={"pkg/f0.py": "Ada"},
+    )
+    assert signals["pkg:a"].primary_owner == "Ada"
+    assert signals["pkg:a"].primary_owner_pct == 25.0
+
+
+def test_ownership_is_omitted_when_almost_nothing_is_attributed() -> None:
+    """One owner out of five hundred files is not an ownership signal."""
+    signals = build_box_signals(
+        {f"pkg/f{i}.py": "pkg:a" for i in range(500)},
+        file_owners={"pkg/f0.py": "Ada"},
+    )
+    assert signals["pkg:a"].primary_owner is None
+    assert signals["pkg:a"].primary_owner_pct is None
+
+
+def test_a_repo_with_no_churn_data_reports_no_hotspot_count() -> None:
+    """Zero hotspots and never having looked are different claims.
+
+    An index-only run has no git metadata, so every box would otherwise
+    serialize ``repowise.hotspots "0"`` — a clean bill of health nobody
+    measured.
+    """
+    signals = build_box_signals(FILES, churn_measured=False)
+    assert signals["box:one"].hotspot_count is None
+    # Dead code has no such distinction available, so zero stays zero.
+    assert signals["box:one"].dead_count == 0
+
+
+def test_a_measured_zero_is_still_reported() -> None:
+    signals = build_box_signals(FILES, hotspot_paths=())
+    assert signals["box:one"].hotspot_count == 0

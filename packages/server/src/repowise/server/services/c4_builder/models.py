@@ -124,7 +124,14 @@ class BoxSignals:
     "not known", which must not be rendered as a real score of zero.
     """
 
-    hotspot_count: int = 0
+    #: ``None`` when churn was never measured for this repo at all — a
+    #: different statement from "measured, found none", and the one a reader
+    #: would otherwise take as a clean bill of health.
+    #:
+    #: ``dead_count`` has no such distinction available: an empty findings
+    #: table means either the pass did not run or it found nothing, and
+    #: nothing in the schema separates them, so zero is reported as zero.
+    hotspot_count: int | None = 0
     dead_count: int = 0
     #: Names of the curated layers this box's files belong to. A box can span
     #: several, so this is a list rather than one label.

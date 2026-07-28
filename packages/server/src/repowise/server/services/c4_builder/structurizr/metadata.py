@@ -62,16 +62,16 @@ def tags_for(signals: BoxSignals | None) -> list[str]:
 def properties_for(signals: BoxSignals | None) -> dict[str, str]:
     """Namespaced properties for one box. Values are strings; DSL has no types.
 
-    Counts are emitted even when zero — we counted, and zero is the answer.
-    Ownership is omitted when unknown, because there ``0``/empty would be a
-    claim rather than a gap.
+    A count of zero is emitted — we counted, and zero is the answer. A count we
+    never took is omitted: a repo with no churn data at all would otherwise
+    read as a repo with no hotspots, which is the clean bill of health the
+    omit-what-is-unknown rule exists to prevent.
     """
     if signals is None:
         return {}
-    properties: dict[str, str] = {
-        f"{_NAMESPACE}.hotspots": str(signals.hotspot_count),
-        f"{_NAMESPACE}.deadFiles": str(signals.dead_count),
-    }
+    properties: dict[str, str] = {f"{_NAMESPACE}.deadFiles": str(signals.dead_count)}
+    if signals.hotspot_count is not None:
+        properties[f"{_NAMESPACE}.hotspots"] = str(signals.hotspot_count)
     if signals.primary_owner:
         properties[f"{_NAMESPACE}.owner"] = signals.primary_owner
         if signals.primary_owner_pct is not None:
