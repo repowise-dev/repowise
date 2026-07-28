@@ -1,5 +1,6 @@
 import { ArrowRight, Bug, Code2, Network } from "lucide-react";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
+import { isExternal, nodeKind } from "@repowise-dev/types";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { StatGrid, StatTile } from "../shared/stat-grid";
@@ -148,9 +149,9 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
                 Dependencies ({data.graph.out_degree})
               </p>
               {data.graph.dependencies.slice(0, 5).map((n) => {
-                const isExternal = n.node_id.startsWith("external:");
-                const isSymbol = !isExternal && (n.node_type === "symbol" || n.node_id.includes("::"));
-                if (isExternal) {
+                const isExternalNode = isExternal(n.node_id);
+                const isSymbol = !isExternalNode && nodeKind(n.node_id) === "symbol";
+                if (isExternalNode) {
                   return (
                     <p
                       key={`out-${n.node_id}`}

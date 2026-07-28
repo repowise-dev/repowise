@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { StatGrid, StatTile } from "../shared/stat-grid";
 import { truncatePath } from "../lib/format";
 import type { FileDetailGraph, FileGraphNeighbor } from "@repowise-dev/types/files";
+import { isExternal, nodeKind } from "@repowise-dev/types";
 
 interface FileGraphTabProps {
   graph: FileDetailGraph | null;
@@ -42,16 +43,16 @@ function NeighborList({
         ) : (
           <ul className="space-y-2">
             {neighbors.map((n) => {
-              const isExternal = n.node_id.startsWith("external:");
-              const isSymbol = !isExternal && (n.node_type === "symbol" || n.node_id.includes("::"));
+              const isExternalNode = isExternal(n.node_id);
+              const isSymbol = !isExternalNode && nodeKind(n.node_id) === "symbol";
               const href = isSymbol ? symbolHref(n.node_id) : fileHref(n.node_id);
               const row = (
                 <>
                   <span
                     className={`font-mono text-xs truncate flex-1 min-w-0 ${
-                      isExternal ? "text-[var(--color-text-tertiary)]" : "text-[var(--color-text-primary)]"
+                      isExternalNode ? "text-[var(--color-text-tertiary)]" : "text-[var(--color-text-primary)]"
                     }`}
-                    title={isExternal ? `${n.node_id} (external dependency, not part of this repo)` : n.node_id}
+                    title={isExternalNode ? `${n.node_id} (external dependency, not part of this repo)` : n.node_id}
                   >
                     {truncatePath(n.node_id, 48)}
                   </span>
@@ -62,7 +63,7 @@ function NeighborList({
               );
               return (
                 <li key={`${n.node_id}-${n.edge_type}`}>
-                  {isExternal ? (
+                  {isExternalNode ? (
                     <div className="flex items-center gap-2 -mx-2 px-2 py-1 rounded">{row}</div>
                   ) : (
                     <a

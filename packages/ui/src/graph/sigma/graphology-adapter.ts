@@ -1,4 +1,5 @@
 import Graph from "graphology";
+import { isExternal } from "@repowise-dev/types";
 import type {
   GraphExport,
   GraphNode,
@@ -306,9 +307,15 @@ function* buildFileGraph(
   return result;
 }
 
-/** External-dependency module ids share the platform-wide `external:` prefix. */
+/**
+ * True for a module id naming code we do not own.
+ *
+ * Delegates rather than testing the prefix by hand: `framework:` nodes are
+ * third-party too, and the hand-rolled check missed them, so a framework's
+ * own code was drawn as one of the repository's modules.
+ */
 export function isExternalModuleId(id: string): boolean {
-  return id.startsWith("external:");
+  return isExternal(id);
 }
 
 export function moduleGraphToGraphology(
