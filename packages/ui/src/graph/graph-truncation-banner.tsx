@@ -1,15 +1,19 @@
 "use client";
 
 /**
- * GraphTruncationBanner — shown when the server capped the full-graph
- * response to top-N by PageRank. Communicates the cap to the user and offers
- * a stepped "load more" escape hatch (one page of importance at a time).
+ * GraphTruncationBanner — states the bound when the server capped the
+ * full-graph response to top-N by PageRank, and offers a stepped "load more"
+ * escape hatch (one page of importance at a time).
+ *
+ * A cap is normal on any large repo, not a fault, so this reads as a status
+ * line rather than a warning: no amber fill, no alert glyph, no border box. It
+ * used to spend all three on a message that fires on every big-repo load, and
+ * sat directly above the canvas it was describing. Rule 10 — a marker means
+ * there is something to do.
  *
  * Lives in `packages/ui` so the hosted frontend can reuse it.
  */
 
-import { AlertTriangle } from "lucide-react";
-import { Button } from "../ui/button";
 import { cn } from "../lib/cn";
 import { formatNumber } from "../lib/format";
 
@@ -29,6 +33,9 @@ export interface GraphTruncationBannerProps {
   className?: string;
 }
 
+const linkClass =
+  "shrink-0 font-medium text-[var(--color-accent-primary)] hover:underline";
+
 export function GraphTruncationBanner({
   shown,
   total,
@@ -46,42 +53,36 @@ export function GraphTruncationBanner({
       role="status"
       aria-live="polite"
       className={cn(
-        "flex items-center gap-3 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2 text-[12px] text-[var(--color-text-primary)]",
+        "flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[12px] text-[var(--color-text-secondary)]",
         className,
       )}
     >
-      <AlertTriangle className="h-4 w-4 shrink-0 text-[var(--color-warning)]" />
       <p className="min-w-0 flex-1">
-        Showing <span className="font-semibold tabular-nums">{formatNumber(shown)}</span> of{" "}
-        <span className="font-semibold tabular-nums">{formatNumber(total)}</span> by importance.
-        {slowHint && canLoadMore && (
-          <span className="ml-1 text-[var(--color-text-secondary)]">
-            Loading more may be slow.
-          </span>
-        )}
+        Showing the{" "}
+        <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
+          {formatNumber(shown)}
+        </span>{" "}
+        most-connected files of{" "}
+        <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
+          {formatNumber(total)}
+        </span>
+        .
+        {slowHint && canLoadMore && " Loading more will be slower."}
       </p>
-      <div className="flex shrink-0 items-center gap-2">
-        {onSwitchToArchitecture && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onSwitchToArchitecture}
-            className="h-7 px-2 text-xs font-medium text-[var(--color-warning)] hover:bg-[var(--color-warning)]/15 hover:text-[var(--color-warning)]"
-          >
-            Switch to Architecture
-          </Button>
-        )}
-        {onLoadMore && canLoadMore && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onLoadMore(nextLimit)}
-            className="h-7 px-2 text-xs font-medium text-[var(--color-warning)] hover:bg-[var(--color-warning)]/15 hover:text-[var(--color-warning)]"
-          >
-            Load {formatNumber(Math.min(LOAD_MORE_STEP, nextLimit - limit))} more
-          </Button>
-        )}
-      </div>
+      {onSwitchToArchitecture && (
+        <button type="button" onClick={onSwitchToArchitecture} className={linkClass}>
+          See all of them grouped
+        </button>
+      )}
+      {onLoadMore && canLoadMore && (
+        <button
+          type="button"
+          onClick={() => onLoadMore(nextLimit)}
+          className={linkClass}
+        >
+          Load {formatNumber(Math.min(LOAD_MORE_STEP, nextLimit - limit))} more
+        </button>
+      )}
     </div>
   );
 }

@@ -17,6 +17,76 @@ const LANGUAGE_LEGEND = [
   { lang: "other", color: LANGUAGE_COLORS.other, label: "Other" },
 ];
 
+/**
+ * Legend chrome, shared by the constellation and the file/module readings.
+ *
+ * Sleeker than what it replaced: one hairline instead of three (the header
+ * rule, the section rule and the per-block rules all did the same job), a
+ * single 6px gutter instead of nested 10px padding, and rows that are flush
+ * hit targets rather than text with negative margins hung off it. The old box
+ * spent about a third of its height on borders and uppercase section labels
+ * describing two or three entries each — rule 3's "if a section's label is a
+ * large fraction of its content, it wants merging".
+ */
+const shellClass =
+  "overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 text-xs shadow-sm backdrop-blur-sm";
+
+const headerClass =
+  "flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]";
+
+const countClass = "font-mono text-[10px] tabular-nums tracking-[0.04em]";
+
+const rowClass =
+  "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
+
+/** Section label inside the key. Mono micro-label, no rule above it. */
+const groupClass =
+  "px-1.5 pt-1.5 pb-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
+function Chevron({ expanded }: { expanded: boolean }) {
+  const Icon = expanded ? ChevronDown : ChevronUp;
+  return <Icon className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />;
+}
+
+// `color` is optional because LANGUAGE_COLORS is an index signature — an
+// unknown language resolves to undefined and the swatch just renders empty.
+function Swatch({ color }: { color: string | undefined }) {
+  return (
+    <span
+      className="h-2 w-2 shrink-0 rounded-full"
+      style={{ background: color }}
+    />
+  );
+}
+
+/** A toggleable swatch. Same 8px mark as `Swatch` so a filterable row and a
+ *  static one line up on the same optical grid; unchecked reads as an outline
+ *  rather than a different shape. */
+function SwatchToggle({
+  color,
+  checked,
+  label,
+  onToggle,
+}: {
+  color: string;
+  checked: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      className="h-4 w-4 shrink-0 rounded-full border sm:h-2 sm:w-2"
+      style={{ borderColor: color, background: checked ? color : "transparent" }}
+      aria-label={label}
+      aria-pressed={checked}
+    />
+  );
+}
+
 interface GraphLegendProps {
   nodeCount: number;
   edgeCount: number;
@@ -54,7 +124,11 @@ export const GraphLegend = memo(function GraphLegend({
   constellationEntries,
   onConstellationHubClick,
 }: GraphLegendProps) {
-  const [expanded, setExpanded] = useState(false);
+  // Open by default. Every node on the canvas is painted from this key, so
+  // collapsing it ships a field of coloured circles with no way to read them
+  // until the reader thinks to click a counter. The key is the cheapest thing
+  // on screen and the only one that makes the rest mean anything.
+  const [expanded, setExpanded] = useState(true);
   const communityFamily = useCommunityFamilies();
   const edgeColors = edgeColorsForTheme(graphTheme);
   const isConstellation = viewMode === "architecture";
@@ -65,27 +139,17 @@ export const GraphLegend = memo(function GraphLegend({
     const entries = allEntries.slice(0, 12);
     const overflow = allEntries.length - entries.length;
     return (
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-sm min-w-[160px] max-w-[220px]">
-        <button
-          onClick={() => setExpanded((s) => !s)}
-          className="flex items-center justify-between w-full px-2.5 py-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-        >
-          <span className="font-medium tabular-nums">
+      <div className={shellClass}>
+        <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
+          <span className={countClass}>
             {allEntries.length} communit{allEntries.length === 1 ? "y" : "ies"}
           </span>
-          {expanded ? (
-            <ChevronDown className="w-3 h-3 shrink-0 ml-1.5" />
-          ) : (
-            <ChevronUp className="w-3 h-3 shrink-0 ml-1.5" />
-          )}
+          <Chevron expanded={expanded} />
         </button>
         {expanded && (
-          <div className="px-2.5 pb-2.5 space-y-1 border-t border-[var(--color-border-default)] pt-2">
-            <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
-              Communities
-            </p>
+          <div className="space-y-px px-1.5 pb-1.5">
             {entries.length === 0 && (
-              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+              <p className="px-1.5 py-1 text-[11px] text-[var(--color-text-tertiary)]">
                 No communities detected
               </p>
             )}
@@ -95,24 +159,22 @@ export const GraphLegend = memo(function GraphLegend({
                 <button
                   key={e.communityId}
                   onClick={() => onConstellationHubClick?.(e.communityId)}
-                  className="flex items-center gap-2 w-full text-left text-[var(--color-text-tertiary)] rounded px-1 -mx-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
+                  className={rowClass}
                 >
-                  <span
-                    className="w-2.5 h-2.5 rounded-full shrink-0"
-                    style={{ background: color }}
-                  />
-                  <span className="truncate flex-1">{e.label}</span>
-                  <span className="tabular-nums text-[10px] shrink-0">{e.memberCount}</span>
+                  <Swatch color={color} />
+                  <span className="min-w-0 flex-1 truncate">{e.label}</span>
+                  <span className="shrink-0 tabular-nums text-[10px] text-[var(--color-text-tertiary)]">
+                    {e.memberCount}
+                  </span>
                 </button>
               );
             })}
             {overflow > 0 && (
-              <p className="text-[10px] text-[var(--color-text-tertiary)]">
-                +{overflow} smaller communit{overflow === 1 ? "y" : "ies"} not
-                listed
+              <p className="px-1.5 pt-1 text-[10px] text-[var(--color-text-tertiary)]">
+                +{overflow} smaller not listed
               </p>
             )}
-            <p className="text-[10px] text-[var(--color-text-tertiary)] pt-1.5 border-t border-[var(--color-border-default)]">
+            <p className="px-1.5 pt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
               Inner ring = entry surface
             </p>
           </div>
@@ -122,35 +184,28 @@ export const GraphLegend = memo(function GraphLegend({
   }
 
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-sm min-w-[120px] max-w-[150px]">
-      <button
-        onClick={() => setExpanded((s) => !s)}
-        className="flex items-center justify-between w-full px-2.5 py-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-      >
-        <span className="font-medium tabular-nums">
+    <div className={`${shellClass} min-w-[148px] max-w-[190px]`}>
+      <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
+        <span className={countClass}>
           {nodeCount} nodes &middot; {edgeCount} edges
         </span>
-        {expanded ? (
-          <ChevronDown className="w-3 h-3 shrink-0 ml-1.5" />
-        ) : (
-          <ChevronUp className="w-3 h-3 shrink-0 ml-1.5" />
-        )}
+        <Chevron expanded={expanded} />
       </button>
 
       {expanded && (
-        <div className="px-2.5 pb-2.5 space-y-1.5 border-t border-[var(--color-border-default)] pt-2">
-          <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
-            {colorMode === "language" ? "Language" : colorMode === "community" ? "Community" : "Risk"}
+        <div className="space-y-px px-1.5 pb-1.5">
+          <p className={groupClass}>
+            {colorMode === "language" ? "Language" : "Community"}
           </p>
 
           {colorMode === "language" &&
             LANGUAGE_LEGEND.map((l) => (
-              <div key={l.lang} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ background: l.color }}
-                />
-                <span>{l.label}</span>
+              <div
+                key={l.lang}
+                className="flex items-center gap-2 px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)]"
+              >
+                <Swatch color={l.color} />
+                <span className="truncate">{l.label}</span>
               </div>
             ))}
 
@@ -166,43 +221,29 @@ export const GraphLegend = memo(function GraphLegend({
                 {onToggleAllCommunities && entries && (
                   <button
                     onClick={() => onToggleAllCommunities(!allSelected)}
-                    className="text-[10px] text-[var(--color-accent-graph)] hover:underline mb-0.5"
+                    className="px-1.5 pb-0.5 text-[10px] font-medium text-[var(--color-accent-primary)] hover:underline"
                   >
-                    {allSelected ? "Deselect All" : "Select All"}
+                    {allSelected ? "Deselect all" : "Select all"}
                   </button>
                 )}
                 {entries
-                  ? entries.map(([cid, label], i) => {
+                  ? entries.map(([cid, label]) => {
                       const color = communityFamily(cid).hub;
                       const checked = !activeCommunities || activeCommunities.has(cid);
                       return (
-                        <div
-                          key={cid}
-                          className={`flex items-center gap-2 text-[var(--color-text-tertiary)]${
-                            onCommunityClick
-                              ? " cursor-pointer rounded px-1 -mx-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
-                              : ""
-                          }`}
-                        >
-                          {onCommunityToggle && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); onCommunityToggle(cid); }}
-                              className="shrink-0 w-4 h-4 sm:w-[10px] sm:h-[10px] rounded-sm border"
-                              style={{
-                                borderColor: color,
-                                background: checked ? color : "transparent",
-                              }}
-                              aria-label={`Toggle community ${label}`}
+                        <div key={cid} className={rowClass}>
+                          {onCommunityToggle ? (
+                            <SwatchToggle
+                              color={color}
+                              checked={checked}
+                              label={`Toggle community ${label}`}
+                              onToggle={() => onCommunityToggle(cid)}
                             />
-                          )}
-                          {!onCommunityToggle && (
-                            <span
-                              className="w-2 h-2 rounded-full shrink-0"
-                              style={{ background: color }}
-                            />
+                          ) : (
+                            <Swatch color={color} />
                           )}
                           <span
-                            className="truncate"
+                            className="min-w-0 flex-1 truncate"
                             onClick={() => onCommunityClick?.(cid)}
                           >
                             {label}
@@ -211,40 +252,21 @@ export const GraphLegend = memo(function GraphLegend({
                       );
                     })
                   : Array.from({ length: 6 }, (_, i) => (
-                      <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ background: communityFamily(i).hub }}
-                        />
-                        <span>Community {i + 1}</span>
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)]"
+                      >
+                        <Swatch color={communityFamily(i).hub} />
+                        <span className="truncate">Community {i + 1}</span>
                       </div>
                     ))}
               </>
             );
           })()}
 
-          {colorMode === "risk" && (
-            <>
-              <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--color-risk-low)]" />
-                <span>Low risk</span>
-              </div>
-              <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--color-risk-medium)]" />
-                <span>Medium risk</span>
-              </div>
-              <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--color-risk-high)]" />
-                <span>High risk</span>
-              </div>
-            </>
-          )}
-
           {onEdgeTypeToggle && visibleEdgeTypes && (
             <>
-              <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium pt-1.5 border-t border-[var(--color-border-default)] mt-1.5">
-                Edges
-              </p>
+              <p className={groupClass}>Edges</p>
               {([
                 { type: "import", label: "Imports", color: edgeColors.import },
                 { type: "crossCommunity", label: "Cross-community", color: edgeColors.crossCommunity },
@@ -254,17 +276,16 @@ export const GraphLegend = memo(function GraphLegend({
               ] as const).map((et) => {
                 const checked = visibleEdgeTypes.has(et.type);
                 return (
-                  <div key={et.type} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                    <button
-                      onClick={() => onEdgeTypeToggle(et.type)}
-                      className="shrink-0 w-4 h-4 sm:w-[10px] sm:h-[10px] rounded-sm border"
-                      style={{
-                        borderColor: et.color,
-                        background: checked ? et.color : "transparent",
-                      }}
-                      aria-label={`Toggle ${et.label} edges`}
+                  <div key={et.type} className={rowClass}>
+                    <SwatchToggle
+                      color={et.color}
+                      checked={checked}
+                      label={`Toggle ${et.label} edges`}
+                      onToggle={() => onEdgeTypeToggle(et.type)}
                     />
-                    <span className={checked ? "" : "line-through opacity-50"}>
+                    <span
+                      className={`min-w-0 flex-1 truncate ${checked ? "" : "opacity-45"}`}
+                    >
                       {et.label}
                     </span>
                   </div>
@@ -274,7 +295,7 @@ export const GraphLegend = memo(function GraphLegend({
           )}
 
           {viewMode !== "module" && viewMode !== "full" && (
-            <p className="text-[10px] text-[var(--color-text-tertiary)] pt-1 border-t border-[var(--color-border-default)]">
+            <p className="px-1.5 pt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
               {viewMode === "dead" && "Showing unreachable files"}
               {viewMode === "hotfiles" && "Most-committed files (30d)"}
               {viewMode === "unified" && "Unified: community + risk signals"}

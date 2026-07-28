@@ -59,29 +59,33 @@ describe("GraphFlow shell", () => {
     expect(screen.getByText("No graph data")).toBeTruthy();
   });
 
+  // Uses "language" as the controlled value because it is the one that is not
+  // the default. This was "risk" until that lens was removed for painting
+  // `pagerank * 3` through unreachable thresholds; the assertion is about
+  // control flow, not about which lens, so it survives the swap unchanged.
   it("reflects a controlled colorMode and reports changes without self-updating", () => {
     const onColorModeChange = vi.fn();
     render(
       <GraphFlow
         {...baseProps}
-        colorMode="risk"
+        colorMode="language"
         onColorModeChange={onColorModeChange}
       />,
     );
 
-    // Controlled value wins: Risk is active, Community (the default) is not.
-    expect(screen.getByRole("button", { name: "Risk" }).getAttribute("aria-pressed")).toBe("true");
+    // Controlled value wins: Language is active, Community (the default) is not.
+    expect(screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed")).toBe("true");
     expect(
       screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed"),
     ).toBe("false");
 
     // Clicking another mode reports out but does NOT change the displayed mode —
     // the host owns the value and hasn't pushed a new prop yet.
-    fireEvent.click(screen.getByRole("button", { name: "Language" }));
-    expect(onColorModeChange).toHaveBeenCalledWith("language");
-    expect(screen.getByRole("button", { name: "Risk" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Community" }));
+    expect(onColorModeChange).toHaveBeenCalledWith("community");
+    expect(screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed")).toBe("true");
     expect(
-      screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
+      screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed"),
     ).toBe("false");
   });
 
@@ -92,8 +96,8 @@ describe("GraphFlow shell", () => {
       screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
     ).toBe("true");
 
-    fireEvent.click(screen.getByRole("button", { name: "Risk" }));
-    expect(screen.getByRole("button", { name: "Risk" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Community" }));
+    expect(screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed")).toBe("true");
     expect(
       screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
     ).toBe("false");

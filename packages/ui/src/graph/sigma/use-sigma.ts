@@ -447,14 +447,17 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
             attrs.nodeType === "module"
               ? getCommunityFamily(attrs.communityId).hub
               : languageColor(attrs.language || "other");
-        } else if (cm === "community") {
-          // Modules (centroids) get the hub hue; files use the softer satellite
-          // tint so leaves recede behind their community's anchor.
+        } else {
+          // Community. Modules (centroids) get the hub hue; files use the
+          // softer satellite tint so leaves recede behind their anchor.
+          //
+          // A third branch used to paint a "risk" lens from `pagerank * 3`
+          // against thresholds of 0.3 and 0.7. PageRank sums to 1 across the
+          // graph, so those thresholds are unreachable on any real repo and
+          // the lens rendered entirely green. See the `ColorMode` docstring in
+          // `graph-toolbar.tsx` for why it is gone rather than re-tuned.
           const family = getCommunityFamily(attrs.communityId);
           color = attrs.nodeType === "module" ? family.hub : family.satellite;
-        } else {
-          const risk = attrs.pagerank * 3;
-          color = risk > 0.7 ? viz.risk.high : risk > 0.3 ? viz.risk.medium : viz.risk.low;
         }
         if (attrs.isDead) color = desaturateColor(color, 0.6);
         if (attrs.isHotspot) color = tintColor(color, viz.hotspot, 0.4);

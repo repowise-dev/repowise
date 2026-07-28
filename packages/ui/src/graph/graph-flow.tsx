@@ -224,8 +224,9 @@ export function GraphFlow(props: GraphFlowProps) {
 
   // The dependency graph follows the global app theme rather than a separate
   // local toggle. Sigma needs a concrete "light"/"dark" (never "system"), so
-  // resolve it; the in-graph Sun/Moon control flips the global theme below.
-  const { resolvedTheme, setTheme } = useTheme();
+  // resolve it. The toolbar used to carry its own Sun/Moon that just called
+  // `setTheme` — a duplicate of the app's header toggle — and it is gone.
+  const { resolvedTheme } = useTheme();
   const graphTheme: GraphTheme = resolvedTheme === "dark" ? "dark" : "light";
 
   const [egoDepth, setEgoDepth] = useState(0);
@@ -678,6 +679,15 @@ export function GraphFlow(props: GraphFlowProps) {
     !!fileGraphData &&
     fileGraphData.nodes.length >= ASYNC_BUILD_THRESHOLD;
 
+  // `isBuildingGraph` is only raised *inside* the effect below, which React
+  // runs after it has already painted. So on the commit where an async build
+  // first becomes necessary — the fetch has landed, the build has not started
+  // — every loading flag reads false while `sigmaGraph` is still null, and the
+  // canvas paints its "No graph data" empty state for a frame. Deriving the
+  // wait during render closes the gap: any repo above ASYNC_BUILD_THRESHOLD
+  // (1,000 nodes) hit this on every full / dead / hot load.
+  const isAwaitingAsyncBuild = needsAsyncBuild && !asyncSigmaGraph;
+
   useEffect(() => {
     if (!needsAsyncBuild || !fileGraphData) {
       setAsyncSigmaGraph(null);
@@ -1091,14 +1101,6 @@ export function GraphFlow(props: GraphFlowProps) {
     setLayoutNotice(null);
   }, [sigmaGraph]);
 
-  const handleGraphThemeChange = useCallback(
-    (theme: GraphTheme) => {
-      // Drive the global theme; the graph re-reads it via resolvedTheme.
-      setTheme(theme);
-    },
-    [setTheme],
-  );
-
   const handleSignalToggle = useCallback((signal: Signal) => {
     setActiveSignals((prev) => {
       const next = new Set(prev);
@@ -1205,12 +1207,32 @@ export function GraphFlow(props: GraphFlowProps) {
     setCtxMenu(null);
   }, [ctxMenu, setCtxMenu]);
 
-  if (isLoading || (isBuildingGraph && !sigmaGraph))
+  if (isLoading || isAwaitingAsyncBuild || (isBuildingGraph && !sigmaGraph))
     return <Skeleton className="h-full w-full rounded-lg" />;
+
+  // What the top-left status panel has to say, if anything. It is one bordered
+  // panel now, so it must not render when every row inside it is empty — an
+  // empty box is worse than the four separate chips it replaced.
+  const showOverlayCounts =
+    !!sigmaGraph && sigmaGraph.order > 0 && (isDeadView || isHotView);
+  const hasCanvasStatus =
+    (isEgoActive && !!selectedNodeId) ||
+    (isModuleView && isDrilledDown) ||
+    (isModuleView && !isDrilledDown && hasExpandedModules) ||
+    (isModuleView && hasExpandedModules && !fullGraph && isLoadingFullGraph) ||
+    (isModuleView && !isDrilledDown && !hasExpandedModules && !moduleHintDismissed) ||
+    (showOverlayCounts && !!overlayStats);
 
   return (
     <GraphProvider value={ctxValue}>
-      <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-inset)" } : {}) }} aria-label="Dependency graph">
+      {/* The canvas is what the reader came for, so it sits on the page plane
+          rather than below it (rule 8). Dark mode used to paint
+          `--color-bg-inset`, which the July ramp move dropped to #0a0a0b — a
+          full step darker than the #0e0e0f page around it, so the graph read
+          as a hole cut in the app. Light mode never painted anything and has
+          always looked right; this makes dark do what light already did. Same
+          call the knowledge-graph canvas made in `zoom/theme.ts`. */}
+      <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-root)" } : {}) }} aria-label="Dependency graph">
         {sigmaGraph && sigmaGraph.order > 0 ? (
           <SigmaCanvas
             ref={sigmaRef}
@@ -1247,18 +1269,24 @@ export function GraphFlow(props: GraphFlowProps) {
               title={overlayEmptyState?.title ?? "No graph data"}
               description={
                 overlayEmptyState?.description ??
-                "Check that the backend is running and this repo has been indexed."
+                "This scope came back with nothing to draw. Try another scope, or re-index the repo if it was added recently."
               }
             />
           </div>
         ) : null}
 
-        {/* Ego indicator / breadcrumb / overlay counts (stacked top-left) */}
-        <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-1.5">
+        {/* Canvas status, top-left. One panel with hairline rows, matching the
+            toolbar, the legend and the zoom controls — this corner could
+            otherwise stack four independently-bordered, independently-shadowed
+            chips (breadcrumb, expanded-modules, loading, tip, overlay counts)
+            over the diagram at once. Rendered only when it has something to
+            say, so an idle canvas carries no chrome here at all (rule 10). */}
+        {hasCanvasStatus && (
+        <div className={`absolute top-3 left-3 z-10 flex flex-col items-stretch overflow-hidden ${canvasPanelClass}`}>
         {isEgoActive && selectedNodeId ? (
           <div>
-            <div className="flex items-center gap-2 rounded-lg border border-[var(--color-accent-graph)]/30 bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
-              <span className="text-[10px] text-[var(--color-accent-graph)]">
+            <div className={canvasRowClass}>
+              <span className="text-[10px] text-[var(--color-accent-primary)]">
                 Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
                 <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
               </span>
@@ -1272,7 +1300,7 @@ export function GraphFlow(props: GraphFlowProps) {
           </div>
         ) : isModuleView && isDrilledDown ? (
           <div>
-            <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
+            <div className={canvasRowClass}>
               <button
                 onClick={() => handleBreadcrumbClick(-1)}
                 className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)] transition-colors"
@@ -1306,13 +1334,13 @@ export function GraphFlow(props: GraphFlowProps) {
 
         {/* Expanded-modules chip: count + collapse-all. */}
         {isModuleView && !isDrilledDown && hasExpandedModules && (
-          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm">
+          <div className={canvasRowClass}>
             <span className="text-[10px] text-[var(--color-text-secondary)]">
               {expandedModules.size} module{expandedModules.size === 1 ? "" : "s"} expanded
             </span>
             <button
               onClick={collapseAll}
-              className="text-[10px] font-medium text-[var(--color-accent-graph)] hover:underline"
+              className="text-[10px] font-medium text-[var(--color-accent-primary)] hover:underline"
             >
               Collapse all
             </button>
@@ -1322,18 +1350,16 @@ export function GraphFlow(props: GraphFlowProps) {
         {/* Expansion needs the file-level graph — surface the fetch instead of
             letting the double-click look like it silently did nothing. */}
         {isModuleView && hasExpandedModules && !fullGraph && isLoadingFullGraph && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm text-[10px] text-[var(--color-text-secondary)]"
-          >
-            Loading files for expanded module…
+          <div role="status" aria-live="polite" className={canvasRowClass}>
+            <span className="text-[10px] text-[var(--color-text-secondary)]">
+              Loading files for expanded module…
+            </span>
           </div>
         )}
 
         {/* One-time interaction hint for the modules scope. */}
         {isModuleView && !isDrilledDown && !hasExpandedModules && !moduleHintDismissed && (
-          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm">
+          <div className={canvasRowClass}>
             <span className="text-[10px] text-[var(--color-text-secondary)]">
               Tip: double-click a module to see its files
             </span>
@@ -1351,8 +1377,8 @@ export function GraphFlow(props: GraphFlowProps) {
             totals come from the backend when it provides them; without totals
             we still report the in-view count so the overlay never reads as
             silently doing nothing. */}
-        {sigmaGraph && sigmaGraph.order > 0 && overlayStats && (isDeadView || isHotView) && (
-          <div className="flex flex-col items-start gap-1">
+        {showOverlayCounts && overlayStats && (
+          <>
             {isDeadView && (
               <OverlayCountChip
                 kind="dead"
@@ -1367,9 +1393,10 @@ export function GraphFlow(props: GraphFlowProps) {
                 total={hotTotal}
               />
             )}
-          </div>
+          </>
         )}
         </div>
+        )}
 
         {/* Layout-skipped notice: the hierarchical toggle must never look
             active while silently doing nothing. */}
@@ -1428,8 +1455,6 @@ export function GraphFlow(props: GraphFlowProps) {
             onSearchKeyDown={handleSearchKeyDown}
             layoutMode={layoutMode}
             onLayoutModeChange={handleLayoutModeChange}
-            graphTheme={graphTheme}
-            onGraphThemeChange={handleGraphThemeChange}
             onToggleHelp={handleToggleShortcutHelp}
             availableScopes={availableScopes}
             showExternals={showExternals}
@@ -1594,6 +1619,18 @@ export function GraphFlow(props: GraphFlowProps) {
   );
 }
 
+/**
+ * Chrome for the top-left status panel. Shares the toolbar / legend / zoom
+ * treatment so every corner of the canvas reads as one system: one border, one
+ * shadow, one blur, and hairline dividers instead of gaps between boxes.
+ */
+const canvasPanelClass =
+  "rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 shadow-sm backdrop-blur-sm";
+
+/** One row inside that panel. `first:border-t-0` keeps the top edge clean. */
+const canvasRowClass =
+  "flex items-center gap-2 border-t border-[var(--color-border-default)] px-2.5 py-1.5 first:border-t-0";
+
 /** Small status chip captioning a dead/hot view: "12 of 37 dead files in
  *  view" when the backend supplies repo-wide totals, or just the in-view
  *  count when it doesn't. */
@@ -1616,11 +1653,8 @@ function OverlayCountChip({
     text = `${inView} ${noun} in view`;
   }
   return (
-    <div
-      role="status"
-      className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm text-[10px] text-[var(--color-text-secondary)]"
-    >
-      {text}
+    <div role="status" className={canvasRowClass}>
+      <span className="text-[10px] text-[var(--color-text-secondary)]">{text}</span>
     </div>
   );
 }

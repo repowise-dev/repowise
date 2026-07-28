@@ -70,9 +70,8 @@ export function useGraphKeyboardShortcuts(opts: GraphKeyboardShortcutOptions): v
         case "2":
           setColorMode("community");
           break;
-        case "3":
-          setColorMode("risk");
-          break;
+        // No "3". It bound the risk lens, which is gone — see the `ColorMode`
+        // docstring in `graph-toolbar.tsx`.
         case "/":
           e.preventDefault();
           document

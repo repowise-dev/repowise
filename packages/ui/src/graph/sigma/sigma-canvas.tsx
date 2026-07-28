@@ -213,7 +213,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
           // For the constellation, paint the dark canvas on the wrapper and keep
           // the sigma container transparent so the depth-ring underlay shows.
           hasDepthRings && props.graphTheme === "dark"
-            ? { background: "var(--color-bg-canvas)" }
+            ? { background: "var(--color-bg-root)" }
             : undefined
         }
       >
@@ -224,9 +224,14 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
           ref={containerCallback}
           className="w-full h-full relative z-[1]"
           style={{
+            // `--color-bg-canvas` aliases `--color-bg-inset`, which the July
+            // ramp move took to #0a0a0b — darker than the page. The canvas is
+            // the subject, so it takes the page plane (rule 8), matching the
+            // knowledge-graph canvas. Light mode is unchanged: it was already
+            // transparent, which is why only dark looked wrong.
             background:
               !hasDepthRings && props.graphTheme === "dark"
-                ? "var(--color-bg-canvas)"
+                ? "var(--color-bg-root)"
                 : "transparent",
             cursor: "grab",
           }}
@@ -242,7 +247,6 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
           }
           isLayoutRunning={props.layoutMode === "force" ? isLayoutRunning : isElkComputing}
           onToggleLayout={props.layoutMode === "force" ? toggleLayout : undefined}
-          graphTheme={props.graphTheme}
         />
         <SigmaMinimap sigma={sigma} graphTheme={props.graphTheme} />
       </div>

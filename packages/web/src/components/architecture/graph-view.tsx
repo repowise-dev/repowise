@@ -12,9 +12,11 @@ import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 
 type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
-type ColorMode = "language" | "community" | "risk";
+type ColorMode = "language" | "community";
 
-const VALID_COLOR_MODES = new Set<ColorMode>(["language", "community", "risk"]);
+// `?colorMode=risk` links predate the removal of that lens; an unlisted value
+// falls through to the "community" default rather than erroring.
+const VALID_COLOR_MODES = new Set<ColorMode>(["language", "community"]);
 
 const VALID_VIEW_MODES = new Set<ViewMode>([
   "module",
@@ -144,11 +146,15 @@ export function GraphView({
 
   return (
     <GraphCanvasShell
-      title={isMap ? "Communities" : "Dependency Explorer"}
+      // No title. The tab above already says "Communities" / "Explore", and a
+      // heading that repeats the control you just clicked spends a band of
+      // chrome saying nothing — this page carried three of them above the
+      // canvas. What is left is the one line that adds something the tab
+      // cannot: what to do with the thing you are looking at.
       description={
         isMap
-          ? "Detected communities and how they connect — double-click a hub to blossom it"
-          : "Explore dependencies, overlays and trace paths between files"
+          ? "Each circle is a detected community, sized by how much code it holds. Double-click one to open it up."
+          : "Every file and how it depends on the others. Pick two files to trace a path between them."
       }
       banner={
         // Shown only when the current scope renders the capped full graph and
