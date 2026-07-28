@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 
+import pytest
+
 from repowise.core.analysis.knowledge_graph import (
     _KG_SCHEMA_VERSION,
     KnowledgeGraphResult,
@@ -78,6 +80,25 @@ class TestKGResultFromFile:
     def test_rejects_a_non_integer_schema_version(self, tmp_path):
         p = tmp_path / "kg.json"
         p.write_text(json.dumps({"schema_version": "1.0.0", "nodes": []}), encoding="utf-8")
+        assert KnowledgeGraphResult.from_file(p) is None
+
+    def test_rejects_a_boolean_schema_version(self, tmp_path):
+        """``True`` is an int in Python, and ``True < 1`` is False, so it loaded."""
+        p = tmp_path / "kg.json"
+        p.write_text(json.dumps({"schema_version": True, "nodes": []}), encoding="utf-8")
+        assert KnowledgeGraphResult.from_file(p) is None
+
+    @pytest.mark.parametrize("payload", ["[]", '"x"', "5", "null", "true"])
+    def test_rejects_valid_json_that_is_not_an_object(self, tmp_path, payload):
+        """All five are valid JSON and all five are reachable from a hand edit.
+
+        The loader called ``.get`` on whatever came back, so these raised
+        AttributeError — which the orchestrator's except tuple does not name,
+        so it escaped and killed the run. That is the failure the guard around
+        this loader exists to stop.
+        """
+        p = tmp_path / "kg.json"
+        p.write_text(payload, encoding="utf-8")
         assert KnowledgeGraphResult.from_file(p) is None
 
     def test_accepts_a_file_written_before_the_field_existed(self, tmp_path):

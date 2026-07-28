@@ -95,14 +95,35 @@ class KnowledgeGraphResult:
         ``None`` also covers an artifact written by an older schema: callers
         treat it as absent and rebuild, so a stale file can never be read as
         if it had the current shape.
+
+        A version *above* the current one is deliberately accepted. The gate
+        protects a new reader from an old file, which is the direction that
+        actually happens on upgrade; refusing to read a newer file would only
+        help a downgrade, and would strand the user on a rebuild loop until
+        they deleted the artifact by hand.
+
+        Never raises: this runs inside an index, and a hand-edited file must
+        cost a rebuild rather than the whole run.
         """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             _log.warning("knowledge-graph.json at %s is unreadable", path, exc_info=True)
             return None
+        if not isinstance(data, dict):
+            # ``[]``, ``"x"`` and ``5`` are all valid JSON and all reachable
+            # from a hand edit; reading on would raise AttributeError out of
+            # an index run.
+            _log.warning(
+                "Ignoring knowledge-graph.json at %s (expected an object, found %s); rebuilding",
+                path,
+                type(data).__name__,
+            )
+            return None
         found = data.get("schema_version", 1)
-        if not isinstance(found, int) or found < _KG_SCHEMA_VERSION:
+        # ``bool`` is an ``int`` in Python, and ``True < 1`` is False, so a
+        # version of ``true`` would otherwise sail through the gate.
+        if not isinstance(found, int) or isinstance(found, bool) or found < _KG_SCHEMA_VERSION:
             _log.info(
                 "Ignoring knowledge-graph.json at %s (schema_version %s < %s); rebuilding",
                 path,
