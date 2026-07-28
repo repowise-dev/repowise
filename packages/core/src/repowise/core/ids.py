@@ -36,6 +36,10 @@ SYMBOL_SEP = "::"
 #: Deliberately not ``::`` — the old ``cmp:<path>::root`` spelling collided
 #: with the symbol separator, so any reader splitting on ``::`` first saw a
 #: file called ``cmp:<path>`` with a symbol called ``root``.
+#:
+#: Reserved at the end of a component path, the same way ``::`` is reserved.
+#: Note ``#`` also delimits a URL fragment: an id put in a URL unencoded
+#: truncates here. Nothing does that today.
 _ROOT_MARKER = "#root"
 
 
@@ -201,6 +205,15 @@ def render(node: NodeId) -> str:
         return node.path
 
     if isinstance(node, ComponentId):
+        if node.path.endswith(_ROOT_MARKER):
+            # ``cmp:packages/foo#root`` already spells the root bucket of
+            # ``packages/foo``, so a directory genuinely named ``foo#root``
+            # has no distinct spelling. Same trap as the symbol separator,
+            # same answer: fail here rather than mis-parse later.
+            raise InvalidNodeIdError(
+                f"component path ends in the reserved root marker {_ROOT_MARKER!r}: "
+                f"{node.path!r}"
+            )
         marker = _ROOT_MARKER if node.is_root_bucket else ""
         return f"cmp:{node.path}{marker}"
 

@@ -200,3 +200,24 @@ def test_an_awkward_directory_name_still_yields_a_usable_id() -> None:
     assert parse(component_id("weird::dir", is_root_bucket=True)) == ComponentId(
         "weird::dir", is_root_bucket=True
     )
+
+
+def test_a_directory_named_like_the_root_marker_is_skipped_not_fatal() -> None:
+    """One unspellable directory costs its own component, not the whole view."""
+    from repowise.server.services.c4_builder.components import _bucket_into_components
+
+    class _Node:
+        def __init__(self, node_id: str) -> None:
+            self.node_id = node_id
+            self.symbol_count = 1
+            self.language = "python"
+
+    components, file_index = _bucket_into_components(
+        [_Node("pkg/odd#root/a.py"), _Node("pkg/fine/b.py")],
+        "pkg",
+        "(root)",
+    )
+    names = {c.name for c in components}
+    assert "fine" in names
+    assert not any("#root" in c.path for c in components)
+    assert "pkg/odd#root/a.py" not in file_index

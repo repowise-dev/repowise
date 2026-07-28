@@ -42,6 +42,10 @@ EVERY_VARIANT = [
     ComponentId("packages/core/ingestion"),
     ComponentId("packages/core", is_root_bucket=True),
     ComponentId(".", is_root_bucket=True),
+    ComponentId("a#root/b"),
+    FileId(""),
+    ContainerId("паке́т/модуль"),
+    ExternalSystemId("模块"),
     ExternalSystemId("react"),
 ]
 
@@ -108,6 +112,20 @@ def test_a_file_whose_name_contains_the_separator_is_rejected_loudly() -> None:
         render(FileId("weird::name.py"))
     with pytest.raises(InvalidNodeIdError):
         render(SymbolId("weird::dir/a.py", "main"))
+
+
+def test_a_component_path_may_not_end_in_the_root_marker() -> None:
+    """A directory named ``foo#root`` is legal, and unspellable here.
+
+    ``cmp:packages/foo#root`` is already how the synthetic root bucket of
+    ``packages/foo`` is written, so a real directory with that name has no
+    distinct spelling. Structurally the same trap the symbol separator sets,
+    and the same answer: fail at construction rather than mis-parse later.
+    """
+    with pytest.raises(InvalidNodeIdError):
+        render(ComponentId("packages/foo#root"))
+    # The marker only binds at the end, so a path merely containing it is fine.
+    assert parse(render(ComponentId("a#root/b"))) == ComponentId("a#root/b")
 
 
 def test_a_prefixed_id_may_contain_the_symbol_separator() -> None:

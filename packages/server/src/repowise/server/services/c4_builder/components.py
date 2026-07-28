@@ -23,17 +23,20 @@ to component->component edges.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.ids import ComponentId, render
+from repowise.core.ids import ComponentId, InvalidNodeIdError, render
 from repowise.core.persistence import GraphNode
 
 from .containers import container_id
 from .models import Component, Container
+
+logger = logging.getLogger(__name__)
 
 # Source-root directories that carry no architectural meaning — skipped so a
 # component reflects the real feature directory beneath them. Deliberately only
@@ -59,11 +62,15 @@ def _relative(file_path: str, container_path: str) -> str:
 
 def _component_for(
     file_path: str, container_path: str, root_label: str
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str] | None:
     """Return ``(component_id, name, path)`` for a file's owning component.
 
     Skips leading pass-through directories; files with no meaningful directory
     fall into the ``(root)`` bucket.
+
+    ``None`` when the directory name has no unambiguous id — a directory
+    ending in the reserved root marker. One odd directory costs its own
+    component, not the whole view.
     """
     rel = _relative(file_path, container_path)
     dirs = rel.split("/")[:-1]  # directory segments only (drop the filename)
@@ -79,7 +86,11 @@ def _component_for(
     name = dirs[i]
     rel_dir = "/".join(dirs[: i + 1])
     path = f"{container_path}/{rel_dir}" if container_path else rel_dir
-    return component_id(path), name, path
+    try:
+        return component_id(path), name, path
+    except InvalidNodeIdError:
+        logger.warning("c4_component_path_unrenderable path=%s", path)
+        return None
 
 
 async def detect_components(
@@ -160,7 +171,10 @@ def _bucket_into_components(
     file_owner: dict[str, str] = {}
     cid = container_id(container_path)
     for node in file_nodes:
-        comp_id, name, path = _component_for(node.node_id, container_path, root_label)
+        resolved = _component_for(node.node_id, container_path, root_label)
+        if resolved is None:
+            continue
+        comp_id, name, path = resolved
         bucket[comp_id].append(node)
         meta[comp_id] = (name, path)
         file_owner[node.node_id] = comp_id
