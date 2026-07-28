@@ -283,14 +283,21 @@ def to_dsl(
                 for container in model.containers
                 if not model.components_by_container.get(container.id)
             }
+
+            external_ids = {e.id for e in model.external_systems}
+
+            def _still_needed(relation) -> bool:
+                # Nothing is derived for an edge that leaves our boundary: an
+                # external system has no components to carry it. Dropping these
+                # left the external declared with nothing pointing at it.
+                if relation.source_id in external_ids or relation.target_id in external_ids:
+                    return True
+                return relation.source_id in componentless or relation.target_id in componentless
+
             relations = (
                 list(model.actor_relations)
                 + list(model.component_relations)
-                + [
-                    r
-                    for r in model.container_relations
-                    if r.source_id in componentless or r.target_id in componentless
-                ]
+                + [r for r in model.container_relations if _still_needed(r)]
             )
         writer.blank()
         writer.comment("Relationships")
@@ -310,5 +317,6 @@ def to_dsl(
             model,
             references,
             include_components=include_components,
+            include_layer_views=include_metadata,
         )
     return writer.render()

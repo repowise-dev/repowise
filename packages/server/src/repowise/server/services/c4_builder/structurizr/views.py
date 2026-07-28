@@ -28,8 +28,14 @@ def write_views(
     references: dict[str, str],
     *,
     include_components: bool,
+    include_layer_views: bool = True,
 ) -> None:
-    """Write a ``views`` block: context, containers, and per-container components."""
+    """Write a ``views`` block: context, containers, and per-container components.
+
+    ``include_layer_views`` follows the caller's metadata flag. The layer views
+    filter on tags the metadata pass emits, so with metadata off they would
+    parse and then select nothing at all.
+    """
     system_ref = references[model.system.id]
     with writer.block("views"):
         with writer.block(f"systemContext {system_ref} {quote('SystemContext')}"):
@@ -66,7 +72,8 @@ def write_views(
                         writer.line("include *")
                     writer.line("autolayout lr")
 
-        _write_layer_views(writer, model, references)
+        if include_layer_views:
+            _write_layer_views(writer, model, references)
 
         writer.blank()
         with writer.block("styles"):

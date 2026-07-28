@@ -498,6 +498,25 @@ def test_two_packages_presenting_as_the_same_name_do_not_collide() -> None:
     assert "@xyflow/react" in declared
 
 
+def test_an_external_stays_connected_when_components_are_on() -> None:
+    """Structurizr derives a container edge from a component one, an external one it cannot.
+
+    With components on, only the container edges touching a componentless
+    container survive — and an external system is never componentless, so
+    ``pkg:core -> ext:fastapi`` disappeared and FastAPI was declared with
+    nothing pointing at it.
+    """
+    dsl = to_dsl(_model(component_relations=[]), include_components=True)
+    assert "-> ext_fastapi" in dsl, dsl
+
+
+def test_layer_views_are_not_emitted_when_metadata_is_off() -> None:
+    """The tags they filter on are gone, so every one of them selects nothing."""
+    dsl = to_dsl(_signals_model(), standalone=True, include_metadata=False)
+    assert "Layer: " not in dsl
+    assert '"layer_' not in dsl
+
+
 def test_every_person_is_connected_to_the_system() -> None:
     """An unconnected person is left out of the context view entirely.
 
