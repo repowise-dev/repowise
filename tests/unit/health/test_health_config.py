@@ -339,3 +339,57 @@ class TestGitignoreGlobSemantics:
         overrides = config.per_file_severity_overrides(["src/legacy/deep/a.py", "src/new.py"])
         assert "src/legacy/deep/a.py" in overrides
         assert "src/new.py" not in overrides
+
+
+class TestAMalformedFieldNeverRaises:
+    """``from_dict`` is documented as never raising, and ``load`` relies on it.
+
+    ``load`` wraps only the JSON parse, and none of its four callers guard the
+    call, so an exception here aborts an index run over a hand-edited file.
+    """
+
+    def test_a_rules_field_that_is_not_a_list(self) -> None:
+        assert HealthConfig.from_dict({"rules": 5}).rules == []
+        assert HealthConfig.from_dict({"rules": "src/**"}).rules == []
+        assert HealthConfig.from_dict({"rules": {"path": "src/**"}}).rules == []
+
+    def test_a_disabled_biomarkers_field_that_is_not_a_list(self) -> None:
+        assert HealthConfig.from_dict({"disabled_biomarkers": 7}).disabled_biomarkers == []
+        assert HealthConfig.from_dict({"disabled_biomarkers": {"a": 1}}).disabled_biomarkers == []
+
+    def test_a_rules_disabled_biomarkers_field_that_is_not_a_list(self) -> None:
+        config = HealthConfig.from_dict(
+            {"rules": [{"path": "src/**", "disabled_biomarkers": 3}]}
+        )
+        assert len(config.rules) == 1
+        assert config.rules[0].disabled_biomarkers == []
+
+    def test_one_bad_field_does_not_cost_the_rest_of_the_file(self) -> None:
+        config = HealthConfig.from_dict(
+            {
+                "disabled_biomarkers": 7,
+                "rules": [
+                    {"path": "src/legacy/**", "disabled_biomarkers": ["dry_violation"]},
+                    {"path": "src/other/**", "disabled_biomarkers": "complex_method"},
+                ],
+            }
+        )
+        assert config.disabled_biomarkers == []
+        disabled = config.per_file_disabled(["src/legacy/a.py", "src/other/b.py"])
+        assert disabled["src/legacy/a.py"] == {"dry_violation"}
+        assert "src/other/b.py" not in disabled
+
+    def test_a_string_disabled_biomarkers_is_not_read_as_characters(self) -> None:
+        """A string is iterable, so a permissive fix would silence 'c','o','m'…"""
+        config = HealthConfig.from_dict({"disabled_biomarkers": "complex_method"})
+        assert config.disabled_biomarkers == []
+
+    def test_a_refactoring_detectors_field_that_is_not_a_list(self) -> None:
+        """Same shape as the rules fields, one block over in config.yaml."""
+        assert HealthConfig._from_refactoring_block(
+            {"detectors": {"disabled": 4}}
+        ).disabled_refactorings == []
+        # A bare string must not be read as its characters either.
+        assert HealthConfig._from_refactoring_block(
+            {"detectors": {"disabled": "extract_class"}}
+        ).disabled_refactorings == []

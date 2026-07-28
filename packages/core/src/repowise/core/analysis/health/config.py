@@ -86,6 +86,22 @@ _PROFILES: dict[str, dict[str, Severity]] = {
 }
 
 
+def _string_list(raw: object, *, field: str) -> list[str]:
+    """Parse a list-of-names field, dropping anything that is not one.
+
+    A string is deliberately rejected rather than iterated: ``"complex_method"``
+    is the natural thing to write instead of a one-element list, and iterating
+    it would silence biomarkers called ``c``, ``o``, ``m``… — a config that
+    looks like it worked.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list | tuple):
+        log.warning("health_rules_field_not_a_list", field=field, got=type(raw).__name__)
+        return []
+    return [str(item) for item in raw if isinstance(item, str)]
+
+
 def _coerce_severity_map(raw: object) -> dict[str, Severity]:
     """Parse a ``{biomarker: "severity"}`` dict, dropping invalid entries."""
     if not isinstance(raw, dict):
@@ -245,7 +261,7 @@ class HealthConfig:
         enabled = block.get("enabled")
         detectors = block.get("detectors")
         disabled_raw = detectors.get("disabled") if isinstance(detectors, dict) else None
-        disabled = [str(d) for d in disabled_raw or [] if isinstance(d, str)]
+        disabled = _string_list(disabled_raw, field="refactoring.detectors.disabled")
         floor_raw = block.get("min_confidence")
         floor = None
         if isinstance(floor_raw, str) and floor_raw.strip().lower() in _CONFIDENCE_LEVELS:
@@ -279,11 +295,13 @@ class HealthConfig:
     def from_dict(cls, raw: object) -> HealthConfig:
         if not isinstance(raw, dict):
             return cls()
-        disabled: list[str] = [
-            str(b) for b in (raw.get("disabled_biomarkers") or []) if isinstance(b, str)
-        ]
+        disabled = _string_list(raw.get("disabled_biomarkers"), field="disabled_biomarkers")
         rules: list[HealthRule] = []
-        for entry in raw.get("rules") or []:
+        raw_rules = raw.get("rules")
+        if raw_rules is not None and not isinstance(raw_rules, list | tuple):
+            log.warning("health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__)
+            raw_rules = []
+        for entry in raw_rules or []:
             if not isinstance(entry, dict):
                 continue
             # ``path`` is canonical; ``path_glob`` and ``glob`` are accepted
@@ -292,9 +310,9 @@ class HealthConfig:
             glob = entry.get("path") or entry.get("path_glob") or entry.get("glob")
             if not isinstance(glob, str) or not glob:
                 continue
-            disabled_for = [
-                str(b) for b in (entry.get("disabled_biomarkers") or []) if isinstance(b, str)
-            ]
+            disabled_for = _string_list(
+                entry.get("disabled_biomarkers"), field="rules[].disabled_biomarkers"
+            )
             # A rule written against the old matching may now cover less than
             # its author meant, which would quietly un-silence biomarkers they
             # had turned off. Say so instead of letting them discover it in a
