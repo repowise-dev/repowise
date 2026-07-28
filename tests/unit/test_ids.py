@@ -33,6 +33,7 @@ EVERY_VARIANT = [
     SymbolId("src/main.py", "Klass.method"),
     ExternalId("react"),
     ExternalId("pub:http"),
+    ExternalId("serde::Deserialize"),
     FrameworkId("typo3-core"),
     SystemId("repowise"),
     PersonId("developer"),
@@ -99,14 +100,50 @@ def test_a_file_whose_name_contains_the_separator_is_rejected_loudly() -> None:
     """Legal on Linux and macOS, unrepresentable here — so fail at construction.
 
     The alternative is emitting an id that parses back as a symbol, which is
-    the failure the whole module exists to prevent.
+    the failure the whole module exists to prevent. Only the two unprefixed
+    forms are at risk: a prefixed id is read prefix-first, so the separator
+    inside it is just data.
     """
     with pytest.raises(InvalidNodeIdError):
         render(FileId("weird::name.py"))
     with pytest.raises(InvalidNodeIdError):
-        render(ContainerId("weird::pkg"))
-    with pytest.raises(InvalidNodeIdError):
-        render(ComponentId("weird::dir"))
+        render(SymbolId("weird::dir/a.py", "main"))
+
+
+def test_a_prefixed_id_may_contain_the_symbol_separator() -> None:
+    """Rust import resolution really emits ``external:serde::Deserialize``.
+
+    ``ingestion/resolvers/rust.py`` builds an external node from the raw module
+    path, so the separator lands inside a prefixed id. Reading the prefix first
+    makes it unambiguous, so there is nothing to reject.
+    """
+    assert parse("external:serde::Deserialize") == ExternalId("serde::Deserialize")
+    assert render(ExternalId("serde::Deserialize")) == "external:serde::Deserialize"
+    assert parse("framework:foo::bar") == FrameworkId("foo::bar")
+    assert render(ContainerId("weird::pkg")) == "pkg:weird::pkg"
+    assert parse("cmp:weird::dir") == ComponentId("weird::dir")
+
+
+def test_a_prefixed_id_is_never_read_as_a_symbol() -> None:
+    """The regression this ordering exists to prevent.
+
+    Parsing the separator first turned every Rust external into a symbol whose
+    path was ``external:<crate>``, so ``is_external`` said False and the crate
+    was treated as one of the repository's own files.
+    """
+    for raw in (
+        "external:serde::Deserialize",
+        "framework:foo::bar",
+        "pkg:weird::pkg",
+        "file:weird::name.py",
+    ):
+        assert not isinstance(parse(raw), SymbolId), raw
+
+
+def test_a_symbol_name_may_contain_the_separator() -> None:
+    """Rust and C++ symbol names are path-like; only the first split matters."""
+    assert parse("src/lib.rs::Foo::bar") == SymbolId("src/lib.rs", "Foo::bar")
+    assert render(SymbolId("src/lib.rs", "Foo::bar")) == "src/lib.rs::Foo::bar"
 
 
 def test_is_external_covers_frameworks_too() -> None:
@@ -115,6 +152,13 @@ def test_is_external_covers_frameworks_too() -> None:
     assert not is_external("src/main.py")
     assert not is_external("src/main.py::main")
     assert not is_external("pkg:packages/core")
+
+
+def test_is_external_covers_a_name_carrying_the_separator() -> None:
+    """A Cargo repo's externals all look like this."""
+    assert is_external("external:serde::Deserialize")
+    assert is_external("framework:foo::bar")
+    assert file_path_of("external:serde::Deserialize") is None
 
 
 def test_file_path_of() -> None:

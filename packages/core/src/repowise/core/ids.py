@@ -11,12 +11,13 @@ This module is the one place that knows the spelling. :func:`parse` turns a
 raw id into a typed value, :func:`render` turns it back, and the two are exact
 inverses. Two rules keep them that way:
 
-* **``::`` is only ever the symbol separator.** Nothing else may contain it,
-  and :func:`render` raises rather than emitting an id that would parse back
-  as something different.
-* **The prefix is matched against a fixed table.** An unknown prefix is not a
-  kind — ``C:\\src\\main.py`` is a Windows path, not a ``C`` node — so
-  anything unrecognised parses as a file.
+* **The prefix is matched against a fixed table, and it is matched first.** An
+  unknown prefix is not a kind — ``C:\\src\\main.py`` is a Windows path, not a
+  ``C`` node — so anything unrecognised parses as a file.
+* **``::`` separates a file from a symbol, but only in an id with no prefix.**
+  Inside a prefixed id it is ordinary data: Rust import resolution really emits
+  ``external:serde::Deserialize``. :func:`render` raises only for the two
+  unprefixed forms, where a separator genuinely has no unambiguous spelling.
 
 Pure and dependency-free: no database, no filesystem, no imports from the rest
 of the package, so it is safe to use from ingestion, the server and the CLI
@@ -184,10 +185,15 @@ def render(node: NodeId) -> str:
     parse back as a different kind — a file genuinely named ``a::b.py`` is
     legal on disk and has no unambiguous spelling here, and silently
     mis-parsing it later is worse than failing now.
+
+    Only the *unprefixed* forms can hit that. A prefixed id is read prefix-first
+    (see :func:`parse`), so a separator inside one is just part of the value and
+    survives the round trip untouched.
     """
     if isinstance(node, SymbolId):
+        # Only the path is at risk: ``parse`` splits on the FIRST separator, so
+        # the name keeps any further ones. Rust and C++ symbol names need that.
         _reject_separator("symbol path", node.path)
-        _reject_separator("symbol name", node.name)
         return f"{node.path}{SYMBOL_SEP}{node.name}"
 
     if isinstance(node, FileId):
@@ -195,7 +201,6 @@ def render(node: NodeId) -> str:
         return node.path
 
     if isinstance(node, ComponentId):
-        _reject_separator("component path", node.path)
         marker = _ROOT_MARKER if node.is_root_bucket else ""
         return f"cmp:{node.path}{marker}"
 
@@ -204,7 +209,6 @@ def render(node: NodeId) -> str:
         raise InvalidNodeIdError(f"not a node id: {node!r}")
     # Every remaining variant carries exactly one string field.
     (value,) = vars(node).values()
-    _reject_separator(f"{prefix} id", value)
     return f"{prefix}:{value}"
 
 
@@ -214,21 +218,27 @@ def parse(raw: str) -> NodeId:
     Anything without a known prefix is a file path, which is what an
     unprefixed graph node id means and what keeps Windows paths
     (``C:\\src\\main.py``) from being read as a ``C`` node.
+
+    The prefix is looked up **before** the symbol separator is considered.
+    Testing the separator first made ``external:serde::Deserialize`` — the
+    shape Rust import resolution emits for every crate — read as a symbol
+    inside a file called ``external:serde``, so every check asking "is this
+    third-party code?" answered no and the crate was treated as one of the
+    repository's own files.
     """
+    prefix, sep, rest = raw.partition(":")
+    ctor = _BY_PREFIX.get(prefix) if sep else None
+    if ctor is not None:
+        if ctor is ComponentId:
+            if rest.endswith(_ROOT_MARKER):
+                return ComponentId(path=rest[: -len(_ROOT_MARKER)], is_root_bucket=True)
+            return ComponentId(path=rest)
+        return ctor(rest)  # type: ignore[call-arg]
+
     if SYMBOL_SEP in raw:
         path, _, name = raw.partition(SYMBOL_SEP)
         return SymbolId(path=path, name=name)
-
-    prefix, sep, rest = raw.partition(":")
-    ctor = _BY_PREFIX.get(prefix) if sep else None
-    if ctor is None:
-        return FileId(path=raw)
-
-    if ctor is ComponentId:
-        if rest.endswith(_ROOT_MARKER):
-            return ComponentId(path=rest[: -len(_ROOT_MARKER)], is_root_bucket=True)
-        return ComponentId(path=rest)
-    return ctor(rest)  # type: ignore[call-arg]
+    return FileId(path=raw)
 
 
 def is_external(raw: str) -> bool:

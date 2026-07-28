@@ -8,6 +8,7 @@ from repowise.core.generation.layers import (
     compute_layer_order,
     infer_layer,
     layer_key,
+    layer_order_basis,
 )
 
 # ---------------------------------------------------------------------------
@@ -279,6 +280,27 @@ def test_compute_layer_order_ignores_external_and_intra_layer_edges():
     ]
     order = compute_layer_order(file_layers, edges)
     assert order.index("API") < order.index("Data")
+
+
+def test_compute_layer_order_ignores_frameworks_and_rust_crates():
+    """The two external spellings the plain ``external:`` check used to miss.
+
+    ``framework:`` nodes are synthesised by the framework-edge passes, and Rust
+    externals carry the symbol separator in their name. Either one leaking into
+    the ordering race would let a dependency we do not own decide the stack.
+    """
+    file_layers = {"api/a.py": "API", "data/d.py": "Data"}
+    edges = [
+        ("api/a.py", "framework:typo3-core"),
+        ("api/a.py", "external:serde::Deserialize"),
+        ("framework:typo3-core", "data/d.py"),
+        ("api/a.py", "data/d.py"),
+    ]
+    order = compute_layer_order(file_layers, edges)
+    assert order.index("API") < order.index("Data")
+    # Only the one edge between two files we own counts as evidence.
+    assert layer_order_basis(file_layers, edges) == "imports"
+    assert layer_order_basis(file_layers, edges[:3]) == "canonical"
 
 
 def test_compute_layer_order_stable_without_edges():

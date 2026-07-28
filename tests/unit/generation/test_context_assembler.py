@@ -317,6 +317,27 @@ def test_assemble_repo_overview_top_files_sorted(
         assert ctx.top_files_by_pagerank[0].score >= ctx.top_files_by_pagerank[1].score
 
 
+def test_assemble_repo_overview_leaves_out_crates_and_frameworks(
+    sample_config, sample_repo_structure
+):
+    """PageRank is computed over the whole graph, externals included.
+
+    A Rust crate arrives as ``external:serde::Deserialize`` — the separator is
+    part of the crate path, not a symbol — and a framework node as
+    ``framework:typo3-core``. Reading either as one of the repository's own
+    files puts a third-party name at the top of the generated overview.
+    """
+    assembler = ContextAssembler(sample_config)
+    pagerank = {
+        "external:serde::Deserialize": 0.9,
+        "framework:typo3-core": 0.8,
+        "external:react": 0.7,
+        "python_pkg/calculator.py": 0.5,
+    }
+    ctx = assembler.assemble_repo_overview(sample_repo_structure, pagerank, [], {})
+    assert [f.path for f in ctx.top_files_by_pagerank] == ["python_pkg/calculator.py"]
+
+
 def test_assemble_repo_overview_circular_dep_count(
     sample_config, sample_graph, sample_repo_structure
 ):
