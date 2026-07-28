@@ -39,7 +39,14 @@ def write_views(
     system_ref = references[model.system.id]
     with writer.block("views"):
         with writer.block(f"systemContext {system_ref} {quote('SystemContext')}"):
+            # `include *` alone puts every external in here. Structurizr
+            # promotes a container→external edge to the system level, so all
+            # ~50 npm and pypi packages land in the context view and it stops
+            # being a context view — the one diagram whose whole job is to fit
+            # on a slide. They are dependencies rather than systems anyone
+            # integrates with, and the container view below still shows them.
             writer.line("include *")
+            writer.line('exclude "element.tag==External"')
             writer.line("autolayout lr")
 
         writer.blank()
@@ -80,9 +87,11 @@ def write_views(
             with writer.block('element "External"'):
                 writer.line("background #999999")
                 writer.line("color #ffffff")
-            # The health colours. Tag styles are applied in declaration order,
-            # so Hotspot before Dead means a dead hotspot reads as dead — the
-            # more actionable of the two.
+            # The health colours. Which one wins on an element carrying both is
+            # decided by the order of tags *on the element*, not the order these
+            # rules are declared — `tags_for` emits Hotspot then Dead, so a dead
+            # hotspot reads as dead, the more actionable of the two. Reordering
+            # these blocks would change nothing.
             with writer.block('element "Hotspot"'):
                 writer.line("background #b5432f")
                 writer.line("color #ffffff")
@@ -116,6 +125,10 @@ def _write_layer_views(writer: Writer, model: C4Model, references: dict[str, str
     for layer in layers:
         writer.blank()
         key = _view_key("layer", keys[layer])
-        with writer.block(f"container {system_ref} {quote(key)}"):
+        # The key is slugged for uniqueness, so it reads as
+        # `layer_Ingestion_and_Reasoning_Pipeline` in the view picker. The
+        # description is the third positional argument and is what Structurizr
+        # actually shows a reader, so the curated name survives to the UI.
+        with writer.block(f"container {system_ref} {quote(key)} {quote(layer)}"):
             writer.line(f"include {quote(f'element.tag=={layer_tag(layer)}')}")
             writer.line("autolayout lr")

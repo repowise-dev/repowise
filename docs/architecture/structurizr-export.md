@@ -27,12 +27,28 @@ that is already there.
 
 ## 1. The two-file mental model
 
+**Which one do you want?**
+
+| You | Take | Command |
+|---|---|---|
+| Have no `workspace.dsl` and want a picture now | A complete workspace | `repowise export --format structurizr --standalone` |
+| Already keep a hand-written `workspace.dsl` | A model fragment | `repowise export --format structurizr` |
+
+The fragment is the CLI default because the CLI writes into a repo you own,
+where a `workspace.dsl` usually already exists. **It does not open on its
+own** — it has no `workspace` block, so a parser given it directly fails with
+`Unexpected tokens (expected: workspace)`, and structurizr.com cannot resolve
+the `!include` that fixes that because includes are read from disk. If you are
+about to upload a file somewhere, you want `--standalone`.
+
+The web UI offers both and leads with the workspace, since anyone exporting
+from a browser is unlikely to have a workspace file to include it from.
+
 **We own the model. You own the presentation.**
 
-By default the export writes `repowise-model.dsl`, which holds the contents of
-a `model { … }` block and nothing else — no views, no styles, no `workspace`
-line. You include it from your own `workspace.dsl`, where your views, styles,
-documentation and ADRs live:
+The fragment holds the contents of a `model { … }` block and nothing else — no
+views, no styles, no `workspace` line. You include it from your own
+`workspace.dsl`, where your views, styles, documentation and ADRs live:
 
 ```
 workspace "your name" {
@@ -55,7 +71,15 @@ anything you wrote. Re-export as often as you like — the diff shows what
 changed in the architecture, not in your formatting.
 
 If you have no `workspace.dsl` yet, `--standalone` writes a complete one with
-default views so you get a picture from a single command.
+default views so you get a picture from a single command. That file is a
+*starting point you take over*, not a generated artefact — edit its views and
+styles freely, and once you have, switch to the fragment so re-exporting stops
+overwriting your work.
+
+Because `--standalone` targets `workspace.dsl`, which is exactly what your own
+hand-written workspace is called, the export **refuses to overwrite a file it
+did not write**. It names both ways out: emit a fragment beside your file
+instead, or pass `--force` to replace it deliberately.
 
 ---
 
@@ -182,8 +206,10 @@ styles {
 }
 ```
 
-Tag styles apply in declaration order, so `Hotspot` before `Dead` means a box
-that is both reads as dead — the more actionable of the two.
+When a box carries both tags, which style wins is decided by the order of the
+tags **on the element**, not by the order you declare the rules — reordering
+the blocks above changes nothing. We emit `Hotspot` before `Dead`, so a box
+that is both reads as dead, the more actionable of the two.
 
 ---
 
@@ -213,6 +239,7 @@ see the shape before writing your own.
 | `--components` | off | Include the component level: one box per directory |
 | `--no-externals` | on (externals included) | Leave third-party dependencies out |
 | `--output PATH` | repo root | Where to write; `.dsl` names the file |
+| `--force` | off | Overwrite the destination even if Repowise did not write it |
 
 **Why components are off by default.** In a hand-curated Structurizr model a
 component is a grouping somebody chose. Ours is a directory. Architects who

@@ -71,9 +71,28 @@ class Writer:
 def quote(text: str) -> str:
     """Quote a value for the DSL.
 
-    Structurizr string literals are double-quoted with no escape sequence, so
-    an embedded quote is replaced rather than escaped, and newlines are
-    flattened — a literal newline inside a quoted value is a parse error.
+    Newlines are flattened: a literal newline inside a quoted value is a parse
+    error.
+
+    A quote is **escaped**, not replaced. ``\\"`` is the one escape the parser
+    honours, and it survives being nested inside a view filter expression
+    (``include "element.tag==Layer: Data \\"Access\\""`` both parses and selects
+    the element tagged that way), so the tag and the filter that selects it stay
+    identical without either of them losing the character.
+
+    A **trailing** backslash is dropped, because it cannot be expressed at all.
+    ``\\\\`` is not an escape — backslashes pass through literally — so the last
+    one in a value would pair with the closing quote instead, escape it, and run
+    the string on into the rest of the file. Interior backslashes are left
+    alone; a Windows path stays readable.
     """
     flattened = " ".join(str(text).split())
-    return '"' + flattened.replace('"', "'") + '"'
+    # Order matters: escaping quotes introduces backslashes of its own, but only
+    # ever in front of a quote, so nothing it adds can end up trailing.
+    # The space goes with it: dropping the backslash off "Escape Hatch \" would
+    # otherwise leave a trailing one. Structurizr trims both a tag and the
+    # filter that selects it, so it would still match — but only by symmetry,
+    # and layer_tag's guarantee is that the two strings are byte-identical.
+    # Whitespace is already collapsed above, so nothing legitimate is stripped.
+    escaped = flattened.replace('"', '\\"').rstrip("\\ ")
+    return f'"{escaped}"'

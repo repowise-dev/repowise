@@ -38,8 +38,16 @@ def layer_tag(name: str) -> str:
     string the element was never tagged with parses fine and then matches
     nothing, which is harder to spot than a parse error. One function means
     they cannot drift.
+
+    Commas are dropped because Structurizr splits the ``tags`` argument on them
+    *inside* the quotes: ``tags "Layer: Docs, Rendering"`` is stored as the two
+    tags ``Layer: Docs`` and ``Rendering``. The second one has lost the prefix,
+    which is the exact collision the prefix exists to prevent — a layer named
+    "Coupling, Tight" would put a bare ``Tight`` in the tag namespace next to
+    the relationship style of that name. Layer names are curated prose, so a
+    comma in one is ordinary input, not a corner case.
     """
-    return f"{_LAYER_TAG_PREFIX}{name}"
+    return f"{_LAYER_TAG_PREFIX}{name.replace(',', ' ')}"
 
 
 def tags_for(signals: BoxSignals | None) -> list[str]:

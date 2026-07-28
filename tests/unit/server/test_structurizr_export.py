@@ -191,6 +191,27 @@ def test_fragment_explains_how_to_use_itself() -> None:
     assert 'workspace "your name" {' in dsl
 
 
+def test_the_fragment_header_warns_the_web_editor_cannot_resolve_an_include() -> None:
+    """The failure it prevents: paste both files into structurizr.com, get an
+    unresolved include and no diagram."""
+    dsl = to_dsl(_model())
+    assert "structurizr.com" in dsl
+    assert "--standalone" in dsl
+
+
+def test_the_standalone_header_hands_the_file_over_rather_than_locking_it() -> None:
+    """Opposite advice from the fragment on purpose: this one is a starting
+    point the user is meant to edit, so 'do not hand-edit' would be wrong."""
+    dsl = to_dsl(_model(), standalone=True)
+    assert "do not hand-edit" not in dsl
+    assert "yours" in dsl
+    # And it names the escape hatch once they have made it their own.
+    assert "repowise export --format structurizr" in dsl
+    # The include snippet belongs to the fragment; a complete workspace that
+    # tells you to !include itself is nonsense.
+    assert "!include" not in dsl
+
+
 def test_there_is_no_timestamp_in_the_output() -> None:
     """A timestamp would make every regeneration a diff."""
     dsl = to_dsl(_model(), standalone=True, include_components=True)
@@ -386,7 +407,12 @@ def test_quoting_survives_a_name_with_quotes_and_newlines() -> None:
     dsl = to_dsl(model)
     system_line = next(line for line in dsl.splitlines() if "softwareSystem" in line)
     assert "\n" not in system_line
-    assert system_line.count('"') % 2 == 0
+    # Escaped quotes are content, not delimiters, so only the unescaped ones
+    # have to pair up.
+    assert _unescaped_quotes(system_line) % 2 == 0
+    # And the quote survives rather than being rewritten: `\"` is the one escape
+    # the parser honours, at both this level and inside a filter expression.
+    assert 'we\\"rd' in system_line
 
 
 def test_the_system_identifier_does_not_depend_on_the_local_repo_id() -> None:
@@ -643,9 +669,28 @@ def test_a_system_name_with_a_newline_cannot_break_the_header() -> None:
         assert not line or line.startswith("#"), line
 
 
+#: One DSL string literal: quoted, with ``\"`` allowed inside it.
+_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _dsl_strings(line: str) -> list[str]:
+    """Every string literal on *line*, decoded the way the parser reads them.
+
+    Splitting on ``"`` is what these helpers used to do, and it stops working
+    the moment a value legitimately contains an escaped quote — which is how
+    the emitter now spells one, because the parser supports it.
+    """
+    return [match.replace('\\"', '"') for match in _STRING.findall(line)]
+
+
+def _unescaped_quotes(line: str) -> int:
+    """How many quotes actually open or close a string on *line*."""
+    return len(re.findall(r'(?<!\\)"', line))
+
+
 def _layer_view_keys(dsl: str) -> list[str]:
     return [
-        line.split('"')[1]
+        _dsl_strings(line)[0]
         for line in dsl.splitlines()
         if line.strip().startswith("container ") and '"layer_' in line
     ]
@@ -653,9 +698,11 @@ def _layer_view_keys(dsl: str) -> list[str]:
 
 def _layer_filters(dsl: str) -> list[str]:
     return [
-        line.strip().split("element.tag==", 1)[1].rstrip('"')
+        value.split("element.tag==", 1)[1]
         for line in dsl.splitlines()
         if "element.tag==" in line
+        for value in _dsl_strings(line)
+        if value.startswith("element.tag==")
     ]
 
 
@@ -664,7 +711,7 @@ def _emitted_tags(dsl: str) -> set[str]:
     for line in dsl.splitlines():
         stripped = line.strip()
         if stripped.startswith("tags "):
-            tags.update(re.findall(r'"([^"]*)"', stripped))
+            tags.update(_dsl_strings(stripped))
     return tags
 
 
@@ -689,14 +736,80 @@ def test_two_layer_names_that_slug_alike_get_different_view_keys() -> None:
 
 
 def test_a_layer_name_with_a_quote_cannot_break_the_filter() -> None:
-    """The filter is a string literal, so an unescaped quote ends it early."""
+    """The filter is a string literal, so an *unescaped* quote ends it early.
+
+    The tag inside it is a string within a string, and the escape survives both
+    levels — verified against the parser — so the quote is kept rather than
+    substituted away.
+    """
     dsl = to_dsl(
         _signals_model(box_signals={"pkg:packages/core": BoxSignals(layers=('Data "Access"',))}),
         standalone=True,
     )
-    filter_lines = [line for line in dsl.splitlines() if "element.tag==" in line]
+    # Scoped to `include`: the SystemContext view carries an `exclude` filter
+    # of its own, which is not what this is about.
+    filter_lines = [
+        line for line in dsl.splitlines() if line.strip().startswith('include "element.tag==')
+    ]
     assert len(filter_lines) == 1
-    assert filter_lines[0].count('"') == 2, filter_lines[0]
+    assert _unescaped_quotes(filter_lines[0]) == 2, filter_lines[0]
+    assert 'Data \\"Access\\"' in filter_lines[0]
+
+
+def test_a_comma_in_a_layer_name_does_not_split_it_into_two_tags() -> None:
+    """Structurizr splits the `tags` argument on commas *inside* the quotes, so
+    `tags "Layer: Docs, Rendering"` stores `Layer: Docs` and a bare `Rendering`
+    — a tag that has escaped the namespace the prefix exists to enforce."""
+    dsl = to_dsl(
+        _signals_model(box_signals={"pkg:packages/core": BoxSignals(layers=("Coupling, Tight",))}),
+        standalone=True,
+    )
+    tag_lines = [line.strip() for line in dsl.splitlines() if line.strip().startswith("tags ")]
+    assert tag_lines
+    for line in tag_lines:
+        assert "," not in line, line
+    # The layer survives as one namespaced tag rather than two, the second of
+    # which would have been a bare `Tight` colliding with the coupling style.
+    assert '"Layer: Coupling Tight"' in dsl
+
+
+def test_a_trailing_backslash_cannot_run_a_string_past_its_closing_quote() -> None:
+    """A backslash introduces an escape, so a value ending in one would eat its
+    own terminator and swallow the rest of the line."""
+    dsl = to_dsl(
+        _signals_model(box_signals={"pkg:packages/core": BoxSignals(layers=("Windows C:\\",))}),
+        standalone=True,
+    )
+    # It cannot be escaped either — `\\` is not an escape, backslashes pass
+    # through literally — so the only safe thing is to drop the trailing one.
+    assert "Layer: Windows C:" in dsl
+    assert "C:\\" not in dsl
+    # Every quoted line still closes: an even number of *unescaped* quotes.
+    for line in dsl.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        assert _unescaped_quotes(line) % 2 == 0, line
+
+
+def test_the_context_view_leaves_out_the_dependency_wall() -> None:
+    """Structurizr promotes container→external edges to the system level, so
+    `include *` alone puts every npm package in the one diagram meant to fit on
+    a slide."""
+    dsl = to_dsl(_model(), standalone=True)
+    context = dsl.split("systemContext ")[1].split("}")[0]
+    assert 'exclude "element.tag==External"' in context
+
+
+def test_a_layer_view_is_labelled_with_the_curated_name() -> None:
+    """The key is slugged for uniqueness; the description is what a reader sees
+    in the view picker."""
+    dsl = to_dsl(
+        _signals_model(
+            box_signals={"pkg:packages/core": BoxSignals(layers=("Ingestion and Reasoning",))}
+        ),
+        standalone=True,
+    )
+    assert '"Ingestion and Reasoning"' in dsl
 
 
 def test_a_layer_filter_matches_the_tag_that_was_actually_emitted() -> None:
@@ -721,7 +834,7 @@ def test_a_layer_filter_matches_the_tag_that_was_actually_emitted() -> None:
 def _declared(dsl: str, keyword: str) -> list[str]:
     """The display names of every element declared with *keyword*."""
     return [
-        line.split(f"{keyword} ", 1)[1].split('"')[1]
+        _dsl_strings(line.split(f"{keyword} ", 1)[1])[0]
         for line in dsl.splitlines()
         if f"= {keyword} " in line
     ]

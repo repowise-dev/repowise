@@ -75,9 +75,10 @@ export interface C4DiagramProps {
 
   /**
    * Host-provided Structurizr DSL fetcher. When supplied, the export menu
-   * offers "Structurizr DSL". Omit to hide.
+   * offers both DSL shapes — a complete workspace and a model fragment — and
+   * passes `standalone` to say which one it wants. Omit to hide.
    */
-  fetchStructurizr?: (() => Promise<string>) | undefined;
+  fetchStructurizr?: ((options: { standalone: boolean }) => Promise<string>) | undefined;
 
   onLevelChange: (level: C4Level) => void;
   onDrillInto: (containerId: string) => void;

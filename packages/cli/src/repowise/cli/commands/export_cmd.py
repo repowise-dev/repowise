@@ -57,6 +57,13 @@ from repowise.cli.helpers import (
     help="structurizr only: include the component level (one box per directory).",
 )
 @click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="structurizr only: overwrite the output file even if Repowise did not "
+    "write it. --standalone targets workspace.dsl, which may be your own.",
+)
+@click.option(
     "--no-externals",
     "include_externals",
     flag_value=False,
@@ -71,6 +78,7 @@ def export_command(
     standalone: bool = False,
     include_components: bool = False,
     include_externals: bool = True,
+    force: bool = False,
 ) -> None:
     """Export wiki pages, or the architecture model, to files."""
     repo_path = resolve_repo_path(path)
@@ -85,6 +93,7 @@ def export_command(
             standalone=standalone,
             include_components=include_components,
             include_externals=include_externals,
+            force=force,
         )
         if code:
             raise SystemExit(code)
