@@ -1,0 +1,141 @@
+{
+  "_comment": [
+    "Shared node-id cases, read by both packages/core/.../ids.py's tests and",
+    "packages/types/src/node-ids.ts's tests. The two modules decode the same",
+    "wire data, so a rule that holds in one and not the other is a live bug —",
+    "and nothing but a shared list of cases can fail a build when they drift.",
+    "",
+    "kind:        the variant name, lowercased ('file', 'symbol', 'external', ...)",
+    "file_path:   the file this id refers to, or null",
+    "symbol_name: the symbol this id names, or null",
+    "is_external: names code we do not own (third-party or framework)"
+  ],
+  "cases": [
+    {
+      "raw": "src/main.py",
+      "kind": "path",
+      "file_path": "src/main.py",
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "C:\\src\\main.py",
+      "kind": "path",
+      "file_path": "C:\\src\\main.py",
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "mailto:someone@example.com",
+      "kind": "path",
+      "file_path": "mailto:someone@example.com",
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "file:src/main.py",
+      "kind": "file",
+      "file_path": "src/main.py",
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "src/main.py::main",
+      "kind": "symbol",
+      "file_path": "src/main.py",
+      "symbol_name": "main",
+      "is_external": false
+    },
+    {
+      "raw": "src/lib.rs::Foo::bar",
+      "kind": "symbol",
+      "file_path": "src/lib.rs",
+      "symbol_name": "Foo::bar",
+      "is_external": false
+    },
+    {
+      "raw": "external:react",
+      "kind": "external",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": true
+    },
+    {
+      "raw": "external:pub:http",
+      "kind": "external",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": true
+    },
+    {
+      "raw": "external:serde::Deserialize",
+      "kind": "external",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": true
+    },
+    {
+      "raw": "framework:typo3-core",
+      "kind": "framework",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": true
+    },
+    {
+      "raw": "framework:foo::bar",
+      "kind": "framework",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": true
+    },
+    {
+      "raw": "sys:repowise",
+      "kind": "sys",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "person:developer",
+      "kind": "person",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "pkg:packages/core",
+      "kind": "pkg",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "cmp:packages/core/ingestion",
+      "kind": "cmp",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "cmp:packages/core#root",
+      "kind": "cmp",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": false
+    },
+    {
+      "raw": "ext:react",
+      "kind": "ext",
+      "file_path": null,
+      "symbol_name": null,
+      "is_external": false
+    }
+  ],
+  "display_labels": [
+    { "raw": "src/main.py::main", "label": "main" },
+    { "raw": "src/dir/main.py", "label": "main.py" },
+    { "raw": "file:src/dir/main.py", "label": "main.py" },
+    { "raw": "external:react", "label": "react" },
+    { "raw": "cmp:packages/core#root", "label": "packages/core" }
+  ]
+}

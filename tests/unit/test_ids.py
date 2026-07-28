@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from repowise.core.ids import (
@@ -185,3 +188,44 @@ def test_file_path_of() -> None:
     assert file_path_of("file:src/main.py") == "src/main.py"
     assert file_path_of("external:react") is None
     assert file_path_of("pkg:packages/core") is None
+
+
+# ---------------------------------------------------------------------------
+# The shared fixture — the only thing that can fail a build when the Python
+# and TypeScript decoders drift apart. Its TypeScript half lives in
+# packages/types/__tests__/node-ids.test.ts and reads the same file.
+# ---------------------------------------------------------------------------
+
+_FIXTURE = json.loads(
+    (Path(__file__).resolve().parents[2] / "tests/fixtures/node_ids.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+#: Variant → the ``kind`` string the fixture and the TypeScript side use.
+_KIND_BY_TYPE = {
+    FileId: "path",
+    KgFileId: "file",
+    SymbolId: "symbol",
+    ExternalId: "external",
+    FrameworkId: "framework",
+    SystemId: "sys",
+    PersonId: "person",
+    ContainerId: "pkg",
+    ComponentId: "cmp",
+    ExternalSystemId: "ext",
+}
+
+
+def _symbol_name_of(raw: str) -> str | None:
+    node = parse(raw)
+    return node.name if isinstance(node, SymbolId) else None
+
+
+@pytest.mark.parametrize("case", _FIXTURE["cases"], ids=lambda c: c["raw"])
+def test_the_shared_fixture_holds_in_python(case) -> None:
+    raw = case["raw"]
+    assert _KIND_BY_TYPE[type(parse(raw))] == case["kind"], raw
+    assert file_path_of(raw) == case["file_path"], raw
+    assert _symbol_name_of(raw) == case["symbol_name"], raw
+    assert is_external(raw) is case["is_external"], raw

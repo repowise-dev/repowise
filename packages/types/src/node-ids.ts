@@ -9,12 +9,26 @@
  * Keep this in step with the Python module; the two are small and the rules
  * are the same:
  *
- * - `::` is only ever the symbol separator.
- * - An unknown prefix is not a kind, so a Windows path stays a path.
+ * - The prefix is matched against a fixed table, and it is matched *first*.
+ *   An unknown prefix is not a kind, so a Windows path stays a path.
+ * - `::` separates a file from a symbol, but only in an id with no prefix.
+ *   Rust import resolution emits `external:serde::Deserialize`, where the
+ *   separator is part of the crate path.
+ *
+ * `tests/fixtures/node_ids.json` holds cases both this module and the Python
+ * one are checked against, so a divergence fails a build rather than living
+ * on in whichever surface is quieter.
  */
 
 /** Separator between a file path and a symbol name. */
 export const SYMBOL_SEP = "::";
+
+/**
+ * Marks the synthetic bucket of files sitting at a container's root, as in
+ * `cmp:packages/core#root`. Stripped from a label so the marker never reaches
+ * a reader.
+ */
+const ROOT_MARKER = "#root";
 
 const KNOWN_PREFIXES = [
   "file",
@@ -38,9 +52,9 @@ function prefixOf(raw: string): string | null {
 
 /** What kind of thing this id names. */
 export function nodeKind(raw: string): NodeKind {
-  if (raw.includes(SYMBOL_SEP)) return "symbol";
   const prefix = prefixOf(raw);
-  return (prefix as NodeKind) ?? "path";
+  if (prefix !== null) return prefix as NodeKind;
+  return raw.includes(SYMBOL_SEP) ? "symbol" : "path";
 }
 
 /**
@@ -61,15 +75,16 @@ export function stripPrefix(raw: string): string {
  * bare path both resolve to themselves.
  */
 export function filePathOf(raw: string): string | null {
-  if (raw.includes(SYMBOL_SEP)) return raw.split(SYMBOL_SEP)[0] ?? null;
   const prefix = prefixOf(raw);
-  if (prefix === null) return raw;
   if (prefix === "file") return raw.slice("file:".length);
-  return null;
+  if (prefix !== null) return null;
+  if (raw.includes(SYMBOL_SEP)) return raw.split(SYMBOL_SEP)[0] ?? null;
+  return raw;
 }
 
 /** The symbol name in a `path::Symbol` id, or null if it names no symbol. */
 export function symbolNameOf(raw: string): string | null {
+  if (nodeKind(raw) !== "symbol") return null;
   const index = raw.indexOf(SYMBOL_SEP);
   return index < 0 ? null : raw.slice(index + SYMBOL_SEP.length);
 }
@@ -80,7 +95,8 @@ export function displayLabel(raw: string): string {
   if (symbol) return symbol;
   const path = filePathOf(raw);
   if (path) return path.split("/").pop() || path;
-  return stripPrefix(raw);
+  const rest = stripPrefix(raw);
+  return rest.endsWith(ROOT_MARKER) ? rest.slice(0, -ROOT_MARKER.length) : rest;
 }
 
 /** True if the id names code we do not own (third-party or framework). */

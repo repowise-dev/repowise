@@ -12,6 +12,7 @@ import {
   stripPrefix,
   symbolNameOf,
 } from "../src/node-ids";
+import fixture from "../../../tests/fixtures/node_ids.json";
 
 describe("nodeKind", () => {
   it("recognises the prefixes the backend emits", () => {
@@ -91,5 +92,35 @@ describe("isExternal", () => {
     expect(isExternal("framework:typo3-core")).toBe(true);
     expect(isExternal("src/main.py")).toBe(false);
     expect(isExternal("pkg:packages/core")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The shared fixture. Its Python half lives in tests/unit/test_ids.py and reads
+// the same file, so a rule that holds on one side and not the other fails a
+// build instead of surviving as a live bug in whichever surface is quieter.
+// ---------------------------------------------------------------------------
+
+const FIXTURE = fixture as {
+  cases: {
+    raw: string;
+    kind: string;
+    file_path: string | null;
+    symbol_name: string | null;
+    is_external: boolean;
+  }[];
+  display_labels: { raw: string; label: string }[];
+};
+
+describe("the shared fixture holds in TypeScript", () => {
+  it.each(FIXTURE.cases)("$raw", (item) => {
+    expect(nodeKind(item.raw)).toBe(item.kind);
+    expect(filePathOf(item.raw)).toBe(item.file_path);
+    expect(symbolNameOf(item.raw)).toBe(item.symbol_name);
+    expect(isExternal(item.raw)).toBe(item.is_external);
+  });
+
+  it.each(FIXTURE.display_labels)("label of $raw", (item) => {
+    expect(displayLabel(item.raw)).toBe(item.label);
   });
 });
