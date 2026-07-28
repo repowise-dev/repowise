@@ -498,6 +498,49 @@ def test_two_packages_presenting_as_the_same_name_do_not_collide() -> None:
     assert "@xyflow/react" in declared
 
 
+def test_a_comment_can_never_span_lines() -> None:
+    """A tour title is curated prose, so it can carry a newline.
+
+    Written into a comment as-is, everything after the newline lands in the
+    file as a bare token and the parser stops there.
+    """
+    dsl = to_dsl(
+        _model(
+            tour=[
+                TourStep(
+                    order=1,
+                    title="Start here\nnot a comment",
+                    description="",
+                    reason="because\r\nof reasons",
+                    target_path="packages/core/a.py\nb.py",
+                )
+            ]
+        )
+    )
+    header, _, body = dsl.partition("\nmodel {")
+    assert body, dsl
+    for line in header.splitlines():
+        assert not line or line.startswith("#"), line
+    assert "Start here not a comment" in header
+
+
+def test_the_include_snippet_keeps_the_indentation_it_is_pasted_with() -> None:
+    """The header shows a nested block, so folding must not touch indentation.
+
+    Only line breaks are unsafe in a comment; a run of spaces is what makes the
+    snippet readable and pasteable.
+    """
+    dsl = to_dsl(_model())
+    assert "#         !include " in dsl, dsl.split("\nmodel {")[0]
+
+
+def test_a_system_name_with_a_newline_cannot_break_the_header() -> None:
+    dsl = to_dsl(_model(system=System(id="sys:x", name="repo\nwise")))
+    header = dsl.split("\nmodel {")[0]
+    for line in header.splitlines():
+        assert not line or line.startswith("#"), line
+
+
 def _layer_view_keys(dsl: str) -> list[str]:
     return [
         line.split('"')[1]

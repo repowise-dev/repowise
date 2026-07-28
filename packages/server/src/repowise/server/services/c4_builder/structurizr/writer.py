@@ -30,8 +30,20 @@ class Writer:
         self._lines.append(f"{_INDENT * self._depth}{text}" if text else "")
 
     def comment(self, text: str = "") -> None:
-        """Write a ``#`` comment, or a bare ``#`` for a spacer line."""
-        self.line(f"# {text}" if text else "#")
+        """Write a ``#`` comment, or a bare ``#`` for a spacer line.
+
+        Line breaks are folded to spaces first. A comment runs to the end of
+        the line, so a newline in the text puts everything after it into the
+        file as a bare token and the parser stops there. Much of what reaches
+        here is curated prose — a tour title, a repo name — and folding at the
+        one place that writes a ``#`` means no caller has to remember.
+
+        Only line breaks are touched. The header's include snippet is indented
+        so it can be pasted as written, and collapsing every run of whitespace
+        would flatten that too.
+        """
+        folded = " ".join(str(text).splitlines()).rstrip()
+        self.line(f"# {folded}" if folded else "#")
 
     def blank(self) -> None:
         """One blank line, collapsed if the previous line was already blank."""
