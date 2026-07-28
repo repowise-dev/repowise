@@ -17,10 +17,6 @@ from repowise.cli.helpers import console, load_state
 from repowise.core.generation.cascade import CascadeMode
 from repowise.core.generation.page_selection import PageSelectionIntent
 from repowise.core.generation.scope import ScopePlan, build_cost_plans, resolve_scope
-from repowise.core.pipeline.scoped_generation import (
-    execute_scoped_generation,
-    rehydrate_repo,
-)
 
 # The page types a model writes. Everything else is structural and refreshes on
 # `repowise update`, so `generate` never writes one: it works on the concept
@@ -91,6 +87,16 @@ async def run_scoped_generation(
         upsert_repository,
     )
     from repowise.core.persistence import get_session as _get_session
+
+    # Deferred like every other CLI call site: ``repowise.core.pipeline.__init__``
+    # eagerly pulls in the orchestrator and the persist layer. At module scope
+    # that cost every ``repowise`` invocation 31 extra modules (20 of them the
+    # pipeline package) — ``--help`` and the post-commit hook included, neither
+    # of which generates.
+    from repowise.core.pipeline.scoped_generation import (
+        execute_scoped_generation,
+        rehydrate_repo,
+    )
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)

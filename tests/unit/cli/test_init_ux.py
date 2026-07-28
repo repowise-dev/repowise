@@ -118,6 +118,28 @@ def test_the_progress_module_does_not_drag_in_the_pipeline_package() -> None:
     )
 
 
+def test_the_cli_entry_point_does_not_drag_in_the_pipeline_package() -> None:
+    """The guard above covers one module; this covers the whole entry point.
+
+    ``repowise.cli.main`` imports every command module at module scope, so a
+    single ``from repowise.core.pipeline...`` anywhere under it is paid by every
+    invocation — ``repowise --help`` and each post-commit hook run included.
+    Generation is the only thing that needs the package, and it is always
+    reached through a function body, so nothing here should load it.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import repowise.cli.main, sys; "
+        "print([m for m in sys.modules if m.startswith('repowise.core.pipeline')])"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[]", (
+        f"importing repowise.cli.main pulled in the pipeline package: {out.stdout.strip()}"
+    )
+
+
 # --- keyless provider detection --------------------------------------------
 
 
