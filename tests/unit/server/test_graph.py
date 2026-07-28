@@ -82,6 +82,47 @@ async def test_export_graph_with_data(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_export_graph_carries_edge_type(client: AsyncClient, app) -> None:
+    """Edges carry their semantic type, not just imported_names.
+
+    Without this the client can only infer edge kind from `imported_names`
+    being empty, which collapses every `defines`/`calls`/`co_changes` row into
+    one bucket. Both columns are populated on the row; they were simply never
+    serialized.
+    """
+    repo = await create_test_repo(client)
+    session_factory = app.state.session_factory
+    await _populate_graph(session_factory, repo["id"])
+    async with get_session(session_factory) as session:
+        await crud.batch_upsert_graph_edges(
+            session,
+            repo["id"],
+            [
+                {
+                    "source_node_id": "src/utils.py",
+                    "target_node_id": "src/main.py",
+                    "imported_names_json": "[]",
+                    "edge_type": "calls",
+                    "confidence": 0.5,
+                },
+            ],
+        )
+
+    resp = await client.get(f"/api/graph/{repo['id']}")
+    assert resp.status_code == 200
+    links = {(link["source"], link["target"]): link for link in resp.json()["links"]}
+
+    calls = links[("src/utils.py", "src/main.py")]
+    assert calls["edge_type"] == "calls"
+    assert calls["confidence"] == 0.5
+
+    # The default edge_type still round-trips, so a client can always branch on
+    # it rather than falling back to the empty-imported_names heuristic.
+    imports = links[("src/main.py", "src/utils.py")]
+    assert imports["edge_type"] == "imports"
+
+
+@pytest.mark.asyncio
 async def test_export_graph_repo_not_found(client: AsyncClient) -> None:
     resp = await client.get("/api/graph/nonexistent")
     assert resp.status_code == 404
