@@ -12,7 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.generation.page_redirects import SupersededError, resolve_superseded
+from repowise.core.generation.page_redirects import (
+    SupersededError,
+    repo_wide_successor_type,
+    resolve_superseded,
+)
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import _now_utc
 from repowise.server.deps import get_db_session, verify_api_key
@@ -36,6 +40,35 @@ router = APIRouter(
 REDIRECTED_FROM_HEADER = "X-Repowise-Redirected-From"
 
 
+async def _sole_page_of_type(session: AsyncSession, page_type: str, retired_id: str):
+    """The store's single page of *page_type*, or ``None``.
+
+    Some retirements hand off to "the repository's overview" rather than to a
+    named id, because the retired id carries nothing that identifies the
+    successor. The store is what knows, so it is asked here.
+
+    Requires exactly one match. Zero means the index never produced the
+    successor; more than one means the store holds several repositories and
+    picking either would send readers of one repository into another's wiki.
+    Both are refusals rather than guesses, and both are logged, because either
+    strands every inbound link to the retired page.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    rows = (await session.execute(select(Page).where(Page.page_type == page_type))).scalars().all()
+    if len(rows) == 1:
+        return rows[0]
+    logger.warning(
+        "page_redirect_repo_wide_unresolved",
+        page_id=retired_id,
+        successor_type=page_type,
+        matches=len(rows),
+    )
+    return None
+
+
 async def _get_page_or_successor(session: AsyncSession, page_id: str, response: Response):
     """The requested page, or the page that took over from it.
 
@@ -52,11 +85,20 @@ async def _get_page_or_successor(session: AsyncSession, page_id: str, response: 
 
     try:
         successor_id = resolve_superseded(page_id)
+        repo_wide_type = None if successor_id else repo_wide_successor_type(page_id)
     except SupersededError:
         # The table is static and a test resolves every entry in it, so this
         # means a real bug. It must not take page serving down with it.
         logger.warning("page_redirect_table_broken", page_id=page_id, exc_info=True)
         return None
+
+    if repo_wide_type is not None:
+        successor = await _sole_page_of_type(session, repo_wide_type, page_id)
+        if successor is None:
+            return None
+        logger.info("page_redirect_served", page_id=page_id, successor_id=successor.id)
+        response.headers[REDIRECTED_FROM_HEADER] = page_id
+        return successor
 
     if successor_id is None:
         return None

@@ -6,15 +6,21 @@ something.  This module owns that mapping and nothing else: it turns a retired
 page id into the id of the page that took over its material.
 
 Page ids are ``{page_type}:{target_path}`` (see ``models.compute_page_id``).
-Retirements come in two shapes and the tables mirror that:
+Retirements come in three shapes and the tables mirror that:
 
-* **A whole page type folds into another.**  Its target path is usually the
-  repository name, which differs per repo, so the rule cannot be written as a
-  literal id.  :data:`SUPERSEDED_TYPES` rewrites the type and carries the path
-  across unchanged.
+* **A whole page type folds into another, keeping its path.**  Its target path
+  is usually the repository name, which differs per repo, so the rule cannot be
+  written as a literal id.  :data:`SUPERSEDED_TYPES` rewrites the type and
+  carries the path across unchanged.
 * **One page with a fixed target path retires.**  The onboarding slots are
   ``onboarding/{slot}`` for every repo, so these can be written as exact ids in
   :data:`SUPERSEDED_IDS`.
+* **A page folds into the repository's single page of some other type.**  Here
+  the retired id carries nothing that identifies the successor — a layer page is
+  keyed by its layer slug, and the overview by the repository name — so the
+  successor cannot be named without reading the store.
+  :data:`SUPERSEDED_TO_REPO_WIDE` names the successor *type* and the serving
+  layer resolves it.
 
 Retirements chain: a page folded into a second page that later folds into a
 third must land on the third, not the second, or the redirect leads somewhere
@@ -41,6 +47,24 @@ SUPERSEDED_TYPES: dict[str, str] = {
 # Retired page id → successor page id, in full.  For pages whose target path is
 # the same in every repository.
 SUPERSEDED_IDS: dict[str, str] = {}
+
+# Retired page type → the page type of the *one* repo-wide page that took over.
+#
+# The other two tables can name their successor from the retired id alone.  This
+# one cannot: a layer page is keyed by its layer slug (``layer_page:layer:core``)
+# and the overview is keyed by the repository name, which the id does not carry.
+# Rewriting the type would produce ``repo_overview:layer:core`` — an id no page
+# has ever had.
+#
+# So these resolve at serving time instead, against the store, which is the only
+# place that knows which repository is being read.  :func:`repo_wide_successor_type`
+# reports the type to look up; the caller finds that repository's page of it.
+SUPERSEDED_TO_REPO_WIDE: dict[str, str] = {
+    # Layers stopped being pages and became grouping rows in the docs tree,
+    # built from provenance stamped on their members.  A row is not a page, so
+    # an inbound link to a retired layer page lands on the overview.
+    "layer_page": "repo_overview",
+}
 
 # A chain longer than this is a table authoring mistake rather than a real
 # history — the orientation set has never held more than a handful of pages.
@@ -139,3 +163,17 @@ def resolve_superseded(
     raise SupersededCycleError(
         f"Retirement chain from {page_id!r} exceeded {_MAX_CHAIN} hops: " + " -> ".join(seen)
     )
+
+
+def repo_wide_successor_type(page_id: str) -> str | None:
+    """The page type a retired repo-wide page hands off to, if any.
+
+    Returns the *type* rather than an id because the successor is keyed by the
+    repository, which ``page_id`` does not carry.  The caller resolves it
+    against the store it is already reading.
+
+    Raises:
+        SupersededTargetError: ``page_id`` is not ``{page_type}:{target_path}``.
+    """
+    page_type, _ = _split(page_id)
+    return SUPERSEDED_TO_REPO_WIDE.get(page_type)

@@ -404,3 +404,66 @@ async def test_broken_redirect_table_does_not_500_the_reader(client: AsyncClient
     with patch(_REDIRECTS, side_effect=SupersededCycleError("a -> b -> a")):
         resp = await client.get("/api/pages/architecture_diagram:gone")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Retirements that hand off to "this repository's overview"
+#
+# A layer page is keyed by its layer slug, so its id carries nothing that names
+# the overview. The successor is resolved against the store instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retired_layer_page_lands_on_the_overview(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_page(
+            session,
+            page_id="repo_overview:demo",
+            repository_id=repo["id"],
+            page_type="repo_overview",
+            title="Repository Overview",
+            content="# Overview",
+            target_path="demo",
+            source_hash="h",
+            model_name="mock",
+            provider_name="mock",
+        )
+    resp = await client.get("/api/pages/layer_page:layer:analysis")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "repo_overview:demo"
+    assert resp.headers["x-repowise-redirected-from"] == "layer_page:layer:analysis"
+
+
+@pytest.mark.asyncio
+async def test_retired_layer_page_404s_when_no_overview_exists(
+    client: AsyncClient, app
+) -> None:
+    """No successor is a refusal, not a guess."""
+    await _create_page(client, app.state.session_factory)
+    resp = await client.get("/api/pages/layer_page:layer:analysis")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_overview_is_refused_not_guessed(client: AsyncClient, app) -> None:
+    """Two repositories in one store must not cross-link their wikis."""
+    repo_a = await create_test_repo(client)
+    repo_b = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        for repo, name in ((repo_a, "a"), (repo_b, "b")):
+            await crud.upsert_page(
+                session,
+                page_id=f"repo_overview:{name}",
+                repository_id=repo["id"],
+                page_type="repo_overview",
+                title=f"Overview {name}",
+                content="# Overview",
+                target_path=name,
+                source_hash="h",
+                model_name="mock",
+                provider_name="mock",
+            )
+    resp = await client.get("/api/pages/layer_page:layer:analysis")
+    assert resp.status_code == 404
