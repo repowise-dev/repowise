@@ -665,6 +665,14 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         minCameraRatio: 0.002,
         maxCameraRatio: 50,
         hideEdgesOnMove: true,
+        // Labels are a canvas2d pass that Sigma re-runs on every camera frame,
+        // and at this graph size it is the dominant cost of a pan or a zoom —
+        // WebGL draws the nodes almost for free by comparison. With this set,
+        // dragging and zooming skip renderLabels/renderEdgeLabels/
+        // renderHighlightedNodes entirely and paint nodes only; everything
+        // comes back on the first settled frame. Pairs with hideEdgesOnMove
+        // above, which already does the same for the edge programs.
+        hideLabelsOnMove: true,
         zIndex: true,
 
         // Hub/core disc labels + hover tooltips. The label drawer is
