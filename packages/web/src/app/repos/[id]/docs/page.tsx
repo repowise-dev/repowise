@@ -14,7 +14,13 @@ export default function DocsPage({
   const { id: repoId } = use(params);
 
   return (
-    <div className="flex flex-col h-screen">
+    // Fill the height `main` actually leaves, not the whole viewport. `main` is
+    // already a flex child sitting below the banners a repo can stack above it
+    // (reindex hint, active job, upgrade), so asking for `h-screen` here
+    // overflowed by exactly the height of whichever ones were showing and
+    // pushed the reader's footer chrome below the fold. `min-h-0` lets the tree
+    // and reader scroll inside this box rather than growing it.
+    <div className="flex flex-1 flex-col min-h-0">
       <DocsExplorer repoId={repoId} />
     </div>
   );
