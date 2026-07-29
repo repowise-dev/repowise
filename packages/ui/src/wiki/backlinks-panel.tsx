@@ -66,13 +66,20 @@ export function BacklinksPanel({
         {visible.map((bl) => {
           const Icon = getPageTypeIcon(bl.source_page_type);
           const href = buildHref(repoId, bl.source_page_id);
-          const title = getPageTypeLabel(bl.source_page_type);
+          // The page's own name, not its kind. The kind is already the icon
+          // beside it, and a tooltip reading "File" over a list of files told
+          // the reader nothing about which page they were about to open.
+          const title = bl.source_title;
           const children = (
             <>
-              <Icon className="h-3 w-3 mt-0.5 shrink-0 text-[var(--color-text-tertiary)]" />
-              <span className="truncate" title={bl.source_title}>
-                {bl.source_title}
-              </span>
+              <Icon
+                aria-label={getPageTypeLabel(bl.source_page_type)}
+                className="h-3 w-3 mt-0.5 shrink-0 text-[var(--color-text-tertiary)]"
+              />
+              {/* Wraps rather than truncates, like the Related list. In a
+                  ~260px rail one-line ellipsis cut page titles at the path
+                  segment that identifies them. */}
+              <span className="min-w-0 break-words leading-snug">{bl.source_title}</span>
             </>
           );
           return (
