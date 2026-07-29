@@ -30,7 +30,6 @@ import {
   type Confidence,
   type EffortBucket,
   type RefactoringPlan,
-  type RefactoringSummary,
 } from "./types";
 
 const PAGE_SIZE = 60;
@@ -62,9 +61,11 @@ export interface RefactoringBoardProps {
   /** Plans for the active type filter. */
   plans: RefactoringPlan[];
   /** Every plan, unfiltered — the lede and Start here describe the whole repo,
-   *  not the tab you happen to be on. */
+   *  not the tab you happen to be on. This is also where the per-type counts
+   *  come from, which is why the board no longer takes a `summary`: the
+   *  endpoint's summary and the plan list could disagree under a filter, and
+   *  two sources for one number is how a tab badge starts lying. */
   allPlans?: RefactoringPlan[] | undefined;
-  summary?: RefactoringSummary;
   indexedFileCount?: number | undefined;
   onOpen?: ((plan: RefactoringPlan) => void) | undefined;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
@@ -80,7 +81,6 @@ export interface RefactoringBoardProps {
 export function RefactoringBoard({
   plans,
   allPlans,
-  summary,
   indexedFileCount,
   onOpen,
   onAiPrompt,

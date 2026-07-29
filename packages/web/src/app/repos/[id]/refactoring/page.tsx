@@ -143,7 +143,6 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
           <RefactoringBoard
             plans={filtered}
             allPlans={allPlans}
-            summary={data?.summary}
             onOpen={(plan) => void setOpenPlanId(plan.id)}
             onAiPrompt={onAiPrompt}
             onSeeStructural={() => void setType("structural")}
