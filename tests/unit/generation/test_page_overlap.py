@@ -15,6 +15,12 @@ from repowise.core.generation.page_overlap import (
 )
 from repowise.core.generation.report import GenerationReport
 
+# Warnings are asserted against this logger by name rather than the root
+# logger.  The CLI sets ``repowise.core`` to ERROR unless run verbose, and that
+# level survives for the whole process — raising only the root level would
+# capture nothing once any CLI code has run in the same session.
+_LOGGER = "repowise.core.generation.page_overlap"
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -217,17 +223,38 @@ def test_no_overlap_is_distinguishable_from_nothing_compared(overview, getting_s
 
 def test_empty_orientation_set_warns(caplog):
     """A check that compared nothing says so out loud."""
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
         measure_orientation_overlap([])
 
     assert any("compared no pairs" in r.message for r in caplog.records)
 
 
 def test_flagged_pair_warns(caplog, overview, architecture):
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
         measure_orientation_overlap([overview, architecture])
 
     assert any("overlap" in r.message.lower() for r in caplog.records)
+
+
+def test_warnings_survive_a_quietened_parent_logger(caplog, overview, architecture):
+    """The CLI silences ``repowise.core`` unless run verbose.
+
+    That is a process-wide level on an ancestor logger, so a test that only
+    raises the root level captures nothing once any CLI code has run.  Pin the
+    behaviour: asking this module's own logger for warnings must work no
+    matter what an ancestor was set to.
+    """
+    parent = logging.getLogger("repowise.core")
+    previous = parent.level
+    parent.setLevel(logging.ERROR)
+    try:
+        with caplog.at_level(logging.WARNING, logger=_LOGGER):
+            measure_orientation_overlap([overview, architecture])
+
+        assert any("overlap" in r.message.lower() for r in caplog.records)
+    finally:
+        # Restore, or this test leaks the very state it is guarding against.
+        parent.setLevel(previous)
 
 
 def test_page_without_content_is_skipped_not_scored(overview):
