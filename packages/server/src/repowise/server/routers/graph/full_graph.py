@@ -47,12 +47,17 @@ def _flow_member_ids(
     entry_ids: list[str],
     max_depth: int = _FLOW_MAX_DEPTH,
 ) -> set[str]:
-    """Node ids on the primary execution path from each entry point.
+    """Files on the primary execution path from each entry point.
 
     In-memory mirror of ``mcp_server._graph_utils.bfs_trace`` (same rules:
     ``calls`` edges only, highest-confidence unvisited successor, confidence
     >= 0.5, test/demo paths excluded) over the already-fetched edge list, so
     the export doesn't re-query edges per hop.
+
+    ``calls`` edges only ever join symbol nodes, so the trace itself is a list
+    of ``path/to/file.py::symbol`` ids. The export carries files, so each step
+    is reduced to its containing file — the reservation is for "the files this
+    flow runs through", which is what the canvas can actually highlight.
     """
     adjacency: dict[str, list[GraphEdge]] = {}
     for e in edges:
@@ -79,7 +84,7 @@ def _flow_member_ids(
             visited.add(best_id)
             current = best_id
         members |= visited
-    return members
+    return {node_id.split("::")[0] for node_id in members}
 
 
 @router.get("/{repo_id}/nodes/search", response_model=list[NodeSearchResult])
@@ -121,6 +126,15 @@ async def export_graph(
 ) -> GraphExportResponse:
     """Export the full dependency graph in D3 force-directed format.
 
+    File nodes only. ``graph_nodes`` also holds a symbol node per extracted
+    symbol — on this repo 28,205 of 31,397 rows — and PageRank ranks the two
+    kinds together, so 450 of the top 1,500 used to be symbols drawn as file
+    circles, labelled ``path/file.py::Symbol`` and carrying a ``fullPath`` that
+    is not a path. Nothing downstream reads ``node_type`` (checked: packages/ui
+    and the VS Code webview), so the client cannot tell them apart. Excluding
+    them buys back those 1,500 slots for real files and makes
+    ``total_node_count`` a count of files, which is what every caller labels it.
+
     Large repos are capped with ``truncated=True``. Selection reserves slots
     for dead-code files, hotspots, and execution-flow members (up to
     ``_RESERVED_CLASS_CAP`` each, highest PageRank first within a class) and
@@ -157,7 +171,7 @@ async def export_graph(
                 GraphNode.community_id,
             )
         )
-        .where(GraphNode.repository_id == repo_id)
+        .where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file")
         .order_by(GraphNode.pagerank.desc())
     )
     all_nodes = node_result.scalars().all()

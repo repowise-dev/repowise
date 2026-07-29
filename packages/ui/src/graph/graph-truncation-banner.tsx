@@ -18,7 +18,19 @@ import { cn } from "../lib/cn";
 import { formatNumber } from "../lib/format";
 
 export const LOAD_MORE_STEP = 1500;
-export const LOAD_MORE_CEILING = 6000;
+
+/**
+ * Highest node cap the "load more" ladder will offer.
+ *
+ * Was 6,000 — a number nothing had rendered, promised while the canvas was
+ * still spending 8-12 seconds in an FA2 worker on every load. The layout is
+ * seeded-and-painted now (no worker), and the largest graph actually measured
+ * end to end is this repo's whole file set: 3,192 nodes / 13,216 edges, which
+ * paints immediately. 3,000 is inside that, and it is exactly two presses of
+ * the 1,500 step. Raising it again is a benchmark, not an edit.
+ */
+export const LOAD_MORE_CEILING = 3000;
+
 const SLOW_HINT_THRESHOLD = 3000;
 
 export interface GraphTruncationBannerProps {

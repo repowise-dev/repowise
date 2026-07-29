@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import useSWR from "swr";
 import { useQueryState } from "nuqs";
 import { useSearchParams } from "next/navigation";
@@ -8,49 +8,42 @@ import { GraphFlow } from "@/components/graph/graph-flow";
 import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
 import { GraphCanvasShell } from "@repowise-dev/ui/graph/graph-canvas-shell";
 import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
+import {
+  GraphScopeSwitcher,
+  ModuleFilterSelect,
+} from "@repowise-dev/ui/graph/graph-scope-controls";
+import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
 import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 
-type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 type ColorMode = "language" | "community";
+type Scope = "communities" | "files";
 
 // `?colorMode=risk` links predate the removal of that lens; an unlisted value
 // falls through to the "community" default rather than erroring.
 const VALID_COLOR_MODES = new Set<ColorMode>(["language", "community"]);
 
-const VALID_VIEW_MODES = new Set<ViewMode>([
-  "module",
-  "full",
-  "architecture",
-  "dead",
-  "hotfiles",
-  "unified",
-]);
-
-// Scopes that render their own dedicated endpoint and therefore never touch the
-// capped full-graph endpoint (`/api/graph`). The constellation ("architecture")
-// and the module browser fetch their own graphs, so the page must NOT eagerly
-// fetch the full graph — nor show its truncation banner — for these scopes.
-const SCOPES_WITHOUT_FULL_GRAPH = new Set<ViewMode>(["architecture", "module"]);
+/** Scope + signal → the canvas's internal ViewMode. The overlay wins, because
+ *  dead/hot are only ever drawn on the file graph. */
+function toViewMode(scope: Scope, signal: string | null): ViewMode {
+  if (scope === "communities") return "architecture";
+  if (signal === "dead") return "dead";
+  if (signal === "hot") return "hotfiles";
+  return "full";
+}
 
 export function GraphView({
   repoId,
-  scope = "map",
-  onScopeViewChange,
+  scope,
+  onScopeChange,
 }: {
   repoId: string;
-  /** Which top-level Architecture mode hosts the canvas: Map = constellation,
-   *  Explore = file/module graphs. One mounted component serves both. */
-  scope?: "map" | "explore";
-  /** Scope switches inside the canvas (toolbar) re-sync `?view=` upstream. */
-  onScopeViewChange?: (view: "map" | "explore") => void;
+  /** Controlled by the page, which owns `?view=`. */
+  scope: Scope;
+  onScopeChange: (scope: Scope) => void;
 }) {
   const searchParams = useSearchParams();
-
-  const viewModeParam = searchParams.get("viewMode");
-  const initialViewMode = VALID_VIEW_MODES.has((viewModeParam ?? "") as ViewMode)
-    ? (viewModeParam as ViewMode)
-    : undefined;
   const initialNode = searchParams.get("node");
 
   const colorModeParam = searchParams.get("colorMode");
@@ -60,25 +53,23 @@ export function GraphView({
 
   const [, setSelectedNode] = useQueryState("node");
   const [, setColorModeParam] = useQueryState("colorMode");
-  const [, setViewModeParam] = useQueryState("viewMode");
+  const [signal, setSignal] = useQueryState("signal");
+  const [activeModule, setActiveModule] = useQueryState("module");
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
   const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
+  const [moduleGroups, setModuleGroups] = useState<ModuleGroup[]>([]);
 
-  // The scope the canvas mounts into: a pinned node forces "full"; an explicit
-  // ?viewMode= wins; otherwise the hosting mode decides (Map → constellation,
-  // Explore → full graph).
-  const mountViewMode: ViewMode = initialNode
-    ? "full"
-    : initialViewMode ?? (scope === "explore" ? "full" : "architecture");
+  // A pinned node is always a file, so a `?node=` link forces the file scope
+  // however the URL spells the rest.
+  const effectiveScope: Scope = initialNode ? "files" : scope;
+  const viewMode = toViewMode(effectiveScope, signal);
 
-  // Track the live scope so we only fetch the capped full graph (and render
-  // its truncation banner) for scopes that actually use it. Remount the canvas
-  // (flowKey) when the truncation banner jumps to the constellation — that is
-  // a host-initiated scope change, which GraphFlow only reads at mount.
-  const [viewMode, setViewMode] = useState<ViewMode>(mountViewMode);
-  const [flowKey, setFlowKey] = useState(0);
-  const [forcedViewMode, setForcedViewMode] = useState<ViewMode | null>(null);
-  const usesFullGraph = !SCOPES_WITHOUT_FULL_GRAPH.has(viewMode);
+  // Only the unfiltered file scope renders the capped `/api/graph` payload.
+  // The constellation, and each of the dead/hot signals, has its own endpoint —
+  // so neither the fetch nor the truncation banner belongs to them. The banner
+  // used to show under the signals too, announcing "1,500 of 3,194 files" over
+  // a canvas drawing 734 nodes that came from somewhere else entirely.
+  const usesFullGraph = effectiveScope === "files" && !signal;
 
   const { data: graphData } = useSWR<GraphExportResponse>(
     usesFullGraph ? `graph:${repoId}:${graphLimit ?? "default"}` : null,
@@ -89,8 +80,6 @@ export function GraphView({
   // Click a file node → open doc panel
   const handleNodeClick = useCallback(
     (nodeId: string, nodeType: string) => {
-      // Module clicks are handled inside GraphFlow (drill-down)
-      // File clicks open the doc panel
       if (nodeType !== "moduleGroup") {
         setDocNodeId((prev) => (prev === nodeId ? null : nodeId));
         void setSelectedNode(nodeId);
@@ -114,19 +103,16 @@ export function GraphView({
     setDocNodeId(null);
   }, []);
 
-  // In-canvas scope switches keep the URL honest: `?viewMode=` mirrors the
-  // graph scope and `?view=` flips between Map and Explore.
+  // The canvas still owns the dead/hot node filter, and reports it as a
+  // ViewMode. Scope changes never arrive this way any more — the switcher in
+  // the header drives those — so this only has to keep `?signal=` honest.
   const handleViewModeChange = useCallback(
     (mode: ViewMode) => {
-      setViewMode(mode);
-      void setViewModeParam(mode === "architecture" ? null : mode);
-      onScopeViewChange?.(mode === "architecture" ? "map" : "explore");
+      void setSignal(mode === "dead" ? "dead" : mode === "hotfiles" ? "hot" : null);
     },
-    [onScopeViewChange, setViewModeParam],
+    [setSignal],
   );
 
-  // Color-mode changes (toolbar or 1/2/3 keys) sync to the URL so shared
-  // links restore the same coloring.
   const handleColorModeChange = useCallback(
     (mode: ColorMode) => {
       void setColorModeParam(mode);
@@ -134,32 +120,57 @@ export function GraphView({
     [setColorModeParam],
   );
 
-  // "Switch to the Knowledge Graph" from the truncation banner: remount the
-  // canvas in the constellation scope. No page reload.
+  // "See all of them grouped" from the truncation banner: the whole repo, at
+  // the scale where all of it fits.
   const handleSwitchToArchitecture = useCallback(() => {
-    setForcedViewMode("architecture");
-    setFlowKey((k) => k + 1);
-    handleViewModeChange("architecture");
-  }, [handleViewModeChange]);
+    onScopeChange("communities");
+  }, [onScopeChange]);
 
-  const isMap = scope === "map" && !initialNode;
+  const handleScopeChange = useCallback(
+    (next: Scope) => {
+      // The module filter is a file-scope concept; carrying it into the
+      // communities view would leave a control set to something invisible.
+      if (next === "communities") void setActiveModule(null);
+      onScopeChange(next);
+    },
+    [onScopeChange, setActiveModule],
+  );
+
+  const isCommunities = effectiveScope === "communities";
+
+  const headerControls = useMemo(
+    () => (
+      <div className="flex flex-wrap items-center gap-2">
+        {!isCommunities && (
+          <ModuleFilterSelect
+            groups={moduleGroups}
+            activeModule={activeModule}
+            onModuleChange={(next) => void setActiveModule(next)}
+          />
+        )}
+        <GraphScopeSwitcher scope={effectiveScope} onScopeChange={handleScopeChange} />
+      </div>
+    ),
+    [isCommunities, moduleGroups, activeModule, setActiveModule, effectiveScope, handleScopeChange],
+  );
 
   return (
     <GraphCanvasShell
-      // No title. The tab above already says "Communities" / "Explore", and a
-      // heading that repeats the control you just clicked spends a band of
-      // chrome saying nothing — this page carried three of them above the
-      // canvas. What is left is the one line that adds something the tab
-      // cannot: what to do with the thing you are looking at.
+      // No title. The tab above already says "Map", and the scope switcher on
+      // the right says which zoom you are at — a heading that repeats the
+      // control you just clicked spends a band of chrome saying nothing. What
+      // is left is the one line that adds something neither can: what to do
+      // with the thing you are looking at.
       description={
-        isMap
+        isCommunities
           ? "Each circle is a detected community, sized by how much code it holds. Double-click one to open it up."
           : "Every file and how it depends on the others. Pick two files to trace a path between them."
       }
+      titleActions={headerControls}
       banner={
-        // Shown only when the current scope renders the capped full graph and
-        // the server actually capped it. Constellation / module scopes use
-        // their own endpoints, so the banner stays hidden.
+        // Shown only when the file scope actually got capped. This line is the
+        // one place the node count is stated, and it only became true when the
+        // export stopped counting symbol nodes as files.
         usesFullGraph && graphData?.truncated && graphData.total_node_count != null ? (
           <GraphTruncationBanner
             shown={graphData.nodes.length}
@@ -171,7 +182,6 @@ export function GraphView({
         ) : undefined
       }
       overlay={
-        // Doc panel — shows on file click. Single right-rail surface.
         docNodeId ? (
           <GraphDocPanel
             repoId={repoId}
@@ -182,18 +192,17 @@ export function GraphView({
       }
     >
       <GraphFlow
-        key={flowKey}
         repoId={repoId}
-        initialViewMode={forcedViewMode ?? mountViewMode}
-        // Color mode is controlled here so the URL (?colorMode=) is the single
-        // source of truth — back/forward and shared links restore it. Defaults
-        // to community coloring, matching the canvas's own default.
+        // Scope is controlled: `?view=` is the single source of truth, so
+        // back/forward and shared links restore it without a remount.
+        viewMode={viewMode}
+        activeModule={activeModule}
+        // Same value the banner reports, so the caption and the canvas can
+        // never disagree about how many files are drawn.
+        graphLimit={graphLimit}
+        onModuleGroupsChange={setModuleGroups}
         colorMode={initialColorMode ?? "community"}
         initialSelectedNode={initialNode}
-        // Communities locks to the constellation; Explore drops the
-        // constellation scope (it lives in the Knowledge Graph view) so the
-        // toolbar offers only Modules / Full.
-        availableScopes={scope === "explore" ? ["modules", "full"] : undefined}
         onNodeClick={handleNodeClick}
         onNodeViewDocs={handleNodeViewDocs}
         onCommunityPanelOpen={handleCommunityPanelOpen}

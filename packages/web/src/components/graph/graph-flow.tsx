@@ -8,7 +8,6 @@ import {
   type GraphFlowProps as GraphFlowShellProps,
 } from "@repowise-dev/ui/graph/graph-flow";
 import {
-  useModuleGraph,
   useGraph,
   useArchitectureGraph,
   useArchitectureCommunityGraph,
@@ -23,19 +22,30 @@ import { PathFinderPanel } from "./path-finder-panel";
 import { GraphCommunityPanel } from "./graph-community-panel";
 import type {
   GraphExport,
-  ModuleGraph,
   ExecutionFlows,
   CommunitySummaryItem,
   ArchitectureGraph,
   CommunitySlice,
 } from "@repowise-dev/types/graph";
 
-type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 
 export interface GraphFlowProps {
   repoId: string;
   repoName?: string;
   initialViewMode?: ViewMode;
+  /** Controlled scope — the page owns it via `?view=`. */
+  viewMode?: ViewMode;
+  /** Controlled module filter — the page owns it via `?module=`. */
+  activeModule?: string | null;
+  /** Node cap for the full-graph fetch, stepped up by the truncation banner.
+   *  Must be the SAME value the banner is reporting: this and the banner's own
+   *  fetch share an SWR key, so a mismatch means the caption describes a
+   *  payload the canvas never received. It described one for a while — "Load
+   *  more" raised the banner's limit and nothing else, so the sentence said
+   *  3,000 over a canvas still drawing 1,500. */
+  graphLimit?: number | undefined;
+  onModuleGroupsChange?: GraphFlowShellProps["onModuleGroupsChange"];
   initialColorMode?: GraphFlowShellProps["initialColorMode"];
   /** Controlled node color mode — the page URL-syncs it and passes it down. */
   colorMode?: GraphFlowShellProps["colorMode"];
@@ -52,14 +62,16 @@ export interface GraphFlowProps {
   onViewModeChange?: (mode: ViewMode) => void;
   /** Fired when the node color mode changes so the page can sync the URL. */
   onColorModeChange?: GraphFlowShellProps["onColorModeChange"];
-  /** Restricts the in-canvas scope cluster (Explore omits the constellation). */
-  availableScopes?: GraphFlowShellProps["availableScopes"];
 }
 
 export function GraphFlow({
   repoId,
   repoName,
   initialViewMode,
+  viewMode: controlledViewMode,
+  activeModule,
+  graphLimit,
+  onModuleGroupsChange,
   initialColorMode,
   colorMode,
   initialSelectedNode,
@@ -68,25 +80,21 @@ export function GraphFlow({
   onCommunityPanelOpen,
   onViewModeChange,
   onColorModeChange,
-  availableScopes,
 }: GraphFlowProps) {
   const router = useRouter();
   // Constellation (Knowledge Graph) is the default scope.
-  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
-  const [modulePath, setModulePath] = useState<string[]>([]);
-  const [hasExpandedModules, setHasExpandedModules] = useState(false);
+  const [viewModeState, setViewModeState] = useState<ViewMode>(
+    initialViewMode ?? "architecture",
+  );
+  const viewMode = controlledViewMode ?? viewModeState;
   // Currently-expanded constellation hubs (community ids). Drives the slice
   // fetch; the shell owns the actual expand/collapse interaction state.
   const [expandedHubs, setExpandedHubs] = useState<number[]>([]);
-  const isDrilledDown = modulePath.length > 0;
-  const isModuleView = viewMode === "module";
 
-  const { graph: moduleGraph, isLoading: moduleLoading } = useModuleGraph(
-    isModuleView ? repoId : null,
-  );
-  const needsFullGraph = isDrilledDown || viewMode === "full" || viewMode === "unified" || hasExpandedModules;
+  const needsFullGraph = viewMode === "full" || viewMode === "unified";
   const { graph: fullGraph, isLoading: fullLoading } = useGraph(
     needsFullGraph ? repoId : null,
+    graphLimit,
   );
   const { graph: archGraph, isLoading: archLoading } = useArchitectureGraph(null);
   // Constellation community super-graph — only fetched for the radial scope.
@@ -107,13 +115,10 @@ export function GraphFlow({
   const { repo } = useRepo(repoId);
   const resolvedRepoName = repoName ?? repo?.name;
   const { communities } = useCommunities(repoId);
-  // Flow traces highlight file-level nodes, but the picker must also work from
-  // the module overview: selecting a flow there makes the shell jump to the
-  // full graph (enterFullViewFromModule) and highlight the trace. Dead/hot
-  // scopes render file-level graphs too, so flows work there as well — only
-  // the constellation skips the fetch.
+  // Flow traces highlight file-level nodes; the constellation has none, so it
+  // skips the fetch. Dead/hot render file graphs, so flows work there too.
   const { flows: executionFlowsData } = useExecutionFlows(
-    viewMode !== "architecture" || needsFullGraph ? repoId : null,
+    viewMode !== "architecture" ? repoId : null,
     {
       top_n: 10,
       max_depth: 6,
@@ -122,8 +127,6 @@ export function GraphFlow({
 
   return (
     <GraphFlowShell
-      moduleGraph={moduleGraph as ModuleGraph | undefined}
-      isLoadingModuleGraph={moduleLoading}
       fullGraph={fullGraph as GraphExport | undefined}
       isLoadingFullGraph={fullLoading}
       architectureGraph={archGraph as GraphExport | undefined}
@@ -140,17 +143,17 @@ export function GraphFlow({
       communities={communities as CommunitySummaryItem[] | undefined}
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
       initialViewMode={initialViewMode}
+      viewMode={controlledViewMode}
+      activeModule={activeModule}
+      onModuleGroupsChange={onModuleGroupsChange}
       initialColorMode={initialColorMode}
       colorMode={colorMode}
       initialSelectedNode={initialSelectedNode}
       onViewModeChange={(mode) => {
-        setViewMode(mode);
+        setViewModeState(mode);
         onViewModeChange?.(mode);
       }}
       onColorModeChange={onColorModeChange}
-      availableScopes={availableScopes}
-      onModulePathChange={setModulePath}
-      onExpandedModulesChange={(expanded) => setHasExpandedModules(expanded.size > 0)}
       onNodeClick={onNodeClick}
       onNodeViewDocs={onNodeViewDocs}
       onNodeViewSymbols={(nodeId) =>

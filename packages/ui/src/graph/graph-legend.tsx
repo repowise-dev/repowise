@@ -294,7 +294,7 @@ export const GraphLegend = memo(function GraphLegend({
             </>
           )}
 
-          {viewMode !== "module" && viewMode !== "full" && (
+          {viewMode !== "full" && (
             <p className="px-1.5 pt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
               {viewMode === "dead" && "Showing unreachable files"}
               {viewMode === "hotfiles" && "Most-committed files (30d)"}

@@ -6,11 +6,9 @@ import {
   EyeOff,
   Maximize,
   Route,
-  Boxes,
   GitFork,
   Skull,
   Flame,
-  LayoutGrid,
   Workflow,
   Search,
   X,
@@ -18,7 +16,6 @@ import {
   Waypoints,
   SlidersHorizontal,
   HelpCircle,
-  Package,
 } from "lucide-react";
 import { memo, useState } from "react";
 import { Button } from "../ui/button";
@@ -40,7 +37,7 @@ import { Button } from "../ui/button";
  * then this ships two lenses that both encode something true.
  */
 export type ColorMode = "language" | "community";
-export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+export type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 export type LayoutMode = "hierarchical" | "force" | "radial";
 export type GraphTheme = "light" | "dark";
 
@@ -52,8 +49,15 @@ export type GraphTheme = "light" | "dark";
  * The legacy ViewMode is preserved as the wire/state format so existing
  * callers and query-param routing keep working. The helpers below convert
  * freely in both directions.
+ *
+ * There is no "modules" scope. It drew one circle per top-level directory,
+ * and on this repo `packages/` held 69% of the files — a list that skewed is a
+ * bad canvas. It is now a module *filter* over the file graph (see
+ * `use-module-filter`), which cost a scope, an endpoint, a breadcrumb trail,
+ * drill-down state and expand-on-double-click, and gained a control that
+ * partitions the repo instead of pretending to.
  */
-export type Scope = "architecture" | "modules" | "full";
+export type Scope = "architecture" | "full";
 export type Overlay = "dead" | "hot";
 
 export function scopeOverlaysToViewMode(scope: Scope, overlays: ReadonlySet<Overlay>): ViewMode {
@@ -62,14 +66,11 @@ export function scopeOverlaysToViewMode(scope: Scope, overlays: ReadonlySet<Over
   if (hasDead && hasHot) return "unified";
   if (hasDead) return "dead";
   if (hasHot) return "hotfiles";
-  if (scope === "modules") return "module";
   return scope; // "architecture" | "full"
 }
 
 export function viewModeToScopeOverlays(view: ViewMode): { scope: Scope; overlays: Set<Overlay> } {
   switch (view) {
-    case "module":
-      return { scope: "modules", overlays: new Set() };
     case "architecture":
       return { scope: "architecture", overlays: new Set() };
     case "dead":
@@ -107,24 +108,19 @@ interface GraphToolbarProps {
   onLayoutModeChange: (mode: LayoutMode) => void;
   /** Opens the keyboard-shortcut help overlay (also bound to `?`). */
   onToggleHelp?: () => void;
-  /** Which scopes the scope cluster offers. Defaults to all three; the Explore
-   *  surface omits the constellation scope (it lives in the Knowledge Graph
-   *  view) so there is no cross-view jump back through the toolbar. */
-  availableScopes?: Scope[] | undefined;
-  /** Modules scope: whether `external:*` dependency modules are drawn.
-   *  Hidden by default because they usually outnumber the repo's own modules. */
-  showExternals?: boolean | undefined;
-  onShowExternalsChange?: ((v: boolean) => void) | undefined;
-  /** How many external modules the toggle controls (0 hides the toggle). */
-  externalCount?: number | undefined;
+  /** Why the hierarchical layout cannot run on this graph, if it cannot.
+   *  Renders the toggle disabled with the reason as its tooltip instead of
+   *  letting it look live and then refuse on click — ELK's 500-node cap sits
+   *  BELOW the graph loader's 1,500-node floor, so on any repo bigger than
+   *  that the button was unreachable by construction and said so only after
+   *  you pressed it. */
+  hierarchicalDisabledReason?: string | undefined;
 }
 
-// Scope = which subset of nodes are drawn. Mutually exclusive.
-const SCOPES: { id: Scope; icon: typeof Boxes; label: string; hint: string }[] = [
-  { id: "architecture", icon: GitFork, label: "Communities", hint: "Detected communities" },
-  { id: "modules", icon: Boxes, label: "Modules", hint: "Folder / package rollup" },
-  { id: "full", icon: LayoutGrid, label: "Full", hint: "All files and symbols" },
-];
+// No scope cluster here. Scope is one axis and it now has one control, in the
+// section header (`GraphScopeSwitcher`), following the Code Health precedent —
+// floating it over the diagram while the page tabs steered the same axis is
+// what made "Communities" appear twice on one screen.
 
 // Node filter = exclusive All / Hot / Dead segmented control. Hot and dead
 // files are near-disjoint sets, so the old pair of independent toggles read
@@ -200,14 +196,8 @@ export const GraphToolbar = memo(function GraphToolbar({
   layoutMode,
   onLayoutModeChange,
   onToggleHelp,
-  availableScopes,
-  showExternals,
-  onShowExternalsChange,
-  externalCount,
+  hierarchicalDisabledReason,
 }: GraphToolbarProps) {
-  const scopes = availableScopes
-    ? SCOPES.filter((s) => availableScopes.includes(s.id))
-    : SCOPES;
   // Below sm the full control cluster is too much chrome over the canvas —
   // collapse it behind a single toggle, keeping search always reachable.
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -221,10 +211,6 @@ export const GraphToolbar = memo(function GraphToolbar({
   // overlays / FA2 / hierarchical layout don't apply, so those controls are
   // hidden here rather than shown in a half-working state.
   const isConstellation = activeScope === "architecture";
-
-  const setScope = (next: Scope) => {
-    onViewChange(scopeOverlaysToViewMode(next, activeOverlays));
-  };
 
   // Exclusive node filter. Legacy "unified" URLs parse to both overlays and
   // render as Dead here; any click normalizes back to a single filter.
@@ -257,30 +243,6 @@ export const GraphToolbar = memo(function GraphToolbar({
       </button>
 
       <div className={panelClass}>
-      {/* Scope (mutually exclusive). Hidden when only one scope is offered —
-          the surface is locked (e.g. the Communities lens). */}
-      {scopes.length > 1 && (
-      <div className={`${clusterVisibility} ${groupClass}`}>
-        {scopes.map((m) => {
-          const Icon = m.icon;
-          const isActive = activeScope === m.id;
-          return (
-            <button
-              key={m.id}
-              onClick={() => setScope(m.id)}
-              className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass}`}
-              title={m.hint}
-              aria-label={m.label}
-              aria-pressed={isActive}
-            >
-              <Icon className="w-3 h-3" />
-              <span className="hidden lg:inline">{m.label}</span>
-            </button>
-          );
-        })}
-      </div>
-      )}
-
       {/* Node filter (exclusive All / Hot / Dead) — not applicable in the constellation */}
       {!isConstellation && (
       <div
@@ -329,13 +291,19 @@ export const GraphToolbar = memo(function GraphToolbar({
             LAYOUT_MODES.map((m) => {
               const Icon = m.icon;
               const isActive = layoutMode === m.id;
+              const disabledReason =
+                m.id === "hierarchical" ? hierarchicalDisabledReason : undefined;
               return (
                 <button
                   key={m.id}
                   onClick={() => onLayoutModeChange(m.id)}
-                  className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass}`}
-                  title={m.label}
+                  disabled={!!disabledReason}
+                  className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass} ${
+                    disabledReason ? "cursor-not-allowed opacity-40" : ""
+                  }`}
+                  title={disabledReason ?? m.label}
                   aria-label={m.label}
+                  aria-disabled={!!disabledReason}
                   aria-pressed={isActive}
                 >
                   <Icon className="w-3 h-3" />
@@ -407,27 +375,6 @@ export const GraphToolbar = memo(function GraphToolbar({
             aria-pressed={showFlows}
           >
             <Workflow className="w-3.5 h-3.5" />
-          </Button>
-          )}
-          {activeScope === "modules" && onShowExternalsChange && (externalCount ?? 0) > 0 && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onShowExternalsChange(!showExternals)}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showExternals ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`}
-            title={
-              showExternals
-                ? `Hide ${externalCount} external dependencies`
-                : `Show ${externalCount} external dependencies`
-            }
-            aria-label={
-              showExternals
-                ? "Hide external dependencies"
-                : "Show external dependencies"
-            }
-            aria-pressed={showExternals}
-          >
-            <Package className="w-3.5 h-3.5" />
           </Button>
           )}
           {!isConstellation && (

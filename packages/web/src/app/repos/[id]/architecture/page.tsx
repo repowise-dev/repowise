@@ -3,19 +3,38 @@
 /**
  * Architecture — `/repos/[id]/architecture`.
  *
- * The "how the code is wired" destination, with tabs behind `?view=`:
- *   - map      — the constellation, surfaced as the "Communities" tab
- *   - explore  — the full / module dependency graph with dead/hot overlays
- *   - symbols  — the searchable symbol index
- *   - deps     — the third-party dependency registry
+ * Tabs are DATASETS, not zoom levels:
+ *   - Map       — the dependency graph, at community or file scope
+ *   - Coupling  — files that tend to change together
+ *   - Packages  — the declared third-party dependency registry
+ *   - Symbols   — the searchable symbol index
+ *
+ * How zoomed out the graph is — communities vs files — is a different axis and
+ * has exactly one control, `GraphScopeSwitcher`, in the section header beside
+ * the graph. It used to be steered from here *and* from a pill cluster floating
+ * on the canvas, which put "Communities" on screen twice and left "Explore" as
+ * a tab meaning "the graph, but not communities".
+ *
+ * The tab named "Packages" was "Dependencies", which collided with the graph
+ * itself: the Map tab *is* the dependency graph, so a sibling tab called
+ * Dependencies read as the same thing at a different zoom. It lists declared
+ * third-party packages, so it says that.
+ *
+ * ## URL state
+ *
+ * One param per axis, no two params saying the same thing:
+ *   - `?view=`   communities | files | coupling | packages | symbols
+ *   - `?signal=` dead | hot — which overlay is lit on the graph
+ *   - `?module=` a path prefix the file scope is filtered to
+ *
+ * `?view=` and `?viewMode=` used to encode the same axis twice — `view=explore`
+ * and `viewMode=full` both meant "the file graph", and they could disagree.
+ * Scope now lives in `?view=` and nothing else carries it. Old links keep
+ * working: the legacy spellings are aliased below, and a legacy `?viewMode=` is
+ * translated into `?view=`/`?signal=` on first read.
  *
  * The curated layered view ("Knowledge Graph") is a separate top-level route
  * (`/knowledge-graph`); the legacy `?view=layers` alias redirects there.
- *
- * Communities and Explore are the SAME `GraphFlow` canvas differing only by
- * scope: Communities locks it to the constellation (radial) scope, Explore
- * mounts it at full/module scope. Switching scope inside Explore keeps `?view=`
- * in sync without remounting.
  */
 
 import { use, useCallback, useEffect } from "react";
@@ -33,34 +52,61 @@ import { CouplingTab } from "@/components/coupling/coupling-tab";
 // The curated layered view now lives under the dedicated Knowledge Graph route.
 const KNOWLEDGE_GRAPH_VIEWS = new Set(["layers"]);
 
-// Accepted `?view=` values. "graph" and "layers" are legacy aliases that are
-// normalized / redirected below; only the canonical tabs render a tab.
-const VIEWS = [
-  "map",
-  "explore",
-  "deps",
-  "symbols",
-  "coupling",
-  "graph",
-  "layers",
-] as const;
+/** Canonical `?view=` values. The first two are both the Map tab. */
+const CANONICAL = ["communities", "files", "coupling", "packages", "symbols"] as const;
+type CanonicalView = (typeof CANONICAL)[number];
+
+/** Everything `?view=` accepts, canonical values plus legacy spellings. */
+const VIEWS = [...CANONICAL, "map", "explore", "deps", "graph", "layers"] as const;
 type ArchView = (typeof VIEWS)[number];
 
-// IA-as-data. Communities first (today's `map`), then the wiring surfaces.
-// Coupling is added here in a later phase — the structure is kept easy to
-// extend (append a `{ id: "coupling", ... }` row + a panel branch).
-const CANONICAL_VIEWS: { id: Extract<ArchView, "map" | "explore" | "deps" | "symbols" | "coupling">; label: string; hint: string }[] = [
-  { id: "map", label: "Communities", hint: "Constellation of detected communities" },
-  { id: "explore", label: "Explore", hint: "Full dependency graph with dead/hot overlays" },
-  { id: "coupling", label: "Coupling", hint: "Files that tend to change together" },
-  { id: "deps", label: "Dependencies", hint: "Declared third-party dependencies" },
-  { id: "symbols", label: "Symbols", hint: "Every function, class and export" },
+/** Legacy `?view=` spellings → canonical. `graph` predates the tab split and
+ *  `explore` was the file-graph half of the old Map/Explore pair. */
+const VIEW_ALIASES: Record<string, CanonicalView> = {
+  map: "communities",
+  graph: "communities",
+  explore: "files",
+  deps: "packages",
+};
+
+/** Legacy `?viewMode=` values → the `?view=` + `?signal=` they now mean. */
+const LEGACY_VIEW_MODES: Record<string, { view: CanonicalView; signal?: "dead" | "hot" }> = {
+  architecture: { view: "communities" },
+  // The modules scope is gone; its nearest honest destination is the file
+  // graph, where "modules" is now a filter rather than a separate canvas.
+  module: { view: "files" },
+  full: { view: "files" },
+  dead: { view: "files", signal: "dead" },
+  hotfiles: { view: "files", signal: "hot" },
+  // "unified" lit dead AND hot at once; the node filter is exclusive now, so
+  // it resolves to the one the old toolbar rendered as active.
+  unified: { view: "files", signal: "dead" },
+};
+
+// Which tab a canonical view renders under. Both graph scopes are the Map tab.
+const TAB_FOR_VIEW: Record<CanonicalView, string> = {
+  communities: "map",
+  files: "map",
+  coupling: "coupling",
+  packages: "packages",
+  symbols: "symbols",
+};
+
+const TABS: { id: string; label: string }[] = [
+  { id: "map", label: "Map" },
+  { id: "coupling", label: "Coupling" },
+  { id: "packages", label: "Packages" },
+  { id: "symbols", label: "Symbols" },
 ];
 
-// Legacy ?view=graph deep links carried the graph scope in ?viewMode=. Scopes
-// that render file-level graphs map to Explore; the constellation maps to the
-// Communities tab.
-const EXPLORE_VIEW_MODES = new Set(["module", "full", "dead", "hotfiles", "unified"]);
+/** Landing view when a tab is clicked. Map opens on communities — the whole
+ *  repo at a size you can read, rather than 1,500 circles. */
+const DEFAULT_VIEW_FOR_TAB: Record<string, CanonicalView> = {
+  map: "communities",
+  coupling: "coupling",
+  packages: "packages",
+  symbols: "symbols",
+};
 
 export default function ArchitecturePage({
   params,
@@ -71,9 +117,11 @@ export default function ArchitecturePage({
   const router = useRouter();
   const [rawView, setView] = useQueryState(
     "view",
-    parseAsStringLiteral(VIEWS).withDefault("map"),
+    parseAsStringLiteral(VIEWS).withDefault("communities"),
   );
-  const [viewModeParam] = useQueryState("viewMode");
+  const [viewModeParam, setViewModeParam] = useQueryState("viewMode");
+  const [, setSignal] = useQueryState("signal");
+  const [, setModule] = useQueryState("module");
   const [, setFocus] = useQueryState("focus");
 
   // The curated layers view now lives at /knowledge-graph. `?view=layers`
@@ -85,37 +133,42 @@ export default function ArchitecturePage({
     }
   }, [redirectsToKnowledgeGraph, repoId, router]);
 
-  // Normalize the remaining legacy alias without a URL rewrite: ?view=graph →
-  // map/explore by scope.
-  let view: ArchView = rawView;
-  if (rawView === "graph") {
-    view = EXPLORE_VIEW_MODES.has(viewModeParam ?? "") ? "explore" : "map";
-  }
+  // Translate a legacy `?viewMode=` once, then drop it. Doing this as an effect
+  // (rather than reading it every render) means the URL converges on the new
+  // shape instead of carrying both spellings forever.
+  const legacy = viewModeParam ? LEGACY_VIEW_MODES[viewModeParam] : undefined;
+  useEffect(() => {
+    if (!legacy) return;
+    void setView(legacy.view);
+    void setSignal(legacy.signal ?? null);
+    void setViewModeParam(null);
+  }, [legacy, setView, setSignal, setViewModeParam]);
 
-  const handleScopeViewChange = useCallback(
-    (next: "map" | "explore") => {
+  const view: CanonicalView =
+    legacy?.view ?? VIEW_ALIASES[rawView] ?? (rawView as CanonicalView);
+  const activeTab = TAB_FOR_VIEW[view] ?? "map";
+
+  // Leaving a tab drops the params that only meant something inside it, so the
+  // URL never carries a `signal=hot` into the Packages table where nothing
+  // reads it and nothing shows it.
+  const handleTabChange = useCallback(
+    (id: string) => {
+      void setView(DEFAULT_VIEW_FOR_TAB[id] ?? "communities");
+      if (id !== "coupling") void setFocus(null);
+      if (id !== "map") {
+        void setSignal(null);
+        void setModule(null);
+      }
+    },
+    [setView, setFocus, setSignal, setModule],
+  );
+
+  const handleScopeChange = useCallback(
+    (next: "communities" | "files") => {
       void setView(next);
     },
     [setView],
   );
-
-  const handleTabChange = useCallback(
-    (id: string) => {
-      const next = id as ArchView;
-      void setView(next);
-      if (next !== "coupling") {
-        void setFocus(null);
-      }
-    },
-    [setView, setFocus],
-  );
-
-  // The active canonical tab. Map/Explore are the only graph-canvas tabs;
-  // everything else resolves to its own panel.
-  const activeTab: (typeof CANONICAL_VIEWS)[number]["id"] =
-    view === "explore" || view === "deps" || view === "symbols" || view === "coupling"
-      ? view
-      : "map";
 
   if (redirectsToKnowledgeGraph) {
     return null;
@@ -124,29 +177,18 @@ export default function ArchitecturePage({
   return (
     <div className="flex h-full flex-col">
       <div className="shrink-0 px-4 pt-3 sm:px-6">
-        <ViewTabs
-          tabs={CANONICAL_VIEWS.map((v) => ({ id: v.id, label: v.label }))}
-          value={activeTab}
-          onValueChange={handleTabChange}
-        />
+        <ViewTabs tabs={TABS} value={activeTab} onValueChange={handleTabChange} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
         {activeTab === "map" && (
           <GraphView
             repoId={repoId}
-            scope="map"
-            onScopeViewChange={handleScopeViewChange}
+            scope={view === "files" ? "files" : "communities"}
+            onScopeChange={handleScopeChange}
           />
         )}
-        {activeTab === "explore" && (
-          <GraphView
-            repoId={repoId}
-            scope="explore"
-            onScopeViewChange={handleScopeViewChange}
-          />
-        )}
-        {activeTab === "deps" && <DependenciesView repoId={repoId} />}
+        {activeTab === "packages" && <DependenciesView repoId={repoId} />}
         {activeTab === "symbols" && (
           <div className="max-w-[1600px] space-y-6 p-4 sm:p-6">
             <SymbolIndexHeader />

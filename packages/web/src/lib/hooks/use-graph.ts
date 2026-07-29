@@ -14,7 +14,6 @@ import {
   getGraph,
   getGraphMetrics,
   getHotFilesGraph,
-  getModuleGraph,
   getZoomMap,
 } from "@/lib/api/graph";
 import type {
@@ -28,7 +27,6 @@ import type {
   GraphExportResponse,
   GraphMetricsResponse,
   HotFilesGraphResponse,
-  ModuleGraphResponse,
 } from "@/lib/api/types";
 
 const SWR_OPTS = { revalidateOnFocus: false, revalidateOnReconnect: false };
@@ -52,15 +50,6 @@ export function useGraph(repoId: string | null, limit?: number) {
   const { data, error, isLoading } = useSWR<GraphExportResponse>(
     repoId ? `graph:${repoId}:${limit ?? "default"}` : null,
     () => getGraph(repoId!, limit),
-    SWR_OPTS,
-  );
-  return { graph: data, error, isLoading };
-}
-
-export function useModuleGraph(repoId: string | null) {
-  const { data, error, isLoading } = useSWR<ModuleGraphResponse>(
-    repoId ? `module-graph:${repoId}` : null,
-    () => getModuleGraph(repoId!),
     SWR_OPTS,
   );
   return { graph: data, error, isLoading };

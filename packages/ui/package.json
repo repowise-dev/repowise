@@ -22,6 +22,7 @@
     "./graph/context": "./src/graph/context.ts",
     "./graph/elk-layout": "./src/graph/elk-layout.ts",
     "./graph/use-elk-layout": "./src/graph/use-elk-layout.ts",
+    "./graph/use-module-filter": "./src/graph/use-module-filter.ts",
     "./graph/nodes/*": "./src/graph/nodes/*.tsx",
     "./graph/edges/*": "./src/graph/edges/*.tsx",
     "./graph/*": "./src/graph/*.tsx",

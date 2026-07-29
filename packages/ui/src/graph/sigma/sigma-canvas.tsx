@@ -16,8 +16,6 @@ import type { Signal } from "../context";
 import type {
   GraphNode as GraphNodeResponse,
   GraphLink as GraphEdgeResponse,
-  ModuleNode as ModuleNodeResponse,
-  ModuleEdge as ModuleEdgeResponse,
 } from "@repowise-dev/types/graph";
 import { useSigmaRenderer } from "./use-sigma";
 import { useFA2Layout } from "./use-fa2-layout";
@@ -42,8 +40,6 @@ export interface SigmaCanvasProps {
   graphTheme: "light" | "dark";
   fileNodes?: GraphNodeResponse[] | undefined;
   fileEdges?: GraphEdgeResponse[] | undefined;
-  moduleNodes?: ModuleNodeResponse[] | undefined;
-  moduleEdges?: ModuleEdgeResponse[] | undefined;
   onNodeClick?: ((nodeId: string, nodeType: string) => void) | undefined;
   onNodeContextMenu?:
     | ((event: MouseEvent, nodeId: string, nodeType: string) => void)
@@ -106,9 +102,6 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       enabled: props.layoutMode === "hierarchical",
       fileNodes: props.fileNodes,
       fileEdges: props.fileEdges,
-      moduleNodes: props.moduleNodes,
-      moduleEdges: props.moduleEdges,
-      viewMode: props.viewMode,
       onSkipped: props.onLayoutSkipped,
     });
 

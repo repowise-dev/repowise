@@ -18,6 +18,7 @@ import {
   EDGE_SIZE_MULTIPLIERS,
   CURVED_EDGE_THRESHOLD,
   PRESETTLE_MAX_NODES,
+  SEED_JITTER_PER_SQRT_MEMBER,
   getFA2Settings,
   getPresettleIterations,
   getScaledNodeSize,
@@ -171,7 +172,6 @@ function* buildFileGraph(
     (a, b) => a - b,
   );
   const communityCount = sortedCommunities.length;
-  const jitter = Math.sqrt(nodeCount) * 3;
 
   let processed = 0;
   for (let i = 0; i < sortedCommunities.length; i++) {
@@ -182,11 +182,18 @@ function* buildFileGraph(
     const radius = spread * Math.sqrt((i + 1) / communityCount);
     const centroidX = radius * Math.cos(angle);
     const centroidY = radius * Math.sin(angle);
+    // Per-community, not per-graph: a community's box grows with its own
+    // membership so density stays even across very unequal communities.
+    const jitter = SEED_JITTER_PER_SQRT_MEMBER * Math.sqrt(members.length);
 
     for (const node of members) {
+      // Deterministic point in the community's disc. sqrt on the radius keeps
+      // the distribution uniform over area rather than bunched at the centre.
       const hash = simpleHash(node.node_id);
-      const x = centroidX + ((hash % 1000) / 1000 - 0.5) * jitter;
-      const y = centroidY + (((hash >> 10) % 1000) / 1000 - 0.5) * jitter;
+      const r = (jitter / 2) * Math.sqrt((hash % 1000) / 1000);
+      const theta = (((hash >> 10) % 1000) / 1000) * 2 * Math.PI;
+      const x = centroidX + r * Math.cos(theta);
+      const y = centroidY + r * Math.sin(theta);
 
       let baseSize: number;
       if (node.is_entry_point) {
@@ -271,6 +278,12 @@ function* buildFileGraph(
   const maxEdgesPerNode = nodeCount > 1000 ? 25 : Infinity;
   const edgesPerSource = new Map<string, number>();
 
+  // Curvature is an edge-count decision, so decide it on the edge count. The
+  // per-source cap above bounds this, so `orderedLinks.length` is an upper
+  // bound on what actually gets drawn — erring toward curved, which is the
+  // nicer default, on graphs near the threshold.
+  const useCurved = orderedLinks.length <= CURVED_EDGE_THRESHOLD;
+
   let edgeProcessed = 0;
   for (const link of orderedLinks) {
     if (++edgeProcessed % CHUNK_SIZE === 0) yield;
@@ -284,13 +297,12 @@ function* buildFileGraph(
 
     const edgeKind = edgeKindMap.get(link) ?? classifyEdge(link, nodeMap);
 
-    const useCurved = nodeCount <= CURVED_EDGE_THRESHOLD;
     const edgeAttrs: SigmaEdgeAttributes = {
       size: computeEdgeSize(edgeKind, nodeCount),
       color: EDGE_COLORS[edgeKind],
-      // Directed arrowheads under the curved threshold; big graphs keep the
-      // cheaper line program.
-      type: useCurved ? "curvedArrow" : "line",
+      // Dense graphs drop the curvature, never the arrowhead: "line" would
+      // erase the direction encoding that makes a dependency edge readable.
+      type: useCurved ? "curvedArrow" : "arrow",
       curvature: useCurved ? computeEdgeCurvature(edgeKey) : 0,
       edgeKind,
       importedNames: link.imported_names,
@@ -303,6 +315,19 @@ function* buildFileGraph(
 
     result.addEdgeWithKey(edgeKey, link.source, link.target, edgeAttrs);
   }
+
+  // The community seed above IS the layout — mark it settled so use-fa2-layout
+  // skips its auto-run (the toolbar's manual toggle still starts FA2).
+  //
+  // This used to hand off to the animated FA2 worker for 8 seconds. Measured on
+  // this repo's real 1,500-node export, that run does not improve the picture:
+  // cluster separation *falls* monotonically with iterations (23.2 seeded →
+  // 21.6 at 120 → 12.1 at 600 → 7.7 at 1200) as gravity pulls the golden-angle
+  // spiral into one central hairball, while median node drift stays under 4% of
+  // the graph radius for the first ~120. So the eight seconds bought a slower
+  // arrival at a slightly worse layout. Removing it is a removal of known work,
+  // not a speculative optimisation.
+  result.setAttribute("presettled", true);
 
   return result;
 }
