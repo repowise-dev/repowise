@@ -2,6 +2,7 @@
 
 import { use } from "react";
 import { DocsExplorer } from "@/components/docs/docs-explorer";
+import { DOCS_READER_SHELL_CLASS } from "./docs-reader-shell";
 
 // Thin shell — the DocsHeader, search palette, export menu, and per-page
 // controls all live in DocsExplorer, which owns the page selection and
@@ -14,13 +15,9 @@ export default function DocsPage({
   const { id: repoId } = use(params);
 
   return (
-    // Fill the height `main` actually leaves, not the whole viewport. `main` is
-    // already a flex child sitting below the banners a repo can stack above it
-    // (reindex hint, active job, upgrade), so asking for `h-screen` here
-    // overflowed by exactly the height of whichever ones were showing and
-    // pushed the reader's footer chrome below the fold. `min-h-0` lets the tree
-    // and reader scroll inside this box rather than growing it.
-    <div className="flex flex-1 flex-col min-h-0">
+    // Fill the height `main` actually leaves, not the whole viewport — see
+    // docs-reader-shell.ts for why that has to be a definite height.
+    <div className={DOCS_READER_SHELL_CLASS}>
       <DocsExplorer repoId={repoId} />
     </div>
   );
