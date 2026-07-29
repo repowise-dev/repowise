@@ -136,12 +136,22 @@ const HEALTH_BAND_INK: Record<HealthBand, string> = {
 };
 
 /**
+ * A canonical band as an ink color, for a key or legend that has a band but no
+ * score to derive it from. Exported so an off-canvas key paints from the same
+ * table the fills do — a legend with its own copy of the colours is a legend
+ * that can describe a canvas it no longer matches.
+ */
+export function healthBandInk(band: HealthBand): string {
+  return HEALTH_BAND_INK[band];
+}
+
+/**
  * Canonical banding for a higher-is-better health score on the 0-10 scale,
  * as an ink color usable in `style`/SVG attributes. Thresholds come from the
  * shared `bandForScore` mirror so every surface agrees on what counts as red.
  */
 export function healthInk(score10: number): string {
-  return HEALTH_BAND_INK[bandForScore(score10)];
+  return healthBandInk(bandForScore(score10));
 }
 
 /** `healthInk` for scores expressed on a 0-100 scale. */

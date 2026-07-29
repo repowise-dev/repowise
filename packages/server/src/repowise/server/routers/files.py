@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
+from repowise.core.ids import is_external
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import DeadCodeFinding, Page, WikiSymbol
@@ -109,14 +110,21 @@ async def files_index(
 
     One row per indexed file node, joined in-memory from four batch reads
     (graph nodes, materialized degree metrics, health metrics, git metadata).
-    Percentiles for importance (pagerank) and churn are computed once over the
-    full set so the client can rank without refetching.
+    Third-party and framework nodes are excluded — they share the table with
+    real files but have no path to open. Percentiles for pagerank and churn are
+    computed once over the full set so the client can rank without refetching.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    nodes = await crud.get_all_file_metrics(session, repo_id)
+    # Third-party and framework nodes live in the same table as real files, and
+    # they are not files: `external:react` has no path, no LOC, no health and no
+    # page behind it, so its row rendered as a wall of em-dashes linking to a
+    # 404. Dropped before the percentile is taken, so ranking a file against a
+    # node the reader can never open cannot skew where it lands.
+    all_nodes = await crud.get_all_file_metrics(session, repo_id)
+    nodes = [n for n in all_nodes if not is_external(n.node_id)]
     degrees = await crud.get_graph_metrics(session, repo_id)
     metrics_by_path = {m.file_path: m for m in await crud.get_health_metrics(session, repo_id)}
     git_by_path = await crud.get_all_git_metadata(session, repo_id)
