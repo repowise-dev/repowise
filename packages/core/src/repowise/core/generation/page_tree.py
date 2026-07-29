@@ -194,13 +194,36 @@ def assign_page_tree(
     # A file's layer comes from the provenance stamped on it at generation
     # time. Keyed on layer_id, never the display name, which drifts.
     layer_of_file: dict[str, str] = {}
+    # Display name per layer id, borrowed from the files that carry both. The
+    # id is a slug and turning it back into a name is lossy, so the curated
+    # name is read rather than derived.
+    layer_name_by_id: dict[str, str] = {}
     for page in by_type.get("file_page", []):
         lid = page.metadata.get("layer_id")
         if isinstance(lid, str) and lid:
             layer_of_file[page.target_path] = lid
+            name = page.metadata.get("layer_name")
+            if isinstance(name, str) and name:
+                layer_name_by_id.setdefault(lid, name)
 
     def layer_parent(layer_id: str) -> str | None:
         return f"layer_page:{layer_id}" if layer_id in layer_ids else root_id
+
+    def stamp_layer(page: TreeNode, layer_id: str) -> None:
+        """Record which layer a page belongs to, on the page itself.
+
+        A reader-facing tree groups by this rather than by parenting the page
+        onto a layer page, so the grouping survives those pages not existing.
+        Nothing is stamped when the layer could not be resolved: absent is
+        honest, whereas a placeholder id would collect unrelated pages under
+        one heading.
+        """
+        if not layer_id:
+            return
+        page.metadata["layer_id"] = layer_id
+        name = layer_name_by_id.get(layer_id)
+        if name:
+            page.metadata["layer_name"] = name
 
     # --- Modules sit under their dominant layer ----------------------------
     module_paths: list[str] = []
@@ -271,7 +294,9 @@ def assign_page_tree(
                 )
                 borrowed.extend(m for m in child_members if isinstance(m, str))
             members = borrowed
-        page.parent_page_id = layer_parent(_dominant_layer(members, layer_of_file))
+        module_layer = _dominant_layer(members, layer_of_file)
+        stamp_layer(page, module_layer)
+        page.parent_page_id = layer_parent(module_layer)
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
     # The file's own page may not exist: selection can spotlight a symbol in a
@@ -291,7 +316,9 @@ def assign_page_tree(
     for page in by_type.get("scc_page", []):
         members = page.metadata.get("files") or page.metadata.get("file_paths") or []
         members = [m for m in members if isinstance(m, str)]
-        page.parent_page_id = layer_parent(_dominant_layer(members, layer_of_file))
+        scc_layer = _dominant_layer(members, layer_of_file)
+        stamp_layer(page, scc_layer)
+        page.parent_page_id = layer_parent(scc_layer)
 
     for page in by_type.get("layer_page", []):
         page.parent_page_id = root_id
