@@ -194,3 +194,4 @@ class TestArchitectureDiagramRetirement:
 
     def test_the_overview_itself_is_not_redirected(self):
         assert resolve_superseded("repo_overview:repowise") is None
+
