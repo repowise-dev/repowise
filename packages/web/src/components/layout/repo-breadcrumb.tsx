@@ -6,6 +6,7 @@ import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
 import type { BreadcrumbSegment } from "@repowise-dev/ui/shared/breadcrumb";
 import { DocsModeBadge, type DocsMode } from "@repowise-dev/ui/docs/docs-mode-badge";
 import { getRepoBreadcrumbSegmentLabel } from "./repo-breadcrumb-label";
+import { showsRouteBreadcrumb } from "./repo-breadcrumb-route";
 
 export function RepoBreadcrumb({
   repoName,
@@ -17,7 +18,13 @@ export function RepoBreadcrumb({
 }) {
   const pathname = usePathname();
   const match = pathname.match(/^\/repos\/([^/]+)(.*)/);
-  if (!match) return null;
+  if (!match) {
+    // The layout that renders this only wraps /repos/{id}. Reaching here means
+    // the route moved out from under it and every page below lost its trail —
+    // say so rather than rendering nothing.
+    console.warn(`[breadcrumb] no repo in pathname, rendering no trail: ${pathname}`);
+    return null;
+  }
 
   const repoId = match[1];
   const rest = match[2]?.replace(/^\//, "").split("/").filter(Boolean) ?? [];
@@ -36,7 +43,7 @@ export function RepoBreadcrumb({
     });
   }
 
-  const showCrumbs = segments.length > 2;
+  const showCrumbs = segments.length > 2 && showsRouteBreadcrumb(pathname);
   const showBadge = docsMode !== "none";
   // Nothing to show at the repo root with no docs — stay out of the way.
   if (!showCrumbs && !showBadge) return null;
