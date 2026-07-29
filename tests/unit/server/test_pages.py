@@ -330,3 +330,77 @@ async def test_regenerate_page_rejects_unknown_style(client: AsyncClient, app) -
     )
     assert resp.status_code == 400
     assert "style" in resp.json()["detail"].lower()
+
+# ---------------------------------------------------------------------------
+# Retired page ids
+#
+# Wiki pages are public and linkable.  A page that stops being generated has to
+# keep resolving, or every inbound link to it breaks silently on the next index.
+# ---------------------------------------------------------------------------
+
+
+_REDIRECTS = "repowise.server.routers.pages.resolve_superseded"
+
+
+@pytest.mark.asyncio
+async def test_retired_page_id_serves_its_successor(client: AsyncClient, app) -> None:
+    _, page_id = await _create_page(client, app.state.session_factory)
+    with patch(_REDIRECTS, return_value=page_id):
+        resp = await client.get("/api/pages/architecture_diagram:gone")
+    assert resp.status_code == 200
+    body = resp.json()
+    # The reader gets the successor, and can see that they moved: the id in the
+    # body is the successor's, not the one they asked for.
+    assert body["id"] == page_id
+    assert resp.headers["x-repowise-redirected-from"] == "architecture_diagram:gone"
+
+
+@pytest.mark.asyncio
+async def test_retired_page_id_redirects_on_lookup_too(client: AsyncClient, app) -> None:
+    """The query-param form is the one the UI uses; it must behave the same."""
+    _, page_id = await _create_page(client, app.state.session_factory)
+    with patch(_REDIRECTS, return_value=page_id):
+        resp = await client.get(
+            "/api/pages/lookup", params={"page_id": "architecture_diagram:gone"}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == page_id
+    assert resp.headers["x-repowise-redirected-from"] == "architecture_diagram:gone"
+
+
+@pytest.mark.asyncio
+async def test_live_page_is_not_redirected(client: AsyncClient, app) -> None:
+    """A page that exists is served as itself and never consults the table."""
+    _, page_id = await _create_page(client, app.state.session_factory)
+    resp = await client.get(f"/api/pages/{page_id}")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == page_id
+    assert "x-repowise-redirected-from" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_unknown_page_id_still_404s(client: AsyncClient, app) -> None:
+    """Nothing in the redirect path may turn a genuine miss into a success."""
+    await _create_page(client, app.state.session_factory)
+    resp = await client.get("/api/pages/file_page:does/not/exist.py")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_successor_that_does_not_exist_404s(client: AsyncClient, app) -> None:
+    """A redirect pointing at a missing page is a miss, not a 500."""
+    await _create_page(client, app.state.session_factory)
+    with patch(_REDIRECTS, return_value="file_page:also/missing.py"):
+        resp = await client.get("/api/pages/architecture_diagram:gone")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_broken_redirect_table_does_not_500_the_reader(client: AsyncClient, app) -> None:
+    """A cycle is a bug, but it must degrade to a 404 rather than a crash."""
+    from repowise.core.generation.page_redirects import SupersededCycleError
+
+    await _create_page(client, app.state.session_factory)
+    with patch(_REDIRECTS, side_effect=SupersededCycleError("a -> b -> a")):
+        resp = await client.get("/api/pages/architecture_diagram:gone")
+    assert resp.status_code == 404

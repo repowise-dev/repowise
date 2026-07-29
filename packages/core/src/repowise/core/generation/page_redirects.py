@@ -1,0 +1,136 @@
+"""Where a retired wiki page id sends the reader.
+
+Wiki pages are public and linkable, so a page that stops being generated
+cannot simply vanish — every id that was ever served has to keep resolving to
+something.  This module owns that mapping and nothing else: it turns a retired
+page id into the id of the page that took over its material.
+
+Page ids are ``{page_type}:{target_path}`` (see ``models.compute_page_id``).
+Retirements come in two shapes and the tables mirror that:
+
+* **A whole page type folds into another.**  Its target path is usually the
+  repository name, which differs per repo, so the rule cannot be written as a
+  literal id.  :data:`SUPERSEDED_TYPES` rewrites the type and carries the path
+  across unchanged.
+* **One page with a fixed target path retires.**  The onboarding slots are
+  ``onboarding/{slot}`` for every repo, so these can be written as exact ids in
+  :data:`SUPERSEDED_IDS`.
+
+Retirements chain: a page folded into a second page that later folds into a
+third must land on the third, not the second, or the redirect leads somewhere
+that is itself gone.  :func:`resolve_superseded` follows the chain to its end.
+
+Everything here fails loudly.  A redirect table is exactly the kind of thing
+that rots silently — a cycle would hang, a typo'd successor would strand every
+inbound link — and either would read as "no redirect needed" rather than as an
+error.  So a cycle raises, a malformed id raises, and the shipped tables are
+walked by a test that resolves every entry in them.
+"""
+
+from __future__ import annotations
+
+# Retired page type → the page type that took over its material.  The target
+# path is carried across unchanged.
+SUPERSEDED_TYPES: dict[str, str] = {}
+
+# Retired page id → successor page id, in full.  For pages whose target path is
+# the same in every repository.
+SUPERSEDED_IDS: dict[str, str] = {}
+
+# A chain longer than this is a table authoring mistake rather than a real
+# history — the orientation set has never held more than a handful of pages.
+# Bounded so a table that somehow evades cycle detection cannot spin forever.
+_MAX_CHAIN = 16
+
+
+class SupersededError(Exception):
+    """Base for redirect-table failures."""
+
+
+class SupersededCycleError(SupersededError):
+    """A retirement chain loops, so it has no destination."""
+
+
+class SupersededTargetError(SupersededError):
+    """A page id is not ``{page_type}:{target_path}``."""
+
+
+def _split(page_id: str) -> tuple[str, str]:
+    """Split an id into (page_type, target_path) on the first colon.
+
+    Target paths may themselves contain colons, so only the first separator is
+    significant.
+    """
+    page_type, sep, target_path = page_id.partition(":")
+    if not sep or not page_type:
+        raise SupersededTargetError(f"Page id {page_id!r} is not '{{page_type}}:{{target_path}}'.")
+    return page_type, target_path
+
+
+def _successor(
+    page_id: str,
+    superseded_types: dict[str, str],
+    superseded_ids: dict[str, str],
+) -> str | None:
+    """One hop, or ``None`` when this id is still live.
+
+    An exact-id rule is more specific than a type-level one and wins.
+    """
+    exact = superseded_ids.get(page_id)
+    if exact is not None:
+        _split(exact)  # a successor that is not a page id strands the link
+        return exact
+
+    page_type, target_path = _split(page_id)
+    successor_type = superseded_types.get(page_type)
+    if successor_type is None:
+        return None
+    return f"{successor_type}:{target_path}"
+
+
+def resolve_superseded(
+    page_id: str,
+    *,
+    superseded_types: dict[str, str] | None = None,
+    superseded_ids: dict[str, str] | None = None,
+) -> str | None:
+    """The live page id a retired one now points at, or ``None``.
+
+    Follows retirement chains to their end, so the returned id is the page that
+    is actually generated today rather than an intermediate that has itself
+    been retired.
+
+    Args:
+        page_id: The id to resolve, ``{page_type}:{target_path}``.
+        superseded_types: Overrides the shipped type table.  For tests.
+        superseded_ids: Overrides the shipped exact-id table.  For tests.
+
+    Returns:
+        The successor id, or ``None`` when ``page_id`` is not retired.
+
+    Raises:
+        SupersededTargetError: ``page_id`` or a successor is malformed.
+        SupersededCycleError: the chain loops and has no destination.
+    """
+    types = SUPERSEDED_TYPES if superseded_types is None else superseded_types
+    ids = SUPERSEDED_IDS if superseded_ids is None else superseded_ids
+
+    _split(page_id)  # reject a malformed id even when no rule matches
+
+    seen = [page_id]
+    current = page_id
+    for _ in range(_MAX_CHAIN):
+        nxt = _successor(current, types, ids)
+        if nxt is None:
+            # ``current`` is live.  It is a redirect only if we moved at all.
+            return current if current != page_id else None
+        if nxt in seen:
+            raise SupersededCycleError(
+                "Retirement chain loops and has no destination: " + " -> ".join([*seen, nxt])
+            )
+        seen.append(nxt)
+        current = nxt
+
+    raise SupersededCycleError(
+        f"Retirement chain from {page_id!r} exceeded {_MAX_CHAIN} hops: " + " -> ".join(seen)
+    )

@@ -7,10 +7,12 @@ parameter greedily matches the suffix as part of the page_id.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.generation.page_redirects import SupersededError, resolve_superseded
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import _now_utc
 from repowise.server.deps import get_db_session, verify_api_key
@@ -20,11 +22,59 @@ from repowise.server.schemas import (
     PageVersionResponse,
 )
 
+logger = structlog.get_logger(__name__)
+
 router = APIRouter(
     prefix="/api/pages",
     tags=["pages"],
     dependencies=[Depends(verify_api_key)],
 )
+
+# Names the id the reader actually asked for when they were moved. Without it a
+# redirect is indistinguishable from having requested the successor directly,
+# and a client cannot tell the reader their link is out of date.
+REDIRECTED_FROM_HEADER = "X-Repowise-Redirected-From"
+
+
+async def _get_page_or_successor(session: AsyncSession, page_id: str, response: Response):
+    """The requested page, or the page that took over from it.
+
+    Wiki pages are public and linkable, so an id that stops being generated has
+    to keep resolving. A miss is retried against the retirement table before it
+    becomes a 404.
+
+    Returns ``None`` when neither the page nor a successor exists — callers
+    raise the 404, so a genuine miss can never be turned into a success here.
+    """
+    page = await crud.get_page(session, page_id)
+    if page is not None:
+        return page
+
+    try:
+        successor_id = resolve_superseded(page_id)
+    except SupersededError:
+        # The table is static and a test resolves every entry in it, so this
+        # means a real bug. It must not take page serving down with it.
+        logger.warning("page_redirect_table_broken", page_id=page_id, exc_info=True)
+        return None
+
+    if successor_id is None:
+        return None
+
+    successor = await crud.get_page(session, successor_id)
+    if successor is None:
+        # The table points at a page this index did not produce. Every inbound
+        # link to the retired id is stranded, so say so rather than 404ing mute.
+        logger.warning(
+            "page_redirect_successor_missing",
+            page_id=page_id,
+            successor_id=successor_id,
+        )
+        return None
+
+    logger.info("page_redirect_served", page_id=page_id, successor_id=successor_id)
+    response.headers[REDIRECTED_FROM_HEADER] = page_id
+    return successor
 
 
 @router.get("", response_model=None)
@@ -77,6 +127,7 @@ async def list_pages(
 
 @router.get("/lookup", response_model=PageResponse)
 async def get_page_by_query(
+    response: Response,
     page_id: str = Query(..., description="Page ID (e.g. file_page:src/main.py)"),
     repo_id: str | None = Query(
         None,
@@ -95,8 +146,11 @@ async def get_page_by_query(
     workspace server looks the page up in whichever store is the default, and a
     page id that exists in another repo comes back as a 404 — so any caller
     that knows the repo should say so.
+
+    A retired page id resolves to whatever took over from it; the response then
+    carries ``X-Repowise-Redirected-From``.
     """
-    page = await crud.get_page(session, page_id)
+    page = await _get_page_or_successor(session, page_id, response)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     return PageResponse.from_orm(page)
@@ -205,13 +259,17 @@ async def regenerate_page_by_query(
 @router.get("/{page_id:path}", response_model=PageResponse)
 async def get_page(
     page_id: str,
+    response: Response,
     session: AsyncSession = Depends(get_db_session),
 ) -> PageResponse:
     """Get a single wiki page by ID in path (e.g. ``file_page:src/main.py``).
 
     The page_id is URL-decoded automatically by FastAPI.
+
+    A retired page id resolves to whatever took over from it; the response then
+    carries ``X-Repowise-Redirected-From``.
     """
-    page = await crud.get_page(session, page_id)
+    page = await _get_page_or_successor(session, page_id, response)
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     return PageResponse.from_orm(page)
