@@ -34,7 +34,6 @@ from repowise.server.schemas import (
     ZoomRelationResponse,
 )
 from repowise.server.services import c4_builder
-from repowise.server.services.zoom_builder import ZoomMap, build_zoom_map
 from repowise.server.services.c4_builder.mermaid import (
     to_mermaid_l1,
     to_mermaid_l2,
@@ -55,6 +54,7 @@ from repowise.server.services.c4_builder.structurizr import (
     DEFAULT_FILENAME as STRUCTURIZR_FILENAME,
 )
 from repowise.server.services.c4_builder.structurizr import to_dsl
+from repowise.server.services.zoom_builder import ZoomMap, build_zoom_map
 
 router = APIRouter(
     prefix="/api/graph",

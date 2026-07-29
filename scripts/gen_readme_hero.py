@@ -13,10 +13,11 @@ repo has no git-lfs, so every byte is permanent clone weight:
 
     ffmpeg -i in.gif -vf "fps=11,scale=1100:-1:flags=lanczos,split[a][b];      [a]palettegen=max_colors=112[p];[b][p]paletteuse=dither=bayer:bayer_scale=3"       -loop 0 out.gif
 """
-import math, random
-
+import math
 import os
+import random
 import sys
+
 THEME = sys.argv[1] if len(sys.argv) > 1 else "light"
 
 if THEME == "light":
@@ -104,22 +105,24 @@ add(f'<text x="{ax+54}" y="{ay+138}" class="trust">17 of the 20 lowest-health fi
 gx, gy, gw, gh = ax + 22, ay + 162, 452, 170
 add(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="9" fill="{INSET}"/>')
 add(f'<clipPath id="galaxy"><rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="9"/></clipPath>')
-add(f'<g clip-path="url(#galaxy)">')
+add('<g clip-path="url(#galaxy)">')
 # cluster centers
 centers = [(gx+92, gy+80, 62), (gx+218, gy+62, 50), (gx+318, gy+104, 44),
            (gx+392, gy+52, 32), (gx+150, gy+140, 30)]
 HEAT = [SUCCESS, HEAT_MID1, WARNING, HEAT_MID2, ERROR]
 placed = []
-for ci, (cx, cy, cr) in enumerate(centers):
+for _ci, (cx, cy, cr) in enumerate(centers):
     add(f'<circle cx="{cx}" cy="{cy}" r="{cr}" fill="{HAIR_XF}"/>')
     n = int(cr * 1.5)
     for _ in range(n):
         for _try in range(40):
-            a = rng.uniform(0, math.tau); d = cr * math.sqrt(rng.uniform(0, 1)) * 0.92
+            a = rng.uniform(0, math.tau)
+            d = cr * math.sqrt(rng.uniform(0, 1)) * 0.92
             px, py = cx + math.cos(a) * d, cy + math.sin(a) * d
             r = rng.choice([2.2, 2.6, 3.1, 3.6, 4.4, 5.4])
             if all((px-qx)**2 + (py-qy)**2 > (r+qr+1.3)**2 for qx, qy, qr in placed):
-                placed.append((px, py, r)); break
+                placed.append((px, py, r))
+                break
         else:
             continue
         # heat skews unhealthy toward cluster cores
@@ -157,18 +160,20 @@ for ci, (cx, cy) in enumerate(gcent):
     hub_r = 9
     nodes.append((cx, cy, hub_r, COMM[ci], ci, True))
     for _ in range(9):
-        a = rng.uniform(0, math.tau); d = rng.uniform(22, 58)
+        a = rng.uniform(0, math.tau)
+        d = rng.uniform(22, 58)
         nodes.append((cx + math.cos(a)*d, cy + math.sin(a)*d*0.8, rng.uniform(2.6, 4.4), COMM_SOFT[ci], ci, False))
 # edges: leaf -> its hub, plus a few cross links
-for nx, ny, nr, col, ci, is_hub in nodes:
-    if is_hub: continue
+for nx, ny, _nr, _col, ci, is_hub in nodes:
+    if is_hub:
+        continue
     hx, hy = gcent[ci]
     add(f'<line x1="{nx:.1f}" y1="{ny:.1f}" x2="{hx}" y2="{hy}" stroke="{HAIR_F}" stroke-width="1"/>')
 for i in range(len(gcent)):
     for j in range(i+1, len(gcent)):
         if rng.random() < 0.75:
             add(f'<line x1="{gcent[i][0]}" y1="{gcent[i][1]}" x2="{gcent[j][0]}" y2="{gcent[j][1]}" stroke="{HAIR_S}" stroke-width="1.6"/>')
-for nx, ny, nr, col, ci, is_hub in nodes:
+for nx, ny, nr, col, _ci, is_hub in nodes:
     sw = f' stroke="{SURFACE}" stroke-width="1.5"' if is_hub else ''
     add(f'<circle cx="{nx:.1f}" cy="{ny:.1f}" r="{nr:.1f}" fill="{col}"{sw}/>')
 add('</g>')
@@ -247,10 +252,11 @@ card(fx0, fy0, fw, RH, "SERVED TO YOUR AGENT", "10 MCP tools")
 tools = ["get_overview", "get_answer", "get_context", "get_symbol", "search_codebase",
          "get_risk", "get_change_risk", "get_why", "get_dead_code", "get_health"]
 tx, ty = fx0 + 20, fy0 + 54
-for i, t in enumerate(tools):
+for _i, t in enumerate(tools):
     wpx = 12 + len(t) * 6.9
     if tx + wpx > fx0 + fw - 20:
-        tx = fx0 + 20; ty += 30
+        tx = fx0 + 20
+        ty += 30
     add(f'<rect x="{tx:.0f}" y="{ty}" width="{wpx:.0f}" height="24" rx="6" fill="{INSET}" stroke="{BORDER}"/>')
     add(f'<text x="{tx+wpx/2:.0f}" y="{ty+16}" class="mono" text-anchor="middle">{esc(t)}</text>')
     tx += wpx + 8

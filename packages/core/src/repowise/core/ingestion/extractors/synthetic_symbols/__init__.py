@@ -55,7 +55,7 @@ _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
 
 
 def extract_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Dispatch to the language-appropriate synthetic-symbol providers.
 

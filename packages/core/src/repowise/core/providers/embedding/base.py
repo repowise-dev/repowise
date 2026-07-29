@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import struct
 from typing import Protocol, runtime_checkable
 
 

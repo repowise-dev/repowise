@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 import networkx as nx
 
@@ -234,7 +235,7 @@ class TestGoSameFileTypeUseFallback:
     the shape of the 7 false positives the fix rescues.
     """
 
-    _SOURCES: dict[str, str] = {
+    _SOURCES: ClassVar[dict[str, str]] = {
         "go.mod": "module example.com/widget\n\ngo 1.22\n",
         # Single-file package, zero imports — candidates is empty for this
         # file even before ``from_path`` is discarded.

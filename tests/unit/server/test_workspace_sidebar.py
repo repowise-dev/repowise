@@ -23,7 +23,6 @@ from repowise.core.persistence.database import init_db
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -136,7 +135,7 @@ async def test_list_repos_includes_unindexed_workspace_entries(
     """Frontend pulled /api/repos and used to silently drop unindexed
     workspace repos. Now they must appear as ``ws:<alias>`` synthetic
     rows with status="needs_index"."""
-    _, ws_root, ws_config, _ = workspace_app
+    _, _ws_root, _ws_config, _ = workspace_app
 
     resp = await client.get("/api/repos")
     assert resp.status_code == 200
@@ -162,7 +161,7 @@ async def test_list_repos_includes_unindexed_workspace_entries(
 
 
 async def test_search_fulltext_fans_across_workspace(workspace_app, client: AsyncClient):
-    _, _, _, repo_id = workspace_app
+    _, _, _, _repo_id = workspace_app
 
     resp = await client.get(
         "/api/search",

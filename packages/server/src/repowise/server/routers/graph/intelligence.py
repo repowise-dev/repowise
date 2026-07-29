@@ -35,7 +35,7 @@ router = APIRouter()
 async def get_graph_metrics(
     repo_id: str,
     node_id: str = Query(..., description="File path or symbol_id"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> GraphMetricsResponse:
     """Return importance metrics for a file or symbol with percentile ranks."""
@@ -76,7 +76,7 @@ async def get_callers_callees(
     direction: str = Query("both", description="callers, callees, or both"),
     edge_types: str = Query("calls", description="Comma-separated edge types"),
     limit: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> CallersCalleesResponse:
     """Find who calls a symbol and what it calls. Also works for class hierarchy."""
@@ -185,7 +185,7 @@ async def get_execution_flows(
     top_n: int = Query(5, ge=1, le=20),
     max_depth: int = Query(5, ge=1, le=12),
     entry_point: str | None = Query(None, description="Specific symbol to trace from"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> ExecutionFlowsResponse:
     """Return top entry points with BFS call-path traces."""

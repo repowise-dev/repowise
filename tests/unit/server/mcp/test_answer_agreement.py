@@ -15,7 +15,6 @@ import pytest
 
 from repowise.server.mcp_server.tool_answer.answer import _agreement_dominant
 
-
 # ---------------------------------------------------------------------------
 # Pure-predicate unit tests for the agreement signal
 # ---------------------------------------------------------------------------

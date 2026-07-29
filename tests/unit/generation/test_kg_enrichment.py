@@ -3,23 +3,19 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-
-import pytest
 
 from repowise.core.generation.kg_enrichment import enrich_tour_with_wiki_links
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
-    SLOT_PREREQUISITES,
     SLOT_ACTIVE_LANDSCAPE,
     SLOT_CODEBASE_MAP,
-    SLOT_DEVELOPMENT_GUIDE,
     SLOT_HOW_IT_WORKS,
     SLOT_KEY_CONCEPTS,
+    SLOT_PREREQUISITES,
     SLOT_PROJECT_OVERVIEW,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -40,7 +40,7 @@ async def ego_graph(
     repo_id: str,
     node_id: str = Query(..., description="Center node ID"),
     hops: int = Query(2, ge=1, le=3),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> EgoGraphResponse:
     """Return the N-hop neighborhood of a given node."""
@@ -113,7 +113,7 @@ async def ego_graph(
 @router.get("/{repo_id}/entry-points", response_model=GraphExportResponse)
 async def entry_points_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> GraphExportResponse:
     """Return the subgraph reachable within 3 hops from entry-point nodes."""
@@ -175,7 +175,7 @@ async def entry_points_graph(
 @router.get("/{repo_id}/dead-nodes", response_model=DeadCodeGraphResponse)
 async def dead_code_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> DeadCodeGraphResponse:
     """Return dead-code nodes plus their 1-hop neighbors."""
@@ -304,7 +304,7 @@ async def hot_files_graph(
     repo_id: str,
     days: int = Query(30, description="Time window in days: 7, 30, or 90"),
     limit: int = Query(25, ge=1, le=100),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> HotFilesGraphResponse:
     """Return the most-committed files plus their 1-hop outgoing neighbors."""

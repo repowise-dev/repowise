@@ -21,7 +21,6 @@ from repowise.core.workspace.cross_repo import (
 from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
 from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
-
 # ---------------------------------------------------------------------------
 # HTTP — ASP.NET
 # ---------------------------------------------------------------------------

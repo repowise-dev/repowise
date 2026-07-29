@@ -238,7 +238,7 @@ def _build_attention_items(
 @router.get("/{repo_id}/overview-summary")
 async def overview_summary(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Everything the Overview page needs above the fold, in one call."""
     repo = await crud.get_repository(session, repo_id)

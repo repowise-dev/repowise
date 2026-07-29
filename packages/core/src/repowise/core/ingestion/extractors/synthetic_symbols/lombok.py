@@ -77,7 +77,7 @@ _TYPE_LOGGER_ANNOTATIONS = {
 }
 
 
-def _bare_annotation_names(modifiers_node: "Node", src: str) -> set[str]:
+def _bare_annotation_names(modifiers_node: Node, src: str) -> set[str]:
     """Return the bare names of every annotation on a modifiers node.
 
     ``@lombok.Data`` / ``@Data`` / ``@Data(staticConstructor="of")`` all
@@ -95,7 +95,7 @@ def _bare_annotation_names(modifiers_node: "Node", src: str) -> set[str]:
     return names
 
 
-def _field_info(field_node: "Node", src: str) -> tuple[str, str, bool, set[str]] | None:
+def _field_info(field_node: Node, src: str) -> tuple[str, str, bool, set[str]] | None:
     """Return (field_name, type_text, is_final, field_annotations) or None.
 
     A single ``field_declaration`` can declare multiple variables
@@ -124,20 +124,19 @@ def _field_info(field_node: "Node", src: str) -> tuple[str, str, bool, set[str]]
                 if leaf.type == "identifier" and name is None:
                     name = node_text(leaf, src).strip()
                     break
-        elif child.type not in (";", ","):
-            # Whatever this node is, it sits where the type goes —
-            # type_identifier / generic_type / scoped_type_identifier /
-            # array_type / annotated_type / integral_type / void_type /
-            # boolean_type / floating_point_type. Capture its text.
-            if not type_text:
-                type_text = node_text(child, src).strip()
+        # Whatever this node is, it sits where the type goes —
+        # type_identifier / generic_type / scoped_type_identifier /
+        # array_type / annotated_type / integral_type / void_type /
+        # boolean_type / floating_point_type. Capture its text.
+        elif child.type not in (";", ",") and not type_text:
+            type_text = node_text(child, src).strip()
 
     if not name:
         return None
     return name, type_text, is_final, field_annotations
 
 
-def _class_fields(class_node: "Node", src: str) -> list[tuple[str, str, bool, set[str]]]:
+def _class_fields(class_node: Node, src: str) -> list[tuple[str, str, bool, set[str]]]:
     """Return a list of (name, type_text, is_final, annotations) per declared field."""
     fields: list[tuple[str, str, bool, set[str]]] = []
     body = class_node.child_by_field_name("body")
@@ -202,7 +201,7 @@ def _add(out: list[Symbol], file_info: FileInfo, *, name: str, kind: str,
 
 
 def _emit_for_class(
-    class_node: "Node", src: str, file_info: FileInfo, out: list[Symbol]
+    class_node: Node, src: str, file_info: FileInfo, out: list[Symbol]
 ) -> None:
     name_node = class_node.child_by_field_name("name")
     if name_node is None:
@@ -225,7 +224,7 @@ def _emit_for_class(
     is_value = "Value" in annotations
     has_getter = "Getter" in annotations or is_data or is_value
     has_setter = "Setter" in annotations or is_data  # @Value is immutable — no setters
-    has_toString = "ToString" in annotations or is_data or is_value
+    has_to_string = "ToString" in annotations or is_data or is_value
     has_eq = "EqualsAndHashCode" in annotations or is_data or is_value
     has_rac = "RequiredArgsConstructor" in annotations or is_data
     has_aac = "AllArgsConstructor" in annotations or is_value
@@ -237,7 +236,7 @@ def _emit_for_class(
     fields = _class_fields(class_node, src)
 
     # Per-field getters/setters/withers.
-    for field_name, field_type, is_final, field_annotations in fields:
+    for field_name, field_type, _is_final, field_annotations in fields:
         field_get = "Getter" in field_annotations or has_getter
         field_set = "Setter" in field_annotations or has_setter
         field_with = "With" in field_annotations or has_with
@@ -254,7 +253,7 @@ def _emit_for_class(
                  kind="method", parent=class_name, line=line,
                  signature=f"public {class_name} {_with_name(field_name)}({field_type or 'Object'})")
 
-    if has_toString:
+    if has_to_string:
         _add(out, file_info, name="toString", kind="method",
              parent=class_name, line=line,
              signature="public String toString()")
@@ -332,7 +331,7 @@ def _emit_for_class(
 
 
 def lombok_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Emit synthetic symbols for Lombok-annotated Java classes."""
     # Cheap reject path: if the source doesn't even mention `@`, there

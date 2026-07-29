@@ -92,7 +92,7 @@ class PhpDynamicHints(DynamicHintExtractor):
             if _NEW_DOLLAR_RE.search(text):
                 edges.append(DynamicEdge(
                     source=rel,
-                    target=f"external:php_dynamic:new_var",
+                    target="external:php_dynamic:new_var",
                     edge_type="dynamic_uses",
                     hint_source=f"{self.name}:new_var",
                 ))

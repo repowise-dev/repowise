@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -295,10 +296,8 @@ def capture_repo_totals(repo: Any) -> RepoTotals:
     """
     totals = RepoTotals()
 
-    try:
+    with contextlib.suppress(Exception):
         totals.total_commit_count = int(repo.git.rev_list("--count", "HEAD").strip())
-    except Exception:
-        pass
 
     try:
         roots = repo.git.rev_list("--max-parents=0", "HEAD").split()

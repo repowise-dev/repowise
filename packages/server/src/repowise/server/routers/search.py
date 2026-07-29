@@ -52,8 +52,8 @@ async def search(
             "unindexed entry (returns empty)."
         ),
     ),
-    fts=Depends(get_fts),  # noqa: B008
-    vector_store=Depends(get_vector_store),  # noqa: B008
+    fts=Depends(get_fts),
+    vector_store=Depends(get_vector_store),
 ) -> list[SearchResultResponse]:
     """Search wiki pages by semantic similarity or full-text match.
 

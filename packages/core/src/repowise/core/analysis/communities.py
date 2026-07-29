@@ -14,7 +14,7 @@ import inspect
 import io
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 import networkx as nx
@@ -113,7 +113,7 @@ def _directory_fallback(nodes: list[str]) -> dict[str, int]:
     return result
 
 
-def _partition(G: nx.Graph) -> tuple[dict, str]:
+def _partition(graph: nx.Graph) -> tuple[dict, str]:
     """Run community detection. Returns ({node: community_id}, algorithm_name).
 
     Tries Leiden (graspologic) first, falls back to Louvain (networkx),
@@ -126,7 +126,7 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
         if "random_seed" in inspect.signature(leiden).parameters:
             leiden_kwargs["random_seed"] = 42  # determinism (matches louvain's seed)
         with _suppress_graspologic_output():
-            result = leiden(G, **leiden_kwargs)
+            result = leiden(graph, **leiden_kwargs)
         return result, "leiden"
     except ImportError:
         pass
@@ -137,7 +137,7 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
         if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
             kwargs["max_level"] = 10
 
-        communities = nx.community.louvain_communities(G, **kwargs)
+        communities = nx.community.louvain_communities(graph, **kwargs)
         assignment = {node: cid for cid, nodes in enumerate(communities) for node in nodes}
         return assignment, "louvain"
     except Exception as exc:
@@ -145,7 +145,7 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
 
     # Final fallback: directory-based grouping
     # Sorted: _directory_fallback numbers directories in first-seen order.
-    return _directory_fallback(sorted(G.nodes())), "directory"
+    return _directory_fallback(sorted(graph.nodes())), "directory"
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +154,10 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
 
 
 def _split_community(
-    G: nx.Graph, nodes: list[str],
+    graph: nx.Graph, nodes: list[str],
 ) -> list[list[str]]:
     """Run a second partition pass on an oversized community subgraph."""
-    subgraph = G.subgraph(nodes)
+    subgraph = graph.subgraph(nodes)
     if subgraph.number_of_edges() == 0:
         return [[n] for n in sorted(nodes)]
     try:
@@ -173,7 +173,7 @@ def _split_community(
 
 
 def _split_oversized(
-    G: nx.Graph,
+    graph: nx.Graph,
     communities: dict[int, list[str]],
     max_fraction: float = _MAX_COMMUNITY_FRACTION,
     min_split_size: int = _MIN_SPLIT_SIZE,
@@ -185,7 +185,7 @@ def _split_oversized(
     result: list[list[str]] = []
     for nodes in communities.values():
         if len(nodes) > max_size:
-            result.extend(_split_community(G, nodes))
+            result.extend(_split_community(graph, nodes))
         else:
             result.append(nodes)
     return result
@@ -196,12 +196,12 @@ def _split_oversized(
 # ---------------------------------------------------------------------------
 
 
-def _cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
+def _cohesion_score(graph: nx.Graph, community_nodes: list[str]) -> float:
     """Ratio of actual intra-community edges to maximum possible."""
     n = len(community_nodes)
     if n <= 1:
         return 1.0
-    subgraph = G.subgraph(community_nodes)
+    subgraph = graph.subgraph(community_nodes)
     actual = subgraph.number_of_edges()
     possible = n * (n - 1) / 2
     return round(actual / possible, 4) if possible > 0 else 0.0
@@ -231,10 +231,10 @@ def _collect_path_segments(
                 and lower not in extra_generic
                 and len(lower) > 1
                 and not lower.startswith(".")
+                and lower not in seen
             ):
-                if lower not in seen:
-                    counter[lower] += 1
-                    seen.add(lower)
+                counter[lower] += 1
+                seen.add(lower)
     return counter
 
 
@@ -330,7 +330,7 @@ def _heuristic_label(
 
 
 def _deduplicate_labels(
-    communities_info: dict[int, "CommunityInfo"],
+    communities_info: dict[int, CommunityInfo],
     extra_generic: frozenset[str] = frozenset(),
 ) -> None:
     """Add sub-labels to disambiguate communities that share the same label.
@@ -529,9 +529,13 @@ def detect_file_communities(
     full_undirected.add_nodes_from(file_nodes)
     for u, v, d in graph.edges(data=True):
         edge_type = d.get("edge_type", "imports")
-        if edge_type in _FILE_COMMUNITY_EDGE_TYPES and u in full_undirected and v in full_undirected:
-            if not full_undirected.has_edge(u, v):
-                full_undirected.add_edge(u, v)
+        if (
+            edge_type in _FILE_COMMUNITY_EDGE_TYPES
+            and u in full_undirected
+            and v in full_undirected
+            and not full_undirected.has_edge(u, v)
+        ):
+            full_undirected.add_edge(u, v)
 
     # Repo-dominant namespace segments (the repo's own package name, ``src``…)
     # are noise, not labels — same data-driven stripping as module naming.

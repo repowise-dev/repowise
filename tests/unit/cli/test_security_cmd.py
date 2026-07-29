@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from click.testing import CliRunner
@@ -45,7 +45,7 @@ class _FakeSummary:
 
 
 class _FakeScanner:
-    last_kwargs: dict[str, Any] = {}
+    last_kwargs: ClassVar[dict[str, Any]] = {}
 
     def __init__(self, _session: object, _repo_id: object) -> None:
         pass

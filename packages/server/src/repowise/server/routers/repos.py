@@ -43,7 +43,7 @@ router = APIRouter(
 async def create_repo(
     body: RepoCreate,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Register a new repository (or update if same local_path exists).
 
@@ -145,7 +145,7 @@ async def _enqueue_index_job(request: Request, session_factory, repo_id: str) ->
 @router.get("", response_model=list[RepoResponse])
 async def list_repos(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[RepoResponse]:
     """List all registered repositories.
 
@@ -217,9 +217,8 @@ async def list_repos(
         return responses
 
     import json as _json
-    from pathlib import Path as _P
 
-    ws_root_path = _P(ws_root)
+    ws_root_path = Path(ws_root)
     # Map local_path → alias entry for quick attach on indexed rows.
     by_path: dict[str, object] = {
         str((ws_root_path / e.path).resolve()): e for e in ws_config.repos
@@ -228,7 +227,7 @@ async def list_repos(
     # Attach alias + status + docs status to already-indexed rows.
     indexed_aliases: set[str] = set()
     for resp in responses:
-        entry = by_path.get(str(_P(resp.local_path).resolve()))
+        entry = by_path.get(str(Path(resp.local_path).resolve()))
         if entry is None:
             continue
         resp.workspace_alias = entry.alias
@@ -238,7 +237,7 @@ async def list_repos(
 
         # The docs mode and index tier are recorded per-repo in state.json.
         # Read it once per response: cheap, and never failing.
-        state_path = _P(resp.local_path) / ".repowise" / "state.json"
+        state_path = Path(resp.local_path) / ".repowise" / "state.json"
         if state_path.is_file():
             try:
                 state = _json.loads(state_path.read_text(encoding="utf-8"))
@@ -266,10 +265,7 @@ async def list_repos(
         if entry.alias in indexed_aliases:
             continue
         abs_path = (ws_root_path / entry.path).resolve()
-        if abs_path.is_dir():
-            status = "needs_index"
-        else:
-            status = "missing_dir"
+        status = "needs_index" if abs_path.is_dir() else "missing_dir"
         # Synthetic, stable, prefixed ID so the frontend can route to a
         # CTA card without colliding with real repo UUIDs.
         synthetic_id = f"ws:{entry.alias}"
@@ -299,7 +295,7 @@ async def list_repos(
 @router.get("/{repo_id}", response_model=RepoResponse)
 async def get_repo(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Get a single repository by ID."""
     repo = await crud.get_repository(session, repo_id)
@@ -312,7 +308,7 @@ async def get_repo(
 async def update_repo(
     repo_id: str,
     body: RepoUpdate,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> RepoResponse:
     """Update repository fields."""
     repo = await crud.get_repository(session, repo_id)
@@ -348,8 +344,8 @@ async def update_repo(
 async def delete_repo(
     repo_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
-    fts=Depends(get_fts),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
+    fts=Depends(get_fts),
 ) -> dict:
     """Delete a repository and all its data."""
     repo = await crud.get_repository(session, repo_id)
@@ -389,7 +385,7 @@ async def delete_repo(
 @router.get("/{repo_id}/stats", response_model=RepoStatsResponse)
 async def get_repo_stats(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> RepoStatsResponse:
     """Get aggregate stats for a repository."""
     repo = await crud.get_repository(session, repo_id)
@@ -489,7 +485,7 @@ async def _ensure_no_active_job(session: AsyncSession, repo_id: str) -> None:
 async def sync_repo(
     repo_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Trigger an incremental documentation sync for a repository.
 
@@ -519,7 +515,7 @@ async def sync_repo(
 async def full_resync(
     repo_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Trigger a full re-generation of all documentation.
 
@@ -675,7 +671,7 @@ async def generate_pages(
     repo_id: str,
     request: Request,
     body: GenerateRequestBody,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Write a subset of the wiki with a model (the HTTP ``repowise generate``).
 
@@ -709,7 +705,7 @@ async def generate_estimate(
     repo_id: str,
     request: Request,
     body: GenerateRequestBody,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Cost + page counts for a generate selection, including cascade fallout.
 
@@ -818,7 +814,7 @@ async def generate_estimate(
 async def index_repo(
     repo_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Run the first full index (docs included) for a registered repository.
 
@@ -866,7 +862,7 @@ async def preflight_index(
     repo_id: str,
     request: Request,
     coverage_pct: float = Query(0.20, ge=0.0, le=1.0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Pre-index readiness check: provider connectivity + rough cost estimate.
 
@@ -1051,7 +1047,7 @@ def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:
 @router.get("/{repo_id}/export")
 async def export_wiki(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
     """Export all wiki pages as a ZIP of markdown files with folder structure."""
     repo = await crud.get_repository(session, repo_id)
@@ -1089,7 +1085,7 @@ async def export_wiki(
 async def get_file_content(
     repo_id: str,
     file_path: str = Query(...),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> PlainTextResponse:
     """Return raw file content from the repository's local checkout."""
     repo = await crud.get_repository(session, repo_id)

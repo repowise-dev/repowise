@@ -111,7 +111,7 @@ class JvmDynamicHints(DynamicHintExtractor):
                     )
                 )
 
-        for src, text, lang in sources:
+        for src, text, _lang in sources:
             try:
                 rel = src.resolve().relative_to(repo_root_resolved).as_posix()
             except ValueError:

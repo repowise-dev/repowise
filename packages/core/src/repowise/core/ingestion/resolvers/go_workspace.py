@@ -118,7 +118,7 @@ def _scan_go_file(text: str) -> tuple[str, bool, bool, bool, bool]:
     return pkg_name, pkg_name == "main", build_constrained, has_init, has_main_func
 
 
-def _read_text(ctx: "ResolverContext", rel_path: str) -> str:
+def _read_text(ctx: ResolverContext, rel_path: str) -> str:
     if ctx.repo_path is None:
         return ""
     try:
@@ -139,10 +139,11 @@ def _import_path_for_dir(
     best: tuple[str, str] | None = None
     best_len = -1
     for module_dir, mod_path in go_modules:
-        if module_dir == "" or pkg_dir == module_dir or pkg_dir.startswith(module_dir + "/"):
-            if len(module_dir) > best_len:
-                best = (module_dir, mod_path)
-                best_len = len(module_dir)
+        if (
+            module_dir == "" or pkg_dir == module_dir or pkg_dir.startswith(module_dir + "/")
+        ) and len(module_dir) > best_len:
+            best = (module_dir, mod_path)
+            best_len = len(module_dir)
     if best is None:
         return None
     module_dir, mod_path = best
@@ -150,7 +151,7 @@ def _import_path_for_dir(
     return f"{mod_path}/{suffix}" if suffix else mod_path
 
 
-def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
+def build_go_package_index(ctx: ResolverContext) -> GoPackageIndex:
     """Group every ``.go`` file in ``ctx.path_set`` by package directory.
 
     One walk over the path set; each file is read at most once to detect
@@ -217,7 +218,7 @@ def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
 _INDEX_KEY = "_go_package_index"
 
 
-def get_or_build_go_index(ctx: "ResolverContext") -> GoPackageIndex:
+def get_or_build_go_index(ctx: ResolverContext) -> GoPackageIndex:
     """Return the cached GoPackageIndex, building it on first access."""
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:

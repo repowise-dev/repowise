@@ -87,7 +87,7 @@ def get_or_build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
         return cached  # type: ignore[return-value]
 
     index = _build_cargo_workspace_index(ctx)
-    setattr(ctx, "_cargo_workspace_index", index)
+    ctx._cargo_workspace_index = index
     return index
 
 
@@ -214,10 +214,7 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
     for member_pattern in members:
         if not isinstance(member_pattern, str):
             continue
-        if member_pattern == ".":
-            matched_paths = [repo]
-        else:
-            matched_paths = sorted(repo.glob(member_pattern))
+        matched_paths = [repo] if member_pattern == "." else sorted(repo.glob(member_pattern))
         if not matched_paths:
             # Fallback to literal path for backward compat
             matched_paths = [(repo / member_pattern).resolve()]

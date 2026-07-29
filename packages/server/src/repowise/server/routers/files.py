@@ -104,7 +104,7 @@ def _percentile_map(values: dict[str, float]) -> dict[str, float]:
 @router.get("/{repo_id}/files")
 async def files_index(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Slim per-file rows for the browsable Files index + treemap.
 
@@ -185,7 +185,7 @@ async def files_index(
 async def file_detail(
     repo_id: str,
     file_path: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Aggregate join over every per-file data source we persist."""
     repo = await crud.get_repository(session, repo_id)

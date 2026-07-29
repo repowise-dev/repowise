@@ -81,7 +81,7 @@ def _head_type(raw: str) -> str:
 
 
 def resolve_csharp_member_reads(
-    graph: "nx.DiGraph",
+    graph: nx.DiGraph,
     cs_texts: dict[str, str],
     type_to_file: dict[str, str],
 ) -> int:
@@ -129,18 +129,22 @@ def resolve_csharp_member_reads(
 
         if primary_type is not None:
             target = type_to_file.get(primary_type)
-            if target and target != path and _THIS_MEMBER_RE.search(text):
-                # ``this.X`` reads in a same-file class are redundant
-                # (same node); we already skip target == path above.
-                # Cross-file ``this.X`` only happens for partial
-                # classes — keep this branch for completeness.
-                if _add_reads_edge(graph, path, target):
-                    count += 1
+            # ``this.X`` reads in a same-file class are redundant
+            # (same node); we already skip target == path above.
+            # Cross-file ``this.X`` only happens for partial
+            # classes — keep this branch for completeness.
+            if (
+                target
+                and target != path
+                and _THIS_MEMBER_RE.search(text)
+                and _add_reads_edge(graph, path, target)
+            ):
+                count += 1
 
     return count
 
 
-def _add_reads_edge(graph: "nx.DiGraph", source: str, target: str) -> bool:
+def _add_reads_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
     """Add a ``reads`` edge if no edge already connects source → target.
 
     A stronger pre-existing edge (``imports``, ``calls``, ``type_use``,

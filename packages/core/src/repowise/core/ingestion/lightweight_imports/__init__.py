@@ -23,7 +23,6 @@ from .haskell import extract_haskell_imports
 from .lean import extract_lean_imports
 from .sql import extract_dbt_imports
 
-
 ExtractorFn = Callable[[str], list[Import]]
 
 _EXTRACTORS: dict[str, ExtractorFn] = {

@@ -22,7 +22,6 @@ literal strings collected from the call".
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -314,12 +313,12 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
 
 
 __all__ = [
-    "BazelTarget",
     "BazelFile",
-    "parse_bazel_build",
+    "BazelTarget",
     "discover_bazel_packages",
+    "ecosystem",
+    "filenames",
     "is_bazel_repo",
     "parse",
-    "filenames",
-    "ecosystem",
+    "parse_bazel_build",
 ]

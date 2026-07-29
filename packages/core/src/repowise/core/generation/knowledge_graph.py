@@ -391,7 +391,7 @@ def build_deterministic_tour(
     # Steps 2-N: one step per layer, ordered by size descending
     sorted_layers = sorted(
         layers,
-        key=lambda l: len(l.get("nodeIds", [])),
+        key=lambda layer: len(layer.get("nodeIds", [])),
         reverse=True,
     )
 
@@ -452,7 +452,7 @@ def _parse_json_response(content: str) -> dict | None:
     content = content.strip()
     if content.startswith("```"):
         lines = content.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         content = "\n".join(lines)
     try:
         return json.loads(content)

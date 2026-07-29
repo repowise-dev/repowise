@@ -12,7 +12,6 @@ The estimator prefers SQLite telemetry when available
 
 from __future__ import annotations
 
-
 # (input_tokens, output_tokens) per page. Heuristics that bias slightly
 # high — better to over-estimate cost than surprise the user with a
 # bill that's an order of magnitude over the quote.

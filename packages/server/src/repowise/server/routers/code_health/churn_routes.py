@@ -17,7 +17,7 @@ from .serializers import _churn_complexity_to_dict
 async def churn_complexity(
     repo_id: str,
     limit: int = Query(300, ge=1, le=1000),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Churn x complexity scatter points -- the "hotspot anatomy" danger-zone view.
 

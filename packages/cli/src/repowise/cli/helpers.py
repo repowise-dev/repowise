@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from dataclasses import dataclass
@@ -278,10 +279,8 @@ def write_update_queued(repo_path: Path, head: str | None) -> None:
     except OSError:
         return
     payload = {"target_commit": head, "queued_at": time.time()}
-    try:
+    with contextlib.suppress(OSError):
         _update_queued_path(repo_path).write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        pass
 
 
 def read_update_queued(repo_path: Path) -> dict[str, Any] | None:
@@ -305,10 +304,8 @@ def read_update_queued(repo_path: Path) -> dict[str, Any] | None:
 
 def clear_update_queued(repo_path: Path) -> None:
     """Drop the queued marker. Called by update_cmd once it owns the real lock."""
-    try:
+    with contextlib.suppress(OSError):
         _update_queued_path(repo_path).unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def write_update_pending(repo_path: Path, head: str | None) -> None:
@@ -324,10 +321,8 @@ def write_update_pending(repo_path: Path, head: str | None) -> None:
         ensure_repowise_dir(repo_path)
     except OSError:
         return
-    try:
+    with contextlib.suppress(OSError):
         _update_pending_path(repo_path).write_text(head, encoding="utf-8")
-    except OSError:
-        pass
 
 
 def read_update_pending(repo_path: Path) -> str | None:
@@ -344,10 +339,8 @@ def read_update_pending(repo_path: Path) -> str | None:
 
 def clear_update_pending(repo_path: Path) -> None:
     """Drop the pending marker once the rolled-forward update has consumed it."""
-    try:
+    with contextlib.suppress(OSError):
         _update_pending_path(repo_path).unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def _pending_commit_still_ahead(

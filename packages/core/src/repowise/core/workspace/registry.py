@@ -7,6 +7,7 @@ Provides ``RepoContext`` (per-repo resources) and ``RepoRegistry``
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -281,10 +282,8 @@ class RepoRegistry:
         task = self._vs_tasks.pop(alias, None)
         if task is not None and not task.done():
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
         try:
             if ctx._engine is not None:

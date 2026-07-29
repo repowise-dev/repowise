@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+from typing import ClassVar
 
 
 class OpenRouterEmbedder:
@@ -27,7 +28,7 @@ class OpenRouterEmbedder:
         model:   Embedding model name. Default: "google/gemini-embedding-001".
     """
 
-    _DIMS: dict[str, int] = {
+    _DIMS: ClassVar[dict[str, int]] = {
         "google/gemini-embedding-001": 768,
         "openai/text-embedding-3-small": 1536,
         "openai/text-embedding-3-large": 3072,

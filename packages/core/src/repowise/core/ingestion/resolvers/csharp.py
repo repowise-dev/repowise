@@ -107,10 +107,7 @@ def _resolve_importer(index: object, repo_path: Path, importer_path: str) -> Pat
 
 def _matches_package_prefix(module_path: str, packages: set[str]) -> bool:
     """True if *module_path* equals or is a child namespace of any package id."""
-    for pkg in packages:
-        if module_path == pkg or module_path.startswith(pkg + "."):
-            return True
-    return False
+    return any(module_path == pkg or module_path.startswith(pkg + ".") for pkg in packages)
 
 
 def resolve_csharp_import(

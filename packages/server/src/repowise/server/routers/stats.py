@@ -793,7 +793,7 @@ async def _records(
 @router.get("/{repo_id}/stats/highlights")
 async def stats_highlights(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Everything the Stats ("By the Numbers") page needs, in one call.
 

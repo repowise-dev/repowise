@@ -19,8 +19,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
     sync_workspace_state_from_disk,
@@ -125,8 +123,8 @@ def test_drift_recovery(tmp_path: Path) -> None:
 def test_add_fourth_repo_round_trip(tmp_path: Path) -> None:
     """After the initial workspace is indexed, programmatically adding a
     new entry and running update_workspace indexes the new repo only."""
-    a = _git_repo(tmp_path, "alpha")
-    b = _git_repo(tmp_path, "beta")
+    _git_repo(tmp_path, "alpha")
+    _git_repo(tmp_path, "beta")
     cfg = WorkspaceConfig(
         repos=[
             RepoEntry(path="alpha", alias="alpha", is_primary=True),

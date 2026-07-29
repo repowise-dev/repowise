@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence.models import DecisionRecord
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
@@ -46,7 +46,7 @@ async def list_module_health(
     ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[ModuleHealthSummary]:
     accs = await aggregate_modules(session, repo_id)
     rows = [ModuleHealthSummary(**summarize(a)) for a in accs.values()]
@@ -111,7 +111,7 @@ async def _decision_refs(
 async def get_module_health(
     repo_id: str,
     module_path: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> ModuleHealthDetail:
     from repowise.server.services.module_health import module_of
 

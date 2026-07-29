@@ -64,6 +64,8 @@ from repowise.server.mcp_server._answer_context import (
 )
 from repowise.server.mcp_server._answer_context import (
     is_mechanism_question as _is_mechanism_question,
+)
+from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._answer_pipeline import (

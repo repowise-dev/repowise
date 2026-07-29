@@ -31,9 +31,9 @@ from .data import (
     DecisionSummary,
     EditorFileData,
     HotspotFile,
+    KeyModule,
     KGLayerSummary,
     KGTourStepSummary,
-    KeyModule,
 )
 from .tech_stack import detect_build_commands, detect_tech_stack
 
@@ -435,11 +435,11 @@ class EditorFileDataFetcher:
 
         layers = [
             KGLayerSummary(
-                name=l.name,
-                file_count=len(json.loads(l.node_ids_json) if l.node_ids_json else []),
-                description=_truncate_at_word(l.description or "", 80),
+                name=layer.name,
+                file_count=len(json.loads(layer.node_ids_json) if layer.node_ids_json else []),
+                description=_truncate_at_word(layer.description or "", 80),
             )
-            for l in db_layers
+            for layer in db_layers
         ]
 
         # Guided tour: the overview page's metadata_json carries the

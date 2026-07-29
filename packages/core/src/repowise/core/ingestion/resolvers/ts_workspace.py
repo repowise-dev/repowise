@@ -25,6 +25,7 @@ flattened to the first plausible source target. Packages without an
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -105,7 +106,7 @@ def _scan_repo_files(repo_path: Path, *, prune_nested_git: bool = True) -> _Repo
     return scan
 
 
-def _get_repo_scan(ctx: "ResolverContext") -> _RepoFileScan:
+def _get_repo_scan(ctx: ResolverContext) -> _RepoFileScan:
     """Memoized accessor — one walk per resolver context."""
     cached = getattr(ctx, "_ts_repo_file_scan", None)
     if cached is not None:
@@ -262,10 +263,7 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
 
     result: dict[str, dict[str, Any]] = {}
     for pattern in patterns:
-        if pattern == ".":
-            ws_dirs = [repo_path]
-        else:
-            ws_dirs = repo_path.glob(pattern)
+        ws_dirs = [repo_path] if pattern == "." else repo_path.glob(pattern)
         for ws_dir in ws_dirs:
             if not ws_dir.is_dir():
                 continue
@@ -294,7 +292,7 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
     return result
 
 
-def get_or_build_workspace_info(ctx: "ResolverContext") -> dict[str, dict[str, Any]]:
+def get_or_build_workspace_info(ctx: ResolverContext) -> dict[str, dict[str, Any]]:
     cached = getattr(ctx, "_ts_workspace_info", None)
     if cached is not None:
         return cached
@@ -336,7 +334,7 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     return None
 
 
-def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a bare specifier (``@scope/pkg`` or ``@scope/pkg/sub/file``)
     against the workspace map. Honours each workspace's ``exports``
     subpath map (Node.js spec) before falling back to a ``<pkg>/<subpath>``
@@ -351,9 +349,10 @@ def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | No
     # ``@scope/pkg`` and resolve ``sub/x`` under that workspace's dir.
     best_name: str | None = None
     for name in info:
-        if module_path == name or module_path.startswith(name + "/"):
-            if best_name is None or len(name) > len(best_name):
-                best_name = name
+        if (module_path == name or module_path.startswith(name + "/")) and (
+            best_name is None or len(name) > len(best_name)
+        ):
+            best_name = name
     if best_name is None:
         return None
 
@@ -463,7 +462,7 @@ def _expand_exports_wildcard(
     return matches
 
 
-def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     """Build the workspace index for *ctx*.
 
     Idempotent — safe to call multiple times. Reads the workspace
@@ -489,7 +488,7 @@ def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
     return TsWorkspaceIndex(packages=packages, exports_entry_paths=entries)
 
 
-def get_or_build_ts_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+def get_or_build_ts_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     """Memoized accessor — builds the index once per resolver context."""
     cached = getattr(ctx, "_ts_workspace_index", None)
     if cached is not None:
@@ -504,24 +503,22 @@ def get_or_build_ts_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
 # graph never observes through the TS/JS parser path.
 # ---------------------------------------------------------------------------
 
-import re as _re
-
-_MDX_IMPORT_RE = _re.compile(
+_MDX_IMPORT_RE = re.compile(
     r"""import\s+
         (?:type\s+)?
         (?:\{[^}]*\}|\*\s+as\s+\w+|\w+(?:\s*,\s*\{[^}]*\})?)
         \s+from\s+['"]([^'"]+)['"]""",
-    _re.VERBOSE,
+    re.VERBOSE,
 )
 
-_VITEST_INCLUDE_RE = _re.compile(
+_VITEST_INCLUDE_RE = re.compile(
     r"""include\s*:\s*\[\s*((?:['"][^'"]+['"]\s*,?\s*)+)\]""",
-    _re.MULTILINE,
+    re.MULTILINE,
 )
-_VITEST_STRING_RE = _re.compile(r"""['"]([^'"]+)['"]""")
+_VITEST_STRING_RE = re.compile(r"""['"]([^'"]+)['"]""")
 
 
-def find_mdx_import_targets(ctx: "ResolverContext") -> set[str]:
+def find_mdx_import_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative paths reached only via ``import`` in MDX/MD files.
 
     React-component libraries published as documentation (``.mdx`` files
@@ -569,7 +566,7 @@ def find_mdx_import_targets(ctx: "ResolverContext") -> set[str]:
     return targets
 
 
-def _vitest_glob_to_regex(glob: str) -> _re.Pattern[str]:
+def _vitest_glob_to_regex(glob: str) -> re.Pattern[str]:
     """Translate a vitest/minimatch glob into a regex matching repo paths.
 
     ``**`` matches zero-or-more path segments (including empty); a single
@@ -606,10 +603,10 @@ def _vitest_glob_to_regex(glob: str) -> _re.Pattern[str]:
             out.append(c)
             i += 1
     out.append("$")
-    return _re.compile("".join(out))
+    return re.compile("".join(out))
 
 
-def find_vitest_include_targets(ctx: "ResolverContext") -> set[str]:
+def find_vitest_include_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative source files matching vitest ``include`` globs.
 
     Belt-and-suspenders alongside the ``*.test.*`` never-flag pattern —
@@ -692,11 +689,11 @@ def _iter_script_tokens(script: str) -> list[str]:
     *shape*, not faithful argv reconstruction.
     """
     # Replace shell chain operators with spaces so each chunk parses.
-    cleaned = _re.sub(r"&&|\|\||;|\|", " ", script)
+    cleaned = re.sub(r"&&|\|\||;|\|", " ", script)
     return [tok.strip("'\"") for tok in cleaned.split() if tok.strip("'\"")]
 
 
-def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
+def find_npm_script_entry_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative source files referenced by ``package.json`` scripts.
 
     Hono's ``benchmarks/{jsx,routers,query-param}/**`` and zod's
@@ -783,7 +780,7 @@ def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
                     and "?" not in token
                 ):
                     candidate = (pkg_prefix + token).lstrip("./")
-                    candidate = _re.sub(r"\\", "/", candidate)
+                    candidate = re.sub(r"\\", "/", candidate)
                     # Normalise ``a/./b`` and ``a/../b`` segments.
                     parts: list[str] = []
                     for seg in candidate.split("/"):
@@ -809,7 +806,7 @@ def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
                         rel_glob = rel_glob[2:]
                     try:
                         regex = _vitest_glob_to_regex(rel_glob)
-                    except _re.error:
+                    except re.error:
                         continue
                     for candidate in path_set:
                         if regex.match(candidate):

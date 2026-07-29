@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
-from fastapi import APIRouter, Depends, Query
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
@@ -92,7 +92,7 @@ async def search_nodes(
     repo_id: str,
     q: str = Query(..., description="Search query"),
     limit: int = Query(10, ge=1, le=50),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> list[NodeSearchResult]:
     """Full-text search over node_id values."""
@@ -121,7 +121,7 @@ async def export_graph(
         le=6000,
         description="Maximum nodes to return. Stepped up by the client.",
     ),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> GraphExportResponse:
     """Export the full dependency graph in D3 force-directed format.

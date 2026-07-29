@@ -13,6 +13,7 @@ from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
 )
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -21,7 +22,6 @@ from repowise.server.mcp_server._helpers import (
     filter_graph_nodes,
     is_excluded,
 )
-from repowise.core.registry import mcp_tool_registry as mcp
 
 
 @mcp.tool(default=False)

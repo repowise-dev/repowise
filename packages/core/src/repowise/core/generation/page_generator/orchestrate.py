@@ -440,8 +440,8 @@ class _GenerationRun:
         if self.kg_ctx.available:
             layer_page_count = sum(
                 1
-                for l in self.kg_ctx.get_layers()
-                if len([n for n in l.get("nodeIds", []) if n.startswith("file:")]) >= 3
+                for layer in self.kg_ctx.get_layers()
+                if len([n for n in layer.get("nodeIds", []) if n.startswith("file:")]) >= 3
             )
         # Level-8 onboarding pages (the non-promoted slots) also emit, and
         # were previously omitted here, which made the progress total read

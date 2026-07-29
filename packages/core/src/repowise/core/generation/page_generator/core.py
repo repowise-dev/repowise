@@ -324,21 +324,24 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         if self._config.cache_enabled and target_path is not None:
             page_id = compute_page_id(page_type, target_path)
             prior = self._prior_pages.get(page_id)
-            if prior is not None and prior.model_name == self._provider.model_name:
-                if prior.source_hash == compute_source_hash(user_prompt + source_salt):
-                    self._reuse_count += 1
-                    log.debug(
-                        "page_cache.persistent_hit",
-                        page_type=page_type,
-                        target_path=target_path,
-                    )
-                    return GeneratedResponse(
-                        content=prior.content,
-                        input_tokens=0,
-                        output_tokens=0,
-                        cached_tokens=0,
-                        usage={"reused_from_prior_run": True},
-                    )
+            if (
+                prior is not None
+                and prior.model_name == self._provider.model_name
+                and prior.source_hash == compute_source_hash(user_prompt + source_salt)
+            ):
+                self._reuse_count += 1
+                log.debug(
+                    "page_cache.persistent_hit",
+                    page_type=page_type,
+                    target_path=target_path,
+                )
+                return GeneratedResponse(
+                    content=prior.content,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cached_tokens=0,
+                    usage={"reused_from_prior_run": True},
+                )
 
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:

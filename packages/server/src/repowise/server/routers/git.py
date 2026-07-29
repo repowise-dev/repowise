@@ -217,7 +217,7 @@ async def get_commits(
     authorship: str = Query("all", pattern="^(all|agent|human)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[CommitResponse]:
     """Per-commit change-risk feed — the review-priority queue.
 
@@ -246,7 +246,7 @@ async def get_commits(
 @router.get("/{repo_id}/commits/agent-trend", response_model=AgentTrendResponse)
 async def get_agent_trend(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> AgentTrendResponse:
     """Monthly agent-vs-human commit volume across the indexed window.
 
@@ -303,7 +303,7 @@ async def get_agent_trend(
 @router.get("/{repo_id}/commits/stats", response_model=CommitStatsResponse)
 async def get_commit_stats(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> CommitStatsResponse:
     """Repo-wide commit aggregates for the headline stat cards.
 
@@ -370,7 +370,7 @@ def _risk_histogram(sorted_scores: list[float]) -> list[RiskHistogramBucket]:
 async def get_commit_evolution(
     repo_id: str,
     granularity: str = Query("auto", pattern="^(auto|month|week)$"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> CommitEvolutionResponse:
     """The repo's development "story arc" — commit-category mix over time.
 
@@ -447,7 +447,7 @@ async def get_commit_evolution(
 async def get_commit(
     repo_id: str,
     sha: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> CommitDetailResponse:
     """A single commit (by full sha or unique prefix) with its risk breakdown."""
     row = await crud.get_git_commit(session, repo_id, sha)
@@ -462,7 +462,7 @@ async def get_commit(
 async def get_git_metadata(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> GitMetadataResponse:
     """Get git metadata for a specific file."""
     meta = await crud.get_git_metadata(session, repo_id, file_path)
@@ -478,7 +478,7 @@ async def get_hotspots(
     repo_id: str,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[HotspotResponse]:
     """Return the highest-churn files (hotspots), paginated.
 
@@ -519,7 +519,7 @@ async def get_ownership(
     granularity: str = Query("module", description="file or module"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[OwnershipEntry]:
     """Ownership breakdown for a repository, paginated.
 
@@ -587,7 +587,7 @@ async def get_co_changes(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
     min_count: int = Query(3, ge=1),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Get files that frequently change together with the given file."""
     meta = await crud.get_git_metadata(session, repo_id, file_path)
@@ -610,9 +610,9 @@ async def get_co_changes(
 )
 async def get_reviewer_suggestions(
     repo_id: str,
-    paths: list[str] = Query(..., description="Repeat ?paths= for each changed file"),  # noqa: B008
+    paths: list[str] = Query(..., description="Repeat ?paths= for each changed file"),
     limit: int = Query(10, ge=1, le=50),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> ReviewerSuggestionsResponse:
     """Suggest reviewers for a PR touching the given file paths.
 
@@ -626,7 +626,7 @@ async def get_reviewer_suggestions(
 
 async def _resolve_local_repo(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Repository:
     """Resolve a repository with a usable local checkout, or raise 404."""
     repo = await crud.get_repository(session, repo_id)
@@ -660,7 +660,7 @@ def get_risk_range(
         ge=0,
         description="Recent commits to sample for the repo-relative percentile (0 skips it)",
     ),
-    repo: Repository = Depends(_resolve_local_repo),  # noqa: B008
+    repo: Repository = Depends(_resolve_local_repo),
 ) -> RiskRangeResponse:
     """Score a ``base..head`` git range's defect risk from its live diff shape.
 
@@ -729,7 +729,7 @@ def get_risk_range(
 async def get_git_summary(
     repo_id: str,
     top_owners_limit: int = Query(25, ge=1, le=200),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> GitSummaryResponse:
     """Aggregate git health signals for a repository.
 

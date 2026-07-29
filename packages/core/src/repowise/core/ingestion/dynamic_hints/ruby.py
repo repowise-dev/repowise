@@ -61,7 +61,13 @@ class RubyDynamicHints(DynamicHintExtractor):
 
             seen_targets: set[tuple[str, str]] = set()
 
-            def _emit(target: str, hint: str) -> None:
+            def _emit(
+                target: str,
+                hint: str,
+                *,
+                seen_targets: set = seen_targets,
+                rel: str = rel,
+            ) -> None:
                 key = (target, hint)
                 if key in seen_targets:
                     return

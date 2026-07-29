@@ -13,7 +13,8 @@ understands every state shape that has existed.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Mapping
+from collections.abc import Mapping
+from typing import Any, Literal
 
 __all__ = ["DOCS_MODES", "DocsMode", "docs_mode_state_fields", "resolve_docs_mode"]
 

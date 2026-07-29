@@ -6,7 +6,6 @@ first; longest-prefix fallback catches unknown variants.
 
 from __future__ import annotations
 
-
 # Exact-match rates. Per-MTok pricing divided by 1000.
 _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     # OpenAI GPT-5.4 family

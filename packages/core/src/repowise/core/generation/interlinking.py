@@ -248,7 +248,7 @@ def attach_wiki_links_and_backlinks(
                 }
             )
 
-    _BACKLINK_CAP = 25
+    backlink_cap = 25
     for page_id, sources in backlink_map.items():
         if not sources:
             by_id[page_id].metadata["backlinks"] = []
@@ -263,7 +263,7 @@ def attach_wiki_links_and_backlinks(
                 continue
             seen.add(sid)
             unique.append(entry)
-            if len(unique) >= _BACKLINK_CAP:
+            if len(unique) >= backlink_cap:
                 break
         by_id[page_id].metadata["backlinks"] = unique
 

@@ -20,6 +20,7 @@ module stays language-agnostic.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -308,21 +309,15 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     # MDX-only consumers (docs sites that import TSX components into
     # ``.mdx``) and custom vitest layouts (``runtime-tests/**``) — both
     # invisible to the TS parser, both real entry points.
-    try:
+    with contextlib.suppress(Exception):
         entry_paths |= find_mdx_import_targets(ctx)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         entry_paths |= find_vitest_include_targets(ctx)
-    except Exception:
-        pass
     # ``package.json`` ``scripts.*`` references: benchmark / bench-runner /
     # rollup-input paths that ship as live code but are never imported
     # by the main entry graph.
-    try:
+    with contextlib.suppress(Exception):
         entry_paths |= find_npm_script_entry_targets(ctx)
-    except Exception:
-        pass
     for path in entry_paths:
         node = graph.nodes.get(path)
         if node is None:
@@ -416,18 +411,14 @@ def run_warmups(
         # underlying index — only fire start/done once per phase name and
         # rely on the warmup's own idempotency for the second invocation.
         if phase_name in fired_phases:
-            try:
+            with contextlib.suppress(Exception):
                 warmup(ctx)
-            except Exception:
-                pass
             continue
         fired_phases.add(phase_name)
         if progress is not None:
             progress.on_phase_start(phase_name, None)
-        try:
+        with contextlib.suppress(Exception):  # warmup failures must not abort the build
             warmup(ctx)
-        except Exception:  # warmup failures must not abort the build
-            pass
         if progress is not None:
             done = getattr(progress, "on_phase_done", None)
             if callable(done):

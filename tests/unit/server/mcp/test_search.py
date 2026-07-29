@@ -481,15 +481,7 @@ class TestDecisionDemotionAndRescue:
             _mk_result(f"decision:d{i}", f"Decision {i}", "decision_record", "", 0.8 - i * 0.01)
             for i in range(20)
         ]
-        wide = decisions + [
-            _mk_result(
-                "file_page:src/auth/service.py",
-                "Auth Service",
-                "file_page",
-                "src/auth/service.py",
-                0.3,
-            )
-        ]
+        wide = [*decisions, _mk_result("file_page:src/auth/service.py", "Auth Service", "file_page", "src/auth/service.py", 0.3)]
 
         async def fake_search(query, limit=10):
             # Narrow window: only decisions. Wide window: includes the file.

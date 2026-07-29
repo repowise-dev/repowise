@@ -34,7 +34,7 @@ _ANDROID_COMPONENT_TAGS = ("<activity", "<service", "<receiver",
 
 
 def _has_android_manifests(parsed_files: dict[str, Any]) -> bool:
-    return any(p.endswith("AndroidManifest.xml") for p in parsed_files.keys())
+    return any(p.endswith("AndroidManifest.xml") for p in parsed_files)
 
 
 def _add_android_edges(

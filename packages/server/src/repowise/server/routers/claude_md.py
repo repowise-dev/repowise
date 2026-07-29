@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException
 from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
@@ -20,7 +20,7 @@ router = APIRouter(
 @router.get("/api/repos/{repo_id}/claude-md")
 async def get_claude_md(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Return the Repowise-managed CLAUDE.md section as JSON.
 
@@ -48,7 +48,7 @@ async def get_claude_md(
 @router.post("/api/repos/{repo_id}/claude-md/generate", status_code=202)
 async def generate_claude_md(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Regenerate .claude/CLAUDE.md and write it to the repository.
 

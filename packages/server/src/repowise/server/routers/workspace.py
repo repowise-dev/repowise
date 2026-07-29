@@ -844,7 +844,11 @@ async def sync_workspace(
 
         session_factory = resolve_session_factory(request.app.state, repo_id)
 
-        async def _create_job() -> tuple[str | None, str | None]:
+        async def _create_job(
+            *,
+            session_factory=session_factory,
+            repo_id: str | None = repo_id,
+        ) -> tuple[str | None, str | None]:
             """Create a pending job row, returning (job_id, error)."""
             try:
                 async with get_session(session_factory) as session:

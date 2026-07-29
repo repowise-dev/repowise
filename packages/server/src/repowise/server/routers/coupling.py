@@ -50,7 +50,7 @@ def _edge_to_dict(e: CouplingEdge) -> dict[str, Any]:
 async def coupling(
     repo_id: str,
     limit: int = Query(200, ge=1, le=1000),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Return the repo's change-coupling graph (strongest *limit* edges).
 

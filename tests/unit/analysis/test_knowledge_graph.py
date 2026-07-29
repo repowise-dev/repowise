@@ -10,14 +10,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from repowise.core.analysis.knowledge_graph import (
-    KnowledgeGraphResult,
     _classify_complexity,
     _classify_file_type,
     _slugify,
     build_knowledge_graph_skeleton,
     compute_kg_fingerprint,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -238,7 +236,7 @@ class TestSkeletonBuilder:
         )
         assert len(result.layers) == 2
         assert all(layer["id"].startswith("layer:") for layer in result.layers)
-        layer_names = {l["name"] for l in result.layers}
+        layer_names = {layer["name"] for layer in result.layers}
         assert "src/core" in layer_names
         assert "tests" in layer_names
 
@@ -250,7 +248,7 @@ class TestSkeletonBuilder:
             tech_stack=[],
             external_systems=[],
         )
-        core_layer = next(l for l in result.layers if l["name"] == "src/core")
+        core_layer = next(layer for layer in result.layers if layer["name"] == "src/core")
         assert "file:src/main.py" in core_layer["nodeIds"]
         assert "file:src/core.py" in core_layer["nodeIds"]
 

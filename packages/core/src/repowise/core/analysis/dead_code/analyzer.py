@@ -36,8 +36,10 @@ from .cpp_reachability import (
     is_cpp_file_reachable,
     is_cpp_path,
 )
+from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
+from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .risk_factors import RISK_CAP_CONFIDENCE, path_risk_factors, risk_evidence
 
 # Symbol kinds that cannot be independently imported by name in any
@@ -277,8 +279,6 @@ _CPP_BUILTIN_MACROS: frozenset[str] = frozenset(
         "__PRETTY_FUNCTION__",
     }
 )
-from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
-from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 
 logger = structlog.get_logger(__name__)
 

@@ -53,7 +53,7 @@ def distill_command(source: str, command: tuple[str, ...]) -> None:
     """
     try:
         command_str = _render_command(command)
-    except UnrenderableCommand as exc:
+    except UnrenderableCommandError as exc:
         # Refusing is the safe half of the trade: running a command the user
         # did not type is worse than not running one they did.
         raise click.ClickException(str(exc)) from exc
@@ -85,7 +85,7 @@ _CMD_METACHARS = frozenset('"&|<>^()')
 _CMD_VAR_RE = re.compile(r"%(\w+)%")
 
 
-class UnrenderableCommand(Exception):
+class UnrenderableCommandError(Exception):
     """A token cmd.exe cannot be handed over without changing the command."""
 
 
@@ -130,13 +130,13 @@ def _render_command(tokens: tuple[str, ...]) -> str:
 
     for token in tokens:
         if "\n" in token or "\r" in token:
-            raise UnrenderableCommand(
+            raise UnrenderableCommandError(
                 "cmd.exe cannot carry a newline inside an argument; "
                 "quote the whole command as one argument to run it verbatim"
             )
         for name in _CMD_VAR_RE.findall(token):
             if name in os.environ:
-                raise UnrenderableCommand(
+                raise UnrenderableCommandError(
                     f"cmd.exe would expand %{name}% and change this command; "
                     "quote the whole command as one argument to run it verbatim"
                 )

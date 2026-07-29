@@ -129,7 +129,7 @@ class CppDynamicHints(DynamicHintExtractor):
         for _src, text, rel in sources:
             seen: set[tuple[str, str]] = set()
 
-            def _emit(name: str, kind: str) -> None:
+            def _emit(name: str, kind: str, *, seen: set = seen, rel: str = rel) -> None:
                 for target in func_to_files.get(name, ()):
                     key = (target, kind)
                     if key in seen or target == rel:

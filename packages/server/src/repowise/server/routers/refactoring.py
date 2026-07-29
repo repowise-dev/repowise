@@ -23,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.rank import rank_suggestions, score
+from repowise.core.persistence import crud
+from repowise.server.deps import get_db_session, verify_api_key
 
 
 def blast_files(sug: RefactoringSuggestion) -> list[str]:
@@ -31,9 +33,6 @@ def blast_files(sug: RefactoringSuggestion) -> list[str]:
     files = (sug.blast_radius or {}).get("files")
     return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
 
-
-from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session, verify_api_key
 
 router = APIRouter(
     prefix="/api/repos",

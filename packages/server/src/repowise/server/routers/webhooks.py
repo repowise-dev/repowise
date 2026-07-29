@@ -7,9 +7,9 @@ import hmac
 import json
 import os
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import WebhookResponse
@@ -69,7 +69,7 @@ def _launch_webhook_job(request: Request, job_id: str) -> None:
 @router.post("/github", response_model=WebhookResponse)
 async def github_webhook(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> WebhookResponse:
     """Receive and process GitHub webhook events.
 
@@ -137,7 +137,7 @@ async def github_webhook(
 @router.post("/gitlab", response_model=WebhookResponse)
 async def gitlab_webhook(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> WebhookResponse:
     """Receive and process GitLab webhook events.
 

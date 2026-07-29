@@ -24,6 +24,7 @@ when ``--full`` is passed.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import time
 from pathlib import Path
@@ -352,7 +353,7 @@ async def _run_upgrade(
                 if health_report.findings:
                     await save_health_findings(session, repo_id, health_report.findings)
                 kpis = health_report.kpis or {}
-                try:
+                with contextlib.suppress(Exception):  # snapshot is best-effort
                     await save_health_snapshot(
                         session,
                         repo_id,
@@ -365,8 +366,6 @@ async def _run_upgrade(
                             for m in health_report.metrics or []
                         },
                     )
-                except Exception:
-                    pass  # snapshot is best-effort
             console.print(
                 f"Code health recomputed at FULL tier: "
                 f"[cyan]{len(health_report.findings)}[/cyan] findings."

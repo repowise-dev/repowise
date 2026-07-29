@@ -13,10 +13,11 @@ and cached on the context.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -202,9 +203,7 @@ class JvmWorkspaceIndex:
             return pkg in _JAVA_LANG_PACKAGES
         # Unqualified types in java.lang
         parts = import_path.split(".")
-        if len(parts) == 1 and parts[0] in _JAVA_LANG_TYPES:
-            return True
-        return False
+        return bool(len(parts) == 1 and parts[0] in _JAVA_LANG_TYPES)
 
 
 @lru_cache(maxsize=16384)
@@ -380,7 +379,7 @@ def _scan_spring_autoconfig(
     return {k: tuple(v) for k, v in result.items()}
 
 
-def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
+def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     """Build the JVM workspace index from all ``.java`` and ``.kt`` files in the path set.
 
     One walk over the path set; each file read at most once (via
@@ -441,12 +440,10 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
         index.services = {k: tuple(v) for k, v in merged.items()}
     except Exception:
         pass
-    try:
+    with contextlib.suppress(Exception):
         index.autoconfig_imports = _scan_spring_autoconfig(
             repo_path, prune_nested_git=ctx.prune_nested_git
         )
-    except Exception:
-        pass
 
     _scan_jvm_file.cache_clear()
 
@@ -464,7 +461,7 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
 _INDEX_KEY = "_jvm_workspace_index"
 
 
-def get_or_build_jvm_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
+def get_or_build_jvm_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     """Return the cached JvmWorkspaceIndex, building it on first access."""
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:

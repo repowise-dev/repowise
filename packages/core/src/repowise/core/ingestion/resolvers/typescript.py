@@ -37,7 +37,7 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
             "/index.js",
         )
         if ctx.has_sfc_files:
-            exts = exts + (".vue", ".svelte", ".astro")
+            exts = (*exts, ".vue", ".svelte", ".astro")
         for ext in exts:
             candidate = base_posix + ext
             if candidate in ctx.path_set:

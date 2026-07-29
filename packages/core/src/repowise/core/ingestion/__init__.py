@@ -32,29 +32,26 @@ from .traverser import FileTraverser, TraversalStats
 from .tsconfig_resolver import TsconfigResolver, wire_tsconfig_resolver
 
 __all__ = [
-    # Models
-    "CallSite",
-    "EdgeType",
     "EXTENSION_TO_LANGUAGE",
-    "HeritageRelation",
-    "NamedBinding",
     "LANGUAGE_CONFIGS",
     # Parsing
     "ASTParser",
     # Change detection
     "AffectedPages",
+    # Models
+    "CallSite",
     "ChangeDetector",
+    "EdgeType",
     "FileDiff",
     "FileInfo",
     # Traversal
     "FileTraverser",
-    "TraversalStats",
     # Graph
     "GraphBuilder",
-    "TsconfigResolver",
-    "wire_tsconfig_resolver",
+    "HeritageRelation",
     "Import",
     "LanguageConfig",
+    "NamedBinding",
     "PackageInfo",
     "ParsedFile",
     "RepoStructure",
@@ -62,6 +59,9 @@ __all__ = [
     "SymbolDiff",
     "SymbolKind",
     "SymbolRename",
+    "TraversalStats",
+    "TsconfigResolver",
     "compute_content_hash",
     "parse_file",
+    "wire_tsconfig_resolver",
 ]

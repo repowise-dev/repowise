@@ -404,7 +404,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 @router.get("/api/repos/{repo_id}/chat/conversations")
 async def list_conversations(
     repo_id: str,
-    session=Depends(get_db_session),  # noqa: B008
+    session=Depends(get_db_session),
 ):
     convs = await crud.list_conversations(session, repo_id)
     result = []
@@ -418,7 +418,7 @@ async def list_conversations(
 async def get_conversation(
     repo_id: str,
     conversation_id: str,
-    session=Depends(get_db_session),  # noqa: B008
+    session=Depends(get_db_session),
 ):
     conv = await crud.get_conversation(session, conversation_id)
     if not conv or conv.repository_id != repo_id:
@@ -435,7 +435,7 @@ async def get_conversation(
 async def delete_conversation(
     repo_id: str,
     conversation_id: str,
-    session=Depends(get_db_session),  # noqa: B008
+    session=Depends(get_db_session),
 ):
     conv = await crud.get_conversation(session, conversation_id)
     if not conv or conv.repository_id != repo_id:

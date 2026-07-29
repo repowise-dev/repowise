@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+from typing import ClassVar
 
 
 class OpenAIEmbedder:
@@ -38,7 +39,7 @@ class OpenAIEmbedder:
         base_url: Optional custom base URL for OpenAI-compatible endpoints.
     """
 
-    _DIMS: dict[str, int] = {
+    _DIMS: ClassVar[dict[str, int]] = {
         "text-embedding-3-small": 1536,
         "text-embedding-3-large": 3072,
         "text-embedding-ada-002": 1536,

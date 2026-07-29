@@ -78,6 +78,7 @@ __all__ = [
     "build_analysis_summary_panel",
     "build_completion_panel",
     "build_contextual_next_steps",
+    "build_mcp_status_lines",
     "format_bytes",
     "format_elapsed",
     "interactive_advanced_config",

@@ -110,7 +110,7 @@ def build_rails_index(
     return index
 
 
-def get_or_build_rails_index(ctx: "ResolverContext") -> RailsIndex | None:
+def get_or_build_rails_index(ctx: ResolverContext) -> RailsIndex | None:
     cached = getattr(ctx, "_ruby_rails_index", "__sentinel__")
     if cached != "__sentinel__":
         return cached  # type: ignore[return-value]

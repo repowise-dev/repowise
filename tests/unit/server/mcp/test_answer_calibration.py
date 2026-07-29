@@ -13,6 +13,7 @@ rather than retrieval scores alone:
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -69,7 +70,7 @@ class TestValueQuestionShape:
 
 
 class TestUngroundedNumbers:
-    HITS = [
+    HITS: ClassVar[list[dict]] = [
         {
             "title": "constants",
             "summary": "Co-change tuning constants.",
@@ -146,7 +147,7 @@ class TestDistinctiveTerms:
 
 
 class TestFrameTermGrounding:
-    HITS = [
+    HITS: ClassVar[list[dict]] = [
         {
             "title": "enrichment",
             "summary": "Caller/callee rollup for symbol context.",

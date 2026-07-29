@@ -6,8 +6,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import networkx as nx
-
 from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file

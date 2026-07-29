@@ -284,7 +284,7 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     from ..architecture_mermaid import ArchitectureMermaidBuilder
     from ..context_assembler import LayerPageContext
 
-    _MIN_LAYER_FILES = 3
+    min_layer_files = 3
 
     # One builder per run: indexes the graph once, then draws each layer.
     diagram_builder = ArchitectureMermaidBuilder(run.kg_ctx)
@@ -292,7 +292,7 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     for layer in run.kg_ctx.get_layers():
         node_ids = layer.get("nodeIds", [])
         file_paths = [nid[5:] for nid in node_ids if nid.startswith("file:")]
-        if len(file_paths) < _MIN_LAYER_FILES:
+        if len(file_paths) < min_layer_files:
             continue
 
         layer_name = layer.get("name", "")

@@ -371,10 +371,10 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
         )
 
         neighbors: set[str] = set()
-        for src, tgt in importer_res.all():
+        for src, _tgt in importer_res.all():
             if src and src not in existing:
                 neighbors.add(src)
-        for src, tgt in importee_res.all():
+        for _src, tgt in importee_res.all():
             if tgt and tgt not in existing:
                 neighbors.add(tgt)
 

@@ -43,7 +43,7 @@ def _resolve_last_indexed_at(
 async def health_overview(
     repo_id: str,
     limit: int = Query(20, ge=1, le=200),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """KPIs + lowest-scoring files + per-module rollup + meta."""
     repo = await crud.get_repository(session, repo_id)
@@ -113,7 +113,7 @@ async def health_overview(
 @router.get("/api/repos/{repo_id}/health/modules")
 async def health_modules(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """NLOC-weighted module rollups for the dashboard module section."""
     repo = await crud.get_repository(session, repo_id)

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 
-def _is_data_class(class_node: "Node") -> bool:
+def _is_data_class(class_node: Node) -> bool:
     for child in class_node.children:
         if child.type != "modifiers":
             continue
@@ -41,7 +41,7 @@ def _is_data_class(class_node: "Node") -> bool:
     return False
 
 
-def _is_enum_class(class_node: "Node") -> bool:
+def _is_enum_class(class_node: Node) -> bool:
     for child in class_node.children:
         if child.type != "modifiers":
             continue
@@ -54,7 +54,7 @@ def _is_enum_class(class_node: "Node") -> bool:
     return False
 
 
-def _primary_components(class_node: "Node", src: str) -> list[tuple[str, str]]:
+def _primary_components(class_node: Node, src: str) -> list[tuple[str, str]]:
     """Return [(name, type_text), ...] for primary-ctor parameters."""
     out: list[tuple[str, str]] = []
     for child in class_node.children:
@@ -79,7 +79,7 @@ def _primary_components(class_node: "Node", src: str) -> list[tuple[str, str]]:
 
 
 def kotlin_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Emit data-class / enum / object synthesised symbols."""
     out: list[Symbol] = []
@@ -102,7 +102,7 @@ def kotlin_synthetic_symbols(
 
             if _is_data_class(node):
                 components = _primary_components(node, src)
-                for i, (cname, ctype) in enumerate(components, start=1):
+                for i, (_cname, ctype) in enumerate(components, start=1):
                     out.append(build_synthetic_symbol(
                         name=f"component{i}", kind="method",
                         signature=f"public {ctype or 'Any'} component{i}()",

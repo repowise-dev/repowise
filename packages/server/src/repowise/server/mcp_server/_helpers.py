@@ -198,10 +198,7 @@ async def _resolve_all_contexts() -> list[Any]:
 def _unsupported_repo_all(tool_name: str) -> dict:
     """Return an error dict for tools that don't support ``repo='all'``."""
     registry = _state._registry
-    if registry is not None:
-        available = registry.get_all_aliases()
-    else:
-        available = []
+    available = registry.get_all_aliases() if registry is not None else []
     return {
         "error": (
             f"repo='all' is not supported for {tool_name}. "
@@ -499,28 +496,28 @@ def _compute_alignment(
 # ---------------------------------------------------------------------------
 
 
-def _get_exclude_spec(repo_path: "Path | str") -> "Any":
+def _get_exclude_spec(repo_path: Path | str) -> Any:
     """Compile the repo's exclusion rules into a PathSpec, or None."""
     from repowise.core.exclusion import build_exclude_spec
 
     return build_exclude_spec(repo_path)
 
 
-def is_excluded(path: "str | None", spec: "Any") -> bool:
+def is_excluded(path: str | None, spec: Any) -> bool:
     """True if *path* matches *spec* (None spec or path -> not excluded)."""
     from repowise.core.exclusion import is_excluded as _core_is_excluded
 
     return _core_is_excluded(path, spec)
 
 
-def filter_rows_by_attr(rows: list, attr: str, spec: "Any") -> list:
+def filter_rows_by_attr(rows: list, attr: str, spec: Any) -> list:
     """Shape A: drop ORM rows whose ``attr`` path is excluded."""
     if not spec:
         return rows
     return [r for r in rows if not is_excluded(getattr(r, attr, None), spec)]
 
 
-def filter_graph_nodes(nodes: list, spec: "Any") -> list:
+def filter_graph_nodes(nodes: list, spec: Any) -> list:
     """Shape B: file nodes match on ``node_id``, symbol nodes on ``file_path``."""
     if not spec:
         return nodes
@@ -533,21 +530,21 @@ def filter_graph_nodes(nodes: list, spec: "Any") -> list:
     return out
 
 
-def filter_dicts_by_key(items: list, key: str, spec: "Any") -> list:
+def filter_dicts_by_key(items: list, key: str, spec: Any) -> list:
     """Shape C: drop result dicts whose ``key`` path is excluded."""
     if not spec:
         return items
     return [d for d in items if not is_excluded(d.get(key), spec)]
 
 
-def decision_is_excluded(decision_row: "Any", spec: "Any") -> bool:
+def decision_is_excluded(decision_row: Any, spec: Any) -> bool:
     """True when a DecisionRecord is anchored entirely in excluded paths."""
     from repowise.core.exclusion import decision_is_excluded as _core_decision_is_excluded
 
     return _core_decision_is_excluded(decision_row, spec)
 
 
-def filter_path_list(paths: "list | None", spec: "Any") -> list:
+def filter_path_list(paths: list | None, spec: Any) -> list:
     """Shape D: filter a list of path strings (None -> [])."""
     if not paths:
         return []
@@ -556,7 +553,7 @@ def filter_path_list(paths: "list | None", spec: "Any") -> list:
     return [p for p in paths if not is_excluded(p, spec)]
 
 
-def filter_embedded_path_ids(ids: list, spec: "Any") -> list:
+def filter_embedded_path_ids(ids: list, spec: Any) -> list:
     """Shape E: ids look like ``"path::Name"``; match on the file portion."""
     if not spec:
         return ids

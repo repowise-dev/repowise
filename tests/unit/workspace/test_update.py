@@ -22,7 +22,6 @@ from repowise.core.workspace.update import (
     update_workspace,
 )
 
-
 # ---------------------------------------------------------------------------
 # sync_workspace_state_from_disk — Phase C1
 # ---------------------------------------------------------------------------
@@ -186,7 +185,7 @@ class TestCheckRepoStaleness:
 
     def test_no_stored_commit_stale(self, tmp_path: Path) -> None:
         repo = _make_git_repo(tmp_path, "myrepo")
-        is_stale, current, behind = check_repo_staleness(repo, None)
+        is_stale, current, _behind = check_repo_staleness(repo, None)
         assert is_stale is True
         assert current is not None
 
@@ -196,12 +195,12 @@ class TestCheckRepoStaleness:
         _add_commit(repo, "a.txt", "commit 2")
         _add_commit(repo, "b.txt", "commit 3")
         _add_commit(repo, "c.txt", "commit 4")
-        is_stale, current, behind = check_repo_staleness(repo, old_head)
+        is_stale, _current, behind = check_repo_staleness(repo, old_head)
         assert is_stale is True
         assert behind == 3
 
     def test_non_git_dir_not_stale(self, tmp_path: Path) -> None:
-        is_stale, current, behind = check_repo_staleness(tmp_path, "abc123")
+        is_stale, current, _behind = check_repo_staleness(tmp_path, "abc123")
         assert is_stale is False
         assert current is None
 

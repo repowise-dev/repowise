@@ -62,7 +62,7 @@ _IMPLEMENTS_CONFIDENCE = 0.6
 _MAX_EMBED_DEPTH = 6
 
 
-def _receiver_type_name(method_node: "Node", src: bytes) -> str | None:
+def _receiver_type_name(method_node: Node, src: bytes) -> str | None:
     """Return the bare receiver type of a ``method_declaration``.
 
     ``func (f *File) M()`` → ``File``; ``func (f File) M()`` → ``File``.
@@ -98,7 +98,7 @@ def _receiver_type_name(method_node: "Node", src: bytes) -> str | None:
     return None
 
 
-def _interface_facts(iface_node: "Node", src: bytes) -> tuple[set[str], list[str]]:
+def _interface_facts(iface_node: Node, src: bytes) -> tuple[set[str], list[str]]:
     """Return (explicit method names, embedded interface bare names)."""
     methods: set[str] = set()
     embedded: list[str] = []
@@ -130,7 +130,7 @@ def _interface_facts(iface_node: "Node", src: bytes) -> tuple[set[str], list[str
 
 
 class _FileFacts:
-    __slots__ = ("interfaces", "concrete_methods", "type_kind")
+    __slots__ = ("concrete_methods", "interfaces", "type_kind")
 
     def __init__(self) -> None:
         # name -> (explicit methods, embedded bare names)
@@ -141,10 +141,10 @@ class _FileFacts:
         self.type_kind: dict[str, str] = {}
 
 
-def _extract_file_facts(root: "Node", src: bytes) -> _FileFacts:
+def _extract_file_facts(root: Node, src: bytes) -> _FileFacts:
     facts = _FileFacts()
 
-    def walk(node: "Node") -> None:
+    def walk(node: Node) -> None:
         if node.type == "type_spec":
             name_node = node.child_by_field_name("name")
             type_node = node.child_by_field_name("type")
@@ -172,7 +172,7 @@ def _extract_file_facts(root: "Node", src: bytes) -> _FileFacts:
     return facts
 
 
-def _parse_go(src: bytes) -> "Node | None":
+def _parse_go(src: bytes) -> Node | None:
     """Parse Go source into a tree-sitter root node using the shared grammar."""
     from ..parser import _get_language  # local import: avoid cycle at module load
 
@@ -187,7 +187,7 @@ def _parse_go(src: bytes) -> "Node | None":
 
 
 def resolve_go_interface_satisfaction(
-    graph: "nx.DiGraph", parsed_files: dict[str, Any]
+    graph: nx.DiGraph, parsed_files: dict[str, Any]
 ) -> int:
     """Emit ``method_implements`` edges for structural Go interface satisfaction.
 

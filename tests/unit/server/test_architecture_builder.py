@@ -4,9 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
@@ -127,9 +125,9 @@ async def test_layer_assignment_from_db_kg(client: AsyncClient, app) -> None:
     async with app.state.session_factory() as session:
         view = await build_architecture_view(session, repo["id"])
 
-    layer_names = {l.name for l in view.layers}
+    layer_names = {layer.name for layer in view.layers}
     assert layer_names == {"API", "Domain", "Frontend"}
-    api_layer = next(l for l in view.layers if l.name == "API")
+    api_layer = next(layer for layer in view.layers if layer.name == "API")
     assert "src/main.py" in api_layer.node_ids
 
 
@@ -150,10 +148,10 @@ async def test_layer_assignment_from_communities(client: AsyncClient, app) -> No
         view = await build_architecture_view(session, repo_id)
 
     assert len(view.layers) == 2
-    layer_ids = {l.id for l in view.layers}
+    layer_ids = {layer.id for layer in view.layers}
     assert "layer:community-1" in layer_ids
     assert "layer:community-2" in layer_ids
-    group_a = next(l for l in view.layers if l.id == "layer:community-1")
+    group_a = next(layer for layer in view.layers if layer.id == "layer:community-1")
     assert group_a.name == "Group A"
 
 
@@ -164,7 +162,7 @@ async def test_layer_assignment_from_directories(client: AsyncClient, app) -> No
     async with app.state.session_factory() as session:
         view = await build_architecture_view(session, repo["id"])
 
-    layer_ids = {l.id for l in view.layers}
+    layer_ids = {layer.id for layer in view.layers}
     assert "layer:dir-src" in layer_ids
     assert "layer:dir-lib" in layer_ids
     assert "layer:dir-tests" in layer_ids

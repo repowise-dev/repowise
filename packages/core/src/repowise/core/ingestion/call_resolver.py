@@ -172,7 +172,7 @@ class CallResolver:
         # Multi-hop: follow chains up to 5 hops
         for _ in range(4):
             changed = False
-            for path, origins in list(self._barrel_origins.items()):
+            for _path, origins in list(self._barrel_origins.items()):
                 for name, source in list(origins.items()):
                     deeper = self._barrel_origins.get(source, {}).get(name)
                     if deeper and deeper != source:
@@ -589,10 +589,9 @@ class CallResolver:
                     if key in methods:
                         return ResolvedCall(caller_id, methods[key], 0.90, call.line)
                     syms = self._file_symbols.get(sibling, {})
-                    if receiver_name in syms:
-                        # Found the class; look for the method on it
-                        if key in methods:
-                            return ResolvedCall(caller_id, methods[key], 0.88, call.line)
+                    # Found the class; look for the method on it
+                    if receiver_name in syms and key in methods:
+                        return ResolvedCall(caller_id, methods[key], 0.88, call.line)
 
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
