@@ -79,9 +79,8 @@ class TestBuildGenerationPlan:
     def test_empty_repo(self):
         builder = _make_graph_builder([])
         plans = build_generation_plan([], builder, FakeConfig())
-        # Still get repo_overview + architecture_diagram
+        # Still get repo_overview
         assert any(p.page_type == "repo_overview" for p in plans)
-        assert any(p.page_type == "architecture_diagram" for p in plans)
 
     def test_single_python_file_with_symbol(self):
         fi = FakeFileInfo(path="src/app.py", language="python")

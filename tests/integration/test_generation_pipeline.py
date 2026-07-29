@@ -392,9 +392,18 @@ class TestGenerationPipeline:
         types = [p.page_type for p in pipeline_result["pages"]]
         assert types.count("repo_overview") == 1
 
-    def test_generates_architecture_diagram(self, pipeline_result):
-        types = [p.page_type for p in pipeline_result["pages"]]
-        assert types.count("architecture_diagram") == 1
+    def test_architecture_map_lives_on_the_overview(self, pipeline_result):
+        """The diagram no longer gets a page of its own.
+
+        It described the same repository at the same altitude as the overview
+        and in the same words, so the map moved onto the overview and the page
+        retired. A run that still emits one has regressed.
+        """
+        pages = pipeline_result["pages"]
+        types = [p.page_type for p in pages]
+        assert types.count("architecture_diagram") == 0
+        assert types.count("repo_overview") == 1
+
 
     def test_generates_file_page_for_py_files(self, pipeline_result):
         """There should be at least one file_page for Python files."""

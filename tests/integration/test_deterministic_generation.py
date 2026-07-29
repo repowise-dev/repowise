@@ -136,7 +136,7 @@ class TestDeterministicGeneration:
         types = {p.page_type for p in deterministic_pages}
         assert "file_page" in types
         assert "repo_overview" in types
-        assert "architecture_diagram" in types
+        assert "architecture_diagram" not in types
         assert len(types) >= 4, f"only got {types}"
 
     def test_full_file_coverage(self, deterministic_pages):

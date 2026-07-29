@@ -5,7 +5,7 @@ Guided Tour, Getting Started, Codebase Map, Key Concepts, How It Works,
 Development Guide, Active Landscape, designed to be the first thing a new
 contributor (or LLM agent) reads.
 
-Two slots ("project_overview", "architecture_guide") are *promoted*: they
+One slot ("project_overview") is *promoted*: it
 reuse the existing ``repo_overview`` and ``architecture_diagram`` pages,
 tagged via ``metadata.onboarding_slot``. The other seven slots are new pages
 generated at level 8 with ``page_type='onboarding'`` and a
@@ -28,7 +28,6 @@ from .slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
     SLOT_ACTIVE_LANDSCAPE,
-    SLOT_ARCHITECTURE_GUIDE,
     SLOT_CODEBASE_MAP,
     SLOT_DEVELOPMENT_GUIDE,
     SLOT_GETTING_STARTED,
@@ -45,7 +44,6 @@ __all__ = [
     "ONBOARDING_ORDER",
     "PROMOTED_SLOTS",
     "SLOT_ACTIVE_LANDSCAPE",
-    "SLOT_ARCHITECTURE_GUIDE",
     "SLOT_CODEBASE_MAP",
     "SLOT_DEVELOPMENT_GUIDE",
     "SLOT_GETTING_STARTED",

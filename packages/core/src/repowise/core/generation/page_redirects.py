@@ -31,7 +31,12 @@ from __future__ import annotations
 
 # Retired page type → the page type that took over its material.  The target
 # path is carried across unchanged.
-SUPERSEDED_TYPES: dict[str, str] = {}
+SUPERSEDED_TYPES: dict[str, str] = {
+    # The architecture diagram described the same repository at the same
+    # altitude as the overview, in the same words.  Its diagram moved to the
+    # overview and the page retired.
+    "architecture_diagram": "repo_overview",
+}
 
 # Retired page id → successor page id, in full.  For pages whose target path is
 # the same in every repository.

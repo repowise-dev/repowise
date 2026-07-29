@@ -70,7 +70,7 @@ def get_spec(slot: str) -> SubkindSpec | None:
 def iter_specs() -> list[SubkindSpec]:
     """Return registered specs in canonical reading order.
 
-    Promoted slots (project_overview, architecture_guide) are not generated
+    The promoted slot (project_overview) is not generated
     through this path and are excluded here.
     """
     promoted = set(PROMOTED_SLOTS.values())

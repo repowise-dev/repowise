@@ -34,7 +34,7 @@ from repowise.core.generation.page_selection import (
 from repowise.core.generation.selection import Selection, SelectionInputs, select_pages
 
 # Page types that describe the whole repository (as opposed to one file/module).
-_REPO_WIDE_TYPES = frozenset({"repo_overview", "architecture_diagram", "onboarding"})
+_REPO_WIDE_TYPES = frozenset({"repo_overview", "onboarding"})
 
 # Structural pages the coverage budget does not rank: layer pages come from KG
 # membership and onboarding is curated, so init emits every one of them at every
@@ -160,10 +160,7 @@ def build_dependencies(
         )
     )
 
-    repo_wide_ids = [
-        compute_page_id("repo_overview", repo_name),
-        compute_page_id("architecture_diagram", repo_name),
-    ]
+    repo_wide_ids = [compute_page_id("repo_overview", repo_name)]
     repo_wide_ids += [r.page_id for r in records if r.page_type == "onboarding"]
 
     return build_page_dependencies(
@@ -179,7 +176,7 @@ def selection_page_ids(sel: Selection, repo_name: str) -> set[str]:
 
     Mirrors the id assignment in the page generator's level builders exactly
     (``levels.py``), so a ranked coverage pick names the same pages a full run
-    at that coverage would write. Repo-wide overview/architecture pages are
+    at that coverage would write. The repo-wide overview page is
     keyed by the repo name; onboarding is not budgeted here (the caller adds it).
     """
     ids: set[str] = set()
@@ -194,8 +191,6 @@ def selection_page_ids(sel: Selection, repo_name: str) -> set[str]:
     )
     if sel.emit_repo_overview:
         ids.add(compute_page_id("repo_overview", repo_name))
-    if sel.emit_arch_diagram:
-        ids.add(compute_page_id("architecture_diagram", repo_name))
     return ids
 
 

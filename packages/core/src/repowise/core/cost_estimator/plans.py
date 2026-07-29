@@ -85,7 +85,6 @@ def build_generation_plan(
         "scc_page",
         "module_page",
         "repo_overview",
-        "architecture_diagram",
         "infra_page",
     ):
         count = counts.get(page_type, 0)

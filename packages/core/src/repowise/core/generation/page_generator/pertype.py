@@ -54,6 +54,20 @@ def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> Gener
     return page
 
 
+def _with_architecture_map(page: GeneratedPage, overview_mermaid: str | None) -> GeneratedPage:
+    """Embed the KG-derived architecture map into an already-built page.
+
+    The overview is where the map lives, so the stub paths carry it too — a
+    provider outage should cost the prose around the diagram, not the diagram.
+    Embedding is idempotent, so calling this on a page that already has one is
+    safe.
+    """
+    if not overview_mermaid:
+        return page
+    page.content = embed_mermaid(page.content, overview_mermaid, heading="## Architecture map")
+    return page
+
+
 class PerTypeGenerationMixin:
     """Per-type ``generate_*`` methods. Requires the host to provide
     ``_assembler``, ``_render``, ``_call_provider`` and
@@ -252,6 +266,7 @@ class PerTypeGenerationMixin:
         repo_name: str | None = None,
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
+        overview_mermaid: str | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -282,9 +297,10 @@ class PerTypeGenerationMixin:
         if not repo_name:
             repo_name = getattr(repo_structure, "name", None) or "repo"
         if self._config.deterministic:
-            return self._stub_repo_overview(
+            stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
+            return _with_architecture_map(stub, overview_mermaid)
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
         try:
             response = await self._call_provider(
@@ -294,7 +310,19 @@ class PerTypeGenerationMixin:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
-            return _stub_fallback(stub, "repo_overview", exc)
+            return _with_architecture_map(
+                _stub_fallback(stub, "repo_overview", exc), overview_mermaid
+            )
+        # The overview carries the architecture map itself. It is the
+        # deterministic KG-derived diagram, not one the model drew, and
+        # embedding is idempotent so a reused page picks it up too.
+        if overview_mermaid:
+            response = replace(
+                response,
+                content=embed_mermaid(
+                    response.content, overview_mermaid, heading="## Architecture map"
+                ),
+            )
         return self._build_generated_page(
             "repo_overview",
             repo_name,

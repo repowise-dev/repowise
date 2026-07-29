@@ -176,3 +176,21 @@ class TestShippedTables:
     def test_no_retired_type_is_also_a_successor_of_itself(self):
         for retired_type, successor in SUPERSEDED_TYPES.items():
             assert retired_type != successor
+
+
+# ---------------------------------------------------------------------------
+# The architecture map moved onto the overview
+# ---------------------------------------------------------------------------
+
+
+class TestArchitectureDiagramRetirement:
+    def test_the_retired_page_resolves_to_the_overview(self):
+        assert resolve_superseded("architecture_diagram:repowise") == "repo_overview:repowise"
+
+    def test_it_resolves_for_any_repository(self):
+        """The rule is a type rewrite, so it cannot be repo-specific."""
+        for repo in ("repowise", "some/other-repo", "a"):
+            assert resolve_superseded(f"architecture_diagram:{repo}") == f"repo_overview:{repo}"
+
+    def test_the_overview_itself_is_not_redirected(self):
+        assert resolve_superseded("repo_overview:repowise") is None

@@ -58,7 +58,6 @@ def approximate_generation_plan(
         PageTypePlan(page_type="file_page", count=file_pages, level=0),
         PageTypePlan(page_type="module_page", count=module_pages, level=1),
         PageTypePlan(page_type="repo_overview", count=1 if file_count else 0, level=2),
-        PageTypePlan(page_type="architecture_diagram", count=1 if file_count else 0, level=2),
     ]
     if onboarding and file_count:
         plans.append(PageTypePlan(page_type="onboarding", count=_ONBOARDING_SLOTS, level=2))

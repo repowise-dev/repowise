@@ -119,7 +119,6 @@ class Selection:
     infra_paths: list[str] = field(default_factory=list)
     scc_groups: list[tuple[str, list[str]]] = field(default_factory=list)  # (scc_id, files)
     emit_repo_overview: bool = True
-    emit_arch_diagram: bool = True
     # The concept partition behind ``module_groups``, one entry per group, plus
     # the layer names the grouper steered by. Carried so a caller holding a
     # provider can name these groups; selection itself stays free of the model
@@ -142,7 +141,6 @@ class Selection:
             "scc_page": len(self.scc_groups),
             "module_page": len(self.module_groups),
             "repo_overview": int(self.emit_repo_overview),
-            "architecture_diagram": int(self.emit_arch_diagram),
             "infra_page": len(self.infra_paths),
         }
 
@@ -701,7 +699,6 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         infra_paths=[p for _, p in infras],
         scc_groups=[g for _, g in sccs],
         emit_repo_overview=True,
-        emit_arch_diagram=True,
     )
     log.info("page_selection.complete", counts=sel.counts())
     return sel

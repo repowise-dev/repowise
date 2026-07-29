@@ -356,8 +356,26 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
 
 def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
-    """Level 6 (repo_overview + architecture_diagram)."""
+    """Level 6 (repo_overview).
+
+    The overview carries the architecture map. That map used to sit on a page
+    of its own, which described the same repository at the same altitude in the
+    same words — the two shared roughly a quarter of their vocabulary, so a
+    reader meeting both read one thing twice. The diagram is what that page
+    uniquely had, so it moved here and the page retired; its id redirects.
+    """
+    from ..architecture_mermaid import build_overview_mermaid
+
     gen = run.gen
+    overview_mermaid = build_overview_mermaid(run.kg_ctx)
+    if not overview_mermaid:
+        # The retired page drew its own diagram when the graph could not supply
+        # one, so this used to degrade to a worse map rather than to none. Now
+        # the wiki simply ships without one, which is worth knowing about.
+        log.warning(
+            "generation.overview_architecture_map_empty",
+            repo_name=run.repo_name,
+        )
     coros: list[tuple[str, Any]] = []
     if run._emit(compute_page_id("repo_overview", run.repo_name)):
         coros.append(
@@ -373,22 +391,6 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     repo_name=run.repo_name,
                     external_systems=run.external_systems,
                     decision_records=run.decisions_all[:10],
-                ),
-            )
-        )
-    if run._emit(compute_page_id("architecture_diagram", run.repo_name)):
-        from ..architecture_mermaid import build_overview_mermaid
-
-        overview_mermaid = build_overview_mermaid(run.kg_ctx)
-        coros.append(
-            (
-                compute_page_id("architecture_diagram", run.repo_name),
-                gen.generate_architecture_diagram(
-                    run.graph,
-                    run.pagerank,
-                    run.community,
-                    run.sccs,
-                    run.repo_name,
                     overview_mermaid=overview_mermaid,
                 ),
             )

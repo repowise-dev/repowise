@@ -119,7 +119,6 @@ class _FakeSelection:
         self.infra_paths = ["Dockerfile"]
         self.symbol_spotlights = [("src/a.py", "Widget")]
         self.emit_repo_overview = True
-        self.emit_arch_diagram = True
 
 
 def test_selection_page_ids_mirrors_generation_id_assignment() -> None:
@@ -133,17 +132,14 @@ def test_selection_page_ids_mirrors_generation_id_assignment() -> None:
         compute_page_id("infra_page", "Dockerfile"),
         compute_page_id("symbol_spotlight", "src/a.py::Widget"),
         compute_page_id("repo_overview", "demo"),
-        compute_page_id("architecture_diagram", "demo"),
     }
 
 
 def test_selection_page_ids_honors_emit_flags() -> None:
     sel = _FakeSelection()
     sel.emit_repo_overview = False
-    sel.emit_arch_diagram = False
     ids = selection_page_ids(sel, "demo")
     assert compute_page_id("repo_overview", "demo") not in ids
-    assert compute_page_id("architecture_diagram", "demo") not in ids
 
 
 def test_ranked_ids_to_seed_keeps_unwritten_and_adds_structural() -> None:

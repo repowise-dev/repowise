@@ -81,9 +81,9 @@ export function isStubPage(
 // Onboarding collection
 // ---------------------------------------------------------------------------
 //
-// Two slots — project_overview and architecture_guide — are *promoted*: their
-// content lives in the existing repo_overview / architecture_diagram pages,
-// tagged via `metadata.onboarding_slot`. The other seven are dedicated
+// One slot — project_overview — is *promoted*: its
+// content lives in the existing repo_overview page, tagged via
+// `metadata.onboarding_slot`. The other seven are dedicated
 // `page_type === "onboarding"` pages with `metadata.subkind` discriminating
 // them.
 //
@@ -95,7 +95,6 @@ export function isStubPage(
 
 export const ONBOARDING_SLOT_TITLES = {
   project_overview: "Project Overview",
-  architecture_guide: "Architecture Guide",
   guided_tour: "Guided Tour",
   getting_started: "Getting Started",
   codebase_map: "Codebase Map",

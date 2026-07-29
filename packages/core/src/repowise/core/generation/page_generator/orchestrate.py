@@ -464,7 +464,6 @@ class _GenerationRun:
             + counts["module_page"]
             + layer_page_count
             + int(self.selection.emit_repo_overview)
-            + int(self.selection.emit_arch_diagram)
             + counts["infra_page"]
             + onboarding_page_count
         )

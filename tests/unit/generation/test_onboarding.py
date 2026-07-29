@@ -174,10 +174,7 @@ def test_target_path_format() -> None:
 
 
 def test_promoted_slots_map() -> None:
-    assert PROMOTED_SLOTS == {
-        "repo_overview": "project_overview",
-        "architecture_diagram": "architecture_guide",
-    }
+    assert PROMOTED_SLOTS == {"repo_overview": "project_overview"}
 
 
 # ---------------------------------------------------------------------------
@@ -511,7 +508,10 @@ def test_tag_promoted_pages_sets_onboarding_slot() -> None:
     ]
     PageGenerator._tag_promoted_pages(pages)
     assert pages[0].metadata["onboarding_slot"] == "project_overview"
-    assert pages[1].metadata["onboarding_slot"] == "architecture_guide"
+    # The architecture diagram is no longer a page, so nothing promotes it. A
+    # stale row from an older index must not be tagged into a slot that the
+    # reading order no longer has.
+    assert "onboarding_slot" not in pages[1].metadata
     # Non-promoted pages stay untouched.
     assert "onboarding_slot" not in pages[2].metadata
 

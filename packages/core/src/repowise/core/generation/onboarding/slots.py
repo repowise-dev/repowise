@@ -1,9 +1,9 @@
 """Onboarding slot identifiers and reading order.
 
-The Onboarding collection is a fixed set of nine curated slots. Two slots are
-"promoted": they reuse the existing `repo_overview` and `architecture_diagram`
-pages, tagged via ``metadata.onboarding_slot``. The other seven are new pages
-with ``page_type='onboarding'`` and a ``metadata.subkind`` discriminator.
+The Onboarding collection is a fixed set of eight curated slots. One slot is
+"promoted": it reuses the existing `repo_overview` page, tagged via
+``metadata.onboarding_slot``. The other seven are new pages with
+``page_type='onboarding'`` and a ``metadata.subkind`` discriminator.
 
 Slot identifiers are used three ways:
   - as the ``metadata.subkind`` value on generated pages,
@@ -12,7 +12,7 @@ Slot identifiers are used three ways:
 
 Keep the order list in lockstep with ``packages/ui/src/lib/page-types.ts``
 ``ONBOARDING_ORDER``. A slot without enough signal is skipped at generation
-time, so a repo can end up with fewer than nine.
+time, so a repo can end up with fewer than eight.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ ONBOARDING_GENERATION_VERSION = "2"
 # ---- Slot identifiers ----
 
 SLOT_PROJECT_OVERVIEW = "project_overview"
-SLOT_ARCHITECTURE_GUIDE = "architecture_guide"
 SLOT_GUIDED_TOUR = "guided_tour"
 SLOT_GETTING_STARTED = "getting_started"
 SLOT_CODEBASE_MAP = "codebase_map"
@@ -41,7 +40,6 @@ SLOT_ACTIVE_LANDSCAPE = "active_landscape"
 # generation time and absent from the UI tree.
 ONBOARDING_ORDER: tuple[str, ...] = (
     SLOT_PROJECT_OVERVIEW,
-    SLOT_ARCHITECTURE_GUIDE,
     SLOT_GUIDED_TOUR,
     SLOT_GETTING_STARTED,
     SLOT_CODEBASE_MAP,
@@ -56,14 +54,12 @@ ONBOARDING_ORDER: tuple[str, ...] = (
 # extra content is generated for promoted slots.
 PROMOTED_SLOTS: dict[str, str] = {
     "repo_overview": SLOT_PROJECT_OVERVIEW,
-    "architecture_diagram": SLOT_ARCHITECTURE_GUIDE,
 }
 
 # Human-readable titles used both server-side (page title) and as a fallback
 # label in the UI when a page hasn't been hydrated yet.
 SLOT_TITLES: dict[str, str] = {
     SLOT_PROJECT_OVERVIEW: "Project Overview",
-    SLOT_ARCHITECTURE_GUIDE: "Architecture Guide",
     SLOT_GUIDED_TOUR: "Guided Tour",
     SLOT_GETTING_STARTED: "Getting Started",
     SLOT_CODEBASE_MAP: "Codebase Map",
@@ -76,12 +72,11 @@ SLOT_TITLES: dict[str, str] = {
 
 SLOT_PREREQUISITES: dict[str, tuple[str, ...]] = {
     SLOT_PROJECT_OVERVIEW: (),
-    SLOT_ARCHITECTURE_GUIDE: (),
     SLOT_GUIDED_TOUR: (SLOT_PROJECT_OVERVIEW,),
     SLOT_GETTING_STARTED: (),
     SLOT_CODEBASE_MAP: (SLOT_PROJECT_OVERVIEW,),
-    SLOT_KEY_CONCEPTS: (SLOT_PROJECT_OVERVIEW, SLOT_ARCHITECTURE_GUIDE),
-    SLOT_HOW_IT_WORKS: (SLOT_ARCHITECTURE_GUIDE, SLOT_KEY_CONCEPTS),
+    SLOT_KEY_CONCEPTS: (SLOT_PROJECT_OVERVIEW,),
+    SLOT_HOW_IT_WORKS: (SLOT_KEY_CONCEPTS,),
     SLOT_DEVELOPMENT_GUIDE: (SLOT_GETTING_STARTED, SLOT_HOW_IT_WORKS),
     SLOT_ACTIVE_LANDSCAPE: (SLOT_CODEBASE_MAP,),
 }
