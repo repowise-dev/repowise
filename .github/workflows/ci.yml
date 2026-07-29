@@ -44,6 +44,31 @@ jobs:
         run: uv run pytest tests/unit/ -v --tb=short
 
   # ---------------------------------------------------------------------------
+  # Python lint — ruff. Deliberately its own job rather than a step inside the
+  # test matrix: the result is identical on 3.11/3.12/3.13 (target-version is
+  # pinned in pyproject.toml), so running it there would burn three runners to
+  # learn one thing, and a lint failure would masquerade as a test failure.
+  # ---------------------------------------------------------------------------
+  lint-python:
+    name: Python lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Run ruff
+        run: uv run ruff check .
+
+  # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
   # ---------------------------------------------------------------------------
   test-integration:
