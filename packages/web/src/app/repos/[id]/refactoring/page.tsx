@@ -3,21 +3,29 @@
 /**
  * Refactoring — `/repos/[id]/refactoring`.
  *
- * A first-class surface for the deterministic refactoring plans the health
- * pass writes (Extract Class, Extract Helper, Move Method, Break Cycle, Split
- * File). The
- * card board is the primary view; a priority×effort quadrant heads it. Type
- * filters are URL-synced via `?type=` (nuqs), mirroring the architecture view.
+ * The deterministic refactoring plans the health pass writes. The page leads
+ * with what the pile actually is (mostly small, local extractions), then the
+ * handful that change the codebase's shape, then everything as rows.
+ *
+ * Two URL params, both shareable: `?type=` filters the list, `?plan=` opens one
+ * plan's drawer. The plan param is what the old centred modal could not have —
+ * a plan you can send to someone.
  */
 
 import { use, useCallback, useMemo, useState } from "react";
 import useSWR from "swr";
-import { parseAsStringLiteral, useQueryState } from "nuqs";
+import { parseAsString, parseAsStringLiteral, useQueryState } from "nuqs";
 import { Wrench, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
-import { RefactoringBoard, TYPE_ORDER, typeMeta } from "@repowise-dev/ui/refactoring";
+import {
+  RefactoringBoard,
+  RefactoringDrawer,
+  STRUCTURAL_TYPES,
+  TYPE_ORDER,
+  typeMeta,
+} from "@repowise-dev/ui/refactoring";
 import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring";
 import { AiPromptModal, buildRefactoringPlanPrompt } from "@repowise-dev/ui/health";
 import {
@@ -27,7 +35,7 @@ import {
   type RefactoringSettings,
 } from "@/lib/api/refactoring";
 
-const TYPE_VALUES = ["all", ...TYPE_ORDER] as const;
+const TYPE_VALUES = ["all", "structural", ...TYPE_ORDER] as const;
 type TypeFilter = (typeof TYPE_VALUES)[number];
 
 export default function RefactoringPage({ params }: { params: Promise<{ id: string }> }) {
@@ -36,6 +44,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     "type",
     parseAsStringLiteral(TYPE_VALUES).withDefault("all"),
   );
+  const [openPlanId, setOpenPlanId] = useQueryState("plan", parseAsString);
 
   const { data, error, isLoading, mutate } = useSWR<RefactoringTargets>(
     `refactoring:${repoId}`,
@@ -43,15 +52,28 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     { revalidateOnFocus: false },
   );
 
+  const allPlans = useMemo(() => data?.plans ?? [], [data?.plans]);
+
   const filtered = useMemo(() => {
-    const plans = data?.plans ?? [];
-    return type === "all" ? plans : plans.filter((p) => p.refactoring_type === type);
-  }, [data?.plans, type]);
+    if (type === "all") return allPlans;
+    if (type === "structural") {
+      return allPlans.filter((p) =>
+        (STRUCTURAL_TYPES as readonly string[]).includes(p.refactoring_type),
+      );
+    }
+    return allPlans.filter((p) => p.refactoring_type === type);
+  }, [allPlans, type]);
 
   const prefix = `/repos/${repoId}`;
-  const fileHref = (path: string) => fileEntityPath(prefix, path);
+  const fileHref = useCallback((path: string) => fileEntityPath(prefix, path), [prefix]);
 
-  // AI-prompt modal (flavor picker + copy) — same UX as the health surface.
+  // The open plan comes from the URL, so a reload or a shared link lands on the
+  // same drawer rather than the top of the list.
+  const openPlan = useMemo(
+    () => allPlans.find((p) => p.id === openPlanId) ?? null,
+    [allPlans, openPlanId],
+  );
+
   const [promptPlan, setPromptPlan] = useState<RefactoringPlan | null>(null);
   const onAiPrompt = useCallback((plan: RefactoringPlan) => setPromptPlan(plan), []);
 
@@ -72,20 +94,21 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   );
 
   const counts = new Map((data?.summary.by_type ?? []).map((c) => [c.type, c.count]));
+  const structuralCount = (STRUCTURAL_TYPES as readonly string[]).reduce(
+    (n, t) => n + (counts.get(t) ?? 0),
+    0,
+  );
   const tabs = [
     { id: "all" as const, label: "All", badge: data?.summary.total },
-    ...TYPE_ORDER.map((t) => ({
-      id: t,
-      label: typeMeta(t).label,
-      badge: counts.get(t) ?? 0,
-    })),
+    { id: "structural" as const, label: "Structural", badge: structuralCount },
+    ...TYPE_ORDER.map((t) => ({ id: t, label: typeMeta(t).label, badge: counts.get(t) ?? 0 })),
   ].filter((t) => t.id === "all" || (t.badge ?? 0) > 0);
 
   return (
     <PageShell
       title="Refactoring"
       icon={<Wrench className="h-5 w-5 text-[var(--color-accent-primary)]" />}
-      description="Concrete, ranked refactoring plans — split, dedupe, move, and decouple. Copy any plan straight to your coding agent."
+      description="Concrete, ranked plans the health pass wrote from your code. Open one to see the change, or hand it to a coding agent."
       actions={
         <button
           type="button"
@@ -110,25 +133,40 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
             unreachable.
           </div>
         ) : isLoading ? (
-          <div className="grid gap-5 xl:grid-cols-2">
-            {[0, 1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className="h-56 animate-pulse rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
-              />
-            ))}
+          // Matches the real layout's shapes: a lede block, a ribbon, a field.
+          <div className="space-y-8">
+            <div className="h-32 animate-pulse rounded-xl bg-[var(--color-bg-surface)]" />
+            <div className="h-16 animate-pulse rounded-xl bg-[var(--color-bg-surface)]" />
+            <div className="h-72 animate-pulse rounded-xl bg-[var(--color-bg-surface)]" />
           </div>
         ) : (
           <RefactoringBoard
             plans={filtered}
+            allPlans={allPlans}
             summary={data?.summary}
+            onOpen={(plan) => void setOpenPlanId(plan.id)}
             onAiPrompt={onAiPrompt}
-            onGenerateCode={onGenerateCode}
-            settingsHref={`${prefix}/settings`}
+            onSeeStructural={() => void setType("structural")}
             fileHref={fileHref}
+            // The lede and Start here describe the whole repo, so they only
+            // belong on the unfiltered view — under a type filter they would
+            // be talking about a set the list below is not showing.
+            showLede={type === "all"}
           />
         )}
       </div>
+
+      <RefactoringDrawer
+        plan={openPlan}
+        open={openPlan !== null}
+        onOpenChange={(open) => {
+          if (!open) void setOpenPlanId(null);
+        }}
+        onAiPrompt={onAiPrompt}
+        onGenerateCode={onGenerateCode}
+        settingsHref={`${prefix}/settings`}
+        fileHref={fileHref}
+      />
 
       <AiPromptModal
         open={promptPlan !== null}

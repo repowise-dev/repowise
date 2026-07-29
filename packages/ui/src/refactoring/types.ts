@@ -33,6 +33,18 @@ export interface RefactoringPlan {
   confidence: Confidence | string;
   source_biomarker: string;
   rank_score: number;
+  /**
+   * Files that import this plan's file, and the file's line count. Served
+   * rather than derived: `blast_radius` carries a count under three different
+   * keys depending on the detector, so reading it here produced two different
+   * numbers for the same file.
+   *
+   * Optional so a frontend ahead of its backend degrades — an older server
+   * simply omits them and the structural map renders nothing rather than
+   * plotting every plan at the origin.
+   */
+  dependents?: number;
+  file_nloc?: number;
 }
 
 export interface RefactoringTypeCount {
@@ -522,4 +534,125 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
     }
   }
   return wins;
+}
+
+// ── Structural vs local ───────────────────────────────────────────────────
+
+/**
+ * The types that change a file's shape rather than its insides.
+ *
+ * This split is what the surface is organised around, and it came from the
+ * distribution rather than from taste: on a real index Extract Helper and
+ * Extract Method are 96% of all plans and 89% of everything is rated small
+ * effort, so "all plans" is overwhelmingly a list of local tidy-ups you do
+ * while you are already in the file. The rest change how the codebase is laid
+ * out, are worth planning, and are few enough to rank by hand.
+ */
+export const STRUCTURAL_TYPES: readonly RefactoringType[] = [
+  "split_file",
+  "break_cycle",
+  "extract_class",
+  "move_method",
+];
+
+export function isStructural(plan: RefactoringPlan): boolean {
+  return (STRUCTURAL_TYPES as readonly string[]).includes(plan.refactoring_type);
+}
+
+/** A plan's coordinates on the structural map, or null when either figure is
+ *  missing. 0 means "not measured" for both — a repo with no health pass has no
+ *  line counts, and plotting those at the origin would invent a cluster. */
+export function planPoint(plan: RefactoringPlan): { x: number; y: number } | null {
+  const x = plan.dependents ?? 0;
+  const y = plan.file_nloc ?? 0;
+  return x > 0 && y > 0 ? { x, y } : null;
+}
+
+/**
+ * Below this many plottable points the map is not worth its height: a scatter
+ * with four dots asks the reader to decode two axes to learn less than four
+ * rows would tell them. The section falls back to rows only.
+ */
+export const MAP_MIN_POINTS = 8;
+
+/**
+ * The evidence behind a plan, as one sentence.
+ *
+ * `planSynopsis` says what the plan *is* ("Split into 6 modules"). This says
+ * why it was proposed, in the numbers the detector actually recorded, because
+ * the ranked plans at the top of the page are the ones a reader has to decide
+ * about rather than skim. Returns "" when the evidence dict is empty, so a
+ * caller renders nothing rather than an empty clause.
+ */
+export function planReason(plan: RefactoringPlan): string {
+  const ev = plan.evidence ?? {};
+  const num = (key: string): number => Number(ev[key] ?? 0);
+
+  switch (plan.refactoring_type) {
+    case "split_file": {
+      const parts: string[] = [];
+      const nloc = num("file_nloc");
+      const symbols = num("symbol_count");
+      const groups = num("group_count") || splitGroups(plan).length;
+      if (nloc && symbols && groups) {
+        parts.push(
+          `${nloc.toLocaleString()} lines and ${symbols} symbols that fall into ${groups} groups the imports already respect`,
+        );
+      }
+      const cut = num("cut_edges");
+      const intra = num("intra_edges");
+      if (intra) {
+        parts.push(
+          cut === 0
+            ? `No edges cross a seam`
+            : `${cut} of ${intra} internal edges cross a seam`,
+        );
+      }
+      const cochange = num("cochange_edges");
+      if (cochange) parts.push(`${cochange} pairs of these symbols keep changing together`);
+      return parts.join(". ") + (parts.length ? "." : "");
+    }
+    case "break_cycle": {
+      const size = num("cycle_size") || cycleMembers(plan).length;
+      const edges = num("edge_count");
+      const cuts = num("cut_count") || cutEdges(plan).length;
+      if (!size) return "";
+      return `${size} modules import each other in a ring${
+        edges ? ` across ${edges} edges` : ""
+      }. ${cuts} cut${cuts === 1 ? "" : "s"} open${cuts === 1 ? "s" : ""} it.`;
+    }
+    case "extract_class": {
+      const methods = num("method_count");
+      const fields = num("field_count");
+      const lcom = num("lcom4");
+      if (!methods) return "";
+      return `${methods} methods and ${fields} fields in one class, splitting into ${
+        lcom || 2
+      } groups that share no state.`;
+    }
+    case "move_method": {
+      const foreign = num("foreign_calls");
+      const own = num("own_calls");
+      if (!foreign) return "";
+      return `Reaches into the other class ${foreign} times against ${own} call${
+        own === 1 ? "" : "s"
+      } to its own.`;
+    }
+    case "extract_method": {
+      const slice = num("slice_nloc");
+      const ccn = num("ccn_removed");
+      if (!slice) return "";
+      return `${slice} lines doing one separable job${
+        ccn ? `, carrying ${ccn} of the function's decision points` : ""
+      }.`;
+    }
+    case "extract_helper": {
+      const occ = num("occurrence_count") || extractHelperOccurrences(plan).length;
+      const lines = num("duplicated_lines");
+      if (!occ) return "";
+      return `The same ${lines ? `${lines}-line ` : ""}block appears at ${occ} sites.`;
+    }
+    default:
+      return "";
+  }
 }

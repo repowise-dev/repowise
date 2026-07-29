@@ -1,7 +1,6 @@
 "use client";
 
 import { ArrowRight, CornerDownRight, FilePlus2, Layers, Scissors } from "lucide-react";
-import { typeAccent } from "./meta";
 import {
   blastFiles,
   cutEdges,
@@ -104,8 +103,11 @@ function CodeBlock({ code, startLine }: { code: string; startLine: number | null
  * tree, the move as an arrow, clone occurrences as a list, the cycle as cut
  * edges. This is the "what exactly to do" — the heart of the surface.
  */
+/** One accent for every type. See the note in `plan-before.tsx`. */
+const ACCENT = "var(--color-accent-fill)";
+
 export function PlanDetail({ plan, fileHref, hideIntro = false }: PlanDetailProps) {
-  const accent = typeAccent(plan.refactoring_type);
+  const accent = ACCENT;
 
   if (plan.refactoring_type === "extract_class") {
     const groups = extractClassGroups(plan).filter(

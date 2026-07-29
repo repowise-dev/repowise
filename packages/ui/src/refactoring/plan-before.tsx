@@ -1,6 +1,5 @@
 "use client";
 
-import { typeAccent } from "./meta";
 import {
   cutEdges,
   cycleMembers,
@@ -32,8 +31,19 @@ function baseName(path: string): string {
  * so the issue reads at a glance — a tangled class, stacked duplicate sites, a
  * misplaced method reaching across, or a closed import loop.
  */
+/**
+ * One accent for every type, not six.
+ *
+ * These panels used to paint from `--color-refactor-*`, a qualitative palette
+ * of six hues. On a real index two types are 96% of all plans, so the palette
+ * separated categories that barely occur — and `extract_helper`'s green is the
+ * same `#34d399` as `--color-success`, which paints the recovered-health badge
+ * a few pixels away. Two marks on one object may not share a colour.
+ */
+const ACCENT = "var(--color-accent-fill)";
+
 export function PlanBefore({ plan }: PlanBeforeProps) {
-  const accent = typeAccent(plan.refactoring_type);
+  const accent = ACCENT;
 
   if (plan.refactoring_type === "extract_class") {
     const groups = extractClassGroups(plan);
