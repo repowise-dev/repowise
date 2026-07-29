@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from .models import GeneratedPage
+from .page_overlap import OverlapReport, measure_orientation_overlap
 
 
 @dataclass
@@ -25,6 +26,11 @@ class GenerationReport:
     elapsed_seconds: float = 0.0
     hallucination_warning_count: int = 0
     self_repaired_page_count: int = 0
+    # Vocabulary overlap across the orientation pages this run produced.
+    # Warn-only: a flagged pair is reported, never fatal.  Read
+    # ``comparable`` before reading ``flagged`` — an empty ``flagged`` on a
+    # run that compared nothing is not a clean result.
+    orientation_overlap: OverlapReport = field(default_factory=OverlapReport)
 
     @classmethod
     def from_pages(
@@ -50,6 +56,7 @@ class GenerationReport:
             elapsed_seconds=elapsed,
             hallucination_warning_count=hal_count,
             self_repaired_page_count=repair_count,
+            orientation_overlap=measure_orientation_overlap(pages),
         )
 
     @property
@@ -98,4 +105,15 @@ def render_report(report: GenerationReport, console: object) -> None:
     if report.self_repaired_page_count:
         table.add_row("Self-repaired pages", str(report.self_repaired_page_count))
 
+    # Always shown, including when nothing was comparable.  Hiding the row on
+    # a zero would make "the check did not run" look like "the check passed".
+    overlap = report.orientation_overlap
+    overlap_text = overlap.summary_line()
+    if overlap.flagged:
+        overlap_text = f"[yellow]{overlap_text}[/yellow]"
+    table.add_row("Orientation overlap", overlap_text)
+
     console.print(table)  # type: ignore[union-attr]
+
+    for pair in overlap.flagged:
+        console.print(f"  [yellow]overlap[/yellow] {pair.describe()}")  # type: ignore[union-attr]
