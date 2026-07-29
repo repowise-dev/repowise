@@ -2,6 +2,33 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.37.0
+
+### Added
+- `/repowise:init` documents `--no-editor-setup` (and the matching
+  `REPOWISE_SKIP_EDITOR_SETUP=1`), which skips global MCP and hook
+  registration. The codebase-exploration skill points at it for scratch
+  clones, fixtures and worktrees (#1086).
+
+### Changed
+- Version bump to track the repowise 0.37.0 release.
+- The augment hook command in `hooks/hooks.json` guards on the console script
+  being present, so a shell that cannot find `repowise-augment` stays silent
+  instead of reporting a failure on every matched tool call (#1141).
+- `/repowise:dead-code` re-synced with the CLI's `--min-confidence` default,
+  now anchored to `RISK_CAP_CONFIDENCE` (#1087).
+- The code-health skill reflects the `get_health` response surface: targets
+  that cannot be resolved are reported rather than dropped, and the response
+  no longer repeats itself (#1142).
+- `DEVELOPER.md` covers the no-editor-setup path.
+
+## 0.36.0
+
+### Changed
+- Version bump to track the repowise 0.36.0 release.
+- `/repowise:health` dropped `--safe-only`, which never did anything on
+  `health`. The flag remains live on `dead-code` (#1027).
+
 ## 0.35.0
 
 ### Changed

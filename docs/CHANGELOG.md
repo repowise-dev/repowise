@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.37.0] — 2026-07-29
+
+The release where the web UI got taken apart and put back together. Fourteen surfaces moved onto one design language: sections and hairlines instead of a grid of near-identical bordered cards, a sentence above every figure saying what the figure means, and a header row plus a key row on the pages whose canvas is the page. Overview, Docs, Commits, Contributors, Code Health, Coverage, Dead code, Chat, Settings, Decisions, Stats, Files, Refactoring, Knowledge Graph and Architecture all changed shape. The Architecture and Knowledge Graph canvases also got their marks named and their per-frame cost cut, and the docs page stopped downloading 38 MB of page bodies to draw a tree. Away from the UI there is a Structurizr DSL export, a first-run pass over interactive `init`, refreshed provider model defaults, and three MCP response fixes.
+
+### Added
+- **A Structurizr DSL export.** `repowise export --format structurizr` and `GET /api/graph/{id}/c4/structurizr` emit a [Structurizr DSL](https://docs.structurizr.com/dsl) model of the repository, with a download button on the Knowledge Graph page. `--standalone` wraps the model in a `workspace` block so the file opens on structurizr.com as-is, and `--components` includes the component level. Built on a new typed node-id module so ids carry their kind instead of being parsed by convention. (#1143, #1144)
+- **`repowise init --no-editor-setup`** skips global MCP and hook registration, for CI, agents and throwaway installs that should not rewrite `~/.claude/settings.json`. `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch. (#1086)
+- **`fields=summary` on `GET /api/pages`**, which drops `content` and `metadata` and returns a `content_chars` count in their place. `fields=full` remains the default, so existing callers are unaffected. (#1120)
+- **A key row on the Knowledge Graph.** The arrows, the role dot and the health dot were three kinds of mark the surface never explained. All three are named now, the two dots no longer collide on colour, and a mislabelled verb in the backend map is corrected. (#1145)
+- **`--verbose` and richer failure reporting on `init`.** A run that generated some pages and failed others said it succeeded; it now names the failures and points at `--resume`. (#1094, #1098)
+
+### Changed
+- **The web UI runs on one design language.** Cards at uniform weight are gone from Overview, Docs, Commits and Contributors, the contributor profile and commit detail, Code Health, Coverage, Dead code, Chat, Settings and Decisions. Sections and hairlines carry the hierarchy, a lede sentence carries the meaning of the number under it, and the dark surface ramp starts lower so reading columns sit on the base plane instead of in a trench between two lighter walls. (#1114, #1118, #1121, #1125, #1129, #1132, #1134)
+- **The Architecture page steers one axis from one control.** Scope used to live in both the tab strip and a floating pill cluster, with "Communities" appearing twice on one screen. Tabs are datasets now (Map, Coupling, Packages, Symbols) and scope is a single labelled control in the section header. (#1146, #1150)
+- **The Refactoring page leads with what the pile is.** The priority-by-effort quadrant plotted 120 of 1,819 plans, because 89% of plans rate small effort and the X axis was one column. It is replaced with charts whose axes actually spread, under a sentence that says what the plans are. (#1151)
+- **The Files page opens on the map.** The treemap is the subject, so it goes first, with the four figures riding in the sentence beneath it rather than in a strip of equal-weight stat boxes above. (#1152)
+- **The Stats page shows what no other page shows,** and the coding-rhythm punch card is reworked: marginal totals, a colour scale that means something, and no dead gutter on a wide viewport. On this repo the old chart made 853 commits look idle because every cell it could draw capped in the low tens. (#1091, #1096)
+- **Provider model defaults refreshed.** Several shipped model ids had drifted from what the vendors serve, including a default for the recommended provider that was not a real id and only worked via the live `/models` fallback. The Anthropic and OpenRouter defaults were flagship-priced, contradicting the calibration guidance. Cost and temperature handling is corrected alongside. (#1137)
+- **A first-run pass over interactive `init`.** A read-only walkthrough found 52 places where the terminal was confusing, contradictory or invisible; 49 are applied, plus five defects found reviewing the result. Phase reporting is one system now rather than two glued together. (#1139)
+- **Documentation generation enforces completion** and filters the file dependency context it passes to the model. (#1010, #1011)
+- **Python lint is gated in CI.** Ruff is configured to match how the repo is actually written, 508 accumulated violations are cleared, and lint runs on every PR. Types and UI tests do too. (#1101, #1161)
+
+### Fixed
+- **The docs page loaded every page's body to draw a tree.** Opening `/repos/[id]/docs` on this repo meant twelve sequential round trips and 38.6 MB across 5,485 pages, none of whose text the tree renders. The four things that read bodies off that list are each served directly now. (#1120)
+- **The architecture graph spent seconds arriving and kept paying per frame.** The minimap redrew every node on `afterRender`; `getComputedStyle` ran 3,022 times on the mount colour pass and again on every theme flip; ELK wrote 3,000 graphology events for one position update. Measured on this repo's capped export (1,500 nodes, 4,107 edges), those are 0, 36, 12 and 1. Dimming also blended toward the wrong colour. (#1149)
+- **The graph stopped blaming the backend mid-load.** An error state rendered while data was still arriving. (#1146)
+- **`get_health` dropped targets it could not resolve** and repeated itself, so an agent could not tell "not indexed" from "no findings". Nothing about scoring changed; this is the MCP response surface. (#1142)
+- **`get_answer` synthesis was capped at a flat 30 seconds,** a budget sized for a remote API. Providers that shell out to a coding-agent CLI or drive a local model need 40 to 120 seconds for one turn, and those are exactly the providers `init` offers users with no API key. The budget is per provider now. (#1119, #1124)
+- **`get_answer` reports an empty completion** instead of shipping a blank answer as if it were one. (#1126)
+- **A `--resume` run deleted pages it had just protected.** Pages skipped because they already existed were absent from the produced set, which is what the stale sweep treats as deleted. (#1089, #1097)
+- **A page whose provider call failed is kept** rather than dropped from the wiki. (#1104)
+- **The augment hook is silent when its console script is missing** instead of printing an error into every agent turn. (#1141)
+- **`repowise --help` no longer imports the generation pipeline.** One module-scope import in the generate engine pulled the orchestrator and persist layer into every invocation, including post-commit hooks. (#1140)
+- **Malformed `.gitignore` patterns are tolerated** rather than failing ingestion. (#1095)
+- **Command palette answers a single keypress.** It used to need two. (#1157)
+- **Nav links land where their label says.** (#1158)
+- **The docs reader** shows one breadcrumb, computes its height correctly, and wraps long backlinks. (#1156)
+- **Dead code:** the default `min_confidence` floor aligns with `RISK_CAP_CONFIDENCE`, and the zombie-package detector reads git metadata with `dict.get()` instead of assuming the key. (#1084, #1087, #1128)
+- **Coupling keeps `?focus=` in sync with the pinned file.** (#1088)
+- **Pages parented to the repo root use the stored concept tree.** (#1081, #1085)
+- **Server jobs fail explicitly on an unknown execution mode** rather than silently. (#881, #911)
+
+### Documentation
+- **Contributors are onboarded through repowise itself,** and the README badge row is trimmed. (#1110)
+- **Website pages resynced with the shipped surface:** the MCP pages match the live default tool set, the language list matches the 16 AST languages, and the obsolete Anthropic Message Batches / `--no-batch` material is gone. (#1122, #1135, #1136)
+- **New walkthroughs** for `distill` / `expand` / saved output, the security scan, health coverage, and OpenCode provider setup. (#1020, #1021, #1109, #1123)
+- **The commercial page acknowledges the OSS full-history secret scan.** (#1105)
+- **Plugin:** Claude Code and Codex skills and commands updated for the `--no-editor-setup` flag, the dead-code confidence floor, the `get_health` response shape and the augment hook change.
+
+### Internal
+- **One home for "is this path a test?"** The last inline test-path checks in core and the server are converted to the shared rules, and `.mts` / `.cts` tests are classified correctly in `coverage_gradient` and `move_method`. (#1103, #1111, #1112, #1113, #1115)
+- **CLI test coverage** for `repowise decision list/show/confirm/dismiss/health` and the `security scan` stub. (#1108, #1138)
+
+---
+
 ## [0.36.0] — 2026-07-25
 
 A smaller release that settles what 0.35.0 started. Wikis on very large repositories now bound their own file-page volume by default instead of emitting one page per file, `distill` learns a real shell lexer and gains install and infra command families, and a run of contributor fixes lands across serve, the job scheduler and dead code.
