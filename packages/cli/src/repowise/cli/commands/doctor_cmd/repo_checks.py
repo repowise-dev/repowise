@@ -503,7 +503,10 @@ def _run_repo_checks(
                     # combination and returns None, so a repo whose embedder is
                     # unavailable is left alone instead of wrecked.
                     embedder_name = resolve_embedder_for_repo(repo_path)
-                    embedder = build_embedder(embedder_name)
+                    res = build_embedder(embedder_name)
+                    if res.error:
+                        raise res.error
+                    embedder = res.embedder
                     vs = build_vector_store(_DoctorPath(repo_path), embedder)
                     if vs is None:
                         raise RuntimeError(

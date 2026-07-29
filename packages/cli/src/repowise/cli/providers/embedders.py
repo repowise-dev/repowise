@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
+
+from repowise.core.providers.embedding.base import (
+    EmbedderConfigError,
+    EmbedderResult,
+    parse_numeric_env,
+)
 
 
 def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
@@ -21,13 +28,15 @@ def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
         if base_url:
             kwargs["base_url"] = base_url
         if dimensions:
-            kwargs["dimensions"] = int(dimensions)
+            env_name = "OLLAMA_EMBEDDING_DIMS" if "OLLAMA_EMBEDDING_DIMS" in os.environ else "REPOWISE_EMBEDDING_DIMS"
+            kwargs["dimensions"] = parse_numeric_env(dimensions, env_name, is_int=True)
         if timeout:
-            kwargs["timeout"] = float(timeout)
+            env_name = "OLLAMA_EMBEDDING_TIMEOUT" if "OLLAMA_EMBEDDING_TIMEOUT" in os.environ else "REPOWISE_EMBEDDING_TIMEOUT"
+            kwargs["timeout"] = parse_numeric_env(timeout, env_name)
     elif embedder_name == "gemini":
         dimensions = os.environ.get("REPOWISE_EMBEDDING_DIMS")
         if dimensions:
-            kwargs["output_dimensionality"] = int(dimensions)
+            kwargs["output_dimensionality"] = parse_numeric_env(dimensions, "REPOWISE_EMBEDDING_DIMS", is_int=True)
     if model:
         kwargs["model"] = model
     return kwargs
@@ -112,7 +121,6 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     an explicitly set ``REPOWISE_EMBEDDER`` wins (it is the documented escape
     hatch after a manual re-embed), then the pin, then env detection.
     """
-    from pathlib import Path
 
     from repowise.cli.helpers import load_config
 
@@ -126,7 +134,7 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     return str(pinned) if pinned else resolve_embedder(None)
 
 
-def build_embedder(embedder_name_resolved: str) -> Any:
+def build_embedder(embedder_name_resolved: str) -> EmbedderResult:
     """Construct the configured embedder, falling back to MockEmbedder.
 
     Shared by the generation flows and the decision semantic-dedup wiring so
@@ -137,8 +145,14 @@ def build_embedder(embedder_name_resolved: str) -> Any:
     from repowise.core.providers.embedding.registry import get_embedder
 
     if embedder_name_resolved == "mock":
-        return MockEmbedder()
+        return EmbedderResult(embedder=MockEmbedder())
     try:
-        return get_embedder(embedder_name_resolved, **_embedder_kwargs(embedder_name_resolved))
+        kwargs = _embedder_kwargs(embedder_name_resolved)
+    except EmbedderConfigError as e:
+        return EmbedderResult(error=e)
+    try:
+        return EmbedderResult(embedder=get_embedder(embedder_name_resolved, **kwargs))
+    except EmbedderConfigError as e:
+        return EmbedderResult(error=e)
     except Exception:
-        return MockEmbedder()
+        return EmbedderResult(embedder=MockEmbedder())

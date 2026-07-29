@@ -60,7 +60,11 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
         embedder_name = _resolve_embedder(None)
 
-    embedder_impl = build_embedder(embedder_name)
+    res = build_embedder(embedder_name)
+    if res.error:
+        console.print(f"[red]Embedder configuration error: {res.error}[/red]")
+        raise click.Abort()
+    embedder_impl = res.embedder
     if isinstance(embedder_impl, MockEmbedder) and requested_embedder != "mock":
         console.print(
             "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"

@@ -183,8 +183,14 @@ async def run_scoped_generation(
         embedder = None
         vector_store = None
         try:
-            embedder = build_embedder(resolve_embedder(embedder_name))
-            vector_store = build_vector_store(repo_path, embedder)
+            res = build_embedder(resolve_embedder(embedder_name))
+            if res.error:
+                embedder = None
+                vector_store = None
+                console.print(f"[yellow]Embedder configuration error: {res.error}[/yellow]")
+            else:
+                embedder = res.embedder
+                vector_store = build_vector_store(repo_path, embedder)
         except Exception as exc:
             # Null BOTH on any failure. If the embedder built but the store did
             # not, a non-None embedder would make generation embed into a

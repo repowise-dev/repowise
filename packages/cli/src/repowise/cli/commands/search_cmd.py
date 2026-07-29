@@ -152,6 +152,7 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
         # Try LanceDB first (populated during repowise init)
         lance_dir = Path(repo_path) / ".repowise" / "lancedb"
         if lance_dir.exists():
+            config_error = None
             try:
                 from repowise.cli.providers.embedders import (
                     build_embedder,
@@ -159,13 +160,20 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
                 )
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                embedder = build_embedder(resolve_embedder_for_repo(repo_path))
-                store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                results = await store.search(query, limit=limit)
-                await store.close()
-                return results
+                res = build_embedder(resolve_embedder_for_repo(repo_path))
+                if res.error:
+                    config_error = res.error
+                else:
+                    store = LanceDBVectorStore(str(lance_dir), embedder=res.embedder)
+                    results = await store.search(query, limit=limit)
+                    await store.close()
+                    return results
             except Exception:
                 pass
+
+            if config_error:
+                console.print(f"[red]Embedder configuration error: {config_error}[/red]")
+                raise click.Abort()
 
         # Fallback to FTS
         from repowise.core.persistence import FullTextSearch, create_engine
@@ -272,6 +280,7 @@ def _collect_semantic(repo_path, query: str, limit: int):
 
         lance_dir = Path(repo_path) / ".repowise" / "lancedb"
         if lance_dir.exists():
+            config_error = None
             try:
                 from repowise.cli.providers.embedders import (
                     build_embedder,
@@ -279,13 +288,20 @@ def _collect_semantic(repo_path, query: str, limit: int):
                 )
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-                embedder = build_embedder(resolve_embedder_for_repo(repo_path))
-                store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                results = await store.search(query, limit=limit)
-                await store.close()
-                return results
+                res = build_embedder(resolve_embedder_for_repo(repo_path))
+                if res.error:
+                    config_error = res.error
+                else:
+                    store = LanceDBVectorStore(str(lance_dir), embedder=res.embedder)
+                    results = await store.search(query, limit=limit)
+                    await store.close()
+                    return results
             except Exception:
                 pass
+
+            if config_error:
+                console.print(f"[red]Embedder configuration error: {config_error}[/red]")
+                raise click.Abort()
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)

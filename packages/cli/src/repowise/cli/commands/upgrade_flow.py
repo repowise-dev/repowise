@@ -257,8 +257,14 @@ async def _run_upgrade(
     embedder = None
     vector_store = None
     try:
-        embedder = build_embedder(resolve_embedder(embedder_name))
-        vector_store = build_vector_store(repo_path, embedder)
+        res = build_embedder(resolve_embedder(embedder_name))
+        if res.error:
+            embedder = None
+            vector_store = None
+            console.print(f"[yellow]Embedder configuration error: {res.error}[/yellow]")
+        else:
+            embedder = res.embedder
+            vector_store = build_vector_store(repo_path, embedder)
     except Exception as exc:
         console.print(f"[yellow]Embedding skipped: {exc}[/yellow]")
 
