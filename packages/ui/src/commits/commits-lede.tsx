@@ -46,7 +46,7 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
       value: stats.fix_commit_count.toLocaleString(),
       unit: `${fixPct}%`,
       why: "Commits whose subject reads as a bug fix rather than new work.",
-      href: `${base}/hotspots`,
+      href: `${base}/code-health?tab=triage`,
     },
   ];
   if (stats.agent_commit_count > 0) {
@@ -69,7 +69,7 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
     // It has no 1.0 ceiling: k equally-changed files score log2(k), so this
     // repo's 2.08 is roughly four files' worth of spread.
     why: "Shannon entropy of a commit's churn across its files. Zero is a single file, and every extra bit is a doubling of how widely the change spread.",
-    href: `${base}/coupling`,
+    href: `${base}/architecture?view=coupling`,
   });
   if (stats.high_cut != null) {
     reads.push({
@@ -78,7 +78,7 @@ export function CommitsLede({ stats, base, LinkComponent }: CommitsLedeProps) {
       value: stats.high_cut.toFixed(1),
       unit: "out of 10",
       why: "Score a commit has to clear to land in this repo's top tercile.",
-      href: `${base}/risk`,
+      href: `${base}/code-health?tab=triage`,
     });
   }
 

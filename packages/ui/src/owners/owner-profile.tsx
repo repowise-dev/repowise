@@ -125,7 +125,7 @@ export function OwnerProfileView({
       value: owner.dead_code_files_owned.toLocaleString(),
       unit: "files",
       why: `${owner.dead_code_lines_owned.toLocaleString()} unreachable lines still attributed here. Usually the cheapest thing on this page to act on.`,
-      href: `${base}/dead-code`,
+      href: `${base}/code-health?tab=dead-code`,
     });
   }
   if (owner.silo_modules > 0) {
@@ -135,7 +135,7 @@ export function OwnerProfileView({
       value: owner.silo_modules.toLocaleString(),
       unit: owner.silo_modules === 1 ? "directory" : "directories",
       why: "Top-level directories where this person owns more than 80% of the files, so a review has nobody obvious to route to.",
-      href: `${base}/ownership`,
+      href: `${base}/owners`,
     });
   }
   if (owner.agent_collab && owner.agent_collab.agent_commit_count > 0) {
@@ -287,7 +287,7 @@ function OwnershipFootprint({
       title="Where the ownership sits"
       description="Share is the fraction of each directory's files where this person wrote most of the surviving lines. Only top-level directories are attributed, so this is a coarse map rather than a per-module one."
       action={
-        <SectionLink href={`${base}/ownership`} LinkComponent={LinkComponent}>
+        <SectionLink href={`${base}/owners`} LinkComponent={LinkComponent}>
           Ownership
         </SectionLink>
       }

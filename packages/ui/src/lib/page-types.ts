@@ -26,7 +26,9 @@ export const PAGE_TYPE_CONFIG: Record<string, PageTypeConfig> = {
   symbol_spotlight: { label: "Symbol", icon: Sparkles },
   file_page: { label: "File", icon: FileText },
   api_contract: { label: "API Contract", icon: FileCode },
-  scc_page: { label: "SCC", icon: RefreshCw },
+  // "Cycle", not "SCC" — the tree labels these pages "Cycle: <path>", and the
+  // filter chip is the control that narrows to them, so it uses the same word.
+  scc_page: { label: "Cycle", icon: RefreshCw },
   infra_page: { label: "Infra", icon: Server },
   onboarding: { label: "Onboarding", icon: Compass },
 };

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  getPageTypeLabel,
   isModelWrittenType,
   isStubPage,
   MODEL_WRITTEN_PAGE_TYPES,
@@ -56,5 +57,18 @@ describe("isStubPage", () => {
   it("is false for null / undefined", () => {
     expect(isStubPage(null)).toBe(false);
     expect(isStubPage(undefined)).toBe(false);
+  });
+});
+
+describe("getPageTypeLabel", () => {
+  it("calls a cycle page a cycle, the same word the tree uses", () => {
+    // The tree labels these "Cycle: generation/page_generator" via
+    // sccDisplayLabel. The filter chip said "SCC", so the one control for
+    // narrowing to them shared no word with the rows it selected.
+    expect(getPageTypeLabel("scc_page")).toBe("Cycle");
+  });
+
+  it("humanises an unknown type rather than rendering nothing", () => {
+    expect(getPageTypeLabel("not_a_page_type")).toBe("not a page type");
   });
 });

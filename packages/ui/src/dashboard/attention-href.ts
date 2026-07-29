@@ -49,7 +49,7 @@ export function getDefaultHref(item: AttentionItem, prefix: string): string {
       return target ? `${prefix}/owners?path=${encodeURIComponent(target)}` : `${prefix}/owners`;
     case "ungoverned_hotspot":
       // Target is the hotspot's file path → open its file entity page.
-      return target ? fileEntityPath(prefix, target) : `${prefix}/code-health?tab=hotspots`;
+      return target ? fileEntityPath(prefix, target) : `${prefix}/code-health?tab=triage`;
     case "dead_code":
       return `${prefix}/code-health?tab=dead-code`;
     default:

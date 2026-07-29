@@ -422,7 +422,7 @@ export default async function OverviewPage({ params }: Props) {
           title="Where the risk concentrates"
           description="Ranked by prior bug fixes and change frequency, mined from full git history rather than from the code alone."
           action={
-            <SectionLink href={`${base}/code-health?tab=hotspots`} LinkComponent={Link}>
+            <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={Link}>
               {`All ${formatNumber(stats.hotspot_count)} hotspots`}
             </SectionLink>
           }

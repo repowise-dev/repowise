@@ -136,7 +136,7 @@ export function OwnerDirectory({
         summary.soleFilesInactive > 0
           ? `One author, no second reader. ${summary.soleFilesInactive.toLocaleString()} belong to someone who has not committed in ${INACTIVE_DAYS} days.`
           : "One author and no second reader, though all of them belong to someone still active.",
-      href: base ? `${base}/ownership` : "#",
+      href: base ? `${base}/owners` : "#",
     });
   }
   if (summary.siloModules > 0) {
@@ -164,7 +164,7 @@ export function OwnerDirectory({
       value: summary.deadLines.toLocaleString(),
       unit: `${summary.deadOwners} ${summary.deadOwners === 1 ? "person" : "people"}`,
       why: "Unreachable code still attributed to whoever wrote it.",
-      href: base ? `${base}/dead-code` : "#",
+      href: base ? `${base}/code-health?tab=dead-code` : "#",
     });
   }
 
@@ -252,7 +252,7 @@ export function OwnerDirectory({
           {...(base
             ? {
                 action: (
-                  <SectionLink href={`${base}/ownership`} LinkComponent={LinkComponent}>
+                  <SectionLink href={`${base}/owners`} LinkComponent={LinkComponent}>
                     Ownership map
                   </SectionLink>
                 ),

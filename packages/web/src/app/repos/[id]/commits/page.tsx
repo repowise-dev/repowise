@@ -114,7 +114,7 @@ export default async function CommitsPage({
         title="How the score behaves here"
         description="Two views of the same model: where the cuts fall, and what commit shape lands you above them."
         action={
-          <SectionLink href={`${base}/risk`} LinkComponent={Link}>
+          <SectionLink href={`${base}/code-health?tab=triage`} LinkComponent={Link}>
             Change risk
           </SectionLink>
         }
