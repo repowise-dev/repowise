@@ -175,6 +175,10 @@ dev = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# Language sample fixtures are analyzer *inputs*, not code we run. Several are
+# deliberately malformed (undefined names, unclosed file handles) because that is
+# exactly the finding the test asserts on. Linting them would fail forever.
+extend-exclude = ["tests/fixtures/lang_samples"]
 
 [tool.ruff.lint]
 select = [
@@ -188,11 +192,36 @@ select = [
     "RUF", # ruff-specific rules
 ]
 ignore = [
-    "E501",  # line too long (handled by formatter)
+    "E501",    # line too long (handled by formatter)
+    "RUF001",  # ambiguous unicode in strings — we ship prose with – — → in it
+    "RUF002",  # ambiguous unicode in docstrings
+    "RUF003",  # ambiguous unicode in comments
 ]
 
 [tool.ruff.lint.isort]
 known-first-party = ["repowise"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers are evaluated once at import and are immutable by
+# design, so B008 (function call in default argument) does not apply to them.
+# Listed explicitly rather than ignoring B008 outright, which would also hide the
+# genuine mutable-default bugs the rule exists to catch.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.File",
+    "fastapi.Cookie",
+    "fastapi.Security",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests favour readability over naming purity: fixtures shadow builtins, helper
+# classes mirror the CamelCase names of the things they stand in for.
+"tests/**/*.py" = ["N802", "N806", "N818"]
 
 # ---------------------------------------------------------------------------
 # mypy — strict type checking
