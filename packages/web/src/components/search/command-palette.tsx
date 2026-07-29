@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { Search, LayoutDashboard, Settings, BookOpen, FileCode, Layers, Link2, GitMerge, MessageSquare } from "lucide-react";
 import { useSearch } from "@/lib/hooks/use-search";
 import { truncatePath } from "@repowise-dev/ui/lib/format";
+import { commandPaletteShortcutIsClaimed } from "@repowise-dev/ui/lib/command-palette-scope";
 import { getFilesIndex } from "@/lib/api/files";
 import { repoNavItems } from "@/components/layout/nav-items";
 import { pageHref } from "@/lib/utils/page-href";
@@ -67,7 +68,12 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        // A surface with its own palette owns the shortcut while it is
+        // mounted. Without this both dialogs opened on one keypress, stacked.
+        // The sidebar and mobile nav still reach this palette by event, so it
+        // stays available where the scoped one cannot answer.
+        if (commandPaletteShortcutIsClaimed()) return;
         e.preventDefault();
         setOpen((o) => !o);
       }

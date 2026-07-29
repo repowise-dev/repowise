@@ -106,6 +106,7 @@
     "./ui": "./src/ui/index.ts",
     "./ui/*": "./src/ui/*.tsx",
     "./lib/cn": "./src/lib/cn.ts",
+    "./lib/command-palette-scope": "./src/lib/command-palette-scope.ts",
     "./lib/confidence": "./src/lib/confidence.ts",
     "./lib/errors": "./src/lib/errors.ts",
     "./lib/fix-history": "./src/lib/fix-history.ts",

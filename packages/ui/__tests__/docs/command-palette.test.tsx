@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { DocsCommandPalette } from "../../src/docs/command-palette.js";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
+import { commandPaletteShortcutIsClaimed } from "../../src/lib/command-palette-scope.js";
 
 afterEach(cleanup);
 
@@ -90,5 +91,41 @@ describe("DocsCommandPalette", () => {
     });
 
     await waitFor(() => expect(screen.getByText("Config")).toBeInTheDocument());
+  });
+});
+
+describe("DocsCommandPalette shortcut ownership", () => {
+  it("owns the shortcut while mounted so the app-wide palette stands down", () => {
+    expect(commandPaletteShortcutIsClaimed()).toBe(false);
+
+    const view = render(
+      <DocsCommandPalette pages={PAGES} onSelect={() => {}} />,
+    );
+    expect(commandPaletteShortcutIsClaimed()).toBe(true);
+
+    view.unmount();
+    expect(commandPaletteShortcutIsClaimed()).toBe(false);
+  });
+
+  it("one keypress opens this palette and not a second listener", () => {
+    // Stands in for the app-wide palette, which uses exactly this guard.
+    let appWideOpened = false;
+    const appWide = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        if (commandPaletteShortcutIsClaimed()) return;
+        appWideOpened = true;
+      }
+    };
+    window.addEventListener("keydown", appWide);
+
+    try {
+      render(<DocsCommandPalette pages={PAGES} onSelect={() => {}} />);
+      fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+      expect(screen.getByRole("combobox")).toBeInTheDocument();
+      expect(appWideOpened).toBe(false);
+    } finally {
+      window.removeEventListener("keydown", appWide);
+    }
   });
 });

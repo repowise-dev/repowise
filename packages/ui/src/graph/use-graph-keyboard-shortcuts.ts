@@ -2,6 +2,7 @@ import { useEffect, type Dispatch, type SetStateAction } from "react";
 import type { ColorMode } from "./graph-toolbar";
 import type { SigmaCanvasHandle } from "./sigma/sigma-canvas";
 import type { GraphCtxMenu } from "./use-graph-context-menu";
+import { claimCommandPaletteShortcut } from "../lib/command-palette-scope";
 
 interface GraphKeyboardShortcutOptions {
   sigmaRef: { current: SigmaCanvasHandle | null };
@@ -41,6 +42,9 @@ export function useGraphKeyboardShortcuts(opts: GraphKeyboardShortcutOptions): v
   } = opts;
 
   useEffect(() => {
+    // The graph binds ⌘K to its own node search, so it owns the shortcut while
+    // it is on screen and the app-wide palette stands down.
+    const release = claimCommandPaletteShortcut("graph");
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
@@ -93,7 +97,10 @@ export function useGraphKeyboardShortcuts(opts: GraphKeyboardShortcutOptions): v
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      release();
+    };
     // Setters and the ref object are stable identities, so this binds once.
   }, [
     sigmaRef,

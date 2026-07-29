@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, CornerDownLeft } from "lucide-react";
 import { cn } from "../lib/cn";
 import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
+import { claimCommandPaletteShortcut } from "../lib/command-palette-scope";
 import { useDebounce } from "../hooks/use-debounce";
 import type { DocPageSummary } from "@repowise-dev/types/docs";
 
@@ -93,8 +94,10 @@ export function DocsCommandPalette({
   const listboxId = useId();
   const optionId = (pageId: string) => `${listboxId}-opt-${pageId}`;
 
-  // Global ⌘K / Ctrl-K toggle.
+  // ⌘K / Ctrl-K toggle. Claimed for as long as this palette is mounted, so the
+  // app-wide palette stands down and one keypress opens one dialog.
   useEffect(() => {
+    const release = claimCommandPaletteShortcut("docs");
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -104,7 +107,10 @@ export function DocsCommandPalette({
       }
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      release();
+    };
   }, []);
 
   useEffect(() => {
