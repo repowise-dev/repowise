@@ -1228,7 +1228,13 @@ async def get_answer(
     # remote API answers in single-digit seconds; an agent-CLI subprocess or a
     # local model needs minutes, and the old flat 30s cancelled every one of
     # those before it could return (#1119).
-    answer_text, failure_note = await synthesize(provider, _SYSTEM_PROMPT, user_prompt)
+    answer_text, failure_note = await synthesize(
+        provider,
+        _SYSTEM_PROMPT,
+        user_prompt,
+        session_factory=getattr(ctx, "session_factory", None),
+        repo_id=repo_id,
+    )
     if failure_note is not None:
         return _degraded_payload(
             reason="synthesis-failed",

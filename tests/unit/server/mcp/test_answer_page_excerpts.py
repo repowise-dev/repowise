@@ -93,7 +93,7 @@ def _capture_prompt(monkeypatch, answer_mod, answer_text: str) -> list[str]:
         async def generate(self, **kwargs):
             return SimpleNamespace(content=answer_text)
 
-    async def _fake_synthesize(provider, system_prompt, user_prompt):
+    async def _fake_synthesize(provider, system_prompt, user_prompt, **_kwargs):
         seen.append(user_prompt)
         return answer_text, None
 
