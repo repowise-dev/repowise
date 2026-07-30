@@ -94,7 +94,15 @@ _MAX_PRELUDE_COMMITS_PER_HIT = 2
 # have to thread through the orchestrator.
 _MAX_SYMBOL_DOC_CHARS = 120
 _MATCHED_SYMBOL_DOC_CHARS = 400
+# A hit's fallback text is a one-line LLM summary or a 200-char page opener,
+# so 800 is already generous for those.
 _MAX_CHARS_PER_HIT_SUMMARY = 800
+# A real page excerpt is a different thing and gets its own cap. It was
+# sharing the summary cap, which truncated fetched page content to less than
+# half of what the fetch had asked the database for. This value must stay at
+# or above the fetch size — tool_answer.answer checks that at import time,
+# since the fetch size lives in another module.
+_MAX_CHARS_PER_HIT_EXCERPT = 1500
 
 
 def is_why_question(question: str) -> bool:
@@ -302,6 +310,7 @@ def build_context_block(
     decisions: list[dict] | None = None,
     *,
     max_chars_per_hit: int = _MAX_CHARS_PER_HIT_SUMMARY,
+    max_chars_per_excerpt: int = _MAX_CHARS_PER_HIT_EXCERPT,
 ) -> str:
     """Format the LLM prompt body: prelude + decisions block + per-hit excerpts.
 
@@ -315,7 +324,7 @@ def build_context_block(
         parts.append(prelude.rstrip())
     if decisions:
         parts.append(_format_decisions_block(decisions))
-    parts.append(_format_hits_block(hits, max_chars_per_hit))
+    parts.append(_format_hits_block(hits, max_chars_per_hit, max_chars_per_excerpt))
     return "\n\n".join(p for p in parts if p)
 
 
@@ -331,16 +340,24 @@ def _format_decisions_block(decisions: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_hits_block(hits: list[dict], max_chars_per_hit: int) -> str:
+def _format_hits_block(
+    hits: list[dict],
+    max_chars_per_hit: int,
+    max_chars_per_excerpt: int = _MAX_CHARS_PER_HIT_EXCERPT,
+) -> str:
     """Format the per-hit excerpts. Mirrors the prior tool_answer behaviour."""
     parts: list[str] = []
     for i, h in enumerate(hits, start=1):
-        # Prefer a real page excerpt when one was attached (the ambiguous-
-        # retrieval / always-synthesize path enriches non-dominant hits with
-        # actual page content so the LLM reads across the candidates, not just
-        # one-line summaries). Falls back to the summary/snippet otherwise.
-        body_src = h.get("excerpt") or h.get("summary") or h.get("snippet") or ""
-        body = body_src[:max_chars_per_hit]
+        # Prefer a real page excerpt when one was attached, so the LLM reads
+        # the page's actual prose rather than a one-line summary of it. It is
+        # capped separately: the excerpt's size was already decided by the
+        # fetch, and re-applying the (smaller) summary cap here threw away
+        # content the query had paid for.
+        excerpt = h.get("excerpt") or ""
+        if excerpt:
+            body = excerpt[:max_chars_per_excerpt]
+        else:
+            body = (h.get("summary") or h.get("snippet") or "")[:max_chars_per_hit]
         # Tag expanded hits so the LLM knows they didn't surface in retrieval
         # directly — useful context when deciding how much weight to put on
         # them in the answer.

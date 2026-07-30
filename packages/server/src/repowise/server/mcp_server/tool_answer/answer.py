@@ -54,6 +54,9 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import AnswerCache
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._answer_context import (
+    _MAX_CHARS_PER_HIT_EXCERPT,
+)
+from repowise.server.mcp_server._answer_context import (
     build_context_block as _build_context_block_v2,
 )
 from repowise.server.mcp_server._answer_context import (
@@ -112,6 +115,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _ANSWER_SCHEMA_VERSION,
     _DOMINANCE_RATIO,
     _ENRICH_TOP_N_HITS,
+    _GATED_EXCERPT_CHARS,
     _GATED_RETURN_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _INLINE_BODY_MAX_LINES,
@@ -150,6 +154,18 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
 )
 
 _log = logging.getLogger("repowise.mcp.answer")
+
+# The excerpt fetch and the prompt formatter each cap page content, and they
+# live in different modules — which is how the formatter came to discard more
+# than half of every excerpt the fetch had paid a database round-trip for.
+# Checked here, at import, because this is the only module that sees both.
+if _MAX_CHARS_PER_HIT_EXCERPT < _GATED_EXCERPT_CHARS:
+    raise RuntimeError(
+        "get_answer would truncate the page content it fetches: the prompt "
+        f"formatter caps an excerpt at {_MAX_CHARS_PER_HIT_EXCERPT} chars "
+        f"while the fetch asks for {_GATED_EXCERPT_CHARS}. Raise "
+        "_MAX_CHARS_PER_HIT_EXCERPT or lower _GATED_EXCERPT_CHARS."
+    )
 
 # Always-synthesize flag. Default ON: synthesis runs for every retrieval and the
 # post-synthesis grading cascade demotes confidence instead of the tool
