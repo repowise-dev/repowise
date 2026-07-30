@@ -183,6 +183,37 @@ describe("DocsTree", () => {
     expect(rowLabels().some((l) => l.startsWith("3") && l.includes("Alpha API"))).toBe(true);
   });
 
+  it("numbers only the top-level rows that continue the run from 1", () => {
+    // A module no layer claimed keeps the global number generation stamped on
+    // it, so it can land on the top rung as "41" beside onboarding's "1".
+    const unclaimed = makePage({
+      id: "module_page:odd/bits",
+      page_type: "module_page",
+      title: "Module: odd/bits",
+      target_path: "odd/bits",
+      parent_page_id: ROOT.id,
+      display_order: 41,
+      section_number: "41",
+    });
+    render(
+      <DocsTree
+        pages={[...SPINE, unclaimed]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    const labels = rowLabels();
+    // The unbroken run keeps its numbers, so a render-nothing implementation
+    // cannot pass this either.
+    expect(labels.some((l) => l.startsWith("1") && l.includes("Getting Started"))).toBe(true);
+    expect(labels.some((l) => l.startsWith("2") && l.includes("Zebra Runtime"))).toBe(true);
+    expect(labels.some((l) => l.startsWith("3") && l.includes("Alpha API"))).toBe(true);
+    // The row that breaks the run shows no number at all.
+    const stray = labels.find((l) => l.includes("odd/bits")) ?? "";
+    expect(stray).not.toBe("");
+    expect(stray).not.toMatch(/^\d/);
+  });
+
   it("opens the layer spine by default and keeps files out of the outline", () => {
     render(
       <DocsTree pages={SPINE} selectedPageId={null} onSelectPage={() => {}} />,
@@ -395,6 +426,51 @@ describe("DocsTree", () => {
       />,
     );
     expect(screen.getByText("layer:api")).toBeInTheDocument();
+  });
+
+  it("leaves a layer grouping row unnumbered, and the stray beside it too", () => {
+    const onboarding = makePage({
+      id: "onboarding:onboarding/getting_started",
+      page_type: "onboarding",
+      title: "Getting Started",
+      target_path: "onboarding/getting_started",
+      metadata: { subkind: "getting_started" },
+      parent_page_id: "repo_overview:demo",
+      display_order: 1,
+      section_number: "1",
+    });
+    const unclaimed = {
+      ...stampedModule("module_page:odd/bits", "Module: odd/bits", {}, 41),
+      section_number: "41",
+    };
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          onboarding,
+          unclaimed,
+          stampedModule(
+            "module_page:api/routes",
+            "Module: api/routes",
+            { layer_id: "layer:api", layer_name: "Alpha API" },
+            2,
+          ),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    const labels = rowLabels();
+    // The chapter that starts the run keeps its number.
+    expect(labels.some((l) => l.startsWith("1") && l.includes("Getting Started"))).toBe(true);
+    // A layer is a grouping row, not a page — it has no number to show.
+    const layer = labels.find((l) => l.includes("Alpha API")) ?? "";
+    expect(layer).not.toBe("");
+    expect(layer).not.toMatch(/^\d/);
+    // And the unclaimed module next to it does not show its global number.
+    const stray = labels.find((l) => l.includes("odd/bits")) ?? "";
+    expect(stray).not.toBe("");
+    expect(stray).not.toMatch(/^\d/);
   });
 
   it("reads the stamp out of metadata when the row was fetched in full", () => {

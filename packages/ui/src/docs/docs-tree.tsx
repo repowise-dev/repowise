@@ -597,6 +597,38 @@ function filterTree(
   return result;
 }
 
+/**
+ * Keep a top-level row's stored number only while it still reads as a sequence.
+ *
+ * The stored numbers are assigned across the whole outline, but only some of
+ * the numbered pages reach the top rung. The orientation chapters land there
+ * carrying 1-8; a layer's grouping row is not a page and carries no number at
+ * all; and a module no layer claimed keeps its global number, so it arrives at
+ * the top rung stamped "41" and sits next to the "1". Rendered as stored, the
+ * column of numbers skips from 8 to 41 and tells a reader nothing.
+ *
+ * So a row keeps its number only when that number continues the run from 1;
+ * every other top-level row renders none. The visible numbering is then
+ * contiguous or absent, never a jump. Deeper rows are unaffected — they never
+ * render a number in the first place.
+ *
+ * The rule is about the run rather than about which kind of page a row is: if
+ * the outline is later numbered end to end, the numbers come back on their own.
+ */
+function keepContiguousSections(nodes: TreeNode[]): TreeNode[] {
+  let expected = 1;
+  return nodes.map((node) => {
+    if (node.section === String(expected)) {
+      expected += 1;
+      return node;
+    }
+    if (!node.section) return node;
+    const unnumbered: TreeNode = { ...node };
+    delete unnumbered.section;
+    return unnumbered;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tree node component
 // ---------------------------------------------------------------------------
@@ -908,8 +940,10 @@ export function DocsTree({
         : buildTree(pages),
     [pages, viewMode, knowledgeGraphHref],
   );
+  // Numbering is decided on what actually renders, after filtering, so the
+  // visible run stays contiguous even when a filter hides a numbered row.
   const filteredTree = useMemo(
-    () => filterTree(tree, search, typeFilter, freshnessFilter),
+    () => keepContiguousSections(filterTree(tree, search, typeFilter, freshnessFilter)),
     [tree, search, typeFilter, freshnessFilter],
   );
 
