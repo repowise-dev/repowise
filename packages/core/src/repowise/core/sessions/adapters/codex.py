@@ -85,7 +85,7 @@ class CodexAdapter(HarnessAdapter):
                 event.tool_uses.append(
                     ToolUse(
                         id=tool_id,
-                        name=_normalize_tool_name(name),
+                        name=_normalize_tool_name(name, normalized_input),
                         input=normalized_input,
                     )
                 )
@@ -122,7 +122,7 @@ class CodexAdapter(HarnessAdapter):
             return
 
         if payload_type == "custom_tool_call":
-            tool_id = payload.get("call_id") or payload.get("id")
+            tool_id = payload.get("call_id")
             name = payload.get("name")
             if isinstance(tool_id, str) and isinstance(name, str):
                 tool_input = payload.get("input")
@@ -137,7 +137,7 @@ class CodexAdapter(HarnessAdapter):
                 event.tool_uses.append(
                     ToolUse(
                         id=tool_id,
-                        name=_normalize_tool_name(name),
+                        name=_normalize_tool_name(name, normalized_input ),
                         input=normalized_input,
                     )
                 )
@@ -155,7 +155,8 @@ class CodexAdapter(HarnessAdapter):
                 )
 
 
-def _normalize_tool_name(name: str) -> str:
+
+def _normalize_tool_name(name: str, tool_input: dict[str, Any]) -> str:    
     aliases = {
         "search": "search_codebase",
         "search_codebase": "search_codebase",
