@@ -51,6 +51,10 @@ interface TreeNode {
   children: TreeNode[];
   /** Dotted outline number from the stored tree ("2.4.1"), when the page has one. */
   section?: string;
+  /** Where the row's "see the picture" link goes, for rows that have one. */
+  href?: string;
+  /** What that link is for, read out to a screen reader. */
+  hrefLabel?: string;
 }
 
 interface DocsTreeProps {
@@ -58,6 +62,15 @@ interface DocsTreeProps {
   selectedPageId: string | null;
   onSelectPage: (page: DocPageSummary) => void;
   className?: string;
+  /**
+   * The host's knowledge-graph route, linked from every layer row.
+   *
+   * A layer is a grouping of the knowledge graph, and the graph is where its
+   * diagram is drawn and explorable — the tree only lists what is in the layer.
+   * Optional because the route is the host's to name, and a host that has no
+   * such view simply gets a row with no link rather than a dead one.
+   */
+  knowledgeGraphHref?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +401,10 @@ function reportLayerGrouping(
   }
 }
 
-function buildStoredTree(pages: DocPageSummary[]): TreeNode[] {
+function buildStoredTree(
+  pages: DocPageSummary[],
+  knowledgeGraphHref?: string,
+): TreeNode[] {
   // A tombstoned page documents a file that no longer exists. It keeps its row
   // and its content, but the tree deliberately has no place for it, so it must
   // be excluded here rather than treated as an unplaced page.
@@ -467,6 +483,15 @@ function buildStoredTree(pages: DocPageSummary[]): TreeNode[] {
         path: layerDirKey(group.id),
         isDir: true,
         children: group.pages.map((child) => toNode(child, root)),
+        // The tree can only list what a layer holds. The picture of it — which
+        // layer sits on which, and what crosses between them — is the
+        // knowledge graph, so the row carries a way there.
+        ...(knowledgeGraphHref
+          ? {
+              href: knowledgeGraphHref,
+              hrefLabel: `Show ${group.label} in the knowledge graph`,
+            }
+          : {}),
       });
     }
   }
@@ -602,69 +627,90 @@ function TreeItem({
   const hasChildren = node.children.length > 0;
 
   if (node.isDir) {
+    const row = (
+      <button
+        onClick={() => {
+          toggleDir(node.path);
+          if (node.page) onSelectPage(node.page);
+        }}
+        {...(node.page && node.page.title !== node.name ? { title: node.page.title } : {})}
+        className={cn(
+          "flex w-full min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
+          // Top-level sections (layers, the Onboarding folder, the bottom
+          // Auto-documented folder) get air above them so each group reads as
+          // a distinct block rather than one long list.
+          depth === 0 && "mt-2 first:mt-0",
+          isSelected
+            ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+            : "text-[var(--color-text-secondary)]",
+        )}
+        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+      >
+        {hasChildren ? (
+          isExpanded ? (
+            <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+          ) : (
+            <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
+          )
+        ) : (
+          <span className="w-3 shrink-0" />
+        )}
+        <SectionNumber depth={depth} section={node.section} />
+        {node.path === ONBOARDING_DIR_KEY ? (
+          <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />
+        ) : hidesTreeIcon(node.page) ? null : node.page ? (
+          // A layer keeps its section icon as the anchor for its group; a
+          // concept content dir (a module with children) drops its folder
+          // glyph so the outline is not a column of identical icons. The
+          // chevron already marks it as expandable.
+          <PageIcon
+            pageType={node.page.page_type}
+            className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]"
+          />
+        ) : isExpanded ? (
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] opacity-70" />
+        ) : (
+          <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
+        )}
+        <span
+          className={cn(
+            // Wraps rather than truncates. A section title cut to
+            // "Documentation Generation Engi…" names nothing, and the tree
+            // has the vertical room — it is a list of a few dozen concept
+            // rows, not a viewport-bound table.
+            "min-w-0 text-left font-medium [overflow-wrap:anywhere]",
+            // A top-level section is the parent of everything indented under
+            // it, so it carries the strongest weight in the tree.
+            (node.path === ONBOARDING_DIR_KEY || depth === 0) &&
+              "font-semibold text-[var(--color-text-primary)]",
+          )}
+        >
+          {node.name}
+        </span>
+        <RowMarkers page={node.page} showFreshness={showFreshness} />
+      </button>
+    );
+
     return (
       <div>
-        <button
-          onClick={() => {
-            toggleDir(node.path);
-            if (node.page) onSelectPage(node.page);
-          }}
-          {...(node.page && node.page.title !== node.name ? { title: node.page.title } : {})}
-          className={cn(
-            "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
-            // Top-level sections (layers, the Onboarding folder, the bottom
-            // Auto-documented folder) get air above them so each group reads as
-            // a distinct block rather than one long list.
-            depth === 0 && "mt-2 first:mt-0",
-            isSelected
-              ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
-              : "text-[var(--color-text-secondary)]",
-          )}
-          style={{ paddingLeft: `${depth * 16 + 8}px` }}
-        >
-          {hasChildren ? (
-            isExpanded ? (
-              <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
-            ) : (
-              <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
-            )
-          ) : (
-            <span className="w-3 shrink-0" />
-          )}
-          <SectionNumber depth={depth} section={node.section} />
-          {node.path === ONBOARDING_DIR_KEY ? (
-            <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />
-          ) : hidesTreeIcon(node.page) ? null : node.page ? (
-            // A layer keeps its section icon as the anchor for its group; a
-            // concept content dir (a module with children) drops its folder
-            // glyph so the outline is not a column of identical icons. The
-            // chevron already marks it as expandable.
-            <PageIcon
-              pageType={node.page.page_type}
-              className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]"
-            />
-          ) : isExpanded ? (
-            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] opacity-70" />
-          ) : (
-            <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
-          )}
-          <span
-            className={cn(
-              // Wraps rather than truncates. A section title cut to
-              // "Documentation Generation Engi…" names nothing, and the tree
-              // has the vertical room — it is a list of a few dozen concept
-              // rows, not a viewport-bound table.
-              "min-w-0 text-left font-medium [overflow-wrap:anywhere]",
-              // A top-level section is the parent of everything indented under
-              // it, so it carries the strongest weight in the tree.
-              (node.path === ONBOARDING_DIR_KEY || depth === 0) &&
-                "font-semibold text-[var(--color-text-primary)]",
-            )}
-          >
-            {node.name}
-          </span>
-          <RowMarkers page={node.page} showFreshness={showFreshness} />
-        </button>
+        {node.href ? (
+          // The row itself expands; the trailing link leaves for the graph.
+          // Two separate targets rather than one that guesses which was meant,
+          // and an anchor rather than a button so it can be opened in a tab.
+          <div className="flex items-center">
+            {row}
+            <a
+              href={node.href}
+              aria-label={node.hrefLabel}
+              title={node.hrefLabel}
+              className="shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-accent-primary)]"
+            >
+              <Network className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        ) : (
+          row
+        )}
 
         {isExpanded && hasChildren && (
           <div>
@@ -786,7 +832,13 @@ function RowMarkers({
 
 type ViewMode = "domain" | "folder";
 
-export function DocsTree({ pages, selectedPageId, onSelectPage, className }: DocsTreeProps) {
+export function DocsTree({
+  pages,
+  selectedPageId,
+  onSelectPage,
+  className,
+  knowledgeGraphHref,
+}: DocsTreeProps) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [freshnessFilter, setFreshnessFilter] = useState<FreshnessFilter>("all");
@@ -850,8 +902,11 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   const [showFreshness, setShowFreshness] = useState(false);
 
   const tree = useMemo(
-    () => (viewMode === "domain" ? buildStoredTree(pages) : buildTree(pages)),
-    [pages, viewMode],
+    () =>
+      viewMode === "domain"
+        ? buildStoredTree(pages, knowledgeGraphHref)
+        : buildTree(pages),
+    [pages, viewMode, knowledgeGraphHref],
   );
   const filteredTree = useMemo(
     () => filterTree(tree, search, typeFilter, freshnessFilter),

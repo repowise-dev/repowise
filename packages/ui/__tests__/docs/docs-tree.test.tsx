@@ -480,6 +480,44 @@ describe("DocsTree", () => {
     expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Ghost"));
   });
 
+  it("points a layer row at the knowledge graph, where its diagram lives", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+        knowledgeGraphHref="/repos/r1/knowledge-graph"
+      />,
+    );
+    const link = screen.getByRole("link", { name: /Alpha API.*knowledge graph/i });
+    expect(link).toHaveAttribute("href", "/repos/r1/knowledge-graph");
+  });
+
+  it("omits the graph link when the host has no route to offer", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    // Selecting the layer row still works — the link is an extra, not the row.
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+  });
+
   it("lifts a concept's file pages to the bottom folder, leaving the concept a clean leaf", () => {
     // The concept stays a pure title in the outline; its files move wholesale
     // into the single bottom folder rather than sitting beside it.
