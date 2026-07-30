@@ -1,14 +1,15 @@
-"""Re-ranking, domain penalty, intersection boost, and gated-excerpt helpers.
+"""Re-ranking, domain penalty, intersection boost, and page-excerpt helpers.
 
 These operate on the candidate hit list after the hybrid-retrieval stages in
 ``_answer_pipeline``. They tune the ranking (coverage rerank, domain penalty,
-intersection boost) and prepare the low-confidence return path
-(gated excerpts, candidate justifications).
+intersection boost), attach real page content to the top hits, and build the
+candidate justifications the low-confidence return path hands back.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -21,12 +22,14 @@ from repowise.server.mcp_server.tool_answer.config import (
     _COVERAGE_FLOOR,
     _DOMAIN_PENALTY,
     _GATED_EXCERPT_CHARS,
-    _GATED_RETURN_HITS,
+    _PAGE_EXCERPT_HITS,
     _RELATIONAL_CONNECTIVES,
     _STOPWORDS,
     _UI_PATH_PREFIXES,
     _UI_QUESTION_TOKENS,
 )
+
+_log = logging.getLogger("repowise.mcp.answer")
 
 
 def serialize_hits(
@@ -147,30 +150,53 @@ async def _intersection_boost(question: str, hits: list[dict], ctx: Any = None) 
     hits.sort(key=lambda h: h["score"], reverse=True)
 
 
-async def _enrich_gated_excerpts(hits: list[dict], ctx: Any = None) -> None:
-    """For the gated (low-confidence) return path, fetch real page content
-    for top hits so the agent has substantive raw material instead of
-    one-line summaries. Mutates `hits` in place — adds an `excerpt` field.
+async def _attach_page_excerpts(hits: list[dict], ctx: Any = None) -> int:
+    """Attach each top hit's real page content as ``excerpt``. Mutates `hits`.
 
-    Universal motivation: thin retrieval output forces consumers to fall
-    back on priors instead of grounding in source. Symmetric with the
-    enrichment we already do for synthesis.
+    Every consumer of a hit — the synthesis prompt and the pointer payload
+    alike — otherwise sees only the page's one-line LLM summary or a 200-char
+    opener, next to a symbol block carrying docstrings and source bodies. A
+    consumer given names but no prose reconstructs rationale from the names,
+    which is a confident wrong answer rather than a thin one.
+
+    Returns the number of top hits left without page content. That count is
+    the point: a hit reaching synthesis with no body used to be invisible,
+    which is how this went unnoticed for as long as it did.
     """
     if not hits:
-        return
-    page_ids = [h["page_id"] for h in hits[:_GATED_RETURN_HITS] if h.get("page_id")]
+        return 0
+    top = hits[:_PAGE_EXCERPT_HITS]
+    page_ids = [h["page_id"] for h in top if h.get("page_id")]
     if not page_ids:
-        return
+        _log.warning(
+            "get_answer: none of the %d top hits carry a page_id, so no page "
+            "content can be attached — synthesis will read summaries only",
+            len(top),
+        )
+        return len(top)
     try:
         async with get_session(ctx.session_factory) as session:
             res = await session.execute(select(Page.id, Page.content).where(Page.id.in_(page_ids)))
             content_by_id = {row[0]: (row[1] or "") for row in res.all()}
     except Exception:
-        return
-    for h in hits[:_GATED_RETURN_HITS]:
+        # Never fail the answer over an excerpt fetch — but never lose the
+        # fact either. Without this line the whole prompt silently degrades
+        # to summaries and the answer still looks confident.
+        _log.warning(
+            "get_answer: page-content fetch failed for %d hits; synthesis "
+            "will read one-line summaries instead of page prose",
+            len(page_ids),
+            exc_info=True,
+        )
+        return len(top)
+    missing = 0
+    for h in top:
         body = content_by_id.get(h.get("page_id"), "")
         if body:
             h["excerpt"] = body[:_GATED_EXCERPT_CHARS]
+        else:
+            missing += 1
+    return missing
 
 
 def _detect_question_domain(question: str) -> str | None:

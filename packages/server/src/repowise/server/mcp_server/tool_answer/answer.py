@@ -116,6 +116,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _INLINE_BODY_MAX_LINES,
     _INLINE_BODY_MAX_SYMBOLS,
+    _PAGE_EXCERPT_HITS,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
 )
@@ -125,8 +126,8 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
     _apply_domain_penalty,
+    _attach_page_excerpts,
     _candidate_justification,
-    _enrich_gated_excerpts,
     _intersection_boost,
     _rerank_by_coverage,
 )
@@ -1005,6 +1006,25 @@ async def get_answer(
             ),
         }
 
+    # Attach real page content to the top hits, once, for every retrieval —
+    # before anything downstream branches on how good the retrieval looks.
+    #
+    # This used to run only when retrieval was NOT dominant, and dominance is
+    # what earns high confidence: the more certain retrieval was, the less
+    # prose the model was given, so confident answers were the ones built from
+    # symbol names alone. Whatever replaces the code below, keep this
+    # unconditional. Two call sites under different conditions is what made
+    # that inversion possible, and the cost of enriching a hit that a later
+    # fast path never reads is one indexed SELECT over at most five rows.
+    hits_without_page_content = await _attach_page_excerpts(hits, ctx)
+    if hits_without_page_content:
+        _log.warning(
+            "get_answer: %d of %d top hits have no page content; those hits "
+            "reach synthesis as a one-line summary only",
+            hits_without_page_content,
+            min(len(hits), _PAGE_EXCERPT_HITS),
+        )
+
     # --- Retrieval dominance -----------------------------------------------
     # ``dominant`` = retrieval clearly pointed at ONE page (the top hit
     # outscores the rest). It no longer decides WHETHER to synthesize — under
@@ -1042,14 +1062,12 @@ async def get_answer(
         # is ambiguous, so skip synthesis and hand back ranked excerpts +
         # best_guesses for the agent to ground in.
         #
-        # Attach real page content to the top candidates before shaping the
-        # reply. Agent-transcript evidence (context-tool bench, 2026-07-17): a
-        # pointers-only gated payload sends the agent into an 8-15 call Grep/Read
-        # spree that costs more than a bare agent — it paid for the tool call and
-        # still had to acquire all content natively. Excerpts turn the miss path
-        # into "pick one candidate, verify with at most one Read".
-        with contextlib.suppress(Exception):
-            await _enrich_gated_excerpts(hits, ctx)
+        # The excerpts those best_guesses carry were attached above. Agent-
+        # transcript evidence (context-tool bench, 2026-07-17): a pointers-only
+        # gated payload sends the agent into an 8-15 call Grep/Read spree that
+        # costs more than a bare agent — it paid for the tool call and still had
+        # to acquire all content natively. Excerpts turn the miss path into
+        # "pick one candidate, verify with at most one Read".
         best_guesses = _build_best_guesses(hits)
         # Mine source comments for rationale the wiki/decision corpus missed —
         # turns "go Read these 5 files" into a cited why.
@@ -1170,15 +1188,6 @@ async def get_answer(
             repository=repository,
             t0=t0,
         )
-
-    # Ambiguous retrieval (always-synthesize): pull real page content across the
-    # non-dominant top pages so the LLM synthesizes over the actual candidate
-    # content, not one-line summaries — the same excerpts the legacy abstain path
-    # served the agent. No-op on dominant retrievals. (The excerpts also back the
-    # best_guesses folded into a low/medium reply below.)
-    if not dominant:
-        with contextlib.suppress(Exception):
-            await _enrich_gated_excerpts(hits, ctx)
 
     # Decision fusion (why-shaped questions only) + structured prelude. Both
     # layers are gated on signal: no ADRs for the top hits → no decisions

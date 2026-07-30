@@ -191,15 +191,24 @@ _HEDGE_MARKERS = (
 # retrieval with a coverage re-ranker on top, not of any particular repository;
 # tune if a deployment shows systematic over- or under-gating.
 
-# When the gate triggers and we drop synthesis, fetch this many chars of
-# real page content per top hit so the agent has substantive raw material
-# to ground in (vs. one-line summary that's too thin to act on). 1500 chars
-# is enough for a page's opening section plus a code reference; at 600 the
-# excerpt stopped mid-context and agents fell back to native exploration
-# anyway (context-tool bench transcripts, 2026-07-17). Three hits at 1500
-# chars is ~1.1k tokens — well under any MCP output budget.
+# How many chars of real page content to attach per top hit, for the synthesis
+# prompt and for the pointer payload alike. 1500 chars is enough for a page's
+# opening section plus a code reference; at 600 the excerpt stopped mid-context
+# and agents fell back to native exploration anyway (context-tool bench
+# transcripts, 2026-07-17).
 _GATED_EXCERPT_CHARS = 1500
+
+# How many hits the low-confidence payload hands back to the agent.
 _GATED_RETURN_HITS = 3
+
+# How many top hits get their page content attached. Retrieval is capped at 5
+# and all 5 reach the synthesis prompt, so this is 5: a hit the model is asked
+# to read with no prose behind it is one it can only answer from symbol names.
+# This is the cost knob for the feature — 5 hits × 1500 chars is roughly 2k
+# prompt tokens on top of the symbol block, measured at +24% of the tool's own
+# synthesis spend. Lower it to spend less; hits below the cut fall back to
+# their one-line summaries.
+_PAGE_EXCERPT_HITS = 5
 
 # Path-prefix domain heuristics — down-weight cross-domain retrievals so a
 # clearly backend question doesn't anchor on a same-vocabulary UI file (and
