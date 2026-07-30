@@ -8,12 +8,45 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
-def _summary_fields(obj: object) -> dict:
+def _layer_stamp(obj: object, metadata: dict | None) -> tuple[str | None, str | None]:
+    """Which layer this page belongs to, read off its metadata blob.
+
+    Promoted out of ``metadata`` because a *list* of pages needs it: the docs
+    tree groups modules under their layer from this stamp, and it draws itself
+    from a summary listing, which drops the blob. Two short strings per row is
+    a rounding error next to what the summary saves.
+
+    The caller passes ``metadata`` when it has already parsed it. Otherwise the
+    blob is only parsed when its raw text mentions the key at all, so a listing
+    of pages that carry no stamp costs a substring scan rather than a decode.
+    """
+    if metadata is None:
+        raw = getattr(obj, "metadata_json", None) or ""
+        if "layer_id" not in raw:
+            return None, None
+        try:
+            metadata = json.loads(raw)
+        except ValueError:
+            # A blob that will not parse is a page we cannot place. Say
+            # nothing rather than guess — the tree treats that as "no layer".
+            return None, None
+    if not isinstance(metadata, dict):
+        return None, None
+    layer_id = metadata.get("layer_id")
+    layer_name = metadata.get("layer_name")
+    return (
+        layer_id if isinstance(layer_id, str) and layer_id else None,
+        layer_name if isinstance(layer_name, str) and layer_name else None,
+    )
+
+
+def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
     """The part of a page row that costs nothing to send.
 
     Shared by both response models so a field added to one can never go
     missing from the other.
     """
+    layer_id, layer_name = _layer_stamp(obj, metadata)
     return dict(
         id=obj.id,  # type: ignore[attr-defined]
         repository_id=obj.repository_id,  # type: ignore[attr-defined]
@@ -31,6 +64,8 @@ def _summary_fields(obj: object) -> dict:
         confidence=obj.confidence,  # type: ignore[attr-defined]
         freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
         content_chars=len(obj.content or ""),  # type: ignore[attr-defined]
+        layer_id=layer_id,
+        layer_name=layer_name,
         human_notes=obj.human_notes,  # type: ignore[attr-defined]
         parent_page_id=obj.parent_page_id,  # type: ignore[attr-defined]
         display_order=obj.display_order,  # type: ignore[attr-defined]
@@ -69,6 +104,11 @@ class PageSummaryResponse(BaseModel):
     confidence: float
     freshness_status: str
     content_chars: int
+    # Which layer this page belongs to, stamped at generation time. ``None``
+    # on a page no layer claimed, and on every page of a repo indexed before
+    # layers were stamped — both of which read as "ungrouped", not as an error.
+    layer_id: str | None = None
+    layer_name: str | None = None
     human_notes: str | None = None
     # Position in the wiki outline. Older rows carry no placement, which reads
     # as a flat wiki and is what those rows actually describe.
@@ -90,10 +130,13 @@ class PageResponse(PageSummaryResponse):
 
     @classmethod
     def from_orm(cls, obj: object) -> PageResponse:
+        # Parsed once and handed down, so a full listing never decodes the same
+        # blob twice just to read the layer stamp out of it.
+        metadata = json.loads(obj.metadata_json)  # type: ignore[attr-defined]
         return cls(
-            **_summary_fields(obj),
+            **_summary_fields(obj, metadata),
             content=obj.content,  # type: ignore[attr-defined]
-            metadata=json.loads(obj.metadata_json),  # type: ignore[attr-defined]
+            metadata=metadata,
         )
 
 

@@ -48,6 +48,15 @@ export interface DocPageSummary {
    */
   content?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Which layer of the architecture spine this page belongs to, stamped at
+   * generation time. Promoted out of `metadata` because a *list* needs it: the
+   * docs tree groups modules under their layer from this stamp, and a listing
+   * drops the metadata blob. Absent or `null` means no layer claimed the page
+   * — a repo with no curated spine, or a page the grouping leaves where it is.
+   */
+  layer_id?: string | null;
+  layer_name?: string | null;
   human_notes: string | null;
   /**
    * Position in the wiki outline, computed once at generation time so every
