@@ -11,6 +11,7 @@ self-contained README under `examples/<name>/`.
 | [distill/](distill/) | `distill` / `expand` / `saved` — compress command output (no LLM key) |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
+| [risk/](risk/) | `repowise risk` change / PR defect scoring (no LLM key) |
 | [security-scan/](security-scan/) | Working-tree security signals + OSS `security scan --history` (no LLM key) |
 
 ## Conventions
@@ -27,6 +28,7 @@ self-contained README under `examples/<name>/`.
 - [Codex integration](../docs/agent/CODEX.md)
 - [OpenCode integration](../docs/agent/OPENCODE.md)
 - [Code health](../docs/layers/CODE_HEALTH.md)
+- [Change risk](../docs/layers/CHANGE_RISK.md)
 - [Test intelligence](../docs/layers/TEST_INTELLIGENCE.md)
 - [Distill](../docs/agent/DISTILL.md)
 - [CLI: security](../docs/reference/CLI_REFERENCE.md)
