@@ -416,6 +416,19 @@ function buildStoredTree(
   const spinePages = visible.filter(isSpinePage);
   const deterministicPages = visible.filter((p) => !isSpinePage(p));
 
+  // Every deterministic page in one collapsed folder, held apart from the
+  // concept outline so the distinction is obvious. Its interior reuses the
+  // filesystem builder, so the files stay navigable by directory.
+  const referenceFolder: TreeNode | null =
+    deterministicPages.length > 0
+      ? {
+          name: `Auto-documented files (${deterministicPages.length})`,
+          path: AUTO_ROOT_KEY,
+          isDir: true,
+          children: buildTree(deterministicPages),
+        }
+      : null;
+
   const byId = new Map(spinePages.map((p) => [p.id, p]));
   const childrenOf = new Map<string, DocPageSummary[]>();
   const claimed = new Set<string>();
@@ -477,6 +490,12 @@ function buildStoredTree(
     // chapters and the architecture diagram sort before any module, and that
     // is the order a reader should meet them in.
     top.push(...grouping.ungrouped.map((child) => toNode(child, root)));
+    // The file corpus sits directly after the orientation chapters, ahead of
+    // the layers. It is the largest thing in the wiki by a wide margin and the
+    // thing most readers arrive wanting, so it cannot be the last row of a list
+    // whose length grows with the repository — one layer opened and it is off
+    // the screen. Collapsed, so it costs a single row to keep it in reach.
+    if (referenceFolder) top.push(referenceFolder);
     for (const group of grouping.groups) {
       top.push({
         name: group.label,
@@ -527,16 +546,10 @@ function buildStoredTree(
     });
   }
 
-  // Every deterministic page in one collapsed folder at the very bottom, held
-  // apart from the concept outline so the distinction is obvious. Its interior
-  // reuses the filesystem builder, so the files stay navigable by directory.
-  if (deterministicPages.length > 0) {
-    top.push({
-      name: `Auto-documented files (${deterministicPages.length})`,
-      path: AUTO_ROOT_KEY,
-      isDir: true,
-      children: buildTree(deterministicPages),
-    });
+  // A store with no concept root has no orientation to sit behind, so the
+  // folder falls to the bottom rather than opening the tree with it.
+  if (referenceFolder && !top.includes(referenceFolder)) {
+    top.push(referenceFolder);
   }
 
   return top;

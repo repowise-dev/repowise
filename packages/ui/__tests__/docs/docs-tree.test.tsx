@@ -381,6 +381,47 @@ describe("DocsTree", () => {
     expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Alpha API"));
   });
 
+  it("puts the file corpus above the layers, so it never sinks under the outline", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          makePage({
+            id: "onboarding:onboarding/getting_started",
+            page_type: "onboarding",
+            title: "Getting Started",
+            target_path: "onboarding/getting_started",
+            parent_page_id: "repo_overview:demo",
+            display_order: 1,
+          }),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          makePage({ id: "f1", target_path: "src/foo.ts", title: "foo.ts" }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // Orientation first, then the way into the files, then the layer outline.
+    // The corpus is the largest thing in the wiki and the thing most readers
+    // came for; it cannot sit below a list that grows with the repository.
+    const corpus = indexOfRow("Auto-documented files (1)");
+    expect(indexOfRow("Repository Overview: demo")).toBeLessThan(indexOfRow("Getting Started"));
+    expect(indexOfRow("Getting Started")).toBeLessThan(corpus);
+    expect(corpus).toBeLessThan(indexOfRow("Zebra Runtime"));
+    // The layers keep their own order behind it, so this cannot pass on a
+    // build that merely shuffled the top-level rows.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Alpha API"));
+    // Still a deliberate drill-in, not opened on load.
+    expect(screen.queryByText("foo.ts")).not.toBeInTheDocument();
+  });
+
   it("labels a layer by its id when no member carries the display name", () => {
     render(
       <DocsTree
