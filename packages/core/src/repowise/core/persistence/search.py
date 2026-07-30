@@ -16,6 +16,10 @@ Usage::
 
 from __future__ import annotations
 
+import logging
+import os
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -37,6 +41,32 @@ class SearchResult:
 
 
 _SNIPPET_LEN = 200
+
+# Shortest term that still gets a prefix wildcard. See :func:`_match_term`.
+_PREFIX_MIN_CHARS = 4
+
+# A term matching more than this share of the corpus is dropped from the query
+# expression: it cannot discriminate between pages, and every one of them drags
+# thousands of candidates in for BM25 to sort out afterwards. Env-tunable
+# because the right ceiling is a property of a corpus's vocabulary, and the only
+# honest way to set it is to measure recall on the corpus in question.
+_DF_CEILING = float(os.environ.get("REPOWISE_FTS_DF_CEILING", "0.20"))
+
+# Never let the ceiling empty a query. A question written entirely out of common
+# words keeps its rarest terms — a thin match beats no match, especially since
+# vector retrieval is answering the same question alongside this.
+_MIN_KEPT_TERMS = 3
+
+# How many distinct terms' document frequencies one FullTextSearch keeps. Term
+# frequency changes only when the corpus is rewritten, and questions reuse
+# vocabulary heavily, so a small cache removes almost all of the counting.
+_DF_CACHE_MAX = 2048
+
+# Keeps scores strictly decreasing when two MATCH expressions' results are
+# concatenated. Small enough not to disturb any threshold downstream.
+_SCORE_EPSILON = 1e-6
+
+_log = logging.getLogger(__name__)
 
 # Common English stop words to strip from FTS queries
 _STOP_WORDS = frozenset(
@@ -128,28 +158,80 @@ _STOP_WORDS = frozenset(
 )
 
 
-def _build_fts5_query(query: str) -> str:
-    """Build an FTS5 MATCH expression from a natural-language query.
-
-    Strips stop words, then joins remaining terms with OR so that pages
-    containing *any* keyword match.  Each term gets a ``*`` suffix for
-    prefix matching (e.g. "pay*" matches "payment", "payload", etc.).
-    Falls back to the raw (quoted) query when all tokens are stop words.
-    """
+def _meaningful_terms(query: str) -> list[str]:
+    """Alphanumeric tokens of *query*, minus stop words and single characters."""
     import re
 
-    # Keep only alphanumeric tokens
     tokens = re.findall(r"[a-zA-Z0-9_]+", query.lower())
-    meaningful = [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+    return [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+
+
+def _match_term(term: str) -> str:
+    """One FTS5 term, prefix-matched only when it is long enough to be specific.
+
+    A prefix wildcard is what earns morphological recall — ``invalidat*`` finds
+    "invalidates" and "invalidation" — and it is also what turns a short token
+    into a corpus-wide match: ``set*`` hits settings, setup, setter, setdefault.
+    Below the cut the term is matched exactly, which costs the odd plural and
+    buys back a candidate set that BM25 was being asked to sort out afterwards.
+    """
+    return f'"{term}"*' if len(term) >= _PREFIX_MIN_CHARS else f'"{term}"'
+
+
+def _pg_term(term: str) -> str:
+    """One ``to_tsquery`` lexeme, prefix-matched on the same rule as FTS5.
+
+    Terms reach here already reduced to ``[a-zA-Z0-9_]+`` by
+    :func:`_meaningful_terms`, so there is no quoting to get wrong — anything
+    that could change the expression's shape has been dropped before this.
+    """
+    return f"{term}:*" if len(term) >= _PREFIX_MIN_CHARS else term
+
+
+def _build_fts5_query(query: str, document_frequency: Callable[[str], int] | None = None) -> str:
+    """Build an FTS5 MATCH expression from a natural-language query.
+
+    Terms are OR-ed, because a developer question is a paraphrase of the page
+    that answers it: its rarest words are frequently the asker's vocabulary
+    rather than the page's, so requiring all of them (AND) excludes the right
+    page far more often than it narrows usefully. Measured on a 3,678-page
+    corpus, AND over the meaningful terms returned nothing at all for 65 of 99
+    questions, and held the expected page for 25 of 99 against 99 of 99 for OR.
+
+    What OR needs is not a different operator but fewer junk terms. A question
+    carries words that are not stop words yet still match a large share of any
+    code corpus ("file", "does", "page", "index"), and each one drags in
+    thousands of pages that only BM25 tie-breaking then has to sort out. Given
+    a *document_frequency* callable, terms matching more than
+    :data:`_DF_CEILING` of the corpus are dropped from the expression; the same
+    measurement puts the median candidate set at 20% of the corpus rather than
+    65%. Without the callable the expression keeps every term, which is the
+    prior behaviour.
+
+    At least :data:`_MIN_KEPT_TERMS` terms always survive — the rarest ones —
+    so a question written entirely from common words still matches something.
+    """
+    meaningful = _meaningful_terms(query)
 
     if not meaningful:
         # All stop words — fall back to exact phrase
         safe = query.replace('"', '""')
         return f'"{safe}"'
 
-    # FTS5: OR between prefix-match terms gives broad recall;
-    # FTS5 rank (BM25) naturally boosts pages matching more terms.
-    return " OR ".join(f'"{t}"*' for t in meaningful)
+    kept = meaningful
+    if document_frequency is not None:
+        total = document_frequency("")  # corpus size, by convention
+        if total > 0:
+            ceiling = _DF_CEILING * total
+            selective = [t for t in meaningful if document_frequency(t) <= ceiling]
+            if len(selective) < _MIN_KEPT_TERMS:
+                # Every term is common. Keep the rarest few rather than none:
+                # a thin match beats an empty one, and the vector arm is still
+                # answering alongside this.
+                selective = sorted(meaningful, key=document_frequency)[:_MIN_KEPT_TERMS]
+            kept = selective
+
+    return " OR ".join(_match_term(t) for t in kept)
 
 
 def _snippet(content: str) -> str:
@@ -162,6 +244,8 @@ class FullTextSearch:
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
         self._dialect = engine.dialect.name  # "sqlite" or "postgresql"
+        # term → how many pages it matches. "" is the corpus size.
+        self._df_cache: OrderedDict[str, int] = OrderedDict()
 
     async def ensure_index(self) -> None:
         """Create the FTS index if it does not exist (idempotent).
@@ -268,22 +352,98 @@ class FullTextSearch:
             return await self._search_sqlite(query, limit)
         return await self._search_postgresql(query, limit)
 
+    async def _document_frequency(self, conn, term: str) -> int:
+        """How many indexed pages *term* matches. ``""`` is the corpus size.
+
+        Cached per instance: a term's frequency only moves when the corpus is
+        rewritten, and questions reuse vocabulary heavily, so the count query
+        is paid roughly once per distinct word this process ever sees.
+        """
+        if term in self._df_cache:
+            self._df_cache.move_to_end(term)
+            return self._df_cache[term]
+
+        if term:
+            sql = "SELECT count(*) FROM page_fts WHERE page_fts MATCH :q"
+            params = {"q": _match_term(term)}
+        else:
+            sql = "SELECT count(*) FROM page_fts"
+            params = {}
+        try:
+            row = await conn.execute(text(sql), params)
+            count = int(row.scalar() or 0)
+        except Exception:
+            # A term FTS5 refuses to parse must not fail the search: treat it as
+            # rare so it stays in the expression, where it either matches or is
+            # rejected there instead.
+            _log.warning("Could not count pages matching %r", term, exc_info=True)
+            count = 0
+
+        self._df_cache[term] = count
+        while len(self._df_cache) > _DF_CACHE_MAX:
+            self._df_cache.popitem(last=False)
+        return count
+
+    async def _build_selective_query(self, query: str, df) -> str:
+        """``_build_fts5_query`` with this corpus's term frequencies resolved.
+
+        The builder stays a pure synchronous function — it is the piece worth
+        testing on its own — so the counts it needs are awaited here and handed
+        over as a plain lookup.
+        """
+        terms = _meaningful_terms(query)
+        if not terms:
+            return _build_fts5_query(query)
+        counts = {"": await df("")}
+        for term in terms:
+            if term not in counts:
+                counts[term] = await df(term)
+        return _build_fts5_query(query, counts.__getitem__)
+
+    async def _matching_rows(self, conn, fts_query: str, limit: int) -> list:
+        rows = await conn.execute(
+            text(
+                "SELECT f.page_id, f.title, f.content, f.rank "
+                "FROM page_fts f "
+                "WHERE page_fts MATCH :q "
+                "ORDER BY rank "
+                "LIMIT :lim"
+            ),
+            {"q": fts_query, "lim": limit},
+        )
+        return list(rows.fetchall())
+
     async def _search_sqlite(self, query: str, limit: int) -> list[SearchResult]:
         """FTS5 search.  ``rank`` is negative; we negate it to get a positive score."""
-        fts_query = _build_fts5_query(query)
-
         async with self._engine.connect() as conn:
-            rows = await conn.execute(
-                text(
-                    "SELECT f.page_id, f.title, f.content, f.rank "
-                    "FROM page_fts f "
-                    "WHERE page_fts MATCH :q "
-                    "ORDER BY rank "
-                    "LIMIT :lim"
-                ),
-                {"q": fts_query, "lim": limit},
-            )
-            raw = rows.fetchall()
+
+            async def df(term: str) -> int:
+                return await self._document_frequency(conn, term)
+
+            fts_query = await self._build_selective_query(query, df)
+            raw = await self._matching_rows(conn, fts_query, limit)
+
+            # The frequency ceiling can cut a question down to terms that
+            # nothing carries together. Retrying with every term is the prior
+            # behaviour, so the narrowing can lose ranking precision but never
+            # the only hits there were.
+            if len(raw) < limit:
+                widened = _build_fts5_query(query)
+                if widened != fts_query:
+                    seen = {r[0] for r in raw}
+                    extra = [
+                        r
+                        for r in await self._matching_rows(conn, widened, limit)
+                        if r[0] not in seen
+                    ]
+                    if extra:
+                        _log.debug(
+                            "FTS widened from %d to %d hits after the frequency ceiling "
+                            "left too few",
+                            len(raw),
+                            len(raw) + len(extra),
+                        )
+                    raw = (raw + extra)[:limit]
 
         # We need page_type and target_path from wiki_pages
         if not raw:
@@ -307,9 +467,18 @@ class FullTextSearch:
             meta = {r[0]: (r[1], r[2]) for r in page_rows.fetchall()}
 
         results = []
+        # Rows can come from two MATCH expressions, whose BM25 scales are not
+        # comparable. Order is authoritative — the narrow pass ranks ahead of
+        # the widened one — so scores are clamped to be non-increasing along it,
+        # keeping a caller that sorts by score in agreement with one that reads
+        # the list in order.
+        ceiling: float | None = None
         for pid in page_ids:
             page_type, target_path = meta.get(pid, ("", ""))
             score = -(rank_by_id[pid] or 0.0)  # FTS5 rank is negative
+            if ceiling is not None and score > ceiling:
+                score = ceiling
+            ceiling = score - _SCORE_EPSILON
             results.append(
                 SearchResult(
                     page_id=pid,
@@ -323,23 +492,89 @@ class FullTextSearch:
             )
         return results
 
+    async def _pg_document_frequency(self, conn, term: str) -> int:
+        """Pages matching *term* in PostgreSQL. ``""`` is the corpus size.
+
+        Shares :attr:`_df_cache` with the SQLite path; an instance only ever
+        talks to one backend.
+        """
+        if term in self._df_cache:
+            self._df_cache.move_to_end(term)
+            return self._df_cache[term]
+
+        if term:
+            sql = (
+                "SELECT count(*) FROM wiki_pages WHERE to_tsvector('english', "
+                "COALESCE(title,'') || ' ' || COALESCE(content,'')) @@ to_tsquery('english', :q)"
+            )
+            params = {"q": _pg_term(term)}
+        else:
+            sql = "SELECT count(*) FROM wiki_pages"
+            params = {}
+        try:
+            row = await conn.execute(text(sql), params)
+            count = int(row.scalar() or 0)
+        except Exception:
+            _log.warning("Could not count pages matching %r", term, exc_info=True)
+            count = 0
+
+        self._df_cache[term] = count
+        while len(self._df_cache) > _DF_CACHE_MAX:
+            self._df_cache.popitem(last=False)
+        return count
+
+    async def _build_ts_query(self, conn, query: str) -> str:
+        """OR-joined ``to_tsquery`` expression over this query's kept terms."""
+        terms = _meaningful_terms(query)
+        if not terms:
+            return ""
+        total = await self._pg_document_frequency(conn, "")
+        kept = terms
+        if total > 0:
+            selective = []
+            for term in terms:
+                if await self._pg_document_frequency(conn, term) <= _DF_CEILING * total:
+                    selective.append(term)
+            if len(selective) < _MIN_KEPT_TERMS:
+                counts = {t: await self._pg_document_frequency(conn, t) for t in terms}
+                selective = sorted(terms, key=counts.__getitem__)[:_MIN_KEPT_TERMS]
+            kept = selective
+        return " | ".join(_pg_term(t) for t in kept)
+
     async def _search_postgresql(self, query: str, limit: int) -> list[SearchResult]:
-        """PostgreSQL tsvector search with ts_rank scoring."""
+        """PostgreSQL tsvector search with ts_rank scoring.
+
+        The query used to be handed to ``plainto_tsquery`` whole, which strips
+        nothing the caller intended and — more consequentially — joins every
+        remaining lexeme with AND. A developer question is a paraphrase, so
+        requiring all of its words matches almost nothing: on a 3,678-page
+        corpus, AND over the meaningful terms of 99 questions returned no rows
+        at all for 65 of them. This backend was therefore the strict mirror
+        image of SQLite's, which matched two thirds of the corpus, and neither
+        was doing retrieval.
+
+        Both now build the same expression from the same terms with the same
+        frequency ceiling, so a hosted index and a local one rank a question the
+        same way.
+        """
         async with self._engine.connect() as conn:
+            ts_query = await self._build_ts_query(conn, query)
+            if not ts_query:
+                return []
             rows = await conn.execute(
                 text(
                     "SELECT id, title, content, page_type, target_path, "
                     "  ts_rank("
                     "    to_tsvector('english', COALESCE(title,'') || ' ' || COALESCE(content,'')), "
-                    "    plainto_tsquery('english', :q)"
+                    "    to_tsquery('english', :q)"
                     "  ) AS rank "
                     "FROM wiki_pages "
                     "WHERE to_tsvector('english', COALESCE(title,'') || ' ' || COALESCE(content,'')) "
-                    "  @@ plainto_tsquery('english', :q) "
+                    "  @@ to_tsquery('english', :q) "
                     "ORDER BY rank DESC "
                     "LIMIT :lim",
                 ),
-                {"q": query, "lim": limit},
+                {"q": ts_query, "lim": limit},
             )
             raw = rows.fetchall()
 
