@@ -262,8 +262,41 @@ def _build_fts5_query(query: str, document_frequency: Callable[[str], int] | Non
     return " OR ".join(_match_term(t) for t in kept)
 
 
-def _snippet(content: str) -> str:
-    return content[:_SNIPPET_LEN].rstrip()
+def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
+    """A window of *content* centred on the first term of *query* it carries.
+
+    This string is a hit's evidence: ``search_codebase`` returns it as the
+    reason the page is in the list, and the answer tool's coverage re-ranker
+    reads it when ordering candidates. Taken from the front of the page it is
+    the same ``## Overview`` opener on every generated page — identical across
+    thousands of hits, and never the passage that matched.
+
+    Terms are the ones :func:`_meaningful_terms` keeps, so a query made of
+    common words cannot steer the window: matching on "the" would centre on
+    the opener for almost every query and the window would buy nothing.
+
+    Falls back to the opener when nothing matches, which is the right answer
+    for a hit found by its title or its path — those carry no region of the
+    content to point at. Never returns empty for a non-empty page.
+    """
+    if not content:
+        return ""
+
+    lowered = content.lower()
+    position = -1
+    for term in _meaningful_terms(query):
+        found = lowered.find(term)
+        if found != -1 and (position == -1 or found < position):
+            position = found
+    if position == -1:
+        return content[:length].rstrip()
+
+    # Centre the window, then slide it back inside the page rather than
+    # letting it run off an edge: a match in the first or last few characters
+    # would otherwise return a window shorter than the budget for no reason.
+    start = max(0, position - length // 2)
+    start = min(start, max(0, len(content) - length))
+    return content[start : start + length].strip()
 
 
 class FullTextSearch:
@@ -633,7 +666,7 @@ class FullTextSearch:
                     page_type=page_type,
                     target_path=target_path,
                     score=score,
-                    snippet=_snippet(content_by_id[pid]),
+                    snippet=snippet_around(content_by_id[pid], query),
                     search_type="fulltext",
                 )
             )
@@ -728,7 +761,7 @@ class FullTextSearch:
                 page_type=r[3],
                 target_path=r[4],
                 score=float(r[5]),
-                snippet=_snippet(r[2]),
+                snippet=snippet_around(r[2], query),
                 search_type="fulltext",
             )
             for r in raw

@@ -4,10 +4,39 @@ from __future__ import annotations
 
 from repowise.core.providers.embedding.base import Embedder
 
-from ..search import SearchResult
+from ..search import _SNIPPET_LEN, SearchResult, snippet_around
 from ._base import VectorStore, iter_embed_chunks
 
-__all__ = ["LanceDBVectorStore"]
+__all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
+
+# How much of a page's content each row keeps.
+#
+# A hit's evidence snippet should show the region the query matched, not the
+# page's opening line — on a generated page that opener is the same
+# ``## Overview`` paragraph every time. The full-text arm holds the whole page
+# at search time and can cut a window from it; this arm cannot, because what a
+# search sees was fixed when the row was written. So the row keeps enough
+# content for a window to exist inside it.
+#
+# It is a prefix, not the whole page: this column is read on the hot path and
+# duplicated per row, and a match beyond the first few thousand characters is
+# rare enough not to be worth the store. A row written before this widening
+# holds 200 characters and simply windows to its opener.
+STORED_SNIPPET_CHARS = 2_000
+
+
+def _evidence(stored: str, query: str | None) -> str:
+    """The served snippet, cut from the wider text a row keeps.
+
+    With a query, a window centred on what it matched. Without one — the raw
+    vector path, which carries no question — the opener, at the width it had
+    before the stored column was widened.
+    """
+    if not stored:
+        return ""
+    if query:
+        return snippet_around(stored, query)
+    return stored[:_SNIPPET_LEN].rstrip()
 
 
 def _paths_in_filter(paths: list[str]) -> str:
@@ -137,7 +166,7 @@ class LanceDBVectorStore(VectorStore):
             "title": str(metadata.get("title", "")),
             "page_type": str(metadata.get("page_type", "")),
             "target_path": str(metadata.get("target_path", "")),
-            "content_snippet": content[:200],
+            "content_snippet": content[:STORED_SNIPPET_CHARS],
         }
 
     async def _upsert_rows(self, rows: list[dict]) -> None:
@@ -195,7 +224,9 @@ class LanceDBVectorStore(VectorStore):
                 f"embed_batch: {failed}/{len(items)} items failed to embed"
             ) from last_exc
 
-    async def _search_by_vector(self, q_vec: list[float], limit: int) -> list[SearchResult]:
+    async def _search_by_vector(
+        self, q_vec: list[float], limit: int, query: str | None = None
+    ) -> list[SearchResult]:
         # Query with explicit cosine distance so ``_distance`` is a cosine
         # distance (1 - cos); we return ``1 - _distance`` = cosine similarity.
         # This makes the score semantics match the other backends
@@ -206,6 +237,10 @@ class LanceDBVectorStore(VectorStore):
             query_builder = query_builder.distance_type("cosine")
         raw = await query_builder.limit(limit).to_list()
 
+        # A caller that came in by raw vector has no query text to centre on,
+        # so it gets the opener — at the width it always had. The stored
+        # column is now wider than the snippet it serves, and returning it
+        # whole would push ten times the text into a prompt.
         return [
             SearchResult(
                 page_id=r["page_id"],
@@ -213,7 +248,7 @@ class LanceDBVectorStore(VectorStore):
                 page_type=r.get("page_type", ""),
                 target_path=r.get("target_path", ""),
                 score=1.0 - float(r.get("_distance", 1.0)),
-                snippet=r.get("content_snippet", ""),
+                snippet=_evidence(r.get("content_snippet", ""), query),
                 search_type="vector",
             )
             for r in raw
@@ -237,7 +272,7 @@ class LanceDBVectorStore(VectorStore):
             return []
 
         q_vecs = await self._embedder.embed([query])
-        return await self._search_by_vector([float(v) for v in q_vecs[0]], limit)
+        return await self._search_by_vector([float(v) for v in q_vecs[0]], limit, query=query)
 
     async def search_by_vector(self, vector: list[float], limit: int = 10) -> list[SearchResult]:
         await self._ensure_connected()
@@ -254,9 +289,11 @@ class LanceDBVectorStore(VectorStore):
             return [[] for _ in queries]
         q_vecs = await self._embedder.embed(list(queries))
         out: list[list[SearchResult]] = []
-        for q_vec in q_vecs:
+        for query, q_vec in zip(queries, q_vecs, strict=True):
             try:
-                out.append(await self._search_by_vector([float(v) for v in q_vec], limit))
+                out.append(
+                    await self._search_by_vector([float(v) for v in q_vec], limit, query=query)
+                )
             except Exception:
                 out.append([])
         return out
@@ -293,9 +330,11 @@ class LanceDBVectorStore(VectorStore):
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
 
-        LanceDB stores up to 200 chars of content in 'content_snippet'; we use
-        that as the summary. 'key_exports' is not stored in the schema, so we
-        return [] — the caller only uses the text summary for prompt injection.
+        The summary is the opening of 'content_snippet'. That column holds more
+        than this now, because a search cuts an evidence window out of it, but
+        this text goes into a prompt — so it keeps the width it always had
+        rather than growing with the store behind it. 'key_exports' is not in
+        the schema, so it comes back empty; the caller only uses the summary.
         """
         await self._ensure_connected()
         if self._table is None:
@@ -316,8 +355,8 @@ class LanceDBVectorStore(VectorStore):
         if not rows:
             return None
 
-        summary = rows[0].get("content_snippet") or ""
-        return {"summary": str(summary), "key_exports": []}
+        summary = str(rows[0].get("content_snippet") or "")[:_SNIPPET_LEN]
+        return {"summary": summary, "key_exports": []}
 
     async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
         """One ``IN``-filtered scan instead of one filtered query per path.
@@ -346,7 +385,7 @@ class LanceDBVectorStore(VectorStore):
             tp = str(r.get("target_path") or "")
             if not tp or tp in out:
                 continue
-            summary = r.get("content_snippet") or ""
+            summary = str(r.get("content_snippet") or "")[:_SNIPPET_LEN]
             if summary:
-                out[tp] = {"summary": str(summary), "key_exports": []}
+                out[tp] = {"summary": summary, "key_exports": []}
         return out
