@@ -22,7 +22,7 @@ import {
   type OnboardingSlot,
 } from "../lib/page-types";
 import { RAW_GRAPH_ID, displayLabel, treeLabel } from "./page-labels";
-import { groupPagesByLayer, readLayerOrder, readLayerStamp } from "../lib/layers";
+import { groupPagesByLayer, readLayerOrder } from "../lib/layers";
 import { cn } from "../lib/cn";
 import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
 import type { DocPageSummary } from "@repowise-dev/types/docs";
@@ -855,12 +855,20 @@ export function DocsTree({
     // another repo's default-open rows.
     const dirs = new Set<string>(STRAY_GROUP_KEYS);
     dirs.add(ONBOARDING_DIR_KEY);
-    // Domain view: open the section spine (the layers) so the concept titles
-    // read as a clean table of contents on load. Everything else starts shut —
-    // concept pages, the bottom Auto-documented folder, and the file directories
-    // inside it — so the outline is what a reader sees first, with the files a
-    // deliberate click away. A spine node opens by default only when it has a
-    // spine child of its own (a layer holding concepts).
+    // Domain view: everything starts shut — the layer rows, concept pages, the
+    // bottom Auto-documented folder, and the file directories inside it — so
+    // the first screen is the shape of the repository rather than its contents.
+    //
+    // The layers used to open on load, on the reasoning that a shut one hides
+    // the outline under it. That reasoning inverted once the layers became
+    // grouping rows over every module: opening them all put roughly ninety
+    // near-identically-named module rows on the first screen, which buries the
+    // layer names, the orientation chapters and the file corpus alike. A closed
+    // layer costs one click; an open one costs a reader the whole first screen.
+    //
+    // A concept page that parents other concept pages still opens, so a stored
+    // wiki that predates the grouping rows — where the modules hang off a page
+    // per layer — reads the same as it always did.
     const hasSpineChild = new Set(
       pages
         .filter((p) => SPINE_TYPES.has(p.page_type) && p.parent_page_id)
@@ -868,11 +876,6 @@ export function DocsTree({
     );
     for (const page of pages) {
       if (hasSpineChild.has(page.id) && SPINE_TYPES.has(page.page_type)) dirs.add(page.id);
-      // A layer's grouping row has no page behind it, so the rule above cannot
-      // reach it. It opens for the same reason a layer page did: the layers are
-      // the top rung, and a shut one hides the whole outline under it.
-      const layer = readLayerStamp(page);
-      if (layer) dirs.add(layerDirKey(layer.id));
     }
     if (typeof window !== "undefined") {
       try {

@@ -376,9 +376,45 @@ describe("DocsTree", () => {
     // this cannot pass on an alphabetical grouping.
     expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Alpha API"));
     expect("Zebra Runtime".localeCompare("Alpha API")).toBeGreaterThan(0);
-    // Each module reads under its own layer, not beside it.
+    // Each module reads under its own layer, not beside it. The layers start
+    // closed, so open them to see where their members land.
+    fireEvent.click(screen.getByText("Zebra Runtime"));
+    fireEvent.click(screen.getByText("Alpha API"));
     expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("runtime/engine"));
     expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Alpha API"));
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("api/routes"));
+  });
+
+  it("starts every layer row closed, and opens one on a click", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The layers themselves are the first screen: a reader meets the shape of
+    // the repository, not every module in it.
+    expect(screen.getByText("Zebra Runtime")).toBeInTheDocument();
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+    expect(screen.queryByText("runtime/engine")).not.toBeInTheDocument();
+    expect(screen.queryByText("api/routes")).not.toBeInTheDocument();
+
+    // One click opens one layer and leaves the other shut — so this cannot
+    // pass on a tree that simply failed to render its modules at all.
+    fireEvent.click(screen.getByText("Zebra Runtime"));
+    expect(screen.getByText("runtime/engine")).toBeInTheDocument();
+    expect(screen.queryByText("api/routes")).not.toBeInTheDocument();
   });
 
   it("labels a layer by its id when no member carries the display name", () => {
