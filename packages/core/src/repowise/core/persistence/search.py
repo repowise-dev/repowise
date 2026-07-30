@@ -10,7 +10,7 @@ Usage::
 
     fts = FullTextSearch(engine)
     await fts.ensure_index()           # idempotent — safe to call at startup
-    await fts.index("id", "Title", "content …")
+    await fts.index("id", "Title", "content …", summary="…", target_path="a/b.py")
     results = await fts.search("decorator pattern", limit=5)
 """
 
@@ -41,6 +41,34 @@ class SearchResult:
 
 
 _SNIPPET_LEN = 200
+
+# Every column of ``page_fts``, in table order. ``page_id`` is stored but not
+# indexed — it is the join key, never a thing to match on.
+#
+# ``summary`` and ``target_path`` are indexed because both decide whether a
+# page is the right answer while being unable to make it a candidate. The
+# summary is a fresh LLM paraphrase, written for every page and never a prefix
+# of the prose it paraphrases, and the answer tool's coverage re-ranker already
+# reads it — so it reorders results it cannot produce. The target path is the
+# file the page documents; most page titles are that path verbatim, which
+# leaves a question naming a directory matching only whatever the generated
+# prose happens to mention.
+PAGE_FTS_COLUMNS = ("page_id", "title", "content", "summary", "target_path")
+
+PAGE_FTS_DDL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
+    "USING fts5(page_id UNINDEXED, title, content, summary, target_path)"
+)
+
+# The text PostgreSQL indexes and searches. The GIN index built by the Alembic
+# migration uses this exact expression: any drift between the two silently
+# drops the index from the query plan, leaving a sequential scan that still
+# returns the right rows, so both read it from here.
+PG_FTS_EXPRESSION = (
+    "to_tsvector('english', "
+    "COALESCE(title,'') || ' ' || COALESCE(content,'') || ' ' "
+    "|| COALESCE(summary,'') || ' ' || COALESCE(target_path,''))"
+)
 
 # Shortest term that still gets a prefix wildcard. See :func:`_match_term`.
 _PREFIX_MIN_CHARS = 4
@@ -246,35 +274,125 @@ class FullTextSearch:
         self._dialect = engine.dialect.name  # "sqlite" or "postgresql"
         # term → how many pages it matches. "" is the corpus size.
         self._df_cache: OrderedDict[str, int] = OrderedDict()
+        self._warned_missing_fields = False
 
     async def ensure_index(self) -> None:
         """Create the FTS index if it does not exist (idempotent).
 
-        For SQLite the FTS5 table is created here.
+        For SQLite the FTS5 table is created here, and an index left on an
+        older column set by a previous repowise is rebuilt — see
+        :meth:`_upgrade_sqlite_schema`.
         For PostgreSQL the GIN index is created by the Alembic migration; this
-        method is a no-op in that case.
+        recreates it when absent, which is what a store built before the
+        migration existed needs.
         """
         if self._dialect == "sqlite":
             async with self._engine.begin() as conn:
-                await conn.execute(
-                    text(
-                        "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
-                        "USING fts5(page_id UNINDEXED, title, content)"
-                    )
-                )
+                await conn.execute(text(PAGE_FTS_DDL))
+            await self._upgrade_sqlite_schema()
         elif self._dialect == "postgresql":
             async with self._engine.begin() as conn:
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS idx_wiki_pages_fts "
-                        "ON wiki_pages USING GIN("
-                        "  to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(content, ''))"
-                        ")"
+                        f"ON wiki_pages USING GIN({PG_FTS_EXPRESSION})"
                     )
                 )
 
-    async def index(self, page_id: str, title: str, content: str) -> None:
-        """Add or replace a page in the FTS index."""
+    async def _upgrade_sqlite_schema(self) -> None:
+        """Rebuild ``page_fts`` when it predates a column, refilling from SQL.
+
+        FTS5 has no ``ALTER TABLE``, so widening the index means dropping it
+        and writing every row again. The rows themselves cannot supply the new
+        columns — the old index never held them — so the refill reads
+        ``wiki_pages``, which is the system of record for all four indexed
+        fields.
+
+        The table is created with ``IF NOT EXISTS`` by three separate callers,
+        so without this an upgraded install would keep its old shape
+        indefinitely and quietly search fewer fields than it writes.
+        """
+        async with self._engine.connect() as conn:
+            info = await conn.execute(text("PRAGMA table_info(page_fts)"))
+            columns = [r[1] for r in info.fetchall()]
+            if list(columns) == list(PAGE_FTS_COLUMNS):
+                return
+            missing = [c for c in PAGE_FTS_COLUMNS if c not in columns]
+            if not missing:
+                # Extra or reordered columns are somebody else's table. Refuse
+                # rather than drop data this class did not write.
+                raise RuntimeError(
+                    f"page_fts has unexpected columns {columns!r}; "
+                    f"expected {list(PAGE_FTS_COLUMNS)!r}"
+                )
+
+            indexed_rows = await conn.execute(text("SELECT count(*) FROM page_fts"))
+            indexed_count = int(indexed_rows.scalar() or 0)
+            page_rows = await conn.execute(text("SELECT count(*) FROM wiki_pages"))
+            page_count = int(page_rows.scalar() or 0)
+
+        # The rebuild is a delete followed by a refill from a different table.
+        # If that table cannot account for what is already indexed, the two
+        # halves of the store have drifted and refilling would delete
+        # searchable pages outright. An index on the old shape still answers
+        # queries, so leaving it alone is strictly the safer failure.
+        if indexed_count > page_count:
+            raise RuntimeError(
+                f"Refusing to rebuild page_fts: {indexed_count} indexed rows but only "
+                f"{page_count} rows in wiki_pages to refill them from. The full-text "
+                f"index and the page table have drifted apart; repair the store "
+                f"(repowise doctor --repair) before upgrading it."
+            )
+
+        _log.info(
+            "Rebuilding page_fts to add %s (%d pages to reindex)",
+            ", ".join(missing),
+            page_count,
+        )
+        async with self._engine.begin() as conn:
+            await conn.execute(text("DROP TABLE page_fts"))
+            await conn.execute(text(PAGE_FTS_DDL))
+            await conn.execute(
+                text(
+                    "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
+                    "SELECT id, COALESCE(title,''), COALESCE(content,''), "
+                    "       COALESCE(summary,''), COALESCE(target_path,'') "
+                    "FROM wiki_pages"
+                )
+            )
+            written = await conn.execute(text("SELECT count(*) FROM page_fts"))
+            refilled = int(written.scalar() or 0)
+
+        if refilled != page_count:
+            # Nothing in the statement above should be able to drop a row, so
+            # a mismatch means the page table moved underneath the rebuild.
+            _log.warning("page_fts rebuild wrote %d rows for %d pages", refilled, page_count)
+
+    async def index(
+        self,
+        page_id: str,
+        title: str,
+        content: str,
+        summary: str | None = None,
+        target_path: str | None = None,
+    ) -> None:
+        """Add or replace a page in the FTS index.
+
+        *summary* and *target_path* are optional so a caller written against
+        the older three-column index keeps working, but omitting them is
+        logged: the row it writes looks healthy and can never be found by
+        either field, which is a ranking regression with no symptom. Nine
+        places inside repowise write this index and every one of them passes
+        both — an omission is a call site that was missed, not a choice.
+
+        An empty *string* is a different thing and is not warned about: some
+        page types genuinely have no summary.
+        """
+        if summary is None or target_path is None:
+            self._warn_missing_index_fields(page_id, summary, target_path)
+            summary = summary if summary is not None else ""
+            target_path = target_path if target_path is not None else ""
+
         if self._dialect == "sqlite":
             async with self._engine.begin() as conn:
                 # FTS5 does not support UPDATE; use DELETE + INSERT
@@ -284,13 +402,42 @@ class FullTextSearch:
                 )
                 await conn.execute(
                     text(
-                        "INSERT INTO page_fts(page_id, title, content) "
-                        "VALUES (:pid, :title, :content)"
+                        "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
+                        "VALUES (:pid, :title, :content, :summary, :target_path)"
                     ),
-                    {"pid": page_id, "title": title, "content": content},
+                    {
+                        "pid": page_id,
+                        "title": title,
+                        "content": content,
+                        "summary": summary,
+                        "target_path": target_path,
+                    },
                 )
         # PostgreSQL: the GIN index on wiki_pages is maintained automatically
         # by the database as rows are inserted/updated via the CRUD layer.
+
+    def _warn_missing_index_fields(
+        self, page_id: str, summary: str | None, target_path: str | None
+    ) -> None:
+        """Log the first caller that indexes a page without the newer fields.
+
+        Once per instance, because a caller inside a loop would otherwise
+        write one line per page in the corpus.
+        """
+        if self._warned_missing_fields:
+            return
+        self._warned_missing_fields = True
+        omitted = [
+            name
+            for name, value in (("summary", summary), ("target_path", target_path))
+            if value is None
+        ]
+        _log.warning(
+            "Indexing %r without %s — those pages will not be findable by the "
+            "omitted field. This is a call site that needs updating.",
+            page_id,
+            " or ".join(omitted),
+        )
 
     async def delete(self, page_id: str) -> None:
         """Remove a page from the FTS index."""
@@ -504,8 +651,8 @@ class FullTextSearch:
 
         if term:
             sql = (
-                "SELECT count(*) FROM wiki_pages WHERE to_tsvector('english', "
-                "COALESCE(title,'') || ' ' || COALESCE(content,'')) @@ to_tsquery('english', :q)"
+                f"SELECT count(*) FROM wiki_pages "
+                f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q)"
             )
             params = {"q": _pg_term(term)}
         else:
@@ -563,16 +710,12 @@ class FullTextSearch:
                 return []
             rows = await conn.execute(
                 text(
-                    "SELECT id, title, content, page_type, target_path, "
-                    "  ts_rank("
-                    "    to_tsvector('english', COALESCE(title,'') || ' ' || COALESCE(content,'')), "
-                    "    to_tsquery('english', :q)"
-                    "  ) AS rank "
-                    "FROM wiki_pages "
-                    "WHERE to_tsvector('english', COALESCE(title,'') || ' ' || COALESCE(content,'')) "
-                    "  @@ to_tsquery('english', :q) "
-                    "ORDER BY rank DESC "
-                    "LIMIT :lim",
+                    f"SELECT id, title, content, page_type, target_path, "
+                    f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
+                    f"FROM wiki_pages "
+                    f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                    f"ORDER BY rank DESC "
+                    f"LIMIT :lim",
                 ),
                 {"q": ts_query, "lim": limit},
             )

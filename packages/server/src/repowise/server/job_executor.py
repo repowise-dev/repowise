@@ -534,7 +534,13 @@ async def execute_job(
             await fts.delete_many(swept_page_ids)
         if fts is not None and all_pages:
             for page in all_pages:
-                await fts.index(page.page_id, page.title, page.content)
+                await fts.index(
+                    page.page_id,
+                    page.title,
+                    page.content,
+                    summary=page.summary,
+                    target_path=page.target_path,
+                )
 
         # ---- Mark completed ------------------------------------------------
         # Stop progress updates before writing final status to prevent a

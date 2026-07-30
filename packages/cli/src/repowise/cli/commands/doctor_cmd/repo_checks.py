@@ -479,7 +479,13 @@ def _run_repo_checks(
                             select(Page).where(Page.id.in_(list(missing_from_fts)))
                         )
                         for page in rows.scalars().all():
-                            await fts.index(page.id, page.title, page.content)
+                            await fts.index(
+                                page.id,
+                                page.title,
+                                page.content,
+                                summary=page.summary,
+                                target_path=page.target_path,
+                            )
                             repaired += 1
                 for pid in orphaned_fts:
                     await fts.delete(pid)

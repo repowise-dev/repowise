@@ -81,11 +81,23 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
             async with get_session(sf) as session:
                 rows = (
                     await session.execute(
-                        select(Page.id, Page.title, Page.content).where(Page.id.in_(batch))
+                        select(
+                            Page.id,
+                            Page.title,
+                            Page.content,
+                            Page.summary,
+                            Page.target_path,
+                        ).where(Page.id.in_(batch))
                     )
                 ).all()
-            for page_id, title, content in rows:
-                await fts.index(page_id, title or "", content or "")
+            for page_id, title, content, summary, target_path in rows:
+                await fts.index(
+                    page_id,
+                    title or "",
+                    content or "",
+                    summary=summary or "",
+                    target_path=target_path or "",
+                )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
 
@@ -207,7 +219,13 @@ async def persist_result(result: Any, repo_path: Path) -> None:
         await fts.delete_many(swept_page_ids)
     if fts is not None and result.generated_pages:
         for page in result.generated_pages:
-            await fts.index(page.page_id, page.title, page.content)
+            await fts.index(
+                page.page_id,
+                page.title,
+                page.content,
+                summary=page.summary,
+                target_path=page.target_path,
+            )
     await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that

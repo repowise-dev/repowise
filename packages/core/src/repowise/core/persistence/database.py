@@ -377,10 +377,12 @@ async def init_db(engine: AsyncEngine) -> None:
 
         # SQLite-only: create FTS5 virtual table for full-text search.
         # PostgreSQL uses a GIN index added by the Alembic migration.
+        #
+        # The statement comes from ``search.py`` rather than being written out
+        # again here. A second copy of the DDL is how a widened index ends up
+        # only half applied: fresh stores would be born on the old column set
+        # and then be rebuilt by ``FullTextSearch.ensure_index`` on first use.
         if engine.dialect.name == "sqlite":
-            await conn.execute(
-                text(
-                    "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
-                    "USING fts5(page_id UNINDEXED, title, content)"
-                )
-            )
+            from repowise.core.persistence.search import PAGE_FTS_DDL
+
+            await conn.execute(text(PAGE_FTS_DDL))
