@@ -42,7 +42,7 @@ from .structural import (
     oneline,
     signature,
 )
-from .validation import validate_generated_response
+from .validation import reset_artifact_check_counts, validate_generated_response
 
 if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
@@ -243,6 +243,11 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         reason, so nothing is added); None when the caller has no use for it.
         """
         from .orchestrate import run_generate_all
+
+        # The artifact-check tallies are per run, and a long-lived process
+        # generates more than once.  Reset so the report's denominator counts
+        # this run's responses rather than every response since start-up.
+        reset_artifact_check_counts()
 
         return await run_generate_all(
             self,

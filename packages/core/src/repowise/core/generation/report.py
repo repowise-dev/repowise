@@ -37,6 +37,10 @@ class GenerationReport:
     # raises when it is missing — the wiki just comes out flat.  Read
     # ``measured`` before reading the counts.
     layer_grouping: LayerGroupingReport = field(default_factory=LayerGroupingReport)
+    # Tally of the generation-artifact checks run over provider responses this
+    # process.  Carries its own denominator so "checked nothing" and "found
+    # nothing" stay separate facts.
+    artifact_checks: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_pages(
@@ -48,6 +52,10 @@ class GenerationReport:
         decisions_count: int = 0,
         elapsed: float = 0.0,
     ) -> GenerationReport:
+        # Deferred: the page generator pulls in the provider stack, and the
+        # report is importable on its own (the CLI renders it lazily).
+        from .page_generator.validation import artifact_check_counts
+
         by_type = dict(Counter(p.page_type for p in pages))
         hal_count = sum(1 for p in pages if p.metadata.get("hallucination_warnings"))
         repair_count = sum(1 for p in pages if p.metadata.get("self_repair"))
@@ -64,11 +72,19 @@ class GenerationReport:
             self_repaired_page_count=repair_count,
             orientation_overlap=measure_orientation_overlap(pages),
             layer_grouping=measure_layer_grouping(pages),
+            artifact_checks=artifact_check_counts(),
         )
 
     @property
     def total_pages(self) -> int:
         return sum(self.pages_by_type.values())
+
+    def artifact_check_summary(self) -> str:
+        """One line saying whether the artifact checks ran, and what they found."""
+        checked = self.artifact_checks.get("responses_checked", 0)
+        if not checked:
+            return "not run (0 responses checked)"
+        return f"{checked} checked, {self.artifact_checks.get('rejected', 0)} rejected"
 
     def estimated_cost_usd(
         self,
@@ -127,6 +143,13 @@ def render_report(report: GenerationReport, console: object) -> None:
     if grouping.ungrouped:
         grouping_text = f"[yellow]{grouping_text}[/yellow]"
     table.add_row("Layer grouping", grouping_text)
+
+    # Same reasoning as the overlap row: shown even at zero, because a check
+    # that never ran must not look like a check that passed.
+    artifact_text = report.artifact_check_summary()
+    if report.artifact_checks.get("rejected"):
+        artifact_text = f"[yellow]{artifact_text}[/yellow]"
+    table.add_row("Artifact checks", artifact_text)
 
     console.print(table)  # type: ignore[union-attr]
 

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass
 
+from repowise.core.generation.prose import prose_text
 from repowise.core.ingestion.models import ParsedFile
 from repowise.core.providers.llm.base import GeneratedResponse
 
@@ -22,6 +24,121 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 class InvalidGeneratedContentError(ValueError):
     """Raised when a fresh LLM response cannot be persisted as documentation."""
+
+
+# ---------------------------------------------------------------------------
+# Generation artifacts
+#
+# Phrasings in which the model addresses whoever prompted it instead of the
+# reader of the page.  Each rule is checked against the page's prose only —
+# fenced blocks and inline code are stripped first — because quoted source
+# legitimately contains any word at all.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ArtifactRule:
+    """One phrasing that must never reach a reader, and why."""
+
+    name: str
+    pattern: re.Pattern[str]
+    explanation: str
+
+
+GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
+    ArtifactRule(
+        name="trailing_offer",
+        # An offer of further work, which only makes sense to whoever is
+        # holding the conversation.  The offer verb is required: "let me know"
+        # alone would be a bare idiom, and every phrasing here needs the model
+        # to be proposing that *it* do something next.
+        pattern=re.compile(
+            r"\b(?:"
+            r"I(?:'d| would)? (?:can|could|am happy to|would be happy to)"
+            r"(?: also)? (?:produce|generate|provide|create|write|add|draw|"
+            r"expand|prepare|put together|do)"
+            r"|let me know if"
+            r"|would you like me to"
+            r"|do you want me to"
+            r"|if you(?:'d| would)? (?:want|like), I"
+            r"|just say the word"
+            r")\b",
+            re.IGNORECASE,
+        ),
+        explanation="offers the reader further work, which no page can deliver",
+    ),
+    ArtifactRule(
+        name="first_person",
+        # First-person singular in the *author's* voice.  Three deliberate
+        # narrowings, each measured against this repo's own documentation:
+        #
+        # * A bare ``\bI\b`` is unusable.  It matches the ``I`` of ``I/O`` on
+        #   every performance page, and it matches the reader-voice questions
+        #   documentation is written in — "How do I update a workspace?",
+        #   "should I worry about this file?".  So ``I`` must be followed by
+        #   a verb that only the writer of the page would use of themselves.
+        # * The verb list excludes the ones that read naturally after a
+        #   question word ("how do I read", "where do I find", "how do I
+        #   choose"), keeping only their past tense, which cannot.
+        # * "we" is left alone entirely: plenty of projects write house
+        #   documentation in the first-person plural on purpose.
+        pattern=re.compile(
+            r"\bI(?:'m|'ll|'ve|'d)\b"
+            r"|\bI (?:do|did|have|had|am|was|would|could) not\b"
+            r"|\bI (?:can|can't|cannot|could|couldn't|will|would|should|must|am|was|"
+            r"haven't|hadn't|didn't|don't|note|noted|notice|noticed|assume|assumed|"
+            r"inferred|chose|omitted|recommend|suggest|think|believe|focused|"
+            r"included|excluded|generated|wrote|found)\b"
+            r"|\bmyself\b"
+        ),
+        explanation="speaks as the generator rather than describing the code",
+    ),
+    ArtifactRule(
+        name="supplied_context",
+        # The model narrating the shape of its own prompt.  The reader has no
+        # idea what was "provided" and cannot go and look at it.
+        pattern=re.compile(
+            r"\bthe (?:provided|supplied|given|attached|above) "
+            r"(?:information|context|data|input|material|details|excerpt|"
+            r"snippet|list|files?|documents?)\b"
+            r"|\byou (?:provided|supplied|gave|listed)\b",
+            re.IGNORECASE,
+        ),
+        explanation="refers to the prompt, which the reader cannot see",
+    ),
+)
+
+# How many responses each rule has seen and rejected, for the whole process.
+# A rule that matches nothing is indistinguishable from a rule that never ran
+# unless the run count is recorded, and a check nobody can see the denominator
+# for reads as a pass whether or not it happened.
+_artifact_check_counts: Counter[str] = Counter()
+
+
+def artifact_check_counts() -> dict[str, int]:
+    """Snapshot of the artifact-check tallies since the last reset.
+
+    ``responses_checked`` is the denominator: zero means the checks never ran,
+    which is not the same fact as ``rejected`` being zero.
+    """
+    return dict(_artifact_check_counts)
+
+
+def reset_artifact_check_counts() -> None:
+    """Clear the tallies.  Used between runs and between tests."""
+    _artifact_check_counts.clear()
+
+
+def _artifact_detail(content: str) -> str | None:
+    """Describe the first generation artifact in ``content``, if any."""
+    prose = prose_text(content)
+    for rule in GENERATION_ARTIFACT_RULES:
+        match = rule.pattern.search(prose)
+        if match is not None:
+            _artifact_check_counts["rejected"] += 1
+            _artifact_check_counts[f"rejected:{rule.name}"] += 1
+            return f"{rule.name}: {rule.explanation} ({match.group(0).strip()!r})"
+    return None
 
 
 def _pathological_repetition_detail(content: str) -> str | None:
@@ -57,6 +174,7 @@ def _pathological_repetition_detail(content: str) -> str | None:
 
 def validate_generated_response(response: GeneratedResponse) -> None:
     """Reject fresh provider output that is unsafe to persist as a wiki page."""
+    _artifact_check_counts["responses_checked"] += 1
     if response.stop_reason == "max_tokens":
         detail = (
             f" (provider reason: {response.provider_stop_reason})"
@@ -73,6 +191,12 @@ def validate_generated_response(response: GeneratedResponse) -> None:
     if repetition_detail is not None:
         raise InvalidGeneratedContentError(
             f"provider returned pathologically repetitive documentation: {repetition_detail}"
+        )
+
+    artifact_detail = _artifact_detail(response.content)
+    if artifact_detail is not None:
+        raise InvalidGeneratedContentError(
+            f"provider returned text addressed to the prompter, not the reader — {artifact_detail}"
         )
 
 
