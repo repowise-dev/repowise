@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import re
+from collections import OrderedDict
 from typing import Any
 
 from sqlalchemy import select
@@ -45,6 +47,8 @@ from sqlalchemy import select
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.test_paths import is_test_path
+
+_log = logging.getLogger("repowise.mcp.answer")
 
 # How many candidates each retriever fetches before merging. Both modes
 # tend to put the right answer in their top ~10, so 15 gives RRF room to
@@ -84,6 +88,87 @@ _PAGERANK_BIAS_MAX = 0.3
 # (e.g. parent at 4.5, expanded child at 3.15) competitive with a real
 # rank-3/4 hit (~3.0-3.5).
 _GRAPH_EXPAND_DAMPING = 0.7
+
+# Budget for embedding the question. The searches that used to embed inline were
+# bounded at 8s including the embed, so the round-trip keeps that ceiling now
+# that it happens on its own.
+_EMBED_TIMEOUT_S = 8.0
+
+
+# ---------------------------------------------------------------------------
+# The question's embedding, computed once per call
+# ---------------------------------------------------------------------------
+
+# Answering one question used to embed its text up to three times: once for the
+# main fetch, once for the concept lookup on a subsystem-shaped question, once
+# for the neighbourhood re-rank on a flow-shaped one. Each is a network
+# round-trip to the embedding provider, billed, for a vector that cannot differ
+# between them.
+#
+# Keyed by ``(id(store), question)`` and holding the store in the value, so an
+# id can never be recycled onto a different store while its entries are live.
+# Capacity is a handful of entries rather than one: concurrent calls with
+# different questions would otherwise evict each other and re-embed. An entry is
+# a pure function of (embedder, text), so a hit across calls is as correct as a
+# hit within one.
+_QUESTION_VECTOR_CACHE_MAX = 4
+_QUESTION_VECTORS: OrderedDict[tuple[int, str], tuple[Any, list[float]]] = OrderedDict()
+
+
+async def question_vector(ctx: Any, question: str) -> list[float] | None:
+    """The question's embedding, computed at most once per store and question.
+
+    Returns None when there is no store, the backend holds no embedder of its
+    own, or the embed failed — callers then fall back to the store's own
+    ``search(text)``, which embeds inline. That fallback is a cost regression,
+    never a correctness one, so it warns rather than raising.
+    """
+    store = getattr(ctx, "vector_store", None)
+    if store is None or not question:
+        return None
+
+    key = (id(store), question)
+    cached = _QUESTION_VECTORS.get(key)
+    if cached is not None:
+        _QUESTION_VECTORS.move_to_end(key)
+        return cached[1]
+
+    try:
+        vectors = await asyncio.wait_for(store.embed_texts([question]), timeout=_EMBED_TIMEOUT_S)
+    except Exception:
+        _log.warning(
+            "get_answer could not embed the question up front; each retrieval "
+            "stage will embed it again",
+            exc_info=True,
+        )
+        return None
+    if not vectors:
+        # Backend without an embedder of its own. Not an error — but it means
+        # every stage pays for its own round-trip, so it is worth seeing.
+        _log.debug("Vector store cannot embed directly; per-stage embedding stands")
+        return None
+
+    vector = [float(v) for v in vectors[0]]
+    _QUESTION_VECTORS[key] = (store, vector)
+    while len(_QUESTION_VECTORS) > _QUESTION_VECTOR_CACHE_MAX:
+        _QUESTION_VECTORS.popitem(last=False)
+    return vector
+
+
+async def vector_search(
+    store: Any, question: str, limit: int, *, vector: list[float] | None
+) -> list[Any]:
+    """Nearest pages to *question*, reusing *vector* when the backend allows it.
+
+    Every backend that can search by raw vector is spared a second embedding of
+    text it has already embedded; one that cannot returns None from
+    ``search_by_vector`` and is asked to search the text as before.
+    """
+    if vector is not None:
+        by_vector = await store.search_by_vector(vector, limit=limit)
+        if by_vector is not None:
+            return by_vector
+    return await store.search(question, limit=limit)
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +248,12 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     if ready is not None:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ready.wait(), timeout=30.0)
+    # Embedded here, before the store is asked anything: this is the first stage
+    # to need the vector, and every later stage reads the same one back.
+    vector = await question_vector(ctx, question)
     try:
         return await asyncio.wait_for(
-            ctx.vector_store.search(question, limit=_RETRIEVAL_FETCH_LIMIT),
+            vector_search(ctx.vector_store, question, _RETRIEVAL_FETCH_LIMIT, vector=vector),
             timeout=8.0,
         )
     except Exception:
@@ -519,7 +607,10 @@ async def _semantic_concept_paths(question: str, ctx: Any) -> list[str]:
         return []
     try:
         results = await asyncio.wait_for(
-            vs.search(question, limit=_CONCEPT_FETCH_LIMIT), timeout=8.0
+            vector_search(
+                vs, question, _CONCEPT_FETCH_LIMIT, vector=await question_vector(ctx, question)
+            ),
+            timeout=8.0,
         )
     except Exception:
         return []
@@ -561,11 +652,9 @@ async def expand_via_parent_page(hits: list[dict], question: str, ctx: Any) -> l
     # Cluster on the strongest real hits: skip decision records and any hit
     # without a path so decision noise crowding the top slots can't starve the
     # clustering of the member files that reveal the subsystem.
-    top = [
-        h
-        for h in hits
-        if h.get("target_path") and h.get("page_type") != "decision_record"
-    ][:_PARENT_EXPAND_TOP_N]
+    top = [h for h in hits if h.get("target_path") and h.get("page_type") != "decision_record"][
+        :_PARENT_EXPAND_TOP_N
+    ]
     if not top:
         return hits
 

@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import Page
+from repowise.server.mcp_server._answer_pipeline import question_vector, vector_search
 from repowise.server.mcp_server._flow_path import _is_plumbing, _load_file_adjacency
 
 # Motion cues that mark a data-flow question. Loose on purpose: the walk (reaches
@@ -136,17 +137,26 @@ def _walk_neighborhood(adj: dict[str, set[str]], seeds: list[str]) -> set[str]:
     return {n for n in reached if n not in seed_set and not _is_plumbing(n)}
 
 
-async def _relevance_order(searcher: Any, question: str, pool: set[str]) -> list[str]:
+async def _relevance_order(
+    searcher: Any, question: str, pool: set[str], *, vector: list[float] | None = None
+) -> list[str]:
     """Rank ``pool`` members by a store's relevance to ``question``.
 
     One corpus-wide search, kept in the store's returned order — order is all RRF
     consumes, so the two stores' score scales never need reconciling. Returns []
     on any store failure; the other arm then drives the fusion alone.
+
+    ``vector`` is the question's already-computed embedding. Passing it spares
+    the embedding arm a second round-trip for text the main fetch already
+    embedded; the lexical arm has no use for it and ignores it.
     """
     if searcher is None or not pool:
         return []
     try:
-        results = await searcher.search(question, limit=_RANK_SCAN)
+        if vector is not None:
+            results = await vector_search(searcher, question, _RANK_SCAN, vector=vector)
+        else:
+            results = await searcher.search(question, limit=_RANK_SCAN)
     except Exception:
         return []
     order, seen = [], set()
@@ -197,7 +207,12 @@ async def expand_via_neighbor_rerank(
     # Fuse embedding + lexical relevance over the pool AND the seeds (so buried
     # originals contest on the same signal), reusing the pipeline's two stores.
     scored = pool | set(seed_paths)
-    vec_order = await _relevance_order(getattr(ctx, "vector_store", None), question, scored)
+    vec_order = await _relevance_order(
+        getattr(ctx, "vector_store", None),
+        question,
+        scored,
+        vector=await question_vector(ctx, question),
+    )
     fts_order = await _relevance_order(getattr(ctx, "fts", None), question, scored)
     fused = _rrf_fuse(vec_order, fts_order)
     if not fused:
