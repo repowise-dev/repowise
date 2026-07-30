@@ -35,6 +35,10 @@ const ONBOARDING_DIR_KEY = "@onboarding";
 // row needs a key of its own and it must not look like a page id.
 const LAYER_DIR_PREFIX = "@layer:";
 const layerDirKey = (layerId: string) => `${LAYER_DIR_PREFIX}${layerId}`;
+// And for the row holding the modules no layer claimed. Deliberately not a
+// layerDirKey: this row is not a layer, and the key is what keeps it out of
+// the default-expanded set (which only ever gets stamped layers' keys).
+const UNLAYERED_MODULES_KEY = "@group:unlayered-modules";
 // Tree expansion survives reloads (per-browser, not per-repo — paths rarely
 // collide across repos and the fallback is just the default expansion).
 const EXPANDED_DIRS_KEY = "repowise:docs-tree-expanded";
@@ -374,11 +378,23 @@ function compareSiblings(a: DocPageSummary, b: DocPageSummary): number {
  * the grouping reads. They render identically, so the difference has to be
  * reported rather than looked at. The overview naming a spine while not one
  * page carries a stamp is the signal that it is the second one.
+ *
+ * The same goes one module at a time: a single module the layers do not claim
+ * is invisible among dozens that are, so it is named here rather than left to
+ * be spotted in the tree.
  */
 function reportLayerGrouping(
   grouping: ReturnType<typeof groupPagesByLayer>,
   spine: readonly string[],
+  unlayeredModules: readonly DocPageSummary[],
 ): void {
+  if (spine.length > 0 && unlayeredModules.length > 0) {
+    console.warn(
+      `[docs-tree] ${unlayeredModules.length} module pages carry no layer stamp, so they are ` +
+        "listed in a group of their own rather than inside a layer: " +
+        unlayeredModules.map((p) => p.target_path || p.title).join(", "),
+    );
+  }
   if (spine.length > 0 && grouping.stamped === 0) {
     console.warn(
       `[docs-tree] the repository overview names ${spine.length} layers, but not one page ` +
@@ -485,11 +501,25 @@ function buildStoredTree(
     const children = (childrenOf.get(root.id) ?? []).slice().sort(compareSiblings);
     const spine = readLayerOrder(root);
     const grouping = groupPagesByLayer(children, spine);
-    reportLayerGrouping(grouping, spine);
-    // Unclaimed children keep their place ahead of the layers: onboarding
-    // chapters and the architecture diagram sort before any module, and that
-    // is the order a reader should meet them in.
-    top.push(...grouping.ungrouped.map((child) => toNode(child, root)));
+    // A module whose dominant layer came out empty gets no stamp, and left on
+    // the top rung it is drawn exactly like a layer row — one module wearing
+    // the weight of a whole architectural layer. Set those aside for a plainly
+    // named row below the layers. Only when a spine exists: with no layers to
+    // be missing from, there is nothing to say and nothing to move.
+    const unlayeredModules =
+      spine.length > 0
+        ? grouping.ungrouped.filter((p) => p.page_type === "module_page")
+        : [];
+    reportLayerGrouping(grouping, spine, unlayeredModules);
+    // The rest keep their place ahead of the layers: onboarding chapters and
+    // the architecture diagram sort before any module, and that is the order a
+    // reader should meet them in.
+    const unlayered = new Set(unlayeredModules.map((p) => p.id));
+    top.push(
+      ...grouping.ungrouped
+        .filter((child) => !unlayered.has(child.id))
+        .map((child) => toNode(child, root)),
+    );
     // The file corpus sits directly after the orientation chapters, ahead of
     // the layers. It is the largest thing in the wiki by a wide margin and the
     // thing most readers arrive wanting, so it cannot be the last row of a list
@@ -511,6 +541,16 @@ function buildStoredTree(
               hrefLabel: `Show ${group.label} in the knowledge graph`,
             }
           : {}),
+      });
+    }
+    // After the real layers, and named for what it is rather than as if it
+    // were one more of them.
+    if (unlayeredModules.length > 0) {
+      top.push({
+        name: `Modules with no layer (${unlayeredModules.length})`,
+        path: UNLAYERED_MODULES_KEY,
+        isDir: true,
+        children: unlayeredModules.map((child) => toNode(child, root)),
       });
     }
   }
