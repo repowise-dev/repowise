@@ -12,6 +12,7 @@ import {
   clampProse,
   countWords,
 } from "./split-markdown";
+import { readLayerOrder } from "../lib/layers";
 import type { PresentModel, PresentSlide, PresentStep } from "./types";
 
 // Curation caps keep the deck tight and premium on large repos.
@@ -44,10 +45,10 @@ export function readTour(overview: DocPage | undefined): TourStop[] {
     }));
 }
 
-export function readLayerOrder(overview: DocPage | undefined): string[] {
-  const raw = overview?.metadata?.["layer_order_ids"] ?? overview?.metadata?.["layer_order"];
-  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
-}
+// The spine reader lives with the rest of the layer logic — the docs tree
+// groups by the same order this deck presents in, and one repository can only
+// have one layer order.
+export { readLayerOrder } from "../lib/layers";
 
 /**
  * A readable repo name from the overview page title. Titles look like

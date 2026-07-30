@@ -22,6 +22,7 @@ import {
   type OnboardingSlot,
 } from "../lib/page-types";
 import { RAW_GRAPH_ID, displayLabel, treeLabel } from "./page-labels";
+import { groupPagesByLayer, readLayerOrder, readLayerStamp } from "../lib/layers";
 import { cn } from "../lib/cn";
 import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
 import type { DocPageSummary } from "@repowise-dev/types/docs";
@@ -30,6 +31,10 @@ import type { DocPageSummary } from "@repowise-dev/types/docs";
 // real target_path (which never starts with "@") so directory lookups don't
 // collide with module paths.
 const ONBOARDING_DIR_KEY = "@onboarding";
+// Same idea for a layer's grouping row. A layer has no page behind it, so the
+// row needs a key of its own and it must not look like a page id.
+const LAYER_DIR_PREFIX = "@layer:";
+const layerDirKey = (layerId: string) => `${LAYER_DIR_PREFIX}${layerId}`;
 // Tree expansion survives reloads (per-browser, not per-repo — paths rarely
 // collide across repos and the fallback is just the default expansion).
 const EXPANDED_DIRS_KEY = "repowise:docs-tree-expanded";
@@ -348,6 +353,41 @@ function compareSiblings(a: DocPageSummary, b: DocPageSummary): number {
   );
 }
 
+/**
+ * Say out loud when the layer grouping and the repository disagree.
+ *
+ * A tree with no layer rows has two very different causes: a repository that
+ * genuinely has no layers, and a page listing that stopped carrying the stamp
+ * the grouping reads. They render identically, so the difference has to be
+ * reported rather than looked at. The overview naming a spine while not one
+ * page carries a stamp is the signal that it is the second one.
+ */
+function reportLayerGrouping(
+  grouping: ReturnType<typeof groupPagesByLayer>,
+  spine: readonly string[],
+): void {
+  if (spine.length > 0 && grouping.stamped === 0) {
+    console.warn(
+      `[docs-tree] the repository overview names ${spine.length} layers, but not one page ` +
+        "carries a layer stamp, so the outline is flat. Check that the page listing still " +
+        "serves layer_id.",
+    );
+  }
+  if (spine.length === 0 && grouping.stamped > 0) {
+    console.warn(
+      `[docs-tree] ${grouping.stamped} pages name a layer, but the repository overview ` +
+        "records no layer order. Grouping by name, which says nothing about which layer " +
+        "depends on which.",
+    );
+  }
+  if (spine.length > 0 && grouping.offSpine.length > 0) {
+    console.warn(
+      `[docs-tree] ${grouping.offSpine.length} layers are stamped on pages but absent from ` +
+        `the overview's spine, so they sort last: ${grouping.offSpine.join(", ")}`,
+    );
+  }
+}
+
 function buildStoredTree(pages: DocPageSummary[]): TreeNode[] {
   // A tombstoned page documents a file that no longer exists. It keeps its row
   // and its content, but the tree deliberately has no place for it, so it must
@@ -408,12 +448,27 @@ function buildStoredTree(pages: DocPageSummary[]): TreeNode[] {
       page: root,
       children: [],
     });
-    top.push(
-      ...(childrenOf.get(root.id) ?? [])
-        .slice()
-        .sort(compareSiblings)
-        .map((child) => toNode(child, root)),
-    );
+    // The layers are the top rung of the outline, and they are grouping rows
+    // rather than pages: the layer a module belongs to is stamped on the module
+    // itself, so the grouping holds whether or not the wiki describes the layer
+    // anywhere. On a wiki that does parent modules onto a layer page, no child
+    // of the root carries a stamp and this is a no-op.
+    const children = (childrenOf.get(root.id) ?? []).slice().sort(compareSiblings);
+    const spine = readLayerOrder(root);
+    const grouping = groupPagesByLayer(children, spine);
+    reportLayerGrouping(grouping, spine);
+    // Unclaimed children keep their place ahead of the layers: onboarding
+    // chapters and the architecture diagram sort before any module, and that
+    // is the order a reader should meet them in.
+    top.push(...grouping.ungrouped.map((child) => toNode(child, root)));
+    for (const group of grouping.groups) {
+      top.push({
+        name: group.label,
+        path: layerDirKey(group.id),
+        isDir: true,
+        children: group.pages.map((child) => toNode(child, root)),
+      });
+    }
   }
 
   // Concept pages the walk never reached. Grouped by type rather than dropped:
@@ -761,6 +816,11 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     );
     for (const page of pages) {
       if (hasSpineChild.has(page.id) && SPINE_TYPES.has(page.page_type)) dirs.add(page.id);
+      // A layer's grouping row has no page behind it, so the rule above cannot
+      // reach it. It opens for the same reason a layer page did: the layers are
+      // the top rung, and a shut one hides the whole outline under it.
+      const layer = readLayerStamp(page);
+      if (layer) dirs.add(layerDirKey(layer.id));
     }
     if (typeof window !== "undefined") {
       try {

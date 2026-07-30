@@ -315,6 +315,171 @@ describe("DocsTree", () => {
     expect(screen.getByText("infra-0.yml")).toBeInTheDocument();
   });
 
+  // -------------------------------------------------------------------------
+  // Layer grouping from the stamp on the members
+  // -------------------------------------------------------------------------
+  //
+  // The wiki no longer writes a page per layer, so a module cannot be parented
+  // onto one. Every module and cycle carries the layer that claims it, and the
+  // tree builds the grouping row from that.
+
+  /** A repo whose modules hang straight off the overview, each stamped. */
+  const SPINE_IDS = ["layer:runtime", "layer:api"];
+  const layeredRoot = (metadata: Record<string, unknown> = {}) =>
+    makePage({
+      id: "repo_overview:demo",
+      page_type: "repo_overview",
+      title: "Repository Overview: demo",
+      target_path: "demo",
+      parent_page_id: null,
+      display_order: 0,
+      metadata,
+    });
+  const stampedModule = (
+    id: string,
+    title: string,
+    stamp: { layer_id?: string; layer_name?: string } = {},
+    order = 1,
+  ) =>
+    makePage({
+      id,
+      page_type: "module_page",
+      title,
+      target_path: id.replace("module_page:", ""),
+      parent_page_id: "repo_overview:demo",
+      display_order: order,
+      ...stamp,
+    });
+
+  it("groups modules under a layer row built from the stamp on the modules", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The layer row exists even though no page describes the layer.
+    expect(screen.getByText("Zebra Runtime")).toBeInTheDocument();
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+    // Ordered by the overview's spine, which disagrees with the alphabet — so
+    // this cannot pass on an alphabetical grouping.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Alpha API"));
+    expect("Zebra Runtime".localeCompare("Alpha API")).toBeGreaterThan(0);
+    // Each module reads under its own layer, not beside it.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("runtime/engine"));
+    expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Alpha API"));
+  });
+
+  it("labels a layer by its id when no member carries the display name", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(screen.getByText("layer:api")).toBeInTheDocument();
+  });
+
+  it("reads the stamp out of metadata when the row was fetched in full", () => {
+    // A hydrated row carries the blob rather than the promoted column.
+    const module = makePage({
+      id: "module_page:api/routes",
+      page_type: "module_page",
+      title: "Module: api/routes",
+      target_path: "api/routes",
+      parent_page_id: "repo_overview:demo",
+      metadata: { layer_id: "layer:api", layer_name: "Alpha API" },
+    });
+    render(
+      <DocsTree
+        pages={[layeredRoot({ layer_order_ids: ["layer:api"] }), module]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+  });
+
+  it("warns when the overview names a spine but nothing carries a stamp", () => {
+    // A listing that dropped the stamp and a repo with no layers at all look
+    // identical in the rendered tree, so the two must not be told apart by
+    // eye. The overview declaring a spine is the signal something is wrong.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule("module_page:api/routes", "Module: api/routes"),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(" ")).toContain("layer");
+    // The pages are still shown — a missing grouping never hides a page.
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it("stays quiet on a repo that genuinely has no layers", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot(),
+          stampedModule("module_page:api/routes", "Module: api/routes"),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(warn).not.toHaveBeenCalled();
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it("warns about a stamped layer the spine does not list, and still shows it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          stampedModule("module_page:odd/bits", "Module: odd/bits", {
+            layer_id: "layer:ghost",
+            layer_name: "Ghost",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(warn.mock.calls.flat().join(" ")).toContain("layer:ghost");
+    // Off-spine layers sort last rather than disappearing.
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Ghost"));
+  });
+
   it("lifts a concept's file pages to the bottom folder, leaving the concept a clean leaf", () => {
     // The concept stays a pure title in the outline; its files move wholesale
     // into the single bottom folder rather than sitting beside it.
