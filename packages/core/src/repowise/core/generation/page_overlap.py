@@ -52,14 +52,34 @@ ORIENTATION_PAGE_TYPES: frozenset[str] = frozenset(
     {"onboarding", "layer_page", "repo_overview", "architecture_diagram"}
 )
 
-# Measured across the orientation set of a full index: pairs of *different*
-# page types sit at or below 0.19, except one known duplicate at 0.24.  0.22
-# separates them with margin on both sides.
+# Both thresholds warn; neither fails a run.  The readings below come from a
+# fresh index of this repository over an orientation set of 8 pages (7
+# onboarding plus the overview), measured after the layer and architecture
+# pages stopped being emitted.  They replace readings taken on a 20-page set
+# that no longer exists.
+#
+#   cross-type    7 pairs   max 0.2113   median 0.1473
+#   same-type    21 pairs   max 0.2371   median 0.1453
+#
+# Read that as one sample rather than a distribution: one repository, one
+# model.  Page vocabulary depends on both, so another repository can sit
+# anywhere relative to these numbers.
+#
+# Cross-type: the highest innocent pair is 0.2113 — the overview against the
+# guided tour, two pages that should both exist — and the only duplicate ever
+# measured here scored 0.2431 before it was merged away.  Roughly 0.03
+# separates the two classes, which is why this stays a warning line.  Failing a
+# run on it would fail innocent pages at the same rate it caught duplicates,
+# and this check runs during a user's index, not in CI.
 DEFAULT_CROSS_TYPE_THRESHOLD = 0.22
 
-# Pages of the *same* type share a template and a domain vocabulary, so they
-# run far higher — the layer pages have a median near 0.38 with nothing wrong.
-# 0.45 catches the genuinely interchangeable ones without flagging the rest.
+# Same-type pages share a template and a domain vocabulary, so they used to run
+# much higher: the layer pages had a median near 0.38 with nothing wrong, and
+# 0.45 was chosen against them.  Those pages are gone and the remaining
+# same-type maximum is 0.2371, so nothing approaches this bar now.  Left where
+# it is on purpose rather than re-tuned to fit a single index — a bar nobody
+# approaches is worth revisiting once there is more than one index to set it
+# against.
 DEFAULT_SAME_TYPE_THRESHOLD = 0.45
 
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
