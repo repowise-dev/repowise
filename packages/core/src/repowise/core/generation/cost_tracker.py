@@ -59,6 +59,9 @@ _PRICING: dict[str, dict[str, float]] = {
     # DeepSeek
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
+    # MiniMax
+    "MiniMax-M3": {"input": 0.6, "output": 2.4},
+    "MiniMax-M2.7": {"input": 0.3, "output": 1.2},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
