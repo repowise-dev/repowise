@@ -44,6 +44,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.test_paths import is_test_path
@@ -54,6 +55,19 @@ _log = logging.getLogger("repowise.mcp.answer")
 # tend to put the right answer in their top ~10, so 15 gives RRF room to
 # resolve ties without dragging weak tail hits into the merge.
 _RETRIEVAL_FETCH_LIMIT = 15
+
+# Page-id namespace decision vectors live under in the shared page store. Read
+# from the module that writes them so the two cannot drift apart.
+_DECISION_PREFIX = DECISION_VECTOR_PREFIX
+
+# Decision records share the page vector store under this page-id namespace, so
+# a page fetch has to ask for more rows than it needs and drop them. Over-fetch
+# rather than post-filter a fixed window: a query whose nearest neighbours are
+# all decisions would otherwise return a candidate set short by however many
+# happened to rank high, which reads downstream as thin retrieval rather than as
+# a filtered one. The margin is generous because decision rows cluster on the
+# question-shaped text that also retrieves well.
+_DECISION_OVERFETCH = 15
 
 # RRF constant. The standard k=60 from the original RRF paper — large enough
 # that rank-1 (1/61) and rank-2 (1/62) are close, small enough that rank-10
@@ -236,6 +250,43 @@ async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
         return []
 
 
+def _pages_only(results: list[Any], limit: int) -> list[Any]:
+    """Best-first *results* with decision vectors removed, capped at *limit*.
+
+    Decision records live in the page store under their own page-id namespace so
+    dedup can match a paraphrase and ``search_codebase`` can surface a decision
+    directly. Neither is true of answering: a decision row has no ``wiki_pages``
+    row, so hydration leaves it pathless — and a pathless hit skips the tombstone
+    check and the scope filter, can only be reordered by noise demotion rather
+    than dropped, and cannot be cited by the answer it helped write.
+
+    A why-shaped question still gets its decisions. They are injected from a
+    path-overlap query over ``decision_records``, which does not involve this
+    store at all.
+    """
+    kept = [r for r in results if not str(getattr(r, "page_id", "")).startswith(_DECISION_PREFIX)]
+    dropped = len(results) - len(kept)
+    if dropped:
+        _log.debug(
+            "get_answer page retrieval dropped %d decision vector(s) from a window of %d",
+            dropped,
+            len(results),
+        )
+    if len(kept) < limit and dropped:
+        # The over-fetch margin was not enough. Reported because the visible
+        # symptom is a short candidate set, which otherwise reads as a corpus
+        # too small or a query too narrow.
+        _log.warning(
+            "get_answer page retrieval kept only %d of a requested %d candidates: %d "
+            "decision vector(s) filled the window. Decisions may be over-represented "
+            "in the vector store.",
+            len(kept),
+            limit,
+            dropped,
+        )
+    return kept[:limit]
+
+
 async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     """Vector search wrapped in timeout + suppression. Returns [] on any failure.
 
@@ -252,12 +303,18 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     # to need the vector, and every later stage reads the same one back.
     vector = await question_vector(ctx, question)
     try:
-        return await asyncio.wait_for(
-            vector_search(ctx.vector_store, question, _RETRIEVAL_FETCH_LIMIT, vector=vector),
+        results = await asyncio.wait_for(
+            vector_search(
+                ctx.vector_store,
+                question,
+                _RETRIEVAL_FETCH_LIMIT + _DECISION_OVERFETCH,
+                vector=vector,
+            ),
             timeout=8.0,
         )
     except Exception:
         return []
+    return _pages_only(results, _RETRIEVAL_FETCH_LIMIT)
 
 
 def _hit_dict_from_result(result: Any) -> dict:
@@ -352,8 +409,18 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
         }
 
     out: list[dict] = []
+    pageless = 0
     for h in hits:
-        meta = meta_by_id.get(h["page_id"], {})
+        meta = meta_by_id.get(h["page_id"])
+        if meta is None:
+            # A retrieved id with no page behind it: a decision vector, or a
+            # vector left over from a page the stores have since disagreed
+            # about. Either way there is nothing to cite and nothing to read,
+            # and keeping it costs a served slot — while every later gate that
+            # would have caught it (tombstone, scope) is keyed on a path it
+            # does not have.
+            pageless += 1
+            continue
         # Tombstoned pages document deleted/renamed files — serving them as
         # answer material would cite code that no longer exists.
         if meta.get("freshness") == "tombstone":
@@ -367,6 +434,14 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
         # of truth; retrievers sometimes carry stale or empty types.
         h["page_type"] = meta.get("page_type") or h.get("page_type", "")
         out.append(h)
+    if pageless:
+        _log.warning(
+            "get_answer dropped %d of %d retrieved hit(s) with no page row behind them; "
+            "an id in a retriever that the page table does not know is either a "
+            "non-page vector or a three-store disagreement (repowise doctor --repair)",
+            pageless,
+            len(hits),
+        )
     return out
 
 
