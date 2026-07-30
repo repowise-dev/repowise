@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from .models import GeneratedPage
 from .page_overlap import OverlapReport, measure_orientation_overlap
+from .page_tree import LayerGroupingReport, measure_layer_grouping
 
 
 @dataclass
@@ -31,6 +32,11 @@ class GenerationReport:
     # ``comparable`` before reading ``flagged`` — an empty ``flagged`` on a
     # run that compared nothing is not a clean result.
     orientation_overlap: OverlapReport = field(default_factory=OverlapReport)
+    # How far layer provenance reached across this run's pages.  Layers have no
+    # pages of their own, so the docs tree groups by this metadata and nothing
+    # raises when it is missing — the wiki just comes out flat.  Read
+    # ``measured`` before reading the counts.
+    layer_grouping: LayerGroupingReport = field(default_factory=LayerGroupingReport)
 
     @classmethod
     def from_pages(
@@ -57,6 +63,7 @@ class GenerationReport:
             hallucination_warning_count=hal_count,
             self_repaired_page_count=repair_count,
             orientation_overlap=measure_orientation_overlap(pages),
+            layer_grouping=measure_layer_grouping(pages),
         )
 
     @property
@@ -112,6 +119,14 @@ def render_report(report: GenerationReport, console: object) -> None:
     if overlap.flagged:
         overlap_text = f"[yellow]{overlap_text}[/yellow]"
     table.add_row("Orientation overlap", overlap_text)
+
+    # Always shown, for the same reason as the row above: a hidden zero would
+    # make "nothing was groupable" read as "everything grouped".
+    grouping = report.layer_grouping
+    grouping_text = grouping.summary_line()
+    if grouping.ungrouped:
+        grouping_text = f"[yellow]{grouping_text}[/yellow]"
+    table.add_row("Layer grouping", grouping_text)
 
     console.print(table)  # type: ignore[union-attr]
 

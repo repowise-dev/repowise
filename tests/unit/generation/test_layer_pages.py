@@ -172,3 +172,93 @@ class TestGroupingSurvivesWithoutTheirPages:
         stored = next(n for n in nodes if n.page_id == "layer_page:layer:analysis")
         assert stored.parent_page_id == "repo_overview:demo"
         assert stored.section_number is not None
+
+
+class TestTheRunCountsWhatGroupingReached:
+    """Losing the grouping is now a silent failure unless something counts it.
+
+    With the pages gone, nothing errors when provenance fails to land: the
+    tree still builds, every page still has a parent, and the reader simply
+    gets a flat wiki. So the run counts the pages that carry a layer against
+    the pages that were supposed to, and reports it.
+    """
+
+    @staticmethod
+    def _page(page_id: str, page_type: str, **metadata):
+        from datetime import UTC, datetime
+
+        from repowise.core.generation.models import GeneratedPage
+
+        now = datetime.now(UTC)
+        return GeneratedPage(
+            page_id=page_id,
+            page_type=page_type,
+            title=page_id,
+            content="",
+            source_hash="",
+            model_name="",
+            provider_name="template",
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            generation_level=0,
+            target_path=page_id.split(":", 1)[1],
+            created_at=now,
+            updated_at=now,
+            metadata=dict(metadata),
+        )
+
+    def test_counts_stamped_and_unstamped_members(self):
+        from repowise.core.generation.page_tree import measure_layer_grouping
+
+        report = measure_layer_grouping(
+            [
+                self._page("module_page:a", "module_page", layer_id="layer:core"),
+                self._page("scc_page:c1", "scc_page", layer_id="layer:core"),
+                self._page("module_page:b", "module_page"),
+                # Not grouped under a layer row, so not counted either way.
+                self._page("file_page:a.py", "file_page", layer_id="layer:core"),
+                self._page("repo_overview:demo", "repo_overview"),
+            ]
+        )
+        assert report.grouped == 2
+        assert report.ungrouped == 1
+        assert report.total == 3
+
+    def test_nothing_to_group_is_not_a_clean_result(self):
+        """A run with no groupable page proves nothing about the grouping."""
+        from repowise.core.generation.page_tree import measure_layer_grouping
+
+        report = measure_layer_grouping([self._page("repo_overview:demo", "repo_overview")])
+        assert report.total == 0
+        assert not report.measured
+        assert "not computed" in report.summary_line()
+
+    def test_a_blank_layer_id_does_not_count_as_grouped(self):
+        from repowise.core.generation.page_tree import measure_layer_grouping
+
+        report = measure_layer_grouping([self._page("module_page:a", "module_page", layer_id="")])
+        assert report.grouped == 0
+        assert report.ungrouped == 1
+
+    def test_the_generation_report_carries_the_count(self):
+        from repowise.core.generation.report import GenerationReport
+
+        report = GenerationReport.from_pages(
+            [
+                self._page("module_page:a", "module_page", layer_id="layer:core"),
+                self._page("module_page:b", "module_page"),
+            ]
+        )
+        assert report.layer_grouping.grouped == 1
+        assert report.layer_grouping.ungrouped == 1
+
+    def test_the_rendered_report_always_shows_the_row(self):
+        """Hiding it on a zero would make "not measured" look like "all fine"."""
+        from rich.console import Console
+
+        from repowise.core.generation.report import GenerationReport, render_report
+
+        console = Console(record=True, width=200)
+        render_report(GenerationReport.from_pages([]), console)
+        assert "Layer grouping" in console.export_text()
