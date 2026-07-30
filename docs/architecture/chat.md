@@ -2,7 +2,8 @@
 
 The codebase chat feature lets users have an interactive conversation with their
 codebase. The agent uses whichever LLM provider the user has configured, has
-access to all 10 MCP tools, and streams responses back to the browser in real time
+access to **7 tools** from the MCP surface (a curated chat subset — not the full
+11-tool MCP default), and streams responses back to the browser in real time
 showing tool calls as they happen and rendering results in an artifact panel.
 
 ---
@@ -158,8 +159,10 @@ class ChatProvider(Protocol):
 
 Defined in `packages/server/src/repowise/server/chat_tools.py`.
 
-Single source of truth for tool schemas and execution. Imports the 10 MCP tool
-functions directly from `repowise.server.mcp_server`.
+Single source of truth for chat tool schemas and execution. Imports **7** MCP
+tool functions from `repowise.server.mcp_server` (the chat agent does not
+advertise the full MCP default surface — no `get_answer`, `get_symbol`,
+`get_health`, or `list_repos` here).
 
 ```python
 TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, parameters, function, artifact_type)
@@ -174,18 +177,17 @@ TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, paramete
 | `get_artifact_type(name)` | Maps tool name to frontend artifact type |
 | `init_tool_state(...)` | Bridges FastAPI app state to MCP module globals |
 
-**Tool to artifact type mapping:**
+**Tool to artifact type mapping (7 tools):**
 
 | Tool | Artifact Type |
 |------|--------------|
 | `get_overview` | `overview` |
 | `get_context` | `wiki_page` |
 | `get_risk` | `risk_report` |
+| `get_change_risk` | `risk_report` |
 | `get_why` | `decisions` |
 | `search_codebase` | `search_results` |
-| `get_dependency_path` | `graph` |
 | `get_dead_code` | `dead_code` |
-| `get_architecture_diagram` | `diagram` |
 
 ---
 

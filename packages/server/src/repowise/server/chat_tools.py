@@ -188,8 +188,8 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "min_confidence": {
                     "type": "number",
-                    "description": "Minimum confidence threshold (default 0.5).",
-                    "default": 0.5,
+                    "description": "Minimum confidence threshold (default 0.4; matches RISK_CAP_CONFIDENCE).",
+                    "default": 0.4,
                 },
                 "safe_only": {
                     "type": "boolean",

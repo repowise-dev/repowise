@@ -1154,9 +1154,10 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to all 11 MCP tools.
+the user has configured and has access to **7 tools** from the MCP surface
+(see [`chat.md`](chat.md) — not the full 11-tool MCP default).
 
-See [`docs/CHAT.md`](CHAT.md) for the full technical reference covering the
+See [`docs/architecture/chat.md`](chat.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
 database schema, frontend component architecture, and artifact rendering system.
 
@@ -1165,7 +1166,7 @@ database schema, frontend component architecture, and artifact rendering system.
 - **Provider-agnostic** — the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse** — the 11 MCP tools are called directly as Python functions (no
+- **Tool reuse** — the 7 chat tools are called directly as Python functions (no
   subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
   fed to both the LLM and the executor.
 - **SSE streaming** — `POST /api/repos/{repo_id}/chat/messages` runs the agentic
