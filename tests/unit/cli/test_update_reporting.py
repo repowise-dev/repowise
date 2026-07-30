@@ -43,6 +43,10 @@ def _diffs(n: int, status: str = "modified") -> list:
     return [SimpleNamespace(status=status, path=f"src/file_{i}.py") for i in range(n)]
 
 
+def _affected(decay_only: list | None = None) -> SimpleNamespace:
+    return SimpleNamespace(decay_only=decay_only or [])
+
+
 class TestRenderChangedFiles:
     def test_collapses_to_preview_plus_more_by_default(self, monkeypatch):
         printed = _capture(monkeypatch)
@@ -125,3 +129,57 @@ class TestCompletionPanels:
             elapsed=63.1,
         )
         assert any("workspace update complete" in line for line in printed.lines)
+
+
+# Every generation check the report carries. A check that stops reaching the
+# console is a check nobody acts on, so the names are asserted literally.
+_CHECK_ROWS = ("Orientation overlap", "Layer grouping", "Artifact checks", "Overview length")
+
+
+class TestGenerationReport:
+    """The generation checks must reach a plain run, not only `-v`.
+
+    Warnings from `repowise.core.*` are silenced process-wide outside verbose
+    mode (`cli/_setup.py`), so this console output is the only channel a check
+    has. Rendering it under `if verbose:` left every check invisible by default.
+    """
+
+    def test_checks_render_without_detail(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting._render_update_report([], _affected(), [], 4.2, detail=False)
+
+        for row in _CHECK_ROWS:
+            assert any(row in line for line in printed.lines), f"{row} missing from a plain run"
+
+    def test_detail_adds_the_stats_table_and_keeps_the_checks(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting._render_update_report([], _affected(), [], 4.2, detail=True)
+
+        assert any("Est. cost" in line for line in printed.lines)
+        for row in _CHECK_ROWS:
+            assert any(row in line for line in printed.lines), f"{row} missing from a verbose run"
+
+    def test_plain_run_omits_the_stats_table(self, monkeypatch):
+        printed = _capture(monkeypatch)
+        reporting._render_update_report([], _affected(), [], 4.2, detail=False)
+
+        assert not any("Est. cost" in line for line in printed.lines)
+
+    def test_render_failure_is_loud_and_names_the_cause(self, monkeypatch):
+        """A failed report must not read as a successful one.
+
+        The previous fallback printed a green "Updated N pages", so a report
+        that raised looked exactly like a run with nothing to report.
+        """
+        printed = _capture(monkeypatch)
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("overlap exploded")
+
+        monkeypatch.setattr("repowise.core.generation.report.GenerationReport.from_pages", _boom)
+        reporting._render_update_report([], _affected(), [], 4.2, detail=False)
+
+        text = "\n".join(printed.lines)
+        assert "overlap exploded" in text
+        assert "RuntimeError" in text
+        assert "checks did not run" in text

@@ -162,31 +162,45 @@ def render_report(report: GenerationReport, console: object) -> None:
     if report.self_repaired_page_count:
         table.add_row("Self-repaired pages", str(report.self_repaired_page_count))
 
-    # Always shown, including when nothing was comparable.  Hiding the row on
-    # a zero would make "the check did not run" look like "the check passed".
+    console.print(table)  # type: ignore[union-attr]
+    render_generation_checks(report, console)
+
+
+def render_generation_checks(report: GenerationReport, console: object) -> None:
+    """Print the run's quality checks, each of them every time.
+
+    Split out of the statistics table so a caller can show the checks without
+    the cost and token detail. Both callers share this one definition: a check
+    that renders in only one of two places is a check that goes silent the
+    moment a run takes the other path.
+
+    Every row prints even at zero. A hidden zero would make "the check did not
+    run" indistinguishable from "the check passed", which is the failure the
+    checks exist to prevent.
+    """
+    from rich.table import Table  # deferred so core has no hard rich dep
+
+    table = Table(title="Generation Checks", show_lines=False)
+    table.add_column("Check", style="cyan")
+    table.add_column("Result", justify="right")
+
     overlap = report.orientation_overlap
     overlap_text = overlap.summary_line()
     if overlap.flagged:
         overlap_text = f"[yellow]{overlap_text}[/yellow]"
     table.add_row("Orientation overlap", overlap_text)
 
-    # Always shown, for the same reason as the row above: a hidden zero would
-    # make "nothing was groupable" read as "everything grouped".
     grouping = report.layer_grouping
     grouping_text = grouping.summary_line()
     if grouping.ungrouped:
         grouping_text = f"[yellow]{grouping_text}[/yellow]"
     table.add_row("Layer grouping", grouping_text)
 
-    # Same reasoning as the overlap row: shown even at zero, because a check
-    # that never ran must not look like a check that passed.
     artifact_text = report.artifact_check_summary()
     if report.artifact_checks.get("rejected"):
         artifact_text = f"[yellow]{artifact_text}[/yellow]"
     table.add_row("Artifact checks", artifact_text)
 
-    # Always shown for the same reason as the two rows above: a budget nobody
-    # sees the reading of is a budget nobody keeps.
     length_text = report.overview_length_summary()
     if report.overview_over_budget:
         length_text = f"[yellow]{length_text}[/yellow]"

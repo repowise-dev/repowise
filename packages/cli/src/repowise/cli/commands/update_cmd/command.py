@@ -1711,6 +1711,7 @@ def run_update(
         elapsed=elapsed,
         degraded=degraded,
     )
-    if verbose:
-        _render_update_report(generated_pages, affected, new_decision_markers, elapsed)
+    _render_update_report(
+        generated_pages, affected, new_decision_markers, elapsed, detail=verbose
+    )
     return UpdateOutcome.REGENERATED
