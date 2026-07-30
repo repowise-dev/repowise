@@ -12,6 +12,8 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
+import structlog
+
 from ..search import SearchResult
 
 __all__ = [
@@ -21,6 +23,8 @@ __all__ = [
     "cosine_similarity",
     "iter_embed_chunks",
 ]
+
+logger = structlog.get_logger(__name__)
 
 # One embedder call per chunk of this many items. OpenAI rejects embedding
 # requests past 300k total tokens — a generation level of 275 full wiki
@@ -39,9 +43,29 @@ EMBED_TEXT_MAX_CHARS = 30_000
 def iter_embed_chunks(
     items: list[tuple[str, str, dict]],
 ) -> Iterator[tuple[list[tuple[str, str, dict]], list[str]]]:
-    """Yield ``(chunk, capped_texts)`` slices sized for one embedder request."""
+    """Yield ``(chunk, capped_texts)`` slices sized for one embedder request.
+
+    Text past :data:`EMBED_TEXT_MAX_CHARS` is dropped, and dropping it is
+    logged. The cap was sized when the largest page in a corpus was well
+    under it, so for years it bound on nothing; a corpus whose page mix has
+    since changed can push pages over it, and the characters past the cut
+    are simply absent from the vector. Nothing downstream can tell that
+    apart from a page that never said those words, so the only place the
+    loss is observable is here.
+    """
     for start in range(0, len(items), EMBED_BATCH_MAX_ITEMS):
         chunk = items[start : start + EMBED_BATCH_MAX_ITEMS]
+        for page_id, text, _meta in chunk:
+            if len(text) > EMBED_TEXT_MAX_CHARS:
+                logger.warning(
+                    "embed_text_truncated",
+                    # Empty for the raw ``embed_texts`` path, which embeds
+                    # loose strings that belong to no page.
+                    page_id=page_id,
+                    chars=len(text),
+                    chars_dropped=len(text) - EMBED_TEXT_MAX_CHARS,
+                    cap=EMBED_TEXT_MAX_CHARS,
+                )
         yield chunk, [text[:EMBED_TEXT_MAX_CHARS] for _, text, _ in chunk]
 
 
