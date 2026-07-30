@@ -12,6 +12,7 @@ self-contained README under `examples/<name>/`.
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
 | [security-scan/](security-scan/) | Working-tree security signals + OSS `security scan --history` (no LLM key) |
+| [structurizr-export/](structurizr-export/) | `export --format structurizr` fragment vs standalone (no LLM key) |
 
 ## Conventions
 
@@ -29,4 +30,5 @@ self-contained README under `examples/<name>/`.
 - [Code health](../docs/layers/CODE_HEALTH.md)
 - [Test intelligence](../docs/layers/TEST_INTELLIGENCE.md)
 - [Distill](../docs/agent/DISTILL.md)
+- [Structurizr export](../docs/architecture/structurizr-export.md)
 - [CLI: security](../docs/reference/CLI_REFERENCE.md)
