@@ -286,6 +286,81 @@ def test_show_completion_panel_with_failures(monkeypatch):
     assert metrics_dict.get("Pages generated") == "1 (2 failed)"
 
 
+def _completion_result(pages: list) -> SimpleNamespace:
+    graph_mock = MagicMock()
+    graph_mock.number_of_nodes.return_value = 10
+    graph_mock.number_of_edges.return_value = 5
+    return SimpleNamespace(
+        graph_builder=MagicMock(graph=lambda: graph_mock),
+        dead_code_report=None,
+        decision_report=None,
+        git_summary=None,
+        git_meta_map={},
+        repo_structure=SimpleNamespace(root_language_distribution={"Python": 1.0}),
+        generated_pages=pages,
+        failed_page_ids=[],
+        file_count=3,
+        symbol_count=42,
+    )
+
+
+# Every generation check the report carries.
+_CHECK_ROWS = ("Orientation overlap", "Layer grouping", "Artifact checks", "Overview length")
+
+
+class TestInitRendersGenerationChecks:
+    """`init` writes a repository's first pages, so it must report on them.
+
+    It never built a GenerationReport at all: the checks ran only on a later
+    `update`. The first index is where duplication is created, and it was the
+    one run that said nothing about it.
+    """
+
+    def _output(self, monkeypatch, *, index_only: bool) -> str:
+        import io
+
+        from rich.console import Console
+
+        buf = io.StringIO()
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.reporting.console",
+            Console(file=buf, width=200, force_terminal=False),
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.reporting.build_completion_panel",
+            lambda title, metrics, next_steps=None: "PANEL",
+        )
+        show_completion(
+            repo_path="/fake",
+            result=_completion_result([_page("file_page:a")]),
+            start=0.0,
+            effective_index_only=index_only,
+            run_mode="standard",
+            provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+        )
+        return buf.getvalue()
+
+    @pytest.mark.parametrize("index_only", [False, True])
+    def test_checks_render_after_completion(self, monkeypatch, index_only):
+        output = self._output(monkeypatch, index_only=index_only)
+
+        for row in _CHECK_ROWS:
+            assert row in output, f"{row} missing from init's completion output"
+
+    def test_check_failure_is_loud_and_names_the_cause(self, monkeypatch):
+        """A failed check block must not read as a clean first index."""
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("overlap exploded")
+
+        monkeypatch.setattr("repowise.core.generation.report.GenerationReport.from_pages", _boom)
+        output = self._output(monkeypatch, index_only=False)
+
+        assert "overlap exploded" in output
+        assert "RuntimeError" in output
+        assert "checks did not run" in output
+
+
 def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypatch):
     """When result has a job_id attached, run_repo_generation queries that exact job checkpoint."""
     jobs_dir = tmp_path / ".repowise" / "jobs"

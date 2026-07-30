@@ -292,6 +292,30 @@ def show_completion(
             console.print(_line)
         console.print()
 
+    _show_generation_checks(result)
+
+
+def _show_generation_checks(result: Any) -> None:
+    """Report the generation quality checks on the pages this run wrote.
+
+    ``init`` built no report at all, so the checks ran on a later ``update``
+    and never on the first index — which is the run that creates a repository's
+    pages, and so the run where duplication first appears.
+
+    Only the checks are shown, not the statistics table: the completion panel
+    above already carries the page count, cost and token totals.
+    """
+    try:
+        from repowise.core.generation.report import GenerationReport, render_generation_checks
+
+        render_generation_checks(GenerationReport.from_pages(result.generated_pages or []), console)
+    except Exception as exc:
+        # A first index that could not check itself must not read like one that
+        # checked itself clean. The run still exits 0; the wiki is written.
+        console.print(
+            f"[bold red]Generation checks did not run:[/bold red] {type(exc).__name__}: {exc}"
+        )
+
 
 def show_workspace_completion(
     *,
