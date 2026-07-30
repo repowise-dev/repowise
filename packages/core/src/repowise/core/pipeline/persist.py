@@ -43,7 +43,7 @@ def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
 
 async def mark_tombstone_pages(
     session: Any, repo_id: str, candidates: list[tuple[str, list[str]]]
-) -> int:
+) -> list[str]:
     """Mark file pages for deleted/renamed files as tombstones.
 
     A ``freshness_status="fresh"`` page for a file that no longer exists is
@@ -52,10 +52,16 @@ async def mark_tombstone_pages(
     (the prose may still orient a reader) but carry status=tombstone and
     ``successor_paths`` in metadata so serving layers can skip or redirect.
 
-    Returns the number of pages marked.
+    Returns the page ids marked, so the caller can drop them from the
+    full-text index once its session has closed. Every serving layer already
+    discards a tombstone, but retrieval fetches a fixed number of rows before
+    any of that runs, so a tombstone still takes one of those slots and pushes
+    a real candidate out of the fetch. The row has to go, and only the caller
+    knows when it is safe to write to the index — on SQLite it shares a file
+    with this session.
     """
     if not candidates:
-        return 0
+        return []
     from sqlalchemy import select
 
     from repowise.core.persistence.models import Page
@@ -64,7 +70,7 @@ async def mark_tombstone_pages(
     res = await session.execute(
         select(Page).where(Page.repository_id == repo_id, Page.id.in_(page_ids))
     )
-    marked = 0
+    marked: list[str] = []
     for page in res.scalars().all():
         _, successors = page_ids[page.id]
         page.freshness_status = "tombstone"
@@ -74,9 +80,9 @@ async def mark_tombstone_pages(
             meta = {}
         meta["successor_paths"] = successors
         page.metadata_json = json.dumps(meta)
-        marked += 1
+        marked.append(page.id)
     if marked:
-        logger.info("pages_tombstoned", repo_id=repo_id, count=marked)
+        logger.info("pages_tombstoned", repo_id=repo_id, count=len(marked))
     elif candidates:
         # Candidates existed but no page matched — the id scheme drifted from
         # ``file_page:{path}`` or the paths don't line up. Silent success here

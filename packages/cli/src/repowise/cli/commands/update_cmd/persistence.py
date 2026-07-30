@@ -448,6 +448,9 @@ async def _persist_full_update_async(
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
+    # Filled by the tombstone step; read by the full-text block after the
+    # session closes, so it has to survive a step that was skipped.
+    tombstoned_page_ids: list[str] = []
     try:
         await init_db(engine)
         sf = create_session_factory(engine)
@@ -470,7 +473,9 @@ async def _persist_full_update_async(
                     tombstone_candidates,
                 )
 
-                await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
+                tombstoned_page_ids = await mark_tombstone_pages(
+                    session, repo_id, tombstone_candidates(file_diffs)
+                )
             except Exception as exc:
                 _skip("Tombstone marking", exc)
 
@@ -750,6 +755,12 @@ async def _persist_full_update_async(
                     summary=page.summary,
                     target_path=page.target_path,
                 )
+            # A tombstone can never be an answer — hydration drops it — but
+            # retrieval fetches a fixed number of rows before that check runs,
+            # so every tombstone left in the index costs a real candidate its
+            # slot.
+            if tombstoned_page_ids:
+                await fts.delete_many(tombstoned_page_ids)
         except Exception as exc:
             _skip("Full-text search indexing", exc)
         return total_pages

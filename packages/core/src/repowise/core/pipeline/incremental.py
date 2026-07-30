@@ -934,6 +934,9 @@ async def persist_incremental_index(
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
+    # Filled by the tombstone step; read after the session closes, so it has to
+    # survive a step that was skipped.
+    tombstoned_page_ids: list[str] = []
     try:
         await init_db(engine)
         sf = create_session_factory(engine)
@@ -960,7 +963,9 @@ async def persist_incremental_index(
                         tombstone_candidates,
                     )
 
-                    await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
+                    tombstoned_page_ids = await mark_tombstone_pages(
+                        session, repo_id, tombstone_candidates(file_diffs)
+                    )
                 except Exception as exc:
                     _skip("Tombstone marking", exc)
 
@@ -1102,5 +1107,22 @@ async def persist_incremental_index(
                 await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
             except Exception as exc:
                 _skip("Decision purge", exc)
+
+        # After the session closes: on SQLite the full-text index shares the
+        # database file, so writing to it while the session holds a write lock
+        # raises "database is locked".
+        #
+        # A tombstone can never be an answer — hydration drops it — but
+        # retrieval fetches a fixed number of rows before that check runs, so
+        # every tombstone left in the index costs a real candidate its slot.
+        if tombstoned_page_ids:
+            try:
+                from repowise.core.persistence.search import FullTextSearch
+
+                fts = FullTextSearch(engine)
+                await fts.ensure_index()
+                await fts.delete_many(tombstoned_page_ids)
+            except Exception as exc:
+                _skip("Tombstone full-text removal", exc)
     finally:
         await engine.dispose()
