@@ -15,7 +15,6 @@ import structlog
 
 from repowise.core.ids import is_external
 
-from ...analysis.knowledge_graph import _slugify
 from .. import onboarding as _onboarding
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
@@ -271,87 +270,6 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                 ),
             )
         )
-    return coros
-
-
-def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
-    """Level 5 (layer_page): one page per KG layer with >= 3 files."""
-    gen = run.gen
-    coros: list[tuple[str, Any]] = []
-    if not run.kg_ctx.available:
-        return coros
-
-    from ..architecture_mermaid import ArchitectureMermaidBuilder
-    from ..context_assembler import LayerPageContext
-
-    min_layer_files = 3
-
-    # One builder per run: indexes the graph once, then draws each layer.
-    diagram_builder = ArchitectureMermaidBuilder(run.kg_ctx)
-
-    for layer in run.kg_ctx.get_layers():
-        node_ids = layer.get("nodeIds", [])
-        file_paths = [nid[5:] for nid in node_ids if nid.startswith("file:")]
-        if len(file_paths) < min_layer_files:
-            continue
-
-        layer_name = layer.get("name", "")
-        # Key the page by the layer's STABLE slug id (``layer:<slug>``), not its
-        # display name: the LLM layer-name enrichment rewrites ``name`` after
-        # generation, so a name-keyed page would no longer join to its KG layer.
-        # ``id`` is derived from the deterministic heuristic name at curation
-        # time and never changes under enrichment.
-        layer_id = layer.get("id", "") or f"layer:{_slugify(layer_name)}"
-        page_id = compute_page_id("layer_page", layer_id)
-        if not run._emit(page_id):
-            continue
-
-        key_files: list[dict] = []
-        entry_points: list[str] = []
-        edge_connectors: list[str] = []
-        tour_steps_seen: set[int] = set()
-        tour_steps: list[dict] = []
-
-        ranked = sorted(
-            file_paths,
-            key=lambda p: run.pagerank.get(p, 0.0),
-            reverse=True,
-        )
-        for fp in ranked[:10]:
-            fc = run.kg_ctx.get_file_context(fp)
-            entry: dict = {
-                "path": fp,
-                "role": fc.role if fc else "internal",
-                "summary": (run.completed_page_summaries.get(fp) or "")[:200],
-            }
-            key_files.append(entry)
-            if fc:
-                if fc.role == "entry_point":
-                    entry_points.append(fp)
-                elif fc.role == "edge_connector":
-                    edge_connectors.append(fp)
-                if fc.tour_step and fc.tour_step["order"] not in tour_steps_seen:
-                    tour_steps_seen.add(fc.tour_step["order"])
-                    tour_steps.append(fc.tour_step)
-
-        deps_out, deps_in = run.kg_ctx.get_inter_layer_edges(layer)
-        tour_steps.sort(key=lambda s: s["order"])
-
-        ctx = LayerPageContext(
-            layer_name=layer_name,
-            layer_id=layer_id,
-            layer_description=layer.get("description", ""),
-            file_count=len(file_paths),
-            key_files=key_files,
-            deps_out=deps_out,
-            deps_in=deps_in,
-            tour_steps=tour_steps,
-            entry_points=entry_points,
-            edge_connectors=edge_connectors,
-            diagram_mermaid=diagram_builder.layer(layer) or "",
-        )
-        coros.append((page_id, gen.generate_layer_page(ctx)))
-
     return coros
 
 

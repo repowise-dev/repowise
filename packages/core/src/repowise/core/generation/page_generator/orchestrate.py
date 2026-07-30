@@ -436,13 +436,6 @@ class _GenerationRun:
             return
 
         counts = self.selection.counts()
-        layer_page_count = 0
-        if self.kg_ctx.available:
-            layer_page_count = sum(
-                1
-                for layer in self.kg_ctx.get_layers()
-                if len([n for n in layer.get("nodeIds", []) if n.startswith("file:")]) >= 3
-            )
         # Level-8 onboarding pages (the non-promoted slots) also emit, and
         # were previously omitted here, which made the progress total read
         # lower than the pages actually generated (issue #922: "43 of 41").
@@ -462,7 +455,6 @@ class _GenerationRun:
             + counts["file_page"]
             + counts["scc_page"]
             + counts["module_page"]
-            + layer_page_count
             + int(self.selection.emit_repo_overview)
             + counts["infra_page"]
             + onboarding_page_count
@@ -707,11 +699,12 @@ class _GenerationRun:
         # Level 4 (module_page).
         all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
 
-        # Level 5 (layer_page) — one page per KG layer.
-        all_pages.extend(await self.run_level(_levels.build_level5_coros(self), 5))
-
-        # Levels 6 (repo_overview + architecture_diagram), 7 (infra_page),
-        # and 8 (onboarding) share no data dependencies — run merged.
+        # Level 5 was one page per KG layer. Those pages retired: the layer a
+        # page belongs to is stamped on the page itself, so the docs tree can
+        # group by it without a page to hang the group off.
+        #
+        # Levels 6 (repo_overview), 7 (infra_page), and 8 (onboarding) share
+        # no data dependencies — run merged.
         final = (
             _levels.build_level6_coros(self)
             + _levels.build_level7_coros(self)

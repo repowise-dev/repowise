@@ -3,7 +3,7 @@
 Two different jobs share this machinery, and telling them apart matters:
 
 **Sole renderers.** ``file_page``, ``symbol_spotlight``, ``api_contract``,
-``infra_page``, ``scc_page`` and ``layer_page`` state facts a parser knows
+``infra_page`` and ``scc_page`` state facts a parser knows
 exactly: symbols, signatures, imports, dependents, cycle membership, git
 history. A model adds nothing to that and introduces staleness, so these have
 one renderer and no model path at all. Their templates sit at
@@ -430,15 +430,6 @@ class StructuralRenderMixin:
             # painful and this is the one genuinely useful thing the page can
             # say that the LLM page says in prose.
             decouple_ranking=_rank_cycle_participants(ctx),
-        )
-
-    def _structural_layer_page(self, ctx: Any, title: str) -> GeneratedPage:
-        return self._structural_page(
-            page_type="layer_page",
-            target_path=ctx.layer_id,
-            title=title,
-            template="layer_page.j2",
-            ctx=ctx,
         )
 
     def _structural_api_contract(

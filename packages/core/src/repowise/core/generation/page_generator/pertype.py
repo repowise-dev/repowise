@@ -18,7 +18,7 @@ from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
 from .. import onboarding as _onboarding
 from ..architecture_mermaid import embed_mermaid
-from ..context_assembler import FilePageContext, LayerPageContext
+from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
     STUB_FALLBACK_ERROR,
@@ -464,16 +464,6 @@ class PerTypeGenerationMixin:
             slot = _onboarding.PROMOTED_SLOTS.get(page.page_type)
             if slot is not None:
                 page.metadata["onboarding_slot"] = slot
-
-    async def generate_layer_page(
-        self,
-        ctx: LayerPageContext,
-    ) -> GeneratedPage:
-        # target_path = the layer's STABLE slug id (the renderer reads it off
-        # ctx), so the page key survives a rename of ``layer_name``. The title
-        # still uses the display name. The template embeds ctx.diagram_mermaid
-        # itself, so there is no separate embed_mermaid step on this path.
-        return self._structural_layer_page(ctx, f"Layer: {ctx.layer_name}")
 
     async def generate_infra_page(
         self,

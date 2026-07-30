@@ -79,7 +79,6 @@ def test_resolve_scope_unwritten_with_cascade_none() -> None:
     deps = build_page_dependencies(
         module_groups=[_MG("src", ("src/a.py", "src/b.py"))],
         scc_groups=[],
-        layer_page_of={},
         repo_wide_ids=("repo_overview:demo",),
     )
     plan = resolve_scope(
@@ -151,10 +150,14 @@ def test_ranked_ids_to_seed_keeps_unwritten_and_adds_structural() -> None:
         PageRecord("onboarding:map", "onboarding", "map", is_template=False),
     ]
     # Ranked picks both file pages; the written one (b.py) must drop, and the
-    # unwritten structural pages (layer + one onboarding) must be pulled in even
-    # though the ranked set never named them.
+    # unwritten onboarding page must be pulled in even though the ranked set
+    # never named it.
+    #
+    # The stored layer page is unwritten too, and stays out: layer pages are
+    # retired, so seeding one would ask generation for a page it will not
+    # produce and the run would report it missing every time.
     seed = _ranked_ids_to_seed({"file_page:a.py", "file_page:b.py"}, records)
-    assert seed == {"file_page:a.py", "layer_page:core", "onboarding:tour"}
+    assert seed == {"file_page:a.py", "onboarding:tour"}
 
 
 def test_ranked_ids_to_seed_drops_ids_with_no_page() -> None:
@@ -171,7 +174,7 @@ def test_resolve_scope_uses_ranked_seed_verbatim() -> None:
         PageRecord("file_page:b.py", "file_page", "b.py", is_template=True),
     ]
     deps = build_page_dependencies(
-        module_groups=[], scc_groups=[], layer_page_of={}, repo_wide_ids=()
+        module_groups=[], scc_groups=[], repo_wide_ids=()
     )
     # An all-selecting intent would pick both; the ranked seed overrides it.
     plan = resolve_scope(

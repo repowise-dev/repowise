@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.generation.context_assembler import ContextAssembler, LayerPageContext
+from repowise.core.generation.context_assembler import ApiContractContext, ContextAssembler
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.onboarding.subkinds.active_landscape import (
     ActiveLandscapeContext,
@@ -38,53 +38,6 @@ from repowise.core.providers.llm.template import TemplateProvider
 def generator() -> PageGenerator:
     config = GenerationConfig(deterministic=True)
     return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
-
-
-def test_layer_page_renders(generator):
-    ctx = LayerPageContext(
-        layer_name="Ingestion",
-        layer_id="layer:ingestion",
-        layer_description="Parses source files into ASTs.",
-        file_count=7,
-        key_files=[{"path": "src/parse.py", "role": "entry_point", "summary": "Parses files."}],
-        deps_out=[{"target_layer": "Storage", "edge_count": 4}],
-        deps_in=[{"source_layer": "CLI", "edge_count": 2}],
-        # Exactly the shape KnowledgeGraphContext.get_file_context builds
-        # (order/title/description). Inventing a shape here is how the first
-        # version of this template shipped with a field that never exists.
-        tour_steps=[{"order": 1, "title": "Parsing", "description": "Where parsing starts."}],
-        entry_points=["src/parse.py"],
-        edge_connectors=["src/io.py"],
-        diagram_mermaid="flowchart LR\n  a --> b",
-    )
-    page = generator._structural_layer_page(ctx, "Layer: Ingestion")
-
-    assert page.page_id == "layer_page:layer:ingestion"
-    assert page.provider_name == "template"
-    assert page.input_tokens == 0
-    assert "```mermaid" in page.content
-    assert "flowchart LR" in page.content
-    assert "**Storage**" in page.content
-    assert "**CLI**" in page.content
-    # Sits between two layers, so the overview should say so rather than
-    # calling it foundational or top-of-stack.
-    assert "mid-stack" in page.content
-    assert "Step 1: Parsing. Where parsing starts." in page.content
-    assert "Built from the code itself" in page.content
-
-
-def test_layer_page_without_diagram_renders(generator):
-    """A layer with no KG diagram must still produce a usable page."""
-    ctx = LayerPageContext(
-        layer_name="Utilities",
-        layer_id="layer:utilities",
-        layer_description="",
-        file_count=3,
-    )
-    page = generator._structural_layer_page(ctx, "Layer: Utilities")
-
-    assert "```mermaid" not in page.content
-    assert "stands on its own" in page.content
 
 
 def _onboarding_spec(slot: str, template: str):
@@ -217,28 +170,24 @@ def test_symbol_spotlight_tolerates_missing_kind(generator):
 
 def test_multiline_summaries_stay_inside_their_list_item(generator):
     """A raw newline in a bullet ends the markdown list, dumping the rest as
-    body text. Page summaries are routinely multi-paragraph, so every text
-    field folded into a list item runs through the oneline filter."""
-    ctx = LayerPageContext(
-        layer_name="Core",
-        layer_id="layer:core",
-        layer_description="",
-        file_count=3,
-        key_files=[
-            {
-                "path": "a.py",
-                "role": "internal",
-                "summary": "First line.\n\nSecond paragraph that would break the list.",
-            },
-            {"path": "b.py", "role": "internal", "summary": "Short."},
+    body text. Parsed signatures routinely carry newlines, so every text field
+    folded into a list item runs through the oneline filter."""
+    ctx = ApiContractContext(
+        file_path="api/routes.py",
+        language="python",
+        raw_content="",
+        endpoints=[
+            "def create(\n    self,\n    payload: dict,\n) -> Response",
+            "def delete(self, id: str) -> None",
         ],
+        schemas=[],
     )
-    page = generator._structural_layer_page(ctx, "Layer: Core")
+    page = generator._structural_api_contract(ctx, "api/routes.py", "API Contract: api/routes.py")
 
-    body = page.content.split("## Key files", 1)[1]
+    body = page.content.split("## Operations", 1)[1]
     bullets = [ln for ln in body.splitlines() if ln.startswith("- ")]
     assert len(bullets) == 2, f"list broke apart: {bullets}"
-    assert "First line. Second paragraph" in bullets[0]
+    assert "def create( self, payload: dict, ) -> Response" in bullets[0]
 
 
 def test_summary_skips_the_stats_line():

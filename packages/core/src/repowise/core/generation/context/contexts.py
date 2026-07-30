@@ -53,8 +53,8 @@ class FilePageContext:
     decision_records: list[dict] = field(default_factory=list)
     # KG layer context (populated when knowledge graph available)
     kg_layer_name: str = ""
-    # Stable slug id of the layer (``layer:<slug>``) — used to join a file
-    # page to its layer page; ``kg_layer_name`` is the mutable display label.
+    # Stable slug id of the layer (``layer:<slug>``) — the key the docs tree
+    # groups on; ``kg_layer_name`` is the mutable display label, never a key.
     kg_layer_id: str = ""
     kg_layer_description: str = ""
     kg_layer_role: str = ""
@@ -83,7 +83,7 @@ class SymbolSpotlightContext:
 class ModulePageContext:
     # The page's display title. A concept group spans several directories and
     # is named for what it does, so this is prose ("Ingestion Pipeline") and
-    # not a path. Same split as LayerPageContext's layer_name/layer_id: what
+    # not a path. Same split as the layer name/id pair on a file page: what
     # the reader sees is separate from what the page is keyed by, and only the
     # key is stable across regenerations.
     title: str
@@ -137,25 +137,6 @@ class ModulePageContext:
     # Top files inside the module by PageRank, for the "key files" section.
     key_files: list[dict] = field(default_factory=list)
     top_owners: list[dict] = field(default_factory=list)
-
-
-@dataclass
-class LayerPageContext:
-    layer_name: str
-    layer_description: str
-    file_count: int
-    # Stable slug id (``layer:<slug>``) — the layer page's target_path and
-    # page_id derive from this, never from the mutable ``layer_name``.
-    layer_id: str = ""
-    key_files: list[dict] = field(default_factory=list)
-    deps_out: list[dict] = field(default_factory=list)
-    deps_in: list[dict] = field(default_factory=list)
-    tour_steps: list[dict] = field(default_factory=list)
-    entry_points: list[str] = field(default_factory=list)
-    edge_connectors: list[str] = field(default_factory=list)
-    # Deterministic per-layer architecture diagram (mermaid source), embedded
-    # into the page after generation. Empty when the KG can't produce one.
-    diagram_mermaid: str = ""
 
 
 @dataclass

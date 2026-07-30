@@ -798,13 +798,15 @@ async def run_pipeline(
         has_code_to_group = any(
             not getattr(p.file_info, "is_test", False) for p in (parsed_files or [])
         )
-        kg_layers_present = bool(
-            knowledge_graph_result is not None and knowledge_graph_result.layers
-        )
         if produced_module_page or not has_code_to_group:
             authoritative_page_types.add("module_page")
-        if kg_layers_present:
-            authoritative_page_types.add("layer_page")
+        # Layer pages are retired: no run emits one and no failure mode can
+        # make a run emit one, so every completed run is authoritative for the
+        # type and the sweep retires the rows a pre-retirement index left
+        # behind. Unconditional, unlike the types above, because "emitted
+        # zero" here has exactly one cause. Their ids keep resolving through
+        # the redirect table, so retiring the rows breaks no inbound link.
+        authoritative_page_types.add("layer_page")
         # A deterministic run takes every candidate rather than a budgeted
         # slice, so an SCC page missing from its output means the cycle is
         # gone, not that it lost a budget fight. That makes the run

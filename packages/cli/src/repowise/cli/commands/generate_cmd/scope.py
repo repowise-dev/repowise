@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from repowise.core.generation.scope import (
     ScopePlan,
-    _layer_membership,
     _ranked_ids_to_seed,
     _selection_inputs,
     build_cost_plans,
@@ -23,7 +22,6 @@ from repowise.core.generation.scope import (
 
 __all__ = [
     "ScopePlan",
-    "_layer_membership",
     "_ranked_ids_to_seed",
     "_selection_inputs",
     "build_cost_plans",

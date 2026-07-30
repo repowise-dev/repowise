@@ -22,7 +22,6 @@ def _deps():
     return build_page_dependencies(
         module_groups=[_MG("src", ("src/a.py", "src/b.py"))],
         scc_groups=[("scc-abc", ["src/a.py", "src/c.py"])],
-        layer_page_of={"src/a.py": "layer_page:layer:core"},
         repo_wide_ids=(
             "repo_overview:demo",
             "architecture_diagram:demo",
@@ -31,12 +30,11 @@ def _deps():
     )
 
 
-def test_containers_of_collects_module_scc_layer() -> None:
+def test_containers_of_collects_module_and_scc() -> None:
     deps = _deps()
     assert deps.containers_of("src/a.py") == {
         "module_page:src",
         "scc_page:scc-abc",
-        "layer_page:layer:core",
     }
     # b.py is only in the module.
     assert deps.containers_of("src/b.py") == {"module_page:src"}
@@ -49,7 +47,6 @@ def test_cascade_none_marks_dependents_stale_generates_only_seed() -> None:
     assert result.stale_ids == {
         "module_page:src",
         "scc_page:scc-abc",
-        "layer_page:layer:core",
         "repo_overview:demo",
         "architecture_diagram:demo",
         "onboarding:guided-tour",
@@ -63,7 +60,6 @@ def test_cascade_dependents_regenerates_containers_marks_repo_wide_stale() -> No
         "file_page:src/a.py",
         "module_page:src",
         "scc_page:scc-abc",
-        "layer_page:layer:core",
     }
     assert result.stale_ids == {
         "repo_overview:demo",
@@ -79,7 +75,6 @@ def test_cascade_full_regenerates_everything_marks_nothing() -> None:
         "file_page:src/a.py",
         "module_page:src",
         "scc_page:scc-abc",
-        "layer_page:layer:core",
         "repo_overview:demo",
         "architecture_diagram:demo",
         "onboarding:guided-tour",
