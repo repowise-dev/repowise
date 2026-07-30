@@ -20,6 +20,10 @@ _INLINE_CODE_RE = re.compile(r"`+[^`\n]*`+")
 
 _FENCE_PREFIXES = ("```", "~~~")
 
+# A token counts as a word only if it carries a letter or a digit, so bullet
+# dashes, em dashes and stray pipes do not inflate the count.
+_WORDISH = re.compile(r"[^\W_]")
+
 
 def prose_text(content: str) -> str:
     """``content`` with fenced code blocks and inline code spans removed.
@@ -40,3 +44,19 @@ def prose_text(content: str) -> str:
         elif stripped.startswith(fence):
             fence = None
     return _INLINE_CODE_RE.sub(" ", "\n".join(kept))
+
+
+def prose_word_count(content: str) -> int:
+    """How many words of prose a page asks the reader to read.
+
+    Code, inline code and table rows are excluded: they are looked up rather
+    than read, and counting them would let a page of tables look as expensive
+    as a page of argument.  Headings and list text are counted, because the
+    reader does read those.
+    """
+    total = 0
+    for line in prose_text(content).splitlines():
+        if line.lstrip().startswith("|"):
+            continue
+        total += sum(1 for token in line.split() if _WORDISH.search(token))
+    return total
