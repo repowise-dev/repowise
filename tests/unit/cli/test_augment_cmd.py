@@ -57,7 +57,6 @@ def test_augment_silences_logs_before_hook_dispatch(monkeypatch: pytest.MonkeyPa
         augment_cmd,
         "silence_logs_for_machine_output",
         fake_silence_logs_for_machine_output,
-        raising=False,
     )
     monkeypatch.setattr(augment_cmd, "_run_augment", fake_run_augment)
 
