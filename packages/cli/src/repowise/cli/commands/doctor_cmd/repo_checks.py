@@ -244,7 +244,14 @@ def _run_repo_checks(
                         await engine.dispose()
                         return set(), set(), set(), set()
                     pages = await list_pages(session, repo.id, limit=10000)
-                    sql_ids = {p.page_id for p in pages}
+                    # ``Page``'s primary key is the column ``id``; there is no
+                    # ``page_id`` attribute. The old spelling raised here on
+                    # every run, was swallowed below, and left both store
+                    # reconciliations reporting "Could not check" — so neither
+                    # drift was ever detected and --repair never had anything
+                    # to repair. The FTS repair block had the same defect and
+                    # was fixed; this half was missed.
+                    sql_ids = {p.id for p in pages}
                     # The page vector store also holds decision embeddings under
                     # the "decision:<id>" namespace, so they belong on the SQL
                     # side of the ORPHAN check (but NOT FTS, which only indexes
@@ -300,8 +307,18 @@ def _run_repo_checks(
                 else (f"{len(missing_from_fts)} missing, {len(orphaned_fts)} orphaned")
             )
             checks.append(_check("SQL ↔ FTS Index", fts_ok, fts_detail))
-        except Exception:
-            checks.append(_check("Store consistency", True, "Could not check"))
+        except Exception as exc:
+            # Name the failure. "Could not check" is reported as OK, so a
+            # reconciliation that raises on every run looks exactly like one
+            # that had nothing to reconcile — which is how a plain attribute
+            # error stayed hidden here across releases.
+            checks.append(
+                _check(
+                    "Store consistency",
+                    True,
+                    f"Could not check: {type(exc).__name__}: {exc}",
+                )
+            )
 
     # 10. AtomicStorageCoordinator drift check
     coord_drift: float | None = None
