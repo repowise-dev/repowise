@@ -27,6 +27,7 @@ from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedR
 
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..models import (
+    MODEL_PAGE_CONFIDENCE,
     GeneratedPage,
     GenerationConfig,
     compute_page_id,
@@ -450,6 +451,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             created_at=now,
             updated_at=now,
             content_hash=content_hash,
+            # A model wrote this from assembled material: grounded in it and
+            # checked against it, but a summary of the code rather than an
+            # extraction from it. Not the claim a template page makes.
+            confidence=MODEL_PAGE_CONFIDENCE,
         )
         # Record the effective style as page provenance (D10). Only for active
         # styles, so default ("comprehensive") pages keep byte-identical metadata.

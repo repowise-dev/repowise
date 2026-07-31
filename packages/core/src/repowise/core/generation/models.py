@@ -249,6 +249,33 @@ class GenerationConfig:
 # GeneratedPage
 # ---------------------------------------------------------------------------
 
+# What a page's ``confidence`` says, and why there are exactly three values.
+#
+# The column stood at a constant 1.0 on every page a run produced. A constant
+# cannot gate anything: retrieval could not weight by it, the reader UI's
+# low-confidence banner had never once rendered, and a wiki where a provider
+# outage left hundreds of stubs looked exactly as trustworthy as a complete
+# one. These three values are the distinctions that are actually available at
+# the moment a page is written, and no more than that — a finer scale would be
+# a number with nothing behind it.
+
+#: A page whose only renderer is a template: file pages, symbol spotlights.
+#: Every statement on it came from the parse, the import graph or git history,
+#: and no model saw it. There is nothing on the page to be unsure about.
+TEMPLATE_PAGE_CONFIDENCE = 1.0
+
+#: A page a model wrote from assembled material. It is grounded in that
+#: material and checked against it, but it is a summary of the code rather
+#: than an extraction from it, so it is not the same claim a template page
+#: makes. Above the reader UI's banner threshold: worth reading normally.
+MODEL_PAGE_CONFIDENCE = 0.8
+
+#: The structural stub standing in for a page a model was meant to write —
+#: because the provider call failed, or because no key was configured. It is
+#: real material with the prose missing, which is the one case a reader has to
+#: be told about, so it sits below the banner threshold.
+STUB_PAGE_CONFIDENCE = 0.3
+
 
 @dataclass
 class GeneratedPage:
@@ -269,7 +296,9 @@ class GeneratedPage:
         target_path:      File/module/SCC this page documents.
         created_at:       ISO-8601 UTC timestamp.
         updated_at:       ISO-8601 UTC timestamp.
-        confidence:       Decay score (1.0 = fresh, 0.0 = expired).
+        confidence:       How far this page's statements can be trusted, set
+                          at generation from how the page was written.  See
+                          the three constants below.
         freshness_status: Current freshness state.
         metadata:         Provider-specific or page-type-specific extras.
     """

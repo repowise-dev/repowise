@@ -30,7 +30,14 @@ from typing import Any
 
 import structlog
 
-from ..models import GENERATION_LEVELS, GeneratedPage, compute_page_id, compute_source_hash
+from ..models import (
+    GENERATION_LEVELS,
+    STUB_PAGE_CONFIDENCE,
+    TEMPLATE_PAGE_CONFIDENCE,
+    GeneratedPage,
+    compute_page_id,
+    compute_source_hash,
+)
 from .helpers import _extract_summary, _now_iso
 
 log = structlog.get_logger(__name__)
@@ -338,12 +345,18 @@ class StructuralRenderMixin:
         target_path: str,
         title: str,
         template: str,
+        confidence: float = TEMPLATE_PAGE_CONFIDENCE,
         **render_kwargs: Any,
     ) -> GeneratedPage:
         """Render one template page and wrap it as a GeneratedPage.
 
         The mirror of ``_build_generated_page`` for the no-model path: same
         fields, zero tokens, ``provider_name="template"``.
+
+        ``confidence`` is a parameter rather than a constant because the two
+        callers make different claims. A sole renderer's page is everything the
+        page is meant to be; a stub is the same material with the prose
+        missing, and a reader has to be told which one they are looking at.
         """
         content = self._render(template, style_prefix=False, **render_kwargs)
         now = _now_iso()
@@ -363,6 +376,7 @@ class StructuralRenderMixin:
             target_path=target_path,
             created_at=now,
             updated_at=now,
+            confidence=confidence,
         )
 
     def _structural_page(
@@ -417,6 +431,7 @@ class StructuralRenderMixin:
             target_path=target_path,
             title=title,
             template=f"{_STUB_PREFIX}/{template}",
+            confidence=STUB_PAGE_CONFIDENCE,
             **render_kwargs,
         )
 
