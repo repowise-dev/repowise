@@ -53,6 +53,11 @@ class GenerationReport:
     # when the run produced no overview.  ``None`` and ``0`` are different
     # facts: nothing was measured, versus an overview with nothing in it.
     overview_prose_words: int | None = None
+    # Pages this run wrote but did not embed, because they say too little to be
+    # worth one of the fixed number of rows retrieval fetches.  The page is
+    # kept and still resolves as a link target; only its vector is withheld.
+    # Zero whenever the information floor is off, which is the default.
+    pages_denied_a_vector: int = 0
 
     @classmethod
     def from_pages(
@@ -66,6 +71,7 @@ class GenerationReport:
     ) -> GenerationReport:
         # Deferred: the page generator pulls in the provider stack, and the
         # report is importable on its own (the CLI renders it lazily).
+        from ..persistence.information_floor import pages_denied_a_vector
         from .page_generator.validation import artifact_check_counts
 
         by_type = dict(Counter(p.page_type for p in pages))
@@ -85,6 +91,7 @@ class GenerationReport:
             orientation_overlap=measure_orientation_overlap(pages),
             layer_grouping=measure_layer_grouping(pages),
             artifact_checks=artifact_check_counts(),
+            pages_denied_a_vector=pages_denied_a_vector(),
             overview_prose_words=next(
                 (
                     prose_word_count(p.content or "")

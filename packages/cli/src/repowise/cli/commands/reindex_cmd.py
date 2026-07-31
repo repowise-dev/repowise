@@ -118,6 +118,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     indexed = 0
     failed = 0
+    below_floor = 0
 
     with Progress(
         SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
@@ -177,16 +178,22 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                             "[/yellow]"
                         )
                     continue
-                items.append(
-                    embed_item(
-                        page.id,
-                        title=page.title,
-                        page_type=page.page_type or "",
-                        target_path=page.target_path or "",
-                        summary=page.summary or "",
-                        content=page.content or "",
-                    )
+                item = embed_item(
+                    page.id,
+                    title=page.title,
+                    page_type=page.page_type or "",
+                    target_path=page.target_path or "",
+                    summary=page.summary or "",
+                    content=page.content or "",
                 )
+                if item is None:
+                    # Below the information floor. Not a failure — the page is
+                    # deliberately kept out of the index and is counted apart
+                    # from the ones that broke, because a reindex reporting
+                    # them together would read as an embedder losing rows.
+                    below_floor += 1
+                    continue
+                items.append(item)
             await _embed_slice(items)
             progress.advance(task, advance=len(batch))
 
@@ -234,5 +241,10 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     console.print(
         f"\n[bold green]Done![/bold green] Indexed {indexed} items"
         + (f" ({failed} failed)" if failed else "")
+        # Named separately from failures, and only when it happened: a count
+        # folded into "failed" would read as an embedder losing rows, and a
+        # standing "0 held back" would read as a problem on every run that
+        # never had one.
+        + (f" ({below_floor} held back as too thin to index)" if below_floor else "")
         + f" -> {lance_dir}"
     )

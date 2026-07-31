@@ -20,8 +20,23 @@ __all__ = [
     "INFORMATION_FLOOR_ENV",
     "information_floor",
     "meets_information_floor",
+    "pages_denied_a_vector",
+    "reset_pages_denied_a_vector",
     "substantive_text",
 ]
+
+# Pages the embed recipe refused a vector, for the whole process.
+#
+# A run's page count and its vector count differ for several innocent reasons
+# — a resumed run skips pages, a stubbed page is not embedded, a keyless run
+# has no store at all — so an index smaller than its wiki is only readable if
+# the deliberate part of the gap is named. Without this, raising the floor
+# looks exactly like an embedder that quietly dropped work.
+#
+# Process-level rather than threaded through, because the report is built from
+# the page list by a caller that never sees the store. Same shape as the
+# generation artifact-check tallies, which exist for the same reason.
+_pages_denied_a_vector = 0
 
 # Chars of substantive prose a page needs before it is worth a search slot.
 #
@@ -131,6 +146,23 @@ def information_floor() -> int:
     except ValueError:
         return DEFAULT_INFORMATION_FLOOR
     return value if value >= 0 else DEFAULT_INFORMATION_FLOOR
+
+
+def pages_denied_a_vector() -> int:
+    """How many pages the embed recipe held out of the index this process."""
+    return _pages_denied_a_vector
+
+
+def count_page_denied_a_vector() -> None:
+    """Record one held-back page. Called by the embed recipe, nowhere else."""
+    global _pages_denied_a_vector
+    _pages_denied_a_vector += 1
+
+
+def reset_pages_denied_a_vector() -> None:
+    """Clear the tally. Used between runs and between tests."""
+    global _pages_denied_a_vector
+    _pages_denied_a_vector = 0
 
 
 def meets_information_floor(content: str, floor: int | None = None) -> bool:

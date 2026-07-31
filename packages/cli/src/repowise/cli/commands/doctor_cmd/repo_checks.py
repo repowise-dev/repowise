@@ -228,6 +228,9 @@ def _run_repo_checks(
                     get_session,
                     list_pages,
                 )
+                from repowise.core.persistence.information_floor import (
+                    meets_information_floor,
+                )
                 from repowise.core.persistence.vector_store import (
                     LanceDBVectorStore,
                 )
@@ -260,6 +263,18 @@ def _run_repo_checks(
                     # match text, swallowed embed failure) and repair cannot
                     # re-embed it, so flagging it would be permanent noise.
                     vector_sql_ids = sql_ids | await _decision_vector_ids(session, repo.id)
+                    # A page below the information floor is held out of both
+                    # indexes on purpose, so its absence is the correct state
+                    # and not drift. Without this it is reported missing on
+                    # every run and ``--repair`` cannot fix it, because the
+                    # repair applies the same rule and declines — the same
+                    # permanent-noise argument the decision namespace is
+                    # excluded for, one line above. It stays on the ORPHAN
+                    # side: a stored vector for a page now below the floor is
+                    # real drift, and deleting it is a repair that works.
+                    indexable_ids = {
+                        p.id for p in pages if meets_information_floor(p.content or "")
+                    }
 
                 # Check vector store
                 vs_ids: set[str] = set()
@@ -273,7 +288,7 @@ def _run_repo_checks(
                     except Exception:
                         pass  # LanceDB not available
 
-                m_vec = sql_ids - vs_ids if vs_ids else set()
+                m_vec = indexable_ids - vs_ids if vs_ids else set()
                 o_vec = vs_ids - vector_sql_ids if vs_ids else set()
 
                 # Check FTS
@@ -282,7 +297,7 @@ def _run_repo_checks(
                     fts_ids = await fts.list_indexed_ids()
                 except Exception:
                     fts_ids = set()
-                m_fts = sql_ids - fts_ids if fts_ids else set()
+                m_fts = indexable_ids - fts_ids if fts_ids else set()
                 o_fts = fts_ids - sql_ids if fts_ids else set()
 
                 await engine.dispose()
@@ -567,16 +582,25 @@ def _run_repo_checks(
                                 # Same recipe as generation and ``reindex``, so a
                                 # repaired page is comparable with its neighbours
                                 # instead of being embedded on different terms.
-                                await vs.embed_and_upsert(
-                                    *embed_item(
-                                        page.id,
-                                        title=page.title,
-                                        page_type=page.page_type or "",
-                                        target_path=page.target_path or "",
-                                        summary=page.summary or "",
-                                        content=page.content or "",
-                                    )
+                                item = embed_item(
+                                    page.id,
+                                    title=page.title,
+                                    page_type=page.page_type or "",
+                                    target_path=page.target_path or "",
+                                    summary=page.summary or "",
+                                    content=page.content or "",
                                 )
+                                if item is None:
+                                    # Below the information floor, so its absence
+                                    # from the store is correct and there is
+                                    # nothing to repair. Said out loud, because a
+                                    # page silently left missing by the repair
+                                    # reads as the repair having failed on it.
+                                    console.print(
+                                        f"  [dim]Left out {page.id}: too thin to index.[/dim]"
+                                    )
+                                    continue
+                                await vs.embed_and_upsert(*item)
                                 repaired += 1
 
                     for pid in orphaned_vector:

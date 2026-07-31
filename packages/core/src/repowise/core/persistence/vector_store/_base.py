@@ -13,6 +13,7 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
+from ..information_floor import count_page_denied_a_vector, meets_information_floor
 from ..search import SearchResult
 
 __all__ = [
@@ -59,8 +60,11 @@ def embed_item(
     target_path: str,
     summary: str,
     content: str,
-) -> tuple[str, str, dict]:
+) -> tuple[str, str, dict] | None:
     """Build the one ``(page_id, text, metadata)`` item every writer embeds.
+
+    Returns ``None`` when the page says too little to be worth a search slot,
+    which callers skip. See the information floor note below.
 
     Four things write vectors for a page — generation, ``reindex``,
     ``doctor --repair`` and the hosted indexer — and until now each built its
@@ -80,6 +84,20 @@ def embed_item(
     healthy while being unfindable by name, so this raises rather than
     storing it. The other three may legitimately be empty (some page types
     have no summary; a repository-wide page has no path).
+
+    **The information floor.** A page whose content says too little to answer
+    anything gets no vector, and ``None`` comes back instead. The full-text
+    index already applies the same rule, and it has to be the same rule: a
+    page held out of one arm and kept in the other is still fetched, still
+    occupies one of the fixed number of rows retrieval takes before it filters
+    anything, and still displaces a page that could have answered. The test is
+    applied to ``content`` alone for that reason — the same input the
+    full-text side measures, so the two arms cannot disagree about a page.
+
+    The page itself is untouched either way. It stays in ``wiki_pages``, still
+    resolves as a link target, and a reader who arrives at it still learns the
+    file exists. It is only kept out of the index, where its cost is paid by
+    other pages. The floor is 0 by default, which admits everything.
     """
     if not title.strip():
         raise ValueError(
@@ -87,6 +105,9 @@ def embed_item(
             f"vector that cannot be found by name and reports nothing wrong; "
             f"pass the page's real title."
         )
+    if not meets_information_floor(content):
+        count_page_denied_a_vector()
+        return None
     parts = [p for p in (title, target_path, summary, content) if p]
     return (
         page_id,

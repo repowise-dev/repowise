@@ -614,7 +614,14 @@ class _GenerationRun:
                             and getattr(self.vector_store, "persists_across_runs", False)
                         )
                     ):
-                        embed_items.append(_embed_item(result))
+                        # None below the information floor: the page is kept and
+                        # still resolves as a link target, it just gets no
+                        # vector. ``embed_item`` tallies those itself, so the
+                        # run can report how much it held back instead of
+                        # leaving the index quietly smaller than the wiki.
+                        item = _embed_item(result)
+                        if item is not None:
+                            embed_items.append(item)
                 return result
             except Exception as exc:
                 if self.job_system is not None and self.job_id is not None:
@@ -911,8 +918,11 @@ def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
     return scores
 
 
-def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:
+def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
     """Build the ``(page_id, text, metadata)`` tuple for embedding.
+
+    ``None`` when the page falls below the information floor and should get no
+    vector; the caller counts those rather than embedding them.
 
     ``title`` is load-bearing, not decoration: it feeds the coverage rerank
     haystack and the grounding corpus on the serving side. Omitting it here
