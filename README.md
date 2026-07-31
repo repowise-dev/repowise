@@ -169,9 +169,52 @@ Three deterministic signals, all computed from the graph and git history, no LLM
   tests a diff actually exercises with `repowise impacted-tests HEAD~1`.
   ([reference →](docs/layers/TEST_INTELLIGENCE.md))
 
-Plus the free **[Repowise PR Bot](https://github.com/apps/repowise-bot)**: one
-deterministic comment per pull request covering hotspot touches, hidden coupling,
-declining health and dead code. Zero LLM calls.
+Plus the free **[Repowise PR Bot](#the-pr-bot)**, which puts all of it on every pull
+request. Zero LLM calls.
+
+---
+
+## The PR bot
+
+Install the [GitHub App](https://github.com/apps/repowise-bot) and the index shows up
+where the decision actually gets made. One comment per pull request, edited in place on
+every push rather than reposted, and **a green PR gets no comment at all**.
+
+<img src=".github/assets/pr-bot/pr-comment.jpg" alt="The Repowise PR bot comment on a real pull request: repository health and change risk, an at-a-glance line, a before-you-merge checklist of missing tests and co-change partners, the symbol-level blast radius listing nine callers outside the PR, and AI versus human authorship of the changed files" width="100%" />
+
+<sub>A real comment on a real PR, not a mockup:
+[repowise-dev/repowise#1204](https://github.com/repowise-dev/repowise/pull/1204).</sub>
+
+What decides a review is inline. What is context sits behind one fold, so the comment
+stays about seventeen rows whatever it finds.
+
+- **Blast radius, at symbol level.** The contracts this PR changed and every caller of
+  them in a file the PR does not touch. Importing a module says nothing about whether
+  the function you changed is the one being called, so file-level impact is the wrong
+  altitude for the question a reviewer actually has.
+- **Before you merge.** The tests that import your changed files, and the files that
+  changed alongside them in past commits but are missing here.
+- **A Check Run that can gate the merge**, with annotations on the specific lines the
+  PR added. Advisory by default.
+- **Change risk**, scored against the repository's own commit distribution rather than
+  an absolute scale, so it stays meaningful on a repo whose typical commit is large.
+- **AI vs human authorship** of the changed files, with the average health of each.
+- Then hotspots, hidden coupling, declining health, dead code and the change map, one
+  fold down.
+
+### And a page the comment links to
+
+Markdown runs out. The comment shows three callers and says "+6 more"; the page shows
+all nine. Public, no sign-in, on a repository the reader has never seen.
+
+<img src=".github/assets/pr-bot/pr-page-blast-map.jpg" alt="The public per-PR analysis page: the whole repository drawn as a treemap with the pull request's files lit and their importers marked, and below it a focus frame zoomed into the directory the change landed in, with every filename legible" width="100%" />
+
+<sub>Every file in the repo, grouped by directory and sized by lines. The frame below
+zooms to where the change landed.
+[See it live →](https://repowise.dev/pr/repowise-dev/repowise/1204)</sub>
+
+**[Install the PR bot →](https://github.com/apps/repowise-bot)** ·
+[how it works →](https://www.repowise.dev/bot)
 
 ---
 
@@ -483,6 +526,27 @@ opt-in tools, and the full reference: **[docs/agent/MCP_TOOLS.md →](docs/agent
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP | ❌ | ❌ | ❌ | ❌ |
 | Local dashboard | ✅ | ❌ | ❌ | ❌ IDE only | ✅ |
+
+### The PR bot, against the LLM review bots
+
+| | Repowise PR Bot | CodeRabbit | Greptile |
+|---|---|---|---|
+| LLM calls per PR | ✅ **zero** | ❌ every review | ❌ every review |
+| Same diff, same review | ✅ deterministic | ❌ sampled output | ❌ sampled output |
+| Your code sent to a model provider | ✅ never | ❌ yes | ❌ yes |
+| Symbol-level blast radius (changed contracts → their callers) | ✅ call graph | ❌ | ⚠️ prose, from context |
+| Co-change partners missing from the PR | ✅ git history | ❌ | ❌ |
+| Change risk vs the repo's own distribution | ✅ 0-10 + percentile | ❌ | ❌ |
+| Public analysis page per PR, no sign-in | ✅ | ❌ | ❌ |
+| Silent on a clean PR | ✅ by default | ⚠️ configurable | ⚠️ configurable |
+| Cost on public repos | ✅ free, uncapped | ⚠️ free tier | ⚠️ free tier |
+| Self-hostable | ✅ AGPL-3.0 | ❌ | ❌ |
+
+The axis where this is not close is the first two rows. An LLM reviewer is a different
+product with a different failure mode: it can read intent, and it can also be wrong in a
+new way on every run. This one does set arithmetic over a call graph and a git history,
+so there is nothing to hallucinate and nothing to prompt-inject, and pushing the same
+diff twice produces the same review twice.
 
 **repowise is the intersection:** an agent-native context layer *and* behavioral git
 intelligence *and* a defect-validated health score with the fix attached, all out of
