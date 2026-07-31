@@ -75,7 +75,10 @@ and anything else that speaks MCP. Most tools are built around data entities (on
 file, one symbol), which forces agents into long chains of sequential calls. These are
 built around **tasks**: pass several targets in one call, get complete context back.
 
-<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/demo.mp4" alt="Claude Code querying the codebase through repowise's MCP tools" autoplay loop muted playsinline width="100%"></video>
+<img src=".github/assets/demo.gif" alt="The repowise dashboard running locally on localhost:3000: health score, code health map, a break-cycle refactoring plan, the agent prompt it generates, change coupling, and the generated wiki" width="100%" />
+
+<sub>The same index those tools read from, browsable at `localhost:3000`. Recorded on this
+repository, no API key and nothing uploaded.</sub>
 
 Because the exploration work is already done, that phase mostly disappears. Loading
 one commit's context through `get_context` costs **2,391 tokens instead of 64,039**
@@ -231,12 +234,12 @@ setup, all local.
 
 <table>
 <tr>
-<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/architecture-page.mp4" alt="Architecture view: the dependency graph laid out and explorable, with a context drawer per node" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Architecture</b> · the dependency graph, laid out and explorable, with per-node context and change coupling</sub></td>
-<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/code-health.mp4" alt="Code health map: every file as a bubble, hover to inspect score, coverage and tests" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Code Health</b> · every file as a bubble, hover any one to inspect its score, size, coverage and findings</sub></td>
+<td width="50%"><img src=".github/assets/dashboard/architecture-page.png" alt="Architecture view: the dependency graph laid out and explorable, with a context drawer per node" width="100%" /><br/><sub><b>Architecture</b> · the dependency graph, laid out and explorable, with per-node context and change coupling</sub></td>
+<td width="50%"><img src=".github/assets/dashboard/code-health-map.png" alt="Code health map: every file as a bubble, hover to inspect score, coverage and tests" width="100%" /><br/><sub><b>Code Health</b> · every file as a bubble, hover any one to inspect its score, size, coverage and findings</sub></td>
 </tr>
 <tr>
-<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/chat-page.mp4" alt="Chat view: ask questions against the indexed repo, with answers that cite the files and pages they came from" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Chat</b> · ask the codebase a question, answers cite the files and pages they came from</sub></td>
-<td width="50%"><video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/docs-page.mp4" alt="Docs view: auto-generated wiki pages with a tree, mermaid diagrams, and freshness badges" autoplay loop muted playsinline width="100%"></video><br/><sub><b>Docs</b> · auto-generated wiki pages for the whole codebase, with confidence and freshness badges</sub></td>
+<td width="50%"><img src=".github/assets/dashboard/chat-page.png" alt="Chat view: ask questions against the indexed repo, with answers that cite the files and pages they came from" width="100%" /><br/><sub><b>Chat</b> · ask the codebase a question, answers cite the files and pages they came from</sub></td>
+<td width="50%"><img src=".github/assets/dashboard/docs-page.png" alt="Docs view: auto-generated wiki pages with a tree, mermaid diagrams, and freshness badges" width="100%" /><br/><sub><b>Docs</b> · auto-generated wiki pages for the whole codebase, with confidence and freshness badges</sub></td>
 </tr>
 </table>
 
