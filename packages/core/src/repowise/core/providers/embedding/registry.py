@@ -18,10 +18,14 @@ Custom embedder registration:
 from __future__ import annotations
 
 import importlib
+import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from repowise.core.providers.embedding.base import Embedder
+
+_log = logging.getLogger(__name__)
 
 _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "openai": ("repowise.core.providers.embedding.openai", "OpenAIEmbedder"),
@@ -98,3 +102,48 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
 def list_embedders() -> list[str]:
     """Return a sorted list of all available embedder names."""
     return sorted(set(_BUILTIN_EMBEDDERS) | set(_custom_embedders))
+
+
+def resolve_embedding_model(embedder_name: str, repo_path: Path | None = None) -> str | None:
+    """The embedding model *embedder_name* should build with, or None for its default.
+
+    Process env wins, so a shell override still beats persisted intent —
+    ``OLLAMA_EMBEDDING_MODEL`` ahead of the generic ``REPOWISE_EMBEDDING_MODEL``
+    for the ollama backend, matching that constructor's own fallback chain.
+    Below env sits the ``embedding_model`` pinned in ``.repowise/config.yaml``.
+    The pin used to be write-only — recorded at init as the model the store was
+    embedded with, read by nothing — so editing it changed nothing, and a shell
+    without the env vars silently fell to the embedder's default, which can be
+    a different vector width than the table it queries.
+
+    Without *repo_path* the resolution is env-only: callers that measure what
+    the environment alone would resolve (embedder-drift detection) depend on
+    the pin not answering for itself.
+
+    Shared by the CLI build path and the MCP server so the same repo cannot
+    resolve two different ways depending on which surface asks.
+    """
+    import os
+
+    model: str | None = None
+    if embedder_name == "ollama":
+        model = os.environ.get("OLLAMA_EMBEDDING_MODEL") or None
+    model = model or os.environ.get("REPOWISE_EMBEDDING_MODEL") or None
+    if model:
+        return model
+    if repo_path is None:
+        return None
+
+    config_path = Path(repo_path) / ".repowise" / "config.yaml"
+    try:
+        if config_path.is_file():
+            import yaml
+
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            if isinstance(data, dict):
+                pinned = data.get("embedding_model")
+                if pinned:
+                    return str(pinned)
+    except Exception:
+        _log.debug("Failed to read embedding_model from %s", config_path, exc_info=True)
+    return None

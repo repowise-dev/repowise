@@ -477,14 +477,14 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
 
     # Persist provider/model config per-repo when doing full generation
     if docs_mode == "llm" and provider is not None:
-        from repowise.cli.providers.embedders import resolve_embedding_model
+        from repowise.core.providers.embedding.registry import resolve_embedding_model
 
         save_config(
             repo.path,
             provider.provider_name,
             provider.model_name,
             ctx.embedder_name_resolved,
-            embedding_model=resolve_embedding_model(ctx.embedder_name_resolved),
+            embedding_model=resolve_embedding_model(ctx.embedder_name_resolved, repo.path),
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
@@ -503,14 +503,14 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         # could re-embed the store at a different width, which the LanceDB
         # writer resolves by dropping the table. Provider/model/style/language
         # only reach a model, so they are intentionally not written here.
-        from repowise.cli.providers.embedders import resolve_embedding_model
+        from repowise.core.providers.embedding.registry import resolve_embedding_model
 
         save_config_partial(
             repo.path,
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
             embedder=det_embedder,
-            embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
+            embedding_model=(resolve_embedding_model(det_embedder, repo.path) if det_embedder else None),
         )
 
     return _RepoOutcome(

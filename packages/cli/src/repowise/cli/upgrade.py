@@ -95,7 +95,9 @@ class _CliUpgradeContext:
 def _current_embedding_model() -> str | None:
     """The embedding model the running build would resolve right now."""
     try:
-        from .providers.embedders import resolve_embedder, resolve_embedding_model
+        from repowise.core.providers.embedding.registry import resolve_embedding_model
+
+        from .providers.embedders import resolve_embedder
 
         return resolve_embedding_model(resolve_embedder(None))
     except Exception:
@@ -134,7 +136,7 @@ def _vector_dims(repo_path: Path) -> tuple[int | None, int | None]:
     if stored != MockEmbedder.dimensions:
         return None, None
     try:
-        embedder = build_embedder(resolve_embedder_for_repo(repo_path))
+        embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
     except Exception:
         return None, None
     if isinstance(embedder, MockEmbedder):
