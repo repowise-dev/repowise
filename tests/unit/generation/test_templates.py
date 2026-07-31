@@ -239,6 +239,78 @@ def test_symbol_spotlight_contains_symbol_name(jinja_env, symbol_spotlight_ctx):
     assert symbol_spotlight_ctx.symbol_name in result
 
 
+@pytest.fixture(scope="module")
+def unimported_spotlight_ctx() -> SymbolSpotlightContext:
+    """A symbol nothing in the repository imports, and with no docstring.
+
+    Both halves matter: the importer list is what the dropped section was
+    reporting on, and the missing docstring is what the Overview has to cover
+    for on its own.
+    """
+    return SymbolSpotlightContext(
+        symbol_name="_normalise",
+        qualified_name="python_pkg.calculator._normalise",
+        kind="function",
+        signature="def _normalise(value: str) -> str:",
+        docstring=None,
+        file_path="python_pkg/calculator.py",
+        decorators=[],
+        is_async=False,
+        complexity_estimate=1,
+        callers=[],
+    )
+
+
+def test_spotlight_omits_the_importers_section_when_nothing_imports_it(
+    jinja_env, unimported_spotlight_ctx
+):
+    """No importers is not a fact worth a heading of its own."""
+    result = render(jinja_env, "symbol_spotlight.j2", unimported_spotlight_ctx)
+    assert "## Where it is used" not in result
+    assert "No importers" not in result
+
+
+def test_spotlight_keeps_the_importers_section_when_it_has_importers(
+    jinja_env, symbol_spotlight_ctx
+):
+    """The other half: a symbol with importers still lists them, still hedged.
+
+    The hedge is load-bearing. ``callers`` holds files importing the defining
+    module, not verified call sites, and the sentence has to keep saying so.
+    """
+    result = render(jinja_env, "symbol_spotlight.j2", symbol_spotlight_ctx)
+    assert "## Where it is used" in result
+    assert "`main.py`" in result
+    assert "not confirmed call sites" in result
+    # The count and its verb have to agree; one importer is the common case.
+    assert "1 file imports the module" in result
+
+
+def test_spotlight_still_describes_a_symbol_that_has_no_docstring(
+    jinja_env, unimported_spotlight_ctx
+):
+    """The Overview sentence stays even though it reads like a placeholder.
+
+    It is the page summary — ``_extract_summary`` skips the metadata line and
+    the signature fence and lands on it — and it names the symbol, its kind and
+    its file, which is the identifier-bearing text the page exists to carry.
+    Deleting it would blank the summary for every undocumented symbol.
+    """
+    result = render(jinja_env, "symbol_spotlight.j2", unimported_spotlight_ctx)
+    assert "## Overview" in result
+    assert "_normalise" in result
+    assert "python_pkg/calculator.py" in result
+
+
+def test_spotlight_leaves_no_gap_where_a_section_was_dropped(
+    jinja_env, symbol_spotlight_ctx, unimported_spotlight_ctx
+):
+    for ctx in (symbol_spotlight_ctx, unimported_spotlight_ctx):
+        result = render(jinja_env, "symbol_spotlight.j2", ctx)
+        assert "\n\n\n" not in result
+        assert not result.startswith("\n")
+
+
 # ---------------------------------------------------------------------------
 # architecture_diagram.j2
 # ---------------------------------------------------------------------------
