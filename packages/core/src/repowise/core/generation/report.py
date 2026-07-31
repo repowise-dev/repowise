@@ -122,6 +122,28 @@ def measure_opening_frames(pages: list[GeneratedPage]) -> OpeningFrameReport:
     )
 
 
+# The heading over the identifiers appended to a module page after the model
+# has written it. Counted for the same reason the questions block is: the table
+# is conditional (a module exporting nothing renders none), so only the ratio
+# is readable, and nothing else in a run would report it going to zero.
+CONCEPT_INDEX_HEADING = "## Concept index"
+
+
+def _count_concept_indexes(pages: list[GeneratedPage]) -> dict[str, int]:
+    """How many module pages carry their identifiers, out of how many exist.
+
+    The append happens after the provider call, which is the failure mode worth
+    watching: an exception path or a refactor that returns the page before the
+    append would leave every module page pure prose again, and every test in
+    the suite would still pass because the templates are all still correct.
+    """
+    eligible = [p for p in pages if p.page_type == "module_page"]
+    return {
+        "eligible_pages": len(eligible),
+        "with_index": sum(1 for p in eligible if CONCEPT_INDEX_HEADING in (p.content or "")),
+    }
+
+
 def _count_question_blocks(pages: list[GeneratedPage]) -> dict[str, int]:
     """How many template pages carry question-shaped text, out of how many.
 
@@ -185,6 +207,11 @@ class GenerationReport:
     # standing as the description of several different subsystems.  Read
     # ``measured`` before reading the counts.
     opening_frames: OpeningFrameReport = field(default_factory=OpeningFrameReport)
+    # How far the module-page concept index reached across this run. Same shape
+    # and same reason as ``question_blocks``: with its own denominator, "this
+    # run wrote no module pages" and "the append stopped happening" stay
+    # separate facts, and neither one raises on its own.
+    concept_indexes: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_pages(
@@ -221,6 +248,7 @@ class GenerationReport:
             pages_denied_a_vector=pages_denied_a_vector(),
             question_blocks=_count_question_blocks(pages),
             opening_frames=measure_opening_frames(pages),
+            concept_indexes=_count_concept_indexes(pages),
             overview_prose_words=next(
                 (
                     prose_word_count(p.content or "")
@@ -268,6 +296,25 @@ class GenerationReport:
         if not eligible:
             return "not measured (0 template pages)"
         return f"{self.question_blocks.get('with_questions', 0)} of {eligible} pages"
+
+    @property
+    def concept_indexes_missing(self) -> bool:
+        """Whether a module page this run wrote came out without its identifiers.
+
+        Warn-only and legitimately non-zero: a module whose members export
+        nothing has no rows to render. The case worth seeing is the number
+        falling to zero across a run that wrote module pages, which is what the
+        append having stopped looks like from outside.
+        """
+        eligible = self.concept_indexes.get("eligible_pages", 0)
+        return bool(eligible) and self.concept_indexes.get("with_index", 0) < eligible
+
+    def concept_index_summary(self) -> str:
+        """One line saying how far the concept index reached this run."""
+        eligible = self.concept_indexes.get("eligible_pages", 0)
+        if not eligible:
+            return "not measured (0 module pages)"
+        return f"{self.concept_indexes.get('with_index', 0)} of {eligible} pages"
 
     def artifact_check_summary(self) -> str:
         """One line saying whether the artifact checks ran, and what they found."""
@@ -372,6 +419,10 @@ def render_generation_checks(report: GenerationReport, console: object) -> None:
     if frames.over_budget:
         frames_text = f"[yellow]{frames_text}[/yellow]"
     table.add_row("Module page openings", frames_text)
+    concept_text = report.concept_index_summary()
+    if report.concept_indexes_missing:
+        concept_text = f"[yellow]{concept_text}[/yellow]"
+    table.add_row("Module concept index", concept_text)
 
     console.print(table)  # type: ignore[union-attr]
 

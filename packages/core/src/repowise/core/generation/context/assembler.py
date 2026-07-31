@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -54,6 +55,83 @@ def _is_foreign_edge(node: str, path: str) -> bool:
 _MAX_IMPORTS = 30
 # Maximum top-files to include in repo overview
 _MAX_TOP_FILES = 20
+# How many rows the concept index may carry. A module page groups directories,
+# so a wide one can reach several hundred public symbols and the table would
+# then be longer than the page it is attached to. Rows past this are counted
+# rather than dropped silently, so a truncated table cannot read as a complete
+# public surface.
+_MAX_CONCEPT_ROWS = 40
+
+# Identifier word splits: a snake_case underscore, or the boundary before a
+# capital that starts a new word. The second pattern keeps acronym runs whole —
+# ``HTTPAdapter`` is two words, not nine — which matters because the acronym is
+# usually the word a reader would actually say.
+_IDENTIFIER_SPLIT = re.compile(r"_+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def concept_wording(identifier: str) -> str:
+    """Spell an identifier the way prose would say it.
+
+    ``ResolverContext`` becomes "Resolver context" — the noun a reader who has
+    only read the page's prose would use, next to the token they have to type
+    to find it. Derived rather than written: a described column could name a
+    symbol that is not there, and the point of this table is that it cannot.
+    """
+    words = [w for w in _IDENTIFIER_SPLIT.split(identifier) if w]
+    if not words:
+        return identifier
+    # An acronym inside a camel-cased name keeps its case ("HTTPAdapter" →
+    # "HTTP adapter"), because the acronym is the word a reader would say. An
+    # underscore-separated name is lowered whole: ``EMBED_BATCH_MAX_ITEMS`` is a
+    # constant spelled in caps, not four acronyms.
+    keep_case = "_" not in identifier
+    spelled = [w if keep_case and w.isupper() and len(w) > 1 else w.lower() for w in words]
+    first = spelled[0]
+    return " ".join([first[:1].upper() + first[1:], *spelled[1:]])
+
+
+def build_concept_index(
+    file_contexts: list[FilePageContext],
+) -> tuple[list[dict[str, str]], int]:
+    """Rows pairing each public symbol's prose name with its identifier and file.
+
+    Returns the rows and how many were left off by the cap.
+
+    Module pages are written by the model and come out as prose: a real run
+    produced 89 of them carrying four fenced code blocks between them. So the
+    identifiers a reader needs to grep for, and an identifier-exact query needs
+    to match, are not on the page in any spelling. These rows put them there,
+    straight from the assembled symbol data, which is why the table can be
+    trusted where the surrounding prose has to be read as a summary.
+
+    Only top-level public symbols. Methods would multiply the table by the size
+    of the classes without adding a name a reader would search for on its own,
+    and a private symbol is not a route into the module.
+    """
+    ranked = sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True)
+    rows: list[dict[str, str]] = []
+    total = 0
+    for fc in ranked:
+        for symbol in sorted(fc.symbols, key=lambda s: s.get("start_line") or 0):
+            name = (symbol.get("name") or "").strip()
+            if not name or name.startswith("_"):
+                continue
+            if symbol.get("visibility") != "public":
+                continue
+            # A method's own name is rarely what a reader searches for, and
+            # including them turns a 40-row cap into 40 rows of one class.
+            if symbol.get("parent_name"):
+                continue
+            total += 1
+            if len(rows) < _MAX_CONCEPT_ROWS:
+                rows.append(
+                    {
+                        "concept": concept_wording(name),
+                        "symbol": name,
+                        "file": fc.file_path,
+                    }
+                )
+    return rows, total - len(rows)
 
 
 def _file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[str]:
@@ -577,9 +655,7 @@ class ContextAssembler:
         # list is a different list on every run.
         sorted_pr = sorted(pagerank.items(), key=lambda x: (-x[1], x[0]))
         top_files = [
-            _TopFile(path=p, score=s)
-            for p, s in sorted_pr[:_MAX_TOP_FILES]
-            if not is_external(p)
+            _TopFile(path=p, score=s) for p, s in sorted_pr[:_MAX_TOP_FILES] if not is_external(p)
         ]
 
         # SCCs with len > 1 are true circular deps

@@ -18,6 +18,7 @@ from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
 from .. import onboarding as _onboarding
 from ..architecture_mermaid import embed_mermaid
+from ..context.assembler import build_concept_index
 from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
@@ -233,9 +234,31 @@ class PerTypeGenerationMixin:
             page.structural_key = structural_key or page.structural_key
             return page
 
+        def _with_concept_index(page: GeneratedPage) -> GeneratedPage:
+            """Append the module's own identifiers to whatever wrote the page.
+
+            After generation rather than inside the prompt, and that placement
+            is the point. ``module_page.j2`` is a prompt: a table put in it is
+            material the model may reformat, abbreviate or drop, and a page
+            whose identifiers came out of a provider is exactly as trustworthy
+            as the prose around them. Appended here, every name and path is the
+            symbol index's and no response can change it.
+
+            After ``_build_generated_page`` too, so the page summary is still
+            drawn from the model's opening rather than from a table row.
+            """
+            rows, omitted = build_concept_index(file_contexts)
+            if not rows:
+                return page
+            table = self._render(
+                "_concept_index_table.j2", style_prefix=False, rows=rows, omitted=omitted
+            )
+            page.content = f"{(page.content or '').rstrip()}\n\n{table.strip()}\n"
+            return page
+
         if self._config.deterministic:
             page = self._stub_module_page(ctx, page_target, title, module_git_summary)
-            return _stamp_concept(page)
+            return _stamp_concept(_with_concept_index(page))
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
         try:
             response = await self._call_provider(
@@ -243,7 +266,7 @@ class PerTypeGenerationMixin:
             )
         except Exception as exc:
             stub = self._stub_module_page(ctx, page_target, title, module_git_summary)
-            return _stamp_concept(_stub_fallback(stub, "module_page", exc))
+            return _stamp_concept(_with_concept_index(_stub_fallback(stub, "module_page", exc)))
         page = self._build_generated_page(
             "module_page",
             page_target,
@@ -252,7 +275,7 @@ class PerTypeGenerationMixin:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["module_page"],
         )
-        return _stamp_concept(page)
+        return _stamp_concept(_with_concept_index(page))
 
     async def generate_scc_page(
         self,

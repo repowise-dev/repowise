@@ -1,0 +1,18 @@
+{#- The identifiers behind the page's prose, rendered from the assembled symbol
+    data and appended after the model has written the page. Nothing here passes
+    through a provider, so the names and paths are the index's own.
+
+    Rendered only when there is at least one row: a header with nothing under
+    it claims the module exports nothing, in the same shape as a real answer. -#}
+## Concept index
+
+What the prose above calls things, the identifier to search for, and where it lives.
+
+| Concept | Symbol | File |
+| --- | --- | --- |
+{% for row in rows -%}
+| {{ row.concept }} | `{{ row.symbol }}` | `{{ row.file }}` |
+{% endfor -%}
+{%- if omitted %}
+_{{ omitted }} further public symbol{{ "s" if omitted != 1 else "" }} in this module are not listed._
+{% endif -%}
