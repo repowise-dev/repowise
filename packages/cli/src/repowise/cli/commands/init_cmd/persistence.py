@@ -116,6 +116,7 @@ async def persist_result(result: Any, repo_path: Path) -> None:
         persist_generation,
         persist_pipeline_result,
         sweep_stale_generated_pages,
+        tombstone_absent_file_pages,
     )
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
@@ -176,6 +177,20 @@ async def persist_result(result: Any, repo_path: Path) -> None:
             )
         else:
             swept_page_ids = await persist_pipeline_result(result, session, repo.id)
+
+        # Tombstone pages whose file is simply gone. The other tombstone path
+        # reads a diff, and an init compares nothing, so until here a page
+        # written before its file was deleted stayed ``fresh`` through every
+        # later index. Outside the branch above because both branches need it.
+        # Its ids join the swept ones so they leave the vector store and the
+        # full-text index together, below, after this session closes.
+        try:
+            swept_page_ids = [
+                *swept_page_ids,
+                *await tombstone_absent_file_pages(session, repo.id, repo_path),
+            ]
+        except Exception as exc:  # one stale page must not fail a whole index
+            logger.warning("tombstone_absent_sweep_failed", error=str(exc))
 
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.

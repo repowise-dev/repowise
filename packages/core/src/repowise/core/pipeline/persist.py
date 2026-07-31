@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -19,6 +21,14 @@ from repowise.core.generation.models import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# A second, stdlib logger for the one message here that has to survive
+# ``repowise init``. ``configure_cli_logging`` pins both ``repowise.core`` and
+# structlog to ERROR for the progress-bar commands, so anything below ERROR is
+# discarded in the exact command that writes the index. The refusal below is
+# logged through this at ERROR for that reason; the routine counts stay on
+# structlog with their siblings.
+_log = logging.getLogger(__name__)
 
 # Max page ids per UPDATE ... IN (...) so a large cascade cannot exceed
 # SQLite's bound-variable limit on the local CLI store.
@@ -93,6 +103,89 @@ async def mark_tombstone_pages(
             candidate_count=len(candidates),
             sample=[p for p, _ in candidates[:3]],
         )
+    return marked
+
+
+async def tombstone_absent_file_pages(
+    session: Any, repo_id: str, repo_path: Path | str
+) -> list[str]:
+    """Tombstone every file page whose file is no longer on disk.
+
+    :func:`mark_tombstone_pages` works from a diff, so it only ever sees a
+    file that was deleted or renamed *between two commits this run compared*.
+    ``repowise init`` compares nothing — it indexes a checkout as it stands —
+    so it has never tombstoned anything, and a page written before a file was
+    deleted keeps ``freshness_status='fresh'`` through every later index.
+
+    That page is the trap the tombstone exists to close: retrieval serves it,
+    agents cite it, and the index-age metadata says nothing is wrong.
+
+    The check is a plain existence test against the checkout rather than a
+    comparison with what this run parsed. A file can be present but unparsed —
+    an unsupported extension, a parse failure, a changed exclude list — and
+    such a file is stale, not deleted. Calling it deleted would put a
+    ``successor_paths: []`` on a page whose file a reader can still open.
+
+    Returns the page ids marked, so the caller can drop them from the
+    full-text index once its session has closed, on the same terms as
+    :func:`mark_tombstone_pages`.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    root = Path(repo_path)
+    res = await session.execute(
+        select(Page).where(
+            Page.repository_id == repo_id,
+            Page.page_type == "file_page",
+            Page.freshness_status != "tombstone",
+        )
+    )
+    live = list(res.scalars().all())
+    if not live:
+        return []
+
+    absent = [p for p in live if not (root / (p.target_path or "")).exists()]
+    if not absent:
+        return []
+
+    # Every page absent means the paths are not being resolved against the
+    # tree they were written from — a wrong root, a bare-repo checkout, a
+    # working copy that has not been restored yet. Tombstoning the whole wiki
+    # on that reading is worse than leaving it, and unlike a partial mistake
+    # it is not recoverable by re-indexing a file. Refuse, loudly, and let the
+    # rest of the run proceed.
+    if len(absent) == len(live):
+        _log.error(
+            "tombstone_sweep_refused repo_id=%s file_pages=%d root=%s: every file "
+            "page's path is missing from the checkout, which reads as a wrong "
+            "root rather than a deleted repository. Nothing was tombstoned.",
+            repo_id,
+            len(live),
+            root,
+        )
+        return []
+
+    marked: list[str] = []
+    for page in absent:
+        page.freshness_status = "tombstone"
+        try:
+            meta = json.loads(page.metadata_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        # Deleted, not renamed: rename detection is the diff-driven sweep's
+        # job and it has evidence this one does not.
+        meta["successor_paths"] = []
+        page.metadata_json = json.dumps(meta)
+        marked.append(page.id)
+
+    logger.info(
+        "file_pages_tombstoned_absent",
+        repo_id=repo_id,
+        count=len(marked),
+        sample=[p.target_path for p in absent[:3]],
+    )
     return marked
 
 
@@ -678,9 +771,7 @@ async def sweep_superseded_generated_pages(
         produced_ids.setdefault(page_type, set()).add(page.page_id)
         metadata = getattr(page, "metadata", None) or {}
         members = metadata.get("file_paths") or metadata.get("files") or []
-        covered.setdefault(page_type, set()).update(
-            m for m in members if isinstance(m, str)
-        )
+        covered.setdefault(page_type, set()).update(m for m in members if isinstance(m, str))
 
     swept: list[str] = []
     for page_type, current in produced_ids.items():
@@ -722,9 +813,7 @@ async def sweep_superseded_generated_pages(
         swept.extend(stale)
 
     if swept:
-        logger.info(
-            "superseded_generated_pages_swept", repo_id=repo_id, count=len(swept)
-        )
+        logger.info("superseded_generated_pages_swept", repo_id=repo_id, count=len(swept))
     return swept
 
 
