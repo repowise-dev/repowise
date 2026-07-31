@@ -25,6 +25,8 @@ def _clean_env(monkeypatch):
         "REPOWISE_PROVIDER",
         "REPOWISE_DOC_MODEL",
         "REPOWISE_MODEL",
+        "REPOWISE_ANSWER_PROVIDER",
+        "REPOWISE_ANSWER_MODEL",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
@@ -56,9 +58,9 @@ def test_config_yaml_outranks_state_json(tmp_path):
         config={"provider": "openai", "model": "gpt-5.4-nano"},
         state={"provider": "gemini", "model": "gemini-3.1-flash-lite-preview"},
     )
-    name, model, _ = _load_repo_provider_config(repo)
-    assert name == "openai"
-    assert model == "gpt-5.4-nano"
+    persisted = _load_repo_provider_config(repo)
+    assert persisted.provider == "openai"
+    assert persisted.model == "gpt-5.4-nano"
 
 
 def test_state_json_still_used_when_config_lacks_provider(tmp_path):
@@ -67,9 +69,9 @@ def test_state_json_still_used_when_config_lacks_provider(tmp_path):
         config={"commit_limit": 200},
         state={"provider": "openai", "model": "gpt-5.4-nano"},
     )
-    name, model, _ = _load_repo_provider_config(repo)
-    assert name == "openai"
-    assert model == "gpt-5.4-nano"
+    persisted = _load_repo_provider_config(repo)
+    assert persisted.provider == "openai"
+    assert persisted.model == "gpt-5.4-nano"
 
 
 def test_keyless_persisted_provider_falls_back_to_available_key(tmp_path, monkeypatch):
@@ -179,3 +181,88 @@ def test_openrouter_key_alone_now_resolves(tmp_path, monkeypatch):
 
     assert _resolve_provider_for_answer(repo) is not None
     assert seen["name"] == "openrouter"
+
+
+# ---------------------------------------------------------------------------
+# Dedicated answer model (three-model separation: wiki writer / answerer /
+# embedder). The answer surface may name its own provider and model; absent
+# that, it follows the generation chain exactly as before.
+# ---------------------------------------------------------------------------
+
+
+def test_answer_model_env_swaps_the_model_but_keeps_the_provider(tmp_path, monkeypatch):
+    """Same provider (the common local case), different model for answers."""
+    repo = _write_repo(tmp_path, config={"provider": "openai", "model": "wiki-writer-model"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("REPOWISE_ANSWER_MODEL", "answer-writer-model")
+    seen = _record_get_provider(monkeypatch)
+
+    assert _resolve_provider_for_answer(repo) is not None
+    assert seen["name"] == "openai"
+    assert seen["kwargs"]["model"] == "answer-writer-model"
+
+
+def test_answer_provider_env_does_not_inherit_the_generation_model(tmp_path, monkeypatch):
+    """A generation model belongs to the generation provider; the answer
+    provider gets its own default rather than a model it does not serve."""
+    repo = _write_repo(tmp_path, config={"provider": "gemini", "model": "gemini-3.1-flash"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("REPOWISE_ANSWER_PROVIDER", "openai")
+    seen = _record_get_provider(monkeypatch)
+
+    assert _resolve_provider_for_answer(repo) is not None
+    assert seen["name"] == "openai"
+    assert seen["kwargs"].get("model") is None
+
+
+def test_config_yaml_answer_keys_are_honored(tmp_path, monkeypatch):
+    repo = _write_repo(
+        tmp_path,
+        config={
+            "provider": "gemini",
+            "model": "gemini-3.1-flash",
+            "answer_provider": "openai",
+            "answer_model": "gpt-5.4-nano",
+        },
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    seen = _record_get_provider(monkeypatch)
+
+    assert _resolve_provider_for_answer(repo) is not None
+    assert seen["name"] == "openai"
+    assert seen["kwargs"]["model"] == "gpt-5.4-nano"
+
+
+def test_answer_env_outranks_answer_config(tmp_path, monkeypatch):
+    repo = _write_repo(
+        tmp_path,
+        config={"provider": "openai", "answer_model": "from-config"},
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("REPOWISE_ANSWER_MODEL", "from-env")
+    seen = _record_get_provider(monkeypatch)
+
+    assert _resolve_provider_for_answer(repo) is not None
+    assert seen["kwargs"]["model"] == "from-env"
+
+
+def test_keyless_answer_provider_still_falls_back_to_available_key(tmp_path, monkeypatch):
+    """An answer provider without a usable key must not end resolution."""
+    repo = _write_repo(tmp_path, config={"answer_provider": "gemini", "answer_model": "gemini-x"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    provider = _resolve_provider_for_answer(repo)
+    assert provider is not None
+    assert getattr(provider, "provider_name", "") == "openai"
+    # The persisted answer model belongs to gemini and must not leak.
+    assert "gemini" not in (getattr(provider, "model_name", "") or "")
+
+
+def test_state_json_never_supplies_answer_settings(tmp_path):
+    """state.json records the last index run; no index run uses the answer model."""
+    repo = _write_repo(
+        tmp_path,
+        state={"provider": "openai", "answer_provider": "gemini", "answer_model": "gemini-x"},
+    )
+    persisted = _load_repo_provider_config(repo)
+    assert persisted.answer_provider is None
+    assert persisted.answer_model is None
