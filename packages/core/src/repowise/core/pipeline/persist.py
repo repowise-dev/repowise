@@ -96,7 +96,7 @@ async def mark_tombstone_pages(
     return marked
 
 
-async def mark_stale_pages(session: Any, repo_id: str, paths: list[str]) -> int:
+async def mark_stale_pages(session: Any, repo_id: str, paths: Iterable[str]) -> int:
     """Decay weakly-affected file pages to ``freshness_status='stale'``.
 
     ``ChangeDetector.get_affected_pages`` returns ``decay_only`` — pages hit
@@ -108,28 +108,21 @@ async def mark_stale_pages(session: Any, repo_id: str, paths: list[str]) -> int:
     already-stale pages keep their stronger status, and pages regenerated in
     this run are never in ``decay_only`` by construction.
 
+    Maps each path to its ``file_page:<path>`` id and hands off to
+    :func:`mark_page_ids_stale`, so both entry points share one UPDATE.
+
+    The two were separate copies of the same statement, and only the sibling
+    was chunked against ``SQLITE_MAX_VARIABLE_NUMBER``. That is not a crash
+    anyone is hitting today: SQLite has defaulted to 32766 bind variables since
+    3.32, and a ``decay_only`` set that large would take an enormous cascade.
+    It is reachable on the 999-variable builds older interpreters still ship,
+    but the reason to collapse the two is narrower than that. They answered the
+    same question differently, in the file with the most bug fixes in this repo,
+    and now there is one place to answer it.
+
     Returns the number of pages marked.
     """
-    if not paths:
-        return 0
-    from sqlalchemy import update
-
-    from repowise.core.persistence.models import Page
-
-    page_ids = [f"file_page:{path}" for path in paths]
-    res = await session.execute(
-        update(Page)
-        .where(
-            Page.repository_id == repo_id,
-            Page.id.in_(page_ids),
-            Page.freshness_status == "fresh",
-        )
-        .values(freshness_status="stale")
-    )
-    marked = int(res.rowcount or 0)
-    if marked:
-        logger.info("pages_decayed_stale", repo_id=repo_id, count=marked)
-    return marked
+    return await mark_page_ids_stale(session, repo_id, (f"file_page:{path}" for path in paths))
 
 
 async def mark_page_ids_stale(session: Any, repo_id: str, page_ids: Iterable[str]) -> int:
