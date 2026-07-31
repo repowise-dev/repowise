@@ -118,6 +118,85 @@ def test_file_page_contains_file_path(jinja_env, file_page_ctx):
     assert file_page_ctx.file_path in result
 
 
+@pytest.fixture(scope="module")
+def bare_file_page_ctx() -> FilePageContext:
+    """A file the graph knows nothing about: no symbols, no edges, no docstring.
+
+    Config files, data files and the unparsed tail of a large repo all land
+    here, so this is not a corner case — it is a large share of the file pages
+    a real wiki contains.
+    """
+    return FilePageContext(
+        file_path="python_pkg/settings.py",
+        language="python",
+        docstring=None,
+        symbols=[],
+        imports=[],
+        exports=[],
+        file_source_snippet="DEBUG = False",
+        pagerank_score=0.0,
+        betweenness_score=0.0,
+        community_id=0,
+        dependents=[],
+        dependencies=[],
+        is_api_contract=False,
+        is_entry_point=False,
+        is_test=False,
+        parse_errors=[],
+        estimated_tokens=10,
+    )
+
+
+def test_file_page_omits_a_section_it_cannot_fill(jinja_env, bare_file_page_ctx):
+    """A heading with nothing under it is worse than no heading.
+
+    An empty section still costs a reader a stop and still puts its words into
+    the search index, where the same four sentences repeated across thousands
+    of pages are noise that matches everything and distinguishes nothing.
+    """
+    result = render(jinja_env, "file_page.j2", bare_file_page_ctx)
+    assert "## Public API" not in result
+    assert "## Depends on" not in result
+    assert "## Used by" not in result
+
+
+def test_file_page_keeps_the_sections_it_can_fill(jinja_env, file_page_ctx):
+    """The other half of the rule: a populated file still renders everything."""
+    result = render(jinja_env, "file_page.j2", file_page_ctx)
+    assert "## Overview" in result
+    assert "## Public API" in result
+    assert "## Depends on" in result
+    assert "## Used by" in result
+
+
+def test_file_page_leaves_no_gap_where_a_section_was_dropped(
+    jinja_env, file_page_ctx, bare_file_page_ctx
+):
+    """Dropping a section must not leave the blank lines that framed it.
+
+    Every section is conditional, so the run of blank lines between two of them
+    depends on which ones rendered. Asserting the invariant here is what stops
+    a later edit from silently reintroducing the gaps.
+    """
+    for ctx in (file_page_ctx, bare_file_page_ctx):
+        result = render(jinja_env, "file_page.j2", ctx)
+        assert "\n\n\n" not in result
+        assert not result.startswith("\n")
+
+
+def test_file_page_always_says_what_the_file_is(jinja_env, bare_file_page_ctx):
+    """Overview stays unconditional — it is generated, so it is never empty.
+
+    It is also what ``_extract_summary`` reads back as the page summary shown
+    in search results and the wiki list, so a file page without it would be a
+    blank row there.
+    """
+    result = render(jinja_env, "file_page.j2", bare_file_page_ctx)
+    assert "## Overview" in result
+    assert bare_file_page_ctx.file_path in result
+    assert "_No " not in result
+
+
 # ---------------------------------------------------------------------------
 # module_page.j2
 # ---------------------------------------------------------------------------
