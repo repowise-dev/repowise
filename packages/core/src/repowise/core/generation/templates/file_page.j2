@@ -70,5 +70,40 @@ Part of the **{{ ctx.community_label }}** module cluster.
 **Layer:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **Role:** {{ ctx.kg_layer_role }}{% endif %}
 {%- endif %}
 {%- endif %}
+{#- Question-shaped text, built from structure rather than prose.
+
+    Every search query is a question and this page is a declarative reference,
+    so the two share almost no vocabulary. The identifiers are the whole point:
+    thousands of file pages asking the same question differ only in the file
+    and symbol they name, and without those they would be one sentence
+    repeated across the corpus, matching everything and distinguishing nothing.
+
+    A question is emitted only where the page can answer it. A question whose
+    answer is not below it puts the words of a promise into the index and then
+    breaks it, which is the failure this block exists to avoid. Last on the
+    page so it cannot become the summary ``_extract_summary`` reads back.
+
+    Built as a list and capped, because a fully-connected file qualifies for
+    more of them than are worth carrying: past three the block stops being
+    question-shaped text and starts being padding on every page in the corpus.
+-#}
+{%- set questions = [] -%}
+{%- if public_syms -%}
+{%- set _ = questions.append("What does `" ~ ctx.file_path ~ "` export?") -%}
+{%- set _ = questions.append("Where is `" ~ public_syms[0].name ~ "` defined?") -%}
+{%- endif -%}
+{%- if ctx.dependents -%}
+{%- set _ = questions.append("What imports `" ~ ctx.file_path ~ "`?") -%}
+{%- endif -%}
+{%- if ctx.dependencies -%}
+{%- set _ = questions.append("What does `" ~ ctx.file_path ~ "` depend on?") -%}
+{%- endif -%}
+{%- if questions %}
+
+## Questions this page answers
+{% for q in questions[:3] %}
+- {{ q }}
+{%- endfor %}
+{%- endif %}
 
 {% include "_footer.j2" %}

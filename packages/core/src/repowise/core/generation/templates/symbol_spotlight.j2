@@ -52,5 +52,23 @@
 {{ ctx.source_body }}
 ```
 {%- endif %}
+{#- Question-shaped text, built from structure rather than prose. The file
+    page carries the same block; the identifiers are what make it worth
+    anything, since otherwise it is one sentence repeated across the corpus.
+
+    This context is thinner than the file page's: no layer, no dependents, no
+    dependencies. And ``callers`` holds files importing the defining module,
+    not verified call sites, so "what calls this?" is a question this page
+    cannot honestly ask. Two it can always answer, plus one when there are
+    importers — fewer than the file page, and honest rather than padded.
+#}
+
+## Questions this page answers
+
+- Where is `{{ ctx.symbol_name }}` defined?
+- What is `{{ ctx.qualified_name }}`?
+{%- if ctx.callers %}
+- Which files import the module that defines `{{ ctx.symbol_name }}`?
+{%- endif %}
 
 {% include "_footer.j2" %}
