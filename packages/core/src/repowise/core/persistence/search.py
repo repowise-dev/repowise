@@ -26,6 +26,8 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.sql import text
 
+from .information_floor import information_floor, meets_information_floor, substantive_text
+
 
 @dataclass
 class SearchResult:
@@ -308,6 +310,11 @@ class FullTextSearch:
         # term → how many pages it matches. "" is the corpus size.
         self._df_cache: OrderedDict[str, int] = OrderedDict()
         self._warned_missing_fields = False
+        # Pages this instance kept out of the index for saying too little.
+        # A counter, not a line per page: a corpus-wide write would print
+        # thousands. The total is what says whether the floor is set sanely.
+        self.skipped_below_floor = 0
+        self._floor_sample: list[str] = []
 
     async def ensure_index(self) -> None:
         """Create the FTS index if it does not exist (idempotent).
@@ -420,19 +427,35 @@ class FullTextSearch:
 
         An empty *string* is a different thing and is not warned about: some
         page types genuinely have no summary.
+
+        A page below the information floor is not indexed, and any row it
+        already had is deleted. Ten places write this index, so the decision
+        lives here rather than at each of them — one that skipped the check
+        would keep re-admitting the pages the others exclude, and nothing
+        would report the disagreement. The page itself is untouched: it stays
+        in ``wiki_pages`` and stays a valid link target.
         """
         if summary is None or target_path is None:
             self._warn_missing_index_fields(page_id, summary, target_path)
             summary = summary if summary is not None else ""
             target_path = target_path if target_path is not None else ""
 
+        indexable = meets_information_floor(content)
+        if not indexable:
+            self._count_skipped_below_floor(page_id, content)
+
         if self._dialect == "sqlite":
             async with self._engine.begin() as conn:
-                # FTS5 does not support UPDATE; use DELETE + INSERT
+                # FTS5 does not support UPDATE; use DELETE + INSERT. The delete
+                # runs either way: a page that has fallen below the floor since
+                # its last index must lose the row it had, or the exclusion
+                # only ever applies to pages that never existed.
                 await conn.execute(
                     text("DELETE FROM page_fts WHERE page_id = :pid"),
                     {"pid": page_id},
                 )
+                if not indexable:
+                    return
                 await conn.execute(
                     text(
                         "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
@@ -448,6 +471,34 @@ class FullTextSearch:
                 )
         # PostgreSQL: the GIN index on wiki_pages is maintained automatically
         # by the database as rows are inserted/updated via the CRUD layer.
+
+    def _count_skipped_below_floor(self, page_id: str, content: str) -> None:
+        """Record a page held out of the index, and name the first few."""
+        self.skipped_below_floor += 1
+        if len(self._floor_sample) < 3:
+            self._floor_sample.append(page_id)
+        if self.skipped_below_floor == 1:
+            _log.info(
+                "fts_page_below_information_floor page_id=%s substantive_chars=%d floor=%d",
+                page_id,
+                len(substantive_text(content)),
+                information_floor(),
+            )
+
+    def log_floor_exclusions(self) -> None:
+        """Report the run's total. Callers that index a corpus call this once.
+
+        Silent when nothing was excluded, so a repository whose pages are all
+        substantial says nothing rather than reporting a zero.
+        """
+        if not self.skipped_below_floor:
+            return
+        _log.info(
+            "fts_pages_below_information_floor count=%d floor=%d sample=%s",
+            self.skipped_below_floor,
+            information_floor(),
+            ", ".join(self._floor_sample),
+        )
 
     def _warn_missing_index_fields(
         self, page_id: str, summary: str | None, target_path: str | None
