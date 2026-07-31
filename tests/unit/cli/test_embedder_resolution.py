@@ -213,6 +213,9 @@ async def test_reindex_persists_its_resolved_embedder(
         content = "hello"
         page_type = "file_page"
         target_path = "a.py"
+        # Non-nullable on the real model, so a stand-in that omits it is a
+        # stand-in for a page that cannot exist.
+        summary = "what a.py does"
 
     class _Result:
         def __init__(self, rows: list) -> None:

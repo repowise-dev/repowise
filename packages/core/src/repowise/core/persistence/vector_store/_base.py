@@ -18,8 +18,10 @@ from ..search import SearchResult
 __all__ = [
     "EMBED_BATCH_MAX_ITEMS",
     "EMBED_TEXT_MAX_CHARS",
+    "STORED_SNIPPET_CHARS",
     "VectorStore",
     "cosine_similarity",
+    "embed_item",
     "iter_embed_chunks",
 ]
 
@@ -37,6 +39,68 @@ EMBED_BATCH_MAX_ITEMS = 16
 # Per-input cap (~7.5k tokens): embedding models reject a single input past
 # ~8,192 tokens, and one oversized page must not sink its whole chunk.
 EMBED_TEXT_MAX_CHARS = 30_000
+
+# How much of a page's content a vector row keeps for its evidence snippet.
+#
+# Defined here rather than in a backend because it belongs to the item every
+# backend is handed, not to any one store: a row can only ever show what the
+# recipe put in front of it, so a store that cuts at a width the recipe never
+# reaches is cutting nothing. That is what happened when this widened — the
+# store raised its ceiling while the recipe still handed it 600 characters,
+# and on the paths that passed no content at all, an empty string.
+STORED_SNIPPET_CHARS = 2_000
+
+
+def embed_item(
+    page_id: str,
+    *,
+    title: str,
+    page_type: str,
+    target_path: str,
+    summary: str,
+    content: str,
+) -> tuple[str, str, dict]:
+    """Build the one ``(page_id, text, metadata)`` item every writer embeds.
+
+    Four things write vectors for a page — generation, ``reindex``,
+    ``doctor --repair`` and the hosted indexer — and until now each built its
+    own text. One embedded the content alone, one prefixed the title, one
+    passed neither summary nor path. A vector was therefore not comparable
+    with another vector: whether a page could be found by its own name
+    depended on which command last wrote it, and nothing anywhere reported
+    the difference.
+
+    The text carries all four fields because each answers a question the
+    others cannot. ``target_path`` is the strongest one: a page about
+    ``search.py`` has no idea it is about ``search.py`` unless its prose
+    happens to say so, and prose usually does not repeat its own filename.
+
+    ``title`` is required. A page with no title is not a page whose title is
+    empty — it is a writer that lost it, and the row it produces looks
+    healthy while being unfindable by name, so this raises rather than
+    storing it. The other three may legitimately be empty (some page types
+    have no summary; a repository-wide page has no path).
+    """
+    if not title.strip():
+        raise ValueError(
+            f"embed_item: page {page_id!r} has no title. A blank title writes a "
+            f"vector that cannot be found by name and reports nothing wrong; "
+            f"pass the page's real title."
+        )
+    parts = [p for p in (title, target_path, summary, content) if p]
+    return (
+        page_id,
+        "\n".join(parts),
+        {
+            "title": title,
+            "page_type": page_type,
+            "target_path": target_path,
+            "summary": summary,
+            # Wide enough for a store to cut an evidence window out of, and a
+            # prefix rather than the page so a large corpus is not held twice.
+            "content": content[:STORED_SNIPPET_CHARS],
+        },
+    )
 
 
 def iter_embed_chunks(

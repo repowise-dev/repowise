@@ -5,24 +5,21 @@ from __future__ import annotations
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
-from ._base import VectorStore, iter_embed_chunks
+from ._base import STORED_SNIPPET_CHARS, VectorStore, iter_embed_chunks
 
 __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
 
-# How much of a page's content each row keeps.
+# ``STORED_SNIPPET_CHARS`` — how much of a page's content each row keeps — is
+# defined with the embed recipe and re-exported here so the historical import
+# path keeps working.
 #
 # A hit's evidence snippet should show the region the query matched, not the
-# page's opening line — on a generated page that opener is the same
+# page's opening line: on a generated page that opener is the same
 # ``## Overview`` paragraph every time. The full-text arm holds the whole page
 # at search time and can cut a window from it; this arm cannot, because what a
 # search sees was fixed when the row was written. So the row keeps enough
-# content for a window to exist inside it.
-#
-# It is a prefix, not the whole page: this column is read on the hot path and
-# duplicated per row, and a match beyond the first few thousand characters is
-# rare enough not to be worth the store. A row written before this widening
+# content for a window to exist inside it. A row written before the widening
 # holds 200 characters and simply windows to its opener.
-STORED_SNIPPET_CHARS = 2_000
 
 
 def _evidence(stored: str, query: str | None) -> str:

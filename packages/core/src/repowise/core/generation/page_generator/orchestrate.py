@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ...persistence.vector_store import embed_item
 from ..context_assembler import FilePageContext
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
@@ -904,18 +905,22 @@ def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:
     (as this did until 2026-07) left every page embedded at generation time
     with a blank title, while ``reindex`` and ``doctor --repair`` set it, so
     the store disagreed with itself depending on how a page got there.
+
+    The recipe itself is shared with those two commands rather than repeated
+    here, which is what stops that class of disagreement recurring.
+
+    ``page.summary`` and not a summary derived here: it is the same field the
+    full-text index is given, so both arms describe a page the same way. The
+    two used to differ, and a page's summary then depended on which arm you
+    asked.
     """
-    summary = overview_summary(page.content)
-    return (
+    return embed_item(
         page.page_id,
-        page.content,
-        {
-            "title": page.title,
-            "page_type": page.page_type,
-            "target_path": page.target_path,
-            "content": page.content[:600],
-            "summary": summary,
-        },
+        title=page.title,
+        page_type=page.page_type,
+        target_path=page.target_path,
+        summary=page.summary,
+        content=page.content,
     )
 
 

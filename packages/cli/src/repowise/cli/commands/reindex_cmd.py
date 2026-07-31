@@ -112,6 +112,10 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         return
 
     # --- Embed and upsert pages in batches ---
+    # The recipe is shared with generation and ``doctor --repair`` so a page
+    # reindexed here gets the same vector it would have got from any of them.
+    from repowise.core.persistence.vector_store import embed_item
+
     indexed = 0
     failed = 0
 
@@ -160,18 +164,27 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
             batch = pages[i : i + batch_size]
             items = []
             for page in batch:
-                text = f"{page.title}\n{page.content}" if page.content else page.title or ""
-                if not text.strip():
-                    continue  # embedders reject empty input; nothing to index
+                if not (page.title or "").strip():
+                    # The shared recipe refuses a blank title, and it is right
+                    # to: the row would be unfindable by name. Here that must
+                    # not abort a whole reindex over one bad row, so the page
+                    # is skipped and counted like any other failure.
+                    failed += 1
+                    warned += 1
+                    if warned <= 3:
+                        console.print(
+                            f"[yellow]  Warning: skipped {page.id}: no title to index it by"
+                            "[/yellow]"
+                        )
+                    continue
                 items.append(
-                    (
+                    embed_item(
                         page.id,
-                        text,
-                        {
-                            "title": page.title or "",
-                            "page_type": page.page_type or "",
-                            "target_path": page.target_path or "",
-                        },
+                        title=page.title,
+                        page_type=page.page_type or "",
+                        target_path=page.target_path or "",
+                        summary=page.summary or "",
+                        content=page.content or "",
                     )
                 )
             await _embed_slice(items)

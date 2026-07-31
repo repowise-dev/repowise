@@ -548,19 +548,34 @@ def _run_repo_checks(
                             from sqlalchemy import select
 
                             from repowise.core.persistence.models import Page
+                            from repowise.core.persistence.vector_store import embed_item
 
                             rows = await session.execute(
                                 select(Page).where(Page.id.in_(list(missing_from_vector)))
                             )
                             for page in rows.scalars().all():
+                                if not (page.title or "").strip():
+                                    # A repair that writes an unfindable row is
+                                    # not a repair. Leave it reported as missing
+                                    # rather than filling the gap with a vector
+                                    # no search can reach by name.
+                                    console.print(
+                                        f"  [yellow]Skipped {page.id}: no title to "
+                                        f"index it by.[/yellow]"
+                                    )
+                                    continue
+                                # Same recipe as generation and ``reindex``, so a
+                                # repaired page is comparable with its neighbours
+                                # instead of being embedded on different terms.
                                 await vs.embed_and_upsert(
-                                    page.id,
-                                    page.content,
-                                    {
-                                        "title": page.title,
-                                        "page_type": page.page_type,
-                                        "target_path": page.target_path,
-                                    },
+                                    *embed_item(
+                                        page.id,
+                                        title=page.title,
+                                        page_type=page.page_type or "",
+                                        target_path=page.target_path or "",
+                                        summary=page.summary or "",
+                                        content=page.content or "",
+                                    )
                                 )
                                 repaired += 1
 
