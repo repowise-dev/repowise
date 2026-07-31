@@ -158,6 +158,7 @@ def signature(value: object, limit: int = 120) -> str:
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
 FILE_PAGE_TEMPLATE = "file_page.j2"
+SYMBOL_SPOTLIGHT_TEMPLATE = "symbol_spotlight.j2"
 
 # Metadata key holding a structural page's render fingerprint. It lives in
 # metadata rather than in a column of its own because ``GeneratedPage`` already
@@ -277,6 +278,50 @@ def stale_file_page_paths(
             continue
         if stored != structural_content_hash(subject_hash, fingerprint):
             stale.append(path)
+    return stale
+
+
+def stale_spotlight_paths(
+    stored_keys_by_path: Mapping[str, Iterable[str]],
+    parsed_files: Iterable[Any],
+    *,
+    language: str = "en",
+    style_fingerprint: str = "",
+    template_dir: Path | None = None,
+) -> list[str]:
+    """Files whose stored symbol spotlights came from an older renderer.
+
+    The same idea as :func:`stale_file_page_paths` and deliberately a separate
+    function, because the two are keyed differently. A file page is one page
+    per path, so it can be looked up by page id. A file has many spotlights,
+    one per selected symbol, and which symbols were selected on the run that
+    wrote them is not reconstructible here — so the caller groups the stored
+    keys by defining file and this compares against the set.
+
+    Returns **file paths**, not page ids, because regeneration is driven by
+    file: ``update`` re-parses a path and re-renders every page derived from
+    it. One stale spotlight therefore makes its defining file the unit of work.
+    """
+    fingerprint = structural_fingerprint(
+        SYMBOL_SPOTLIGHT_TEMPLATE,
+        language=language,
+        style_fingerprint=style_fingerprint,
+        template_dir=template_dir,
+    )
+    stale: list[str] = []
+    for parsed in parsed_files:
+        subject_hash = getattr(parsed, "content_hash", "") or ""
+        if not subject_hash:
+            # Same reasoning as the file-page sweep: no stable subject means no
+            # stable expectation, and treating it as stale re-renders forever.
+            continue
+        stored = stored_keys_by_path.get(parsed.file_info.path)
+        if not stored:
+            # No spotlight stored for this file is absent, not stale.
+            continue
+        expected = structural_content_hash(subject_hash, fingerprint)
+        if any(key != expected for key in stored):
+            stale.append(parsed.file_info.path)
     return stale
 
 
@@ -412,7 +457,7 @@ class StructuralRenderMixin:
             page_type="symbol_spotlight",
             target_path=target_path,
             title=title,
-            template="symbol_spotlight.j2",
+            template=SYMBOL_SPOTLIGHT_TEMPLATE,
             subject_hash=subject_hash,
             ctx=ctx,
         )

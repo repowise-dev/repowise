@@ -112,7 +112,18 @@ class PerTypeGenerationMixin:
             source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
         )
         target = f"{parsed.file_info.path}::{symbol.name}"
-        return self._structural_symbol_spotlight(ctx, target, f"Symbol: {symbol.qualified_name}")
+        # The subject is the defining file's bytes — the same subject the file
+        # page uses. A spotlight renders a symbol out of that file, so when the
+        # bytes move the spotlight has to be redone anyway, and there is no
+        # finer-grained per-symbol hash stored to compare against. Without a
+        # subject the page stores no render key at all and the staleness sweep
+        # can never see that an improved template has not reached it.
+        return self._structural_symbol_spotlight(
+            ctx,
+            target,
+            f"Symbol: {symbol.qualified_name}",
+            subject_hash=parsed.content_hash or "",
+        )
 
     async def generate_module_page(
         self,

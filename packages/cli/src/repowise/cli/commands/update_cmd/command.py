@@ -435,24 +435,34 @@ def _head_commit_ts(repo_path) -> float | None:
 
 
 def _current_renderer_fingerprint(repo_path) -> str:
-    """This release's fingerprint for the file-page renderer, or '' on failure.
+    """This release's fingerprint for the structural renderers, or '' on failure.
 
-    Cheap: reads one template and a few constants, no parse. An empty result
+    Covers every template with no model path behind it, because this value is
+    what decides whether a repository with no new commits is "already up to
+    date". Fingerprinting only the file page meant a release that improved the
+    spotlight template alone returned before doing anything, and the change
+    never reached an existing wiki.
+
+    Cheap: reads the templates and a few constants, no parse. An empty result
     disables the renderer-staleness gate for this run rather than risking a
     spurious full re-render, which is the safe direction.
     """
     try:
         from repowise.core.generation.page_generator.structural import (
             FILE_PAGE_TEMPLATE,
+            SYMBOL_SPOTLIGHT_TEMPLATE,
             structural_fingerprint,
         )
 
         language, style_fp, template_dir = _renderer_inputs(repo_path)
-        return structural_fingerprint(
-            FILE_PAGE_TEMPLATE,
-            language=language,
-            style_fingerprint=style_fp,
-            template_dir=template_dir,
+        return ":".join(
+            structural_fingerprint(
+                template,
+                language=language,
+                style_fingerprint=style_fp,
+                template_dir=template_dir,
+            )
+            for template in (FILE_PAGE_TEMPLATE, SYMBOL_SPOTLIGHT_TEMPLATE)
         )
     except Exception as exc:
         log.debug("update.renderer_fingerprint_failed", error=str(exc))
@@ -460,7 +470,11 @@ def _current_renderer_fingerprint(repo_path) -> str:
 
 
 def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
-    """File paths whose stored page predates the current structural renderer.
+    """File paths whose stored pages predate the current structural renderers.
+
+    Covers file pages and symbol spotlights. Both sweeps return file paths, so
+    the union is the set of files to re-parse; regenerating a file re-renders
+    every page derived from it, including its spotlights.
 
     Never raises: a failure here means the run behaves exactly as it did
     before the fingerprint existed, which is the safe direction. The style and
@@ -468,21 +482,29 @@ def _stale_renderer_paths(repo_path, parsed_files) -> list[str]:
     would look stale on every run.
     """
     try:
-        from repowise.core.generation.page_generator.structural import stale_file_page_paths
-
-        from .deterministic import load_file_page_render_keys
-
-        stored = load_file_page_render_keys(repo_path)
-        if not stored:
-            return []
-        language, style_fp, template_dir = _renderer_inputs(repo_path)
-        return stale_file_page_paths(
-            stored,
-            parsed_files,
-            language=language,
-            style_fingerprint=style_fp,
-            template_dir=template_dir,
+        from repowise.core.generation.page_generator.structural import (
+            stale_file_page_paths,
+            stale_spotlight_paths,
         )
+
+        from .deterministic import load_file_page_render_keys, load_spotlight_render_keys
+
+        parsed_files = list(parsed_files)
+        language, style_fp, template_dir = _renderer_inputs(repo_path)
+        kwargs = {
+            "language": language,
+            "style_fingerprint": style_fp,
+            "template_dir": template_dir,
+        }
+
+        stale: list[str] = []
+        stored_pages = load_file_page_render_keys(repo_path)
+        if stored_pages:
+            stale.extend(stale_file_page_paths(stored_pages, parsed_files, **kwargs))
+        stored_spotlights = load_spotlight_render_keys(repo_path)
+        if stored_spotlights:
+            stale.extend(stale_spotlight_paths(stored_spotlights, parsed_files, **kwargs))
+        return list(dict.fromkeys(stale))
     except Exception as exc:
         log.debug("update.stale_renderer_check_failed", error=str(exc))
         return []
@@ -1711,7 +1733,5 @@ def run_update(
         elapsed=elapsed,
         degraded=degraded,
     )
-    _render_update_report(
-        generated_pages, affected, new_decision_markers, elapsed, detail=verbose
-    )
+    _render_update_report(generated_pages, affected, new_decision_markers, elapsed, detail=verbose)
     return UpdateOutcome.REGENERATED

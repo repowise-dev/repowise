@@ -21,7 +21,9 @@ from repowise.core.generation.models import compute_page_id
 from repowise.core.generation.page_generator.structural import (
     FILE_PAGE_TEMPLATE,
     RENDER_KEY,
+    SYMBOL_SPOTLIGHT_TEMPLATE,
     stale_file_page_paths,
+    stale_spotlight_paths,
     structural_content_hash,
     structural_fingerprint,
 )
@@ -185,6 +187,88 @@ def test_a_style_switch_makes_every_page_stale():
     parsed = [_parsed("src/a.py")]
     stored = _stored({"src/a.py": _current_hash("hash-of-bytes")})
     assert stale_file_page_paths(stored, parsed, style_fingerprint="caveman") == ["src/a.py"]
+
+
+# ---------------------------------------------------------------------------
+# The same sweep for symbol spotlights
+#
+# Keyed differently on purpose: a file has one file page and many spotlights,
+# and which symbols were selected on the run that wrote them is not
+# reconstructible here, so the caller groups stored keys by defining file.
+# ---------------------------------------------------------------------------
+
+
+def _spotlight_hash(content_hash: str, **kwargs) -> str:
+    return structural_content_hash(
+        content_hash, structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE, **kwargs)
+    )
+
+
+def test_no_spotlight_is_stale_when_the_renderer_has_not_moved():
+    parsed = [_parsed("src/a.py"), _parsed("src/b.py", "other-bytes")]
+    stored = {
+        "src/a.py": [_spotlight_hash("hash-of-bytes"), _spotlight_hash("hash-of-bytes")],
+        "src/b.py": [_spotlight_hash("other-bytes")],
+    }
+    assert stale_spotlight_paths(stored, parsed) == []
+
+
+def test_a_spotlight_template_change_makes_its_file_stale():
+    """The case this exists for: the template moved, so the page has to be redone."""
+    parsed = [_parsed("src/a.py")]
+    old = structural_fingerprint(SYMBOL_SPOTLIGHT_TEMPLATE, source="# an older template")
+    stored = {"src/a.py": [structural_content_hash("hash-of-bytes", old)]}
+    assert stale_spotlight_paths(stored, parsed) == ["src/a.py"]
+
+
+def test_one_stale_spotlight_makes_the_whole_file_the_unit_of_work():
+    """Regeneration is per file, so a single mismatch is enough to select it."""
+    parsed = [_parsed("src/a.py")]
+    stored = {"src/a.py": [_spotlight_hash("hash-of-bytes"), "written-by-something-older"]}
+    assert stale_spotlight_paths(stored, parsed) == ["src/a.py"]
+
+
+def test_spotlights_predating_the_salt_are_refreshed_once():
+    """Every spotlight in every existing wiki stores no key at all.
+
+    That is not a corner case: spotlights were rendered without a subject hash,
+    so nothing was ever stamped. This is the whole population on the first run
+    that carries the fix.
+    """
+    parsed = [_parsed("src/a.py")]
+    assert stale_spotlight_paths({"src/a.py": [""]}, parsed) == ["src/a.py"]
+
+
+def test_a_file_with_no_spotlights_is_not_stale():
+    """Absent is not stale — most files never get a spotlight at all."""
+    parsed = [_parsed("src/no_symbols.py")]
+    assert stale_spotlight_paths({}, parsed) == []
+    assert stale_spotlight_paths({"src/no_symbols.py": []}, parsed) == []
+
+
+def test_a_file_with_no_content_hash_is_skipped_by_the_spotlight_sweep():
+    parsed = [_parsed("src/unparsed.py", content_hash="")]
+    assert stale_spotlight_paths({"src/unparsed.py": ["whatever"]}, parsed) == []
+
+
+def test_the_two_sweeps_do_not_share_a_fingerprint():
+    """Each template is fingerprinted separately, or editing one would falsely
+    mark the other's pages stale and re-render the whole wiki."""
+    assert structural_fingerprint(FILE_PAGE_TEMPLATE) != structural_fingerprint(
+        SYMBOL_SPOTLIGHT_TEMPLATE
+    )
+    # A store written by the current release is stale under neither sweep.
+    parsed = [_parsed("src/a.py")]
+    assert (
+        stale_file_page_paths(_stored({"src/a.py": _current_hash("hash-of-bytes")}), parsed) == []
+    )
+    assert stale_spotlight_paths({"src/a.py": [_spotlight_hash("hash-of-bytes")]}, parsed) == []
+
+
+def test_a_style_switch_makes_every_spotlight_stale():
+    parsed = [_parsed("src/a.py")]
+    stored = {"src/a.py": [_spotlight_hash("hash-of-bytes")]}
+    assert stale_spotlight_paths(stored, parsed, style_fingerprint="caveman") == ["src/a.py"]
 
 
 def test_a_custom_style_template_override_is_what_gets_fingerprinted(tmp_path):
