@@ -20,6 +20,30 @@ from .prose import prose_word_count
 # on purpose — a long overview is worth seeing, never worth failing a run over.
 ORIENTATION_PROSE_WORD_BUDGET = 450
 
+# The heading the deterministic templates put their question-shaped text under.
+# Counted rather than asserted: the block is conditional by design, so a page
+# without one is legitimate and only the ratio is meaningful.
+QUESTIONS_HEADING = "## Questions this page answers"
+
+# Page types rendered from a template with no model path, and therefore the
+# ones that carry a deterministic questions block.
+_QUESTION_PAGE_TYPES = ("file_page", "symbol_spotlight")
+
+
+def _count_question_blocks(pages: list[GeneratedPage]) -> dict[str, int]:
+    """How many template pages carry question-shaped text, out of how many.
+
+    Both numbers, because the ratio is the only reading that means anything.
+    A zero numerator on a zero denominator is a run that wrote no such pages;
+    a zero numerator on a large denominator is the block having silently
+    stopped rendering, which nothing else in the run would report.
+    """
+    eligible = [p for p in pages if p.page_type in _QUESTION_PAGE_TYPES]
+    return {
+        "eligible_pages": len(eligible),
+        "with_questions": sum(1 for p in eligible if QUESTIONS_HEADING in (p.content or "")),
+    }
+
 
 @dataclass
 class GenerationReport:
@@ -58,6 +82,12 @@ class GenerationReport:
     # kept and still resolves as a link target; only its vector is withheld.
     # Zero whenever the information floor is off, which is the default.
     pages_denied_a_vector: int = 0
+    # How far question-shaped text reached across this run's template-rendered
+    # pages.  Carries its own denominator, so "this run wrote no such pages"
+    # and "the block stopped rendering" stay separate facts.  Without the
+    # denominator a silent template regression is indistinguishable from a run
+    # that generated no file pages, and neither one raises.
+    question_blocks: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_pages(
@@ -92,6 +122,7 @@ class GenerationReport:
             layer_grouping=measure_layer_grouping(pages),
             artifact_checks=artifact_check_counts(),
             pages_denied_a_vector=pages_denied_a_vector(),
+            question_blocks=_count_question_blocks(pages),
             overview_prose_words=next(
                 (
                     prose_word_count(p.content or "")
@@ -113,12 +144,32 @@ class GenerationReport:
             return False
         return self.overview_prose_words > ORIENTATION_PROSE_WORD_BUDGET
 
+    @property
+    def questions_missing(self) -> bool:
+        """Whether a template page this run wrote came out with no questions.
+
+        Warn-only, and expected to be non-zero: a file with no symbols and no
+        resolved edges has nothing structural to ask about, so it legitimately
+        renders none. What the flag is for is the other case — the number
+        falling to zero, or near it, across a run that wrote thousands of
+        pages, which is what a broken template looks like from outside.
+        """
+        eligible = self.question_blocks.get("eligible_pages", 0)
+        return bool(eligible) and self.question_blocks.get("with_questions", 0) < eligible
+
     def overview_length_summary(self) -> str:
         """One line naming the overview's length against its budget."""
         if self.overview_prose_words is None:
             return "no overview in this run"
         line = f"{self.overview_prose_words} / {ORIENTATION_PROSE_WORD_BUDGET} words"
         return f"{line} — over budget" if self.overview_over_budget else line
+
+    def question_block_summary(self) -> str:
+        """One line saying how far question-shaped text reached this run."""
+        eligible = self.question_blocks.get("eligible_pages", 0)
+        if not eligible:
+            return "not measured (0 template pages)"
+        return f"{self.question_blocks.get('with_questions', 0)} of {eligible} pages"
 
     def artifact_check_summary(self) -> str:
         """One line saying whether the artifact checks ran, and what they found."""
@@ -212,6 +263,11 @@ def render_generation_checks(report: GenerationReport, console: object) -> None:
     if report.overview_over_budget:
         length_text = f"[yellow]{length_text}[/yellow]"
     table.add_row("Overview length", length_text)
+
+    questions_text = report.question_block_summary()
+    if report.questions_missing:
+        questions_text = f"[yellow]{questions_text}[/yellow]"
+    table.add_row("Question-shaped text", questions_text)
 
     console.print(table)  # type: ignore[union-attr]
 
