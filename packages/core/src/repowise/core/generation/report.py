@@ -5,6 +5,7 @@ Provides token accounting, page breakdown by type, and cost estimation.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -28,6 +29,97 @@ QUESTIONS_HEADING = "## Questions this page answers"
 # Page types rendered from a template with no model path, and therefore the
 # ones that carry a deterministic questions block.
 _QUESTION_PAGE_TYPES = ("file_page", "symbol_spotlight")
+
+# How many leading words of a module page's opening count as its frame. Five is
+# where the observed repetition sits: "the presentation layer is the" opened ten
+# of eighty-nine pages in one run, and the words after it were the only ones
+# doing any work.
+_OPENING_FRAME_WORDS = 5
+
+# Share of module pages that may open with a frame another page also uses
+# before the run is worth flagging.
+OPENING_FRAME_REPEAT_BUDGET = 0.20
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _opening_frame(content: str) -> str:
+    """The first few words of a page's opening sentence, normalised.
+
+    The opening is the page's summary — it is what ``_extract_summary`` stores,
+    what listings show, and what a module's description becomes wherever the
+    wiki is summarised for a reader. So a frame shared across pages is not a
+    style complaint: it is the same sentence being shown as the description of
+    several different subsystems.
+
+    Headings, tables and bullets are skipped: the opening is the first thing
+    written as prose.
+    """
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "|", "-", "*", ">", "`", "_")):
+            continue
+        words = _WORD.findall(stripped.lower())
+        return " ".join(words[:_OPENING_FRAME_WORDS])
+    return ""
+
+
+@dataclass
+class OpeningFrameReport:
+    """How many module pages this run opened with a sentence frame it reused.
+
+    Warn-only and reported with its denominator. Nothing raises when the model
+    settles into a template — the pages are individually well-formed and every
+    other check passes — so without this number the only symptom is a wiki
+    whose module descriptions all read the same.
+    """
+
+    eligible_pages: int = 0
+    repeated_pages: int = 0
+    #: The frame the most pages shared, and how many shared it. Named rather
+    #: than counted alone: a ratio says a problem exists, the frame says which
+    #: sentence to ban next.
+    top_frame: str = ""
+    top_frame_count: int = 0
+
+    @property
+    def measured(self) -> bool:
+        """Whether this run wrote enough module pages to compare at all.
+
+        One page cannot repeat itself, so a zero on a single-page run is not a
+        clean result — it is no result, and reads identically without this.
+        """
+        return self.eligible_pages > 1
+
+    @property
+    def repeat_ratio(self) -> float:
+        return self.repeated_pages / self.eligible_pages if self.eligible_pages else 0.0
+
+    @property
+    def over_budget(self) -> bool:
+        return self.measured and self.repeat_ratio > OPENING_FRAME_REPEAT_BUDGET
+
+    def summary_line(self) -> str:
+        if not self.measured:
+            return f"not measured ({self.eligible_pages} module page(s))"
+        line = f"{self.repeated_pages} of {self.eligible_pages} pages ({self.repeat_ratio:.0%})"
+        if self.top_frame_count > 1:
+            line = f'{line} — "{self.top_frame}" ×{self.top_frame_count}'
+        return line
+
+
+def measure_opening_frames(pages: list[GeneratedPage]) -> OpeningFrameReport:
+    """Count the module pages whose opening frame another module page also uses."""
+    frames = [_opening_frame(p.content or "") for p in pages if p.page_type == "module_page"]
+    present = [f for f in frames if f]
+    counts = Counter(present)
+    top_frame, top_count = counts.most_common(1)[0] if counts else ("", 0)
+    return OpeningFrameReport(
+        eligible_pages=len(frames),
+        repeated_pages=sum(1 for f in present if counts[f] > 1),
+        top_frame=top_frame if top_count > 1 else "",
+        top_frame_count=top_count,
+    )
 
 
 def _count_question_blocks(pages: list[GeneratedPage]) -> dict[str, int]:
@@ -88,6 +180,11 @@ class GenerationReport:
     # denominator a silent template regression is indistinguishable from a run
     # that generated no file pages, and neither one raises.
     question_blocks: dict[str, int] = field(default_factory=dict)
+    # Whether this run's module pages opened with sentence frames they reused.
+    # Their opening is their summary, so a shared frame is the same sentence
+    # standing as the description of several different subsystems.  Read
+    # ``measured`` before reading the counts.
+    opening_frames: OpeningFrameReport = field(default_factory=OpeningFrameReport)
 
     @classmethod
     def from_pages(
@@ -123,6 +220,7 @@ class GenerationReport:
             artifact_checks=artifact_check_counts(),
             pages_denied_a_vector=pages_denied_a_vector(),
             question_blocks=_count_question_blocks(pages),
+            opening_frames=measure_opening_frames(pages),
             overview_prose_words=next(
                 (
                     prose_word_count(p.content or "")
@@ -268,6 +366,12 @@ def render_generation_checks(report: GenerationReport, console: object) -> None:
     if report.questions_missing:
         questions_text = f"[yellow]{questions_text}[/yellow]"
     table.add_row("Question-shaped text", questions_text)
+
+    frames = report.opening_frames
+    frames_text = frames.summary_line()
+    if frames.over_budget:
+        frames_text = f"[yellow]{frames_text}[/yellow]"
+    table.add_row("Module page openings", frames_text)
 
     console.print(table)  # type: ignore[union-attr]
 

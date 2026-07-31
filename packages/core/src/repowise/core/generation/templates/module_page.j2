@@ -125,7 +125,9 @@ Most active file: `{{ module_git_summary.most_active_file }}` ({{ module_git_sum
 
 Write the page now from the material above. Requirements:
 
-- Open with the role-leading opener described, situating this page against its siblings using the scope line. Do not begin with "This module contains N files".
+- Open with one sentence that could only have been written about THIS subsystem, situating it against its siblings using the scope line. The opening sentence is stored as this page's summary and is shown as the module's description wherever the wiki is listed, so it has to carry information on its own.
+  - Do not open with a frame. Every one of these is banned as an opening: "The X layer is the Y of Z", "The X layer serves as the ...", "The X layer acts as the ...", "X is the entry stage of ...", "it consumes ... and produces ...", and "This module contains N files".
+  - Two module pages that open with the same first five words is the failure this rule exists to prevent. Name what this subsystem is responsible for, in words the material above forced on you.
 - Choose H2/H3 headings that name this subsystem's real concerns. There is no fixed heading list — do not emit generic "Overview / Public API / Architecture Notes" headings unless they are genuinely the right names here.
 - Synthesise across the whole file set. Draw on the material as a body of evidence; a file-by-file walkthrough is a failure even when accurate. Draw on many files, not one.
 - Put any enumerable list (key files, dependencies, decisions) in a markdown table where it reads better than prose.
