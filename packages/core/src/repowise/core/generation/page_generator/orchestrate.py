@@ -873,6 +873,20 @@ def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
             # curated id is the best identity available and is stable for a
             # layer; for the others this is a fallback, not the design.
             page.structural_key = page.target_path
+        if not page.structural_key:
+            # The fallback above is a target_path, and a page whose members are
+            # unknown *and* whose target_path is empty comes out of it with no
+            # identity at all. That page is not merely unkeyed: the stale-page
+            # sweep matches these three types by structural key, so an empty one
+            # is a page the sweep can neither find nor retire, and it strands as
+            # a duplicate on every later run. Nothing downstream can tell that
+            # from a type that is not keyed on purpose, which is why this raises
+            # here rather than being logged and carried.
+            raise ValueError(
+                f"structural key missing for {page.page_id!r} (type "
+                f"{page.page_type!r}): it has no member list and no target "
+                f"path, so there is nothing to identify it by."
+            )
 
 
 def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
