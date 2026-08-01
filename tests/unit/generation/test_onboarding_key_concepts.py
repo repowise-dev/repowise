@@ -514,7 +514,8 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
     content = (
         "Call `https://example.com/docs`, `github.com/org/repo`, `api/v1/users`, "
         "`api/V1/users`, `localhost:3000/api`, `v2/users`, `V2/users`, "
-        "`service/v1/users`, `users/V2/profile`, `users/profile`, "
+        "`service/v1/users`, `service/v2/schema.yaml`, `api/v1/openapi.json`, "
+        "`localhost/openapi.json`, `users/V2/profile`, `users/profile`, "
         "`GET /health`, or `/health`."
     )
 
@@ -525,13 +526,14 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
 
 
 def test_grounding_validates_paths_in_versioned_repository_directories() -> None:
-    content = "Do not cite `docs/v2/fake.md` or `src/v1/missing.py`."
+    content = "Do not cite `docs/v2/fake.md`, `src/v1/missing.py`, or `v1/src/handler`."
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
 
-    assert ungrounded == ["docs/v2/fake.md", "src/v1/missing.py"]
+    assert ungrounded == ["docs/v2/fake.md", "src/v1/missing.py", "v1/src/handler"]
     assert "`docs/v2/fake.md`" not in cleaned
     assert "`src/v1/missing.py`" not in cleaned
+    assert "`v1/src/handler`" not in cleaned
 
 
 def test_qualified_evidence_paths_cannot_borrow_a_structured_bare_path() -> None:
@@ -633,7 +635,8 @@ def test_evidence_symbol_match_uses_qualified_identifier_boundaries() -> None:
     ctx = _ctx_for_grounding()
     evidence = {
         "docs/notes.md": (
-            "Other.EvidenceRouter.dispatch and EvidenceRouter.dispatch.extra are unrelated."
+            "Other.EvidenceRouter.dispatch, EvidenceRouter.dispatch.extra, "
+            "Other/EvidenceRouter.dispatch, and Other#EvidenceRouter.dispatch are unrelated."
         )
     }
 

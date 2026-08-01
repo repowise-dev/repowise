@@ -130,6 +130,7 @@ _REPOSITORY_DIRECTORY_NAMES = frozenset(
         "tools",
     }
 )
+_ROUTE_ROOT_NAMES = frozenset({"api", "localhost", "service", "services", "user", "users"})
 
 # A bare identifier, optionally dotted or ``::``-qualified (e.g. ``LanguageSpec``,
 # ``get_session``, ``foo.Bar.baz``, ``path.py::Name``).
@@ -152,6 +153,9 @@ def _looks_like_path(token: str) -> bool:
             return False
         if not all(part not in {"", ".", ".."} for part in parts):
             return False
+        versioned = any(re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts)
+        if first.lower() in _ROUTE_ROOT_NAMES and (versioned or first.lower() != "api"):
+            return False
         if name.startswith(".") or name.lower() in _EXTENSIONLESS_PATH_NAMES:
             return True
         if "." in name:
@@ -160,7 +164,11 @@ def _looks_like_path(token: str) -> bool:
         # Extensionless slash tokens are inherently ambiguous with HTTP routes.
         # Validate them only under conventional repository directories; exact
         # configured evidence paths are recognized separately.
-        return first.lower() in _REPOSITORY_DIRECTORY_NAMES
+        return first.lower() in _REPOSITORY_DIRECTORY_NAMES or (
+            bool(re.fullmatch(r"v\d+", first, re.IGNORECASE))
+            and len(parts) > 1
+            and parts[1].lower() in _REPOSITORY_DIRECTORY_NAMES
+        )
     if (
         name.startswith(".")
         or head.lower() in _EXTENSIONLESS_PATH_NAMES
@@ -272,7 +280,7 @@ def _evidence_grounded(
         head = normalized.split("::", 1)[0].split("#", 1)[0].strip()
         if normalized == head and head in evidence:
             return True
-    boundary_chars = r"A-Za-z0-9_./:#-" if is_path else r"A-Za-z0-9_.:"
+    boundary_chars = r"A-Za-z0-9_./:#-"
     pattern = re.compile(rf"(?<![{boundary_chars}]){re.escape(normalized)}(?![{boundary_chars}])")
     return any(pattern.search(text) is not None for text in evidence.values())
 

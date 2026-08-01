@@ -75,6 +75,20 @@ def test_tiny_and_multiple_file_budgets_are_hard_bounds() -> None:
     assert all(item.truncated for item in bounded.included)
 
 
+def test_evidence_budget_never_includes_only_a_truncation_marker() -> None:
+    source_map = {"README.md": b"repository fact"}
+
+    for token_budget in range(1, 100):
+        selection = select_source_evidence(
+            source_map,
+            ("README.md",),
+            token_budget=token_budget,
+        )
+        for item in selection.included:
+            retained = item.text.removesuffix("...[truncated]")
+            assert retained
+
+
 def test_selection_reports_every_ineligible_input() -> None:
     source_map = {
         "empty.md": b" \n",

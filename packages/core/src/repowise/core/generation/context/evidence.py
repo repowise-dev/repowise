@@ -18,6 +18,7 @@ _HEADER = (
     "make the content safe.\n\n"
 )
 _TRUNCATED = "...[truncated]"
+_MIN_TRUNCATED_CONTENT = len(_TRUNCATED) + 1
 _FRAME_TAG = re.compile(r"<\s*/?\s*repository-file\b[^>]*>", re.IGNORECASE)
 
 
@@ -138,7 +139,9 @@ def select_source_evidence(
     selected = list(eligible)
     while (
         selected
-        and len(_HEADER) + sum(len(_wrapper(path)) + 1 for path, _ in selected) > hard_char_limit
+        and len(_HEADER)
+        + sum(len(_wrapper(path)) + _MIN_TRUNCATED_CONTENT for path, _ in selected)
+        > hard_char_limit
     ):
         path, _ = selected.pop()
         skipped.append(EvidenceSkip(path, "budget_too_small"))
@@ -153,6 +156,8 @@ def select_source_evidence(
     for index, (path, text) in enumerate(selected):
         allowance = remaining_chars // (len(selected) - index)
         excerpt, truncated = _truncate_chars(text, allowance)
+        if truncated and len(excerpt) <= len(_TRUNCATED):  # pragma: no cover - selection invariant
+            raise AssertionError("selected evidence retained no source content")
         included.append(EvidenceItem(path, excerpt, truncated))
         blocks.append(_wrapper(path, excerpt))
         remaining_chars -= len(excerpt)
