@@ -416,6 +416,15 @@ def test_grounding_catches_fabricated_path_and_symbol() -> None:
     assert "SecretOrchestrator" in cleaned
 
 
+def test_qualified_symbol_cannot_borrow_an_unrelated_member() -> None:
+    ctx = {"known": "Real.run"}
+
+    cleaned, ungrounded = check_grounding("`Ghost.run` is fabricated.", ctx)
+
+    assert ungrounded == ["Ghost.run"]
+    assert "`Ghost.run`" not in cleaned
+
+
 def test_grounding_accepts_citations_established_only_by_added_evidence() -> None:
     ctx = _ctx_for_grounding()
     content = (

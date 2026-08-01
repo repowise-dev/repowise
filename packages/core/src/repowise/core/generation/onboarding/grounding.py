@@ -210,10 +210,11 @@ def _path_grounded(token: str, known_paths: set[str]) -> bool:
 def _symbol_grounded(token: str, known_symbols: set[str]) -> bool:
     if token in known_symbols:
         return True
-    # Grounded if any qualified segment is known (``Registry.get`` grounds on
-    # ``Registry``; a member of a known concept is acceptable).
+    # A qualified member may be abbreviated from a known owner, but it may not
+    # borrow a generic member name from an unrelated owner (``Ghost.run`` must
+    # not ground merely because ``Real.run`` established ``run``).
     parts = [p for p in re.split(r"\.|::", token) if p]
-    return any(p in known_symbols for p in parts)
+    return bool(parts and parts[0] in known_symbols)
 
 
 def check_grounding(

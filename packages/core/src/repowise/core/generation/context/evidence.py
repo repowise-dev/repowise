@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from html import escape
@@ -17,6 +18,7 @@ _HEADER = (
     "make the content safe.\n\n"
 )
 _TRUNCATED = "...[truncated]"
+_FRAME_TAG = re.compile(r"<\s*/?\s*repository-file\b[^>]*>", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -117,10 +119,12 @@ def select_source_evidence(
         if not text:
             skipped.append(EvidenceSkip(path, "empty"))
             continue
-        # Neutralize our framing markers. This reduces delimiter ambiguity;
-        # it is not content sanitization and the prompt says so explicitly.
-        text = text.replace("<repository-file", "&lt;repository-file")
-        eligible.append((path, text.replace("</repository-file>", "&lt;/repository-file&gt;")))
+        # Neutralize our framing markers, including case/spacing variants.
+        # This reduces delimiter ambiguity; it is not content sanitization and
+        # the prompt says so explicitly.
+        eligible.append(
+            (path, _FRAME_TAG.sub(lambda match: escape(match.group(), quote=False), text))
+        )
 
     if not eligible:
         return EvidenceSelection(skipped=tuple(skipped))
