@@ -28,7 +28,7 @@ Two cross-cutting capabilities sit on top of the layers:
 
 ## Graph Intelligence
 
-tree-sitter parses every file across 16 languages into a **two-tier dependency
+tree-sitter parses every file across 17 languages into a **two-tier dependency
 graph**: file nodes and symbol nodes (functions, classes, methods). A 3-tier
 call resolver with confidence scoring handles import aliases, barrel
 re-exports, and namespace imports. Heritage extraction covers `extends`,

@@ -32,6 +32,8 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("python", _python.DIALECT),
     ("typescript", _ts_js.DIALECT),
     ("tsx", _ts_js.DIALECT),
+    # .svelte <script> blocks are TS/JS and reach the pass as a TS buffer.
+    ("svelte", _ts_js.DIALECT),
     ("javascript", _ts_js.DIALECT),
     ("jsx", _ts_js.DIALECT),
     ("java", _java.DIALECT),

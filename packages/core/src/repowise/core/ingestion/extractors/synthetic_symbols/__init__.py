@@ -31,6 +31,7 @@ from .java_records import java_record_synthetic_symbols
 from .jvm_codegen import jvm_codegen_synthetic_symbols
 from .kotlin_jvm import kotlin_synthetic_symbols
 from .lombok import lombok_synthetic_symbols
+from .svelte_component import svelte_component_symbols
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -51,6 +52,7 @@ _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
     "kotlin": [kotlin_synthetic_symbols],
     "cpp": [cpp_macro_synthetic_symbols],
     "c": [cpp_macro_synthetic_symbols],
+    "svelte": [svelte_component_symbols],
 }
 
 

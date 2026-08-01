@@ -455,7 +455,9 @@ def wire_tsconfig_resolver(
 
     Needs to be called after add_file() but before build().
     """
-    _ts_langs = {"typescript", "javascript"}
+    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
+    # .svelte component's imports go through the same TS/JS resolver.
+    _ts_langs = {"typescript", "javascript", "svelte"}
 
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()

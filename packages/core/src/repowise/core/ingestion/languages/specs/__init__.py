@@ -49,6 +49,7 @@ from .rust import SPEC as _RUST
 from .scala import SPEC as _SCALA
 from .shell import SPEC as _SHELL
 from .sql import SPEC as _SQL
+from .svelte import SPEC as _SVELTE
 from .swift import SPEC as _SWIFT
 from .terraform import SPEC as _TERRAFORM
 from .toml import SPEC as _TOML
@@ -66,6 +67,9 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _PYTHON,
     _TYPESCRIPT,
     _JAVASCRIPT,
+    # Must follow _TYPESCRIPT: shares_grammar_with resolves against the
+    # registry built so far, so typescript's grammar has to be loaded first.
+    _SVELTE,
     _GO,
     _RUST,
     _JAVA,

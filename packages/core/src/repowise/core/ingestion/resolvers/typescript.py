@@ -6,6 +6,8 @@ import posixpath
 from pathlib import Path
 
 from .context import ResolverContext
+from .subpath_imports import resolve_subpath_import
+from .svelte_kit import resolve_lib_alias
 from .ts_workspace import resolve_via_workspaces
 
 
@@ -55,6 +57,18 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
                 if candidate in ctx.path_set:
                     return candidate
         return None
+
+    # Node.js subpath imports (``#lib/...`` via package.json "imports").
+    subpath_resolved = resolve_subpath_import(module_path, importer_path, ctx)
+    if subpath_resolved is not None:
+        return subpath_resolved
+
+    # SvelteKit's $lib alias. Checked before tsconfig because the tsconfig
+    # that declares it (.svelte-kit/tsconfig.json) is generated and gitignored,
+    # so it is virtually never present in an indexed checkout.
+    lib_resolved = resolve_lib_alias(module_path, importer_path, ctx)
+    if lib_resolved is not None:
+        return lib_resolved
 
     # Non-relative: try tsconfig path-alias resolution first.
     if ctx.tsconfig_resolver is not None:

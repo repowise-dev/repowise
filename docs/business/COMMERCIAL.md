@@ -41,7 +41,7 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers** — Graph (tree-sitter AST across 16 languages, two-tier
+- **Five intelligence layers** — Graph (tree-sitter AST across 17 languages, two-tier
   dependency graph, call resolution, heritage extraction, Leiden communities,
   PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
   factor, significant commits, contributor profiles, module health), Documentation
@@ -82,7 +82,7 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise treats **11 languages at Full tier** (Python, TypeScript, JavaScript, Java,
+Repowise treats **12 languages at Full tier** (Python, TypeScript, JavaScript, Svelte, Java,
 Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import resolution,
 named bindings, call resolution, heritage extraction, multi-project workspace
 resolvers, framework-aware edges, per-language dynamic-hint extractors, and

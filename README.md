@@ -107,7 +107,7 @@ queryable from the CLI, the MCP tools, and the local dashboard.
 
 | Layer | What it gives you | Edge |
 |---|---|---|
-| **◈ Graph** | Dependency graph across 16 languages · file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank and execution flows · framework-aware route→handler edges | A real graph most tools never build |
+| **◈ Graph** | Dependency graph across 17 languages · file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank and execution flows · framework-aware route→handler edges | A real graph most tools never build |
 | **◈ Git** | Hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · which files actually get bug-fixed, and how recently | Behavioural signals static analysis cannot see |
 | **◈ Docs** | A generated wiki page per module and file · rebuilt incrementally every commit · freshness and confidence scoring · hybrid search (full-text + vector) · selectable style and output language | Stays current instead of rotting |
 | **◈ Decisions** | Architectural decisions mined from eight sources, evidence-backed, linked to the graph nodes they govern, connected by supersedes / refines / conflicts_with, tracked for staleness | **★ Captured nowhere else** |
@@ -339,13 +339,14 @@ Set Up This Repository**. Guide: **[docs/agent/VSCODE.md →](docs/agent/VSCODE.
 
 ## Supported languages
 
-**16 languages parsed to AST · 11 at the Full tier · framework-aware across all of them.**
+**17 languages parsed to AST · 12 at the Full tier · framework-aware across all of them.**
 
 <p>
   <strong>Full tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" />
+  <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
   <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" />
   <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />

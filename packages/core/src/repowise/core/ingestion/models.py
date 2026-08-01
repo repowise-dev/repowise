@@ -22,6 +22,8 @@ LanguageTag = Literal[
     "python",
     "typescript",
     "javascript",
+    # Single-file components — parsed as TypeScript via svelte_source.
+    "svelte",
     "go",
     "rust",
     "java",

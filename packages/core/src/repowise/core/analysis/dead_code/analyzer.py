@@ -85,6 +85,11 @@ _LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
 # Kinds allowed as top-level imports in TS/JS (top-level `export const` literals/objects)
 _TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
 
+# Every kind a Svelte component prop can take — see _non_importable_kinds.
+_SVELTE_PROP_KINDS: frozenset[str] = frozenset(
+    {"constant", "variable", "function", "class", "interface", "type_alias"}
+)
+
 
 def _non_importable_kinds(language: str) -> frozenset[str]:
     """Per-language set of symbol kinds excluded from unused-export passes.
@@ -93,6 +98,17 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     additions. Cheap to call — short lookup, no per-call allocation
     when the language has no additions.
     """
+    # A .svelte component's top-level exports are its props: ``export let x``
+    # is set by the PARENT as a markup attribute (``<Foo x={1} />``), never by
+    # an ``import { x }``. repowise models component instantiation as a call
+    # edge on the component, not as symbol-level edges on each prop, so every
+    # prop would read as an unused export. Suppressing the whole pass for
+    # svelte is the honest ceiling: it costs the genuinely-dead exports of a
+    # ``<script context="module">`` block, which cannot be told apart from
+    # props without modelling attribute-to-prop binding across files.
+    if language == "svelte":
+        return _UNIVERSAL_NON_IMPORTABLE | _SVELTE_PROP_KINDS
+
     extra = _LANGUAGE_NON_IMPORTABLE.get(language)
     if extra is None:
         if language in ("typescript", "javascript"):

@@ -51,6 +51,9 @@ dependencies = [
     "tree-sitter-php>=0.23,<1",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
+    # Svelte: locates <script> blocks and markup expressions only; the JS
+    # inside them is parsed with the TypeScript grammar (see svelte_source.py).
+    "tree-sitter-svelte>=1,<2",
     # SQL parsing (multi-dialect, error-tolerant, pure Python)
     "sqlglot>=26,<28",
     # Dependency graph

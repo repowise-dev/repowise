@@ -23,6 +23,8 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
         |
         +-- Config/data language?  -> empty ParsedFile (passthrough)
         +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile/SQL)
+        +-- Multi-language file?   -> svelte_source.py projects it to one
+        |                             grammar's language at identical offsets
         +-- Has grammar?           -> tree-sitter AST parsing
                 |
                 v
@@ -44,7 +46,9 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
                   (src/ + monorepo packages/*/src + PEP 420 namespace
                   packages), __init__.py re-export barrels, stem fallback
           TS/JS:  relative paths, tsconfig aliases, workspace exports,
-                  `export ... from` re-export barrels, node_modules
+                  `export ... from` re-export barrels, node_modules,
+                  package.json "imports" (`#alias/*`) subpath imports
+          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> src/lib
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
@@ -112,6 +116,7 @@ ingestion/
     registry.py        #   HintRegistry
     django.py  pytest_hints.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
+  svelte_source.py     # Multi-language-file projection (see below)
   parser.py            # ASTParser (language-agnostic orchestration)
   graph.py             # GraphBuilder (import/call/heritage resolution)
 
@@ -168,8 +173,10 @@ SPEC = LanguageSpec(
 Then register it in `languages/specs/__init__.py` by importing the module and
 slotting it into the `ALL_SPECS` tuple. **Order matters**: `LanguageRegistry`
 builds its extension map first-spec-wins, so place more specific languages
-ahead of ones that share an extension (e.g. TypeScript before JavaScript). You
-never edit `registry.py` itself.
+ahead of ones that share an extension (e.g. TypeScript before JavaScript). A
+spec using `shares_grammar_with` must also come *after* the spec it borrows
+from, which is resolved against the registry built so far. You never edit
+`registry.py` itself.
 
 ### Step 2: Add the `LanguageTag`
 
@@ -196,7 +203,10 @@ tree-sitter S-expression syntax. Follow the capture-name conventions:
 | `@call.receiver` | Object the call is made on | No |
 | `@call.arguments` | Call arguments | No |
 
-`python.scm` and `typescript.scm` are good starting points.
+`python.scm` and `typescript.scm` are good starting points. A language whose
+syntax *is* another's can skip this step entirely by pointing `scm_file` at the
+existing query file — that field names the query to load, so `svelte` declares
+`scm_file="typescript.scm"` and writes no `.scm` of its own.
 
 ### Step 4: Add a `LanguageConfig` entry
 
@@ -264,6 +274,44 @@ repowise init /path/to/mylang-project
 No changes are needed to `traverser.py`, `dead_code.py`, `page_generator.py`,
 `cost_estimator.py`, or any other consumer file, they all derive their
 language sets from the registry automatically.
+
+---
+
+## Multi-language files (the Svelte pattern)
+
+Some file types hold more than one language. A `.svelte` component is TS/JS in
+its `<script>` blocks, Svelte-flavoured HTML in its markup, and CSS in
+`<style>`. `tree-sitter-svelte` parses the markup but returns each `<script>`
+body as one opaque `raw_text` node, so a `.scm` query against it captures no
+symbol, import, or call — a grammar alone cannot support such a language.
+
+`ingestion/svelte_source.py` solves this with a **byte-preserving projection**
+rather than a second coordinate space:
+
+1. the Svelte grammar *locates* the JS-bearing regions — every `<script>` body,
+   every markup `{expression}`, and the `{#if}` / `{@html}` heads;
+2. every byte outside those regions is blanked to a space, with newlines kept;
+3. each kept markup expression is fenced by rewriting its surrounding `{` and
+   `}` to `;`, so `{a}{b}` cannot run together and an unterminated final script
+   statement cannot swallow the following expression via ASI.
+
+The result is valid TypeScript whose every byte offset and line number matches
+the original file. That single property is what makes the rest free: the spec
+declares `shares_grammar_with="typescript"` and `scm_file="typescript.scm"`, the
+`LanguageConfig` is an alias of TypeScript's, and the three health dialect
+registries alias the TS entries. Each consumer that hands raw bytes to a
+tree-sitter `Parser` calls `prepare_source(language, source)` first — the
+ingestion parser plus the complexity, dataflow, and duplication walkers. It is
+a no-op for every other language.
+
+Two things markup carries that the projection cannot express are minted
+separately: the component symbol itself (via
+`extractors/synthetic_symbols/svelte_component.py`, since the filename is the
+only thing that names a component) and `<Foo />` instantiation call edges (via
+`component_call_sites`, the analogue of `tsx.scm`'s JSX captures).
+
+The same three steps would fit Vue SFCs or Astro components; only the
+region-locating grammar changes.
 
 ---
 

@@ -368,3 +368,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(),
     ),
 }
+
+# A .svelte component's <script> block IS TypeScript, and svelte_source hands
+# the parser a TS buffer, so the TypeScript config applies verbatim. Aliasing
+# rather than copying keeps the two from drifting apart.
+LANGUAGE_CONFIGS["svelte"] = LANGUAGE_CONFIGS["typescript"]

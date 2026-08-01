@@ -75,6 +75,7 @@ from .parser_helpers import (
 )
 from .python_local_refs import extract_python_local_refs
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
+from .svelte_source import component_call_sites, prepare_source
 
 log = structlog.get_logger(__name__)
 
@@ -110,7 +111,12 @@ def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | 
     if language is None:
         return None
 
-    scm_path = QUERIES_DIR / f"{lang}.scm"
+    # The spec names the query file, so a language can reuse another's
+    # queries wholesale (svelte -> typescript.scm). Every other spec declares
+    # ``<tag>.scm``, which is what the default preserves.
+    spec = _LANG_REGISTRY.get(lang)
+    scm_name = (spec.scm_file if spec and spec.scm_file else None) or f"{lang}.scm"
+    scm_path = QUERIES_DIR / scm_name
     if not scm_path.exists():
         log.debug("No .scm query file found", language=lang, path=str(scm_path))
         return None
@@ -273,6 +279,15 @@ class ASTParser:
                 content_hash=content_hash,
             )
 
+        # Svelte components are three languages in one file. ``prepare_source``
+        # blanks the markup and <style> so what reaches the TypeScript grammar
+        # is valid TS at byte-identical offsets — no offset translation is
+        # needed anywhere downstream. A no-op for every other language.
+        # ``content_hash`` above deliberately hashes the ORIGINAL bytes, so
+        # incremental update still tracks the real file.
+        original_source = source
+        source = prepare_source(lang, source)
+
         parser = Parser(language)
         tree = parser.parse(source)
         src = source.decode("utf-8", errors="replace")
@@ -332,6 +347,12 @@ class ASTParser:
             symbols.extend(s for s in synthetic if s.id not in existing_ids)
         imports = self._extract_imports(matches, config, file_info, src)
         calls = self._extract_calls(matches, config, file_info, src, symbols)
+        # Svelte instantiates a component by writing its tag in the markup
+        # (``<Foo />``), which the blanked TS buffer no longer contains. Mint
+        # those call sites from the Svelte grammar directly — the same way
+        # tsx.scm turns ``<Component />`` into a call for React.
+        if lang == "svelte":
+            calls.extend(component_call_sites(original_source, symbols))
         heritage = extract_heritage(matches, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
@@ -397,7 +418,7 @@ class ASTParser:
         # Deferred-export names (``export { x }`` / ``export default x``),
         # computed once per file for the TS/JS visibility refinement.
         ts_deferred_exports: frozenset[str] | None = None
-        if file_info.language in ("typescript", "javascript"):
+        if file_info.language in ("typescript", "javascript", "svelte"):
             ts_deferred_exports = ts_deferred_export_names(src)
 
         for capture_dict in matches:
@@ -528,7 +549,7 @@ class ASTParser:
                 visibility, is_exported_symbol = refine_cpp_visibility(def_node, visibility, src)
             # TS/JS: a top-level declaration is only public when exported —
             # inline, via ``export { x }`` lists, or ``export default x``.
-            elif file_info.language in ("typescript", "javascript"):
+            elif file_info.language in ("typescript", "javascript", "svelte"):
                 visibility = refine_ts_visibility(def_node, visibility, name, ts_deferred_exports)
 
             # Parent class detection

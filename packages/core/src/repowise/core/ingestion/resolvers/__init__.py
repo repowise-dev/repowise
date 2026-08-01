@@ -35,6 +35,9 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "python": resolve_python_import,
     "typescript": resolve_ts_js_import,
     "javascript": resolve_ts_js_import,
+    # A component's imports are ordinary ESM — same resolver, plus the
+    # SvelteKit ``$lib`` alias it now understands for .ts/.js files too.
+    "svelte": resolve_ts_js_import,
     "go": resolve_go_import,
     "rust": resolve_rust_import,
     "cpp": resolve_cpp_import,

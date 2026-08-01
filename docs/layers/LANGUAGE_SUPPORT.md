@@ -1,7 +1,7 @@
 # Language Support
 
-repowise parses **16 languages to a full AST**, resolves imports and call
-graphs across them, and scores **11 at the Full tier** with code-health markers.
+repowise parses **17 languages to a full AST**, resolves imports and call
+graphs across them, and scores **12 at the Full tier** with code-health markers.
 Everything else in your repo is still tracked through git history and appears in
 the wiki. This page is the "what works for my language today" reference.
 
@@ -19,7 +19,7 @@ produce meaningful output.
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
+| **Full** | Python · TypeScript · JavaScript · Svelte · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
 | **Good** | C · Swift · PHP · Dart | Everything above except code-health markers (C, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
 | **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
 | **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
@@ -61,6 +61,7 @@ extractors, and code-health markers.
 | **Python** | `.py` `.pyi` | `import x` / `from x import y`; source-root-aware module index (src/, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
 | **TypeScript** | `.ts` `.tsx` | ESM / `require()` with tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels, optional `.vue`/`.svelte`/`.astro` probing |
 | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` / `require()` including CommonJS re-export shapes and member picks |
+| **Svelte** | `.svelte` | Same resolver as TS/JS, plus SvelteKit's `$lib` alias and Node `#`-prefixed subpath imports; `$app/*` / `$env/*` stay external (virtual modules) |
 | **Java** | `.java` | `import pkg.Class` / `.*` / `import static` with Maven + Gradle reactor discovery, JPMS recognition, package fan-out |
 | **Kotlin** | `.kt` `.kts` | Shares the JVM workspace index with Java (cross-language resolution); `.kt` under `src/main/java` recognised |
 | **Go** | `.go` | `import "path"` with multi-module `go.mod` discovery; a package import fans out to every file in the package |
@@ -70,9 +71,32 @@ extractors, and code-health markers.
 | **Scala** | `.scala` | `import pkg.Foo`, brace/wildcard/package imports via the shared JVM index (cross-language with Java/Kotlin); SBT / Mill build parsing as fallback (partial import resolution¹) |
 | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, RSpec mirror edges, Rails / Zeitwerk autoloading |
 
-All eleven also support three-tier call resolution (same-file, cross-file,
+All twelve also support three-tier call resolution (same-file, cross-file,
 global stem match) and docstring extraction (Python, Ruby comments, JSDoc,
 GoDoc, Rustdoc, Javadoc, Scaladoc, Doxygen, XML doc).
+
+**Svelte components** are three languages in one file, so they get a dedicated
+projection rather than a grammar of their own. `tree-sitter-svelte` locates the
+`<script>` blocks and the markup `{expressions}`; everything else (markup,
+`<style>`) is blanked to spaces with newlines preserved, and the result is
+parsed as TypeScript at **byte-identical offsets**. So a component reuses the
+TypeScript queries, config, and all three health dialects verbatim, and every
+line number points at the real `.svelte` file. Three Svelte-specific pieces sit
+on top:
+
+- the **component itself** becomes a class-kind symbol named after the file
+  (`Button.svelte` → `Button`), since nothing in the source names it;
+- **`<Foo />` in markup** mints a call edge on `Foo`, the same way `tsx.scm`
+  treats a JSX element;
+- **markup expressions are kept**, so a handler referenced only from
+  `on:click={inc}` still carries an edge instead of reading as dead code.
+
+Two deliberate ceilings: `{#each x as y}` / `{#await …}` heads are Svelte block
+syntax rather than JS expressions and are skipped, as are object-literal
+attributes (`use:action={{ a, b }}`), which read as a block at statement
+position. And a component's `export let` props are set by the parent as markup
+attributes, never imported by name, so the unused-export pass is suppressed for
+`.svelte` — the alternative would flag every prop in the repo.
 
 **Framework-aware edges** connect routes to handlers, DI registrations to
 implementations, and ORM entities to relationships:
@@ -85,7 +109,7 @@ implementations, and ORM entities to relationships:
 | C# | ASP.NET (attribute + minimal API), EF Core, gRPC-dotnet, host-builder extension methods, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, gRPC server registration |
 | Rust | Axum, Actix route → handler |
-| JS / TS | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS |
+| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit (`+page.svelte`, `+layout.svelte` and their `.ts` siblings) / Astro, tRPC, Express / NestJS |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |
 
 The dead-code analyzer understands each ecosystem's entry points, generated-file
@@ -184,6 +208,7 @@ is "Full" vs "Good".
 |----------|:---:|:---:|:---:|:---:|:---:|
 | Python | ✅ | ✅ | ✅ | ✅ | ✅ |
 | TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Svelte | ✅¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | Java | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Go | ✅ | n/a¹ | ✅ | ✅ | ✅ |
 | Rust | ✅ | ✅ | ✅ | ✅ | ✅² |
@@ -232,6 +257,12 @@ keeps in-memory `Registry.find(name)` lookups silent. Backticks / `system` /
 `Open3` are subprocess sinks; `s += "…"` in a loop is flagged while `s << x`
 (amortized append) never is.
 
+¹⁰ Svelte rides the TypeScript dialect on all three health layers, because a
+component reaches them as a TypeScript buffer. Markers therefore cover the
+`<script>` blocks and markup expressions — the parts that *are* JS. Markup
+structure and `<style>` carry no health signal, so a component's markers
+describe its logic, not its template size.
+
 ⁹ Shell gets function-level complexity only (CCN / nesting / cognitive / NLOC).
 `&&` / `||` command lists count toward CCN (`cmd || exit 1` is +1), which is
 honest: shell branching is chained command lists. There are no classes,
@@ -250,6 +281,7 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 
 | Language | Target tier | Status |
 |----------|------------|--------|
+| Svelte | Full | Shipped: TS projection of `<script>` + markup expressions, component symbols, `<Foo />` call edges, `$lib` / `#`-subpath resolution, SvelteKit route edges, all three health dialects. Next: `{#each}` head bindings, object-literal attributes, `.svelte.ts` rune modules |
 | Dart | Good | Shipped: AST, health control-flow + class facts, perf dialect, Flutter edges. Next: riverpod/get_it dynamic hints, dataflow dialect |
 | Scala | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, `.r` recompile, sync-over-Future). Next: dataflow dialect, combinator (`.map`/`.foreach`) loop tracking via the shared `block_loop_body` hook Ruby established |
 | Ruby | Full (health) | Shipped: complexity/class/assertion markers + perf dialect with block-iteration loops (`.each`/`.map` blocks) and the stratified ActiveRecord N+1 lexicon. Next: dataflow dialect, LCOM4 via `@ivar` grouping |

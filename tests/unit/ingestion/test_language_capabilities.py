@@ -143,6 +143,9 @@ _FULL = {
     "python",
     "ruby",
     "rust",
+    # svelte components resolve through the TS/JS resolver plus the
+    # SvelteKit $lib alias.
+    "svelte",
     "swift",
     "typescript",
 }

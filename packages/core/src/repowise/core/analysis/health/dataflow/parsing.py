@@ -48,8 +48,11 @@ def parse_source(
         return None
 
     try:
+        from repowise.core.ingestion.svelte_source import prepare_source
+
         parser = Parser(grammar)
-        tree = parser.parse(source)
+        # Markup-blanked TS buffer for .svelte, identical offsets. No-op else.
+        tree = parser.parse(prepare_source(language, source))
     except Exception as exc:
         log.debug("dataflow_parse_failed", path=abs_path, error=str(exc))
         return None
