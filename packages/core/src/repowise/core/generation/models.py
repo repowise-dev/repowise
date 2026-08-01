@@ -72,6 +72,13 @@ class _FrozenEvidenceFiles(dict[str, tuple[str, ...]]):
     def __hash__(self) -> int:
         return hash(frozenset(self.items()))
 
+    def __copy__(self) -> _FrozenEvidenceFiles:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _FrozenEvidenceFiles:
+        memo[id(self)] = self
+        return self
+
     @staticmethod
     def _immutable(*_args: object, **_kwargs: object) -> None:
         raise TypeError("source_evidence_files is immutable")

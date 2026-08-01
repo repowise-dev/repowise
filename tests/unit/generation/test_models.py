@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 from datetime import UTC, datetime, timedelta
 
@@ -202,6 +203,15 @@ def test_generation_config_asdict_preserves_public_evidence_mapping_shape():
     assert snapshot["source_evidence_files"] == {"repo_overview": ("README.md",)}
     restored = GenerationConfig(**snapshot)
     assert restored.source_evidence_files == config.source_evidence_files
+
+
+def test_generation_config_remains_copyable_with_immutable_evidence_mapping():
+    config = GenerationConfig(
+        source_evidence_files={"repo_overview": ("README.md",)},
+    )
+
+    assert copy.copy(config) == config
+    assert copy.deepcopy(config) == config
 
 
 def test_generation_config_reads_repo_max_tokens():

@@ -105,7 +105,8 @@ def _looks_like_path(token: str) -> bool:
     """True when *token* is shaped like a source file path we can verify."""
     head = token.split("::", 1)[0]
     head = head.split("#", 1)[0].strip()
-    if "/" in head or head.lower() in _EXTENSIONLESS_PATH_NAMES:
+    name = head.rsplit("/", 1)[-1]
+    if "/" in head or name.startswith(".") or head.lower() in _EXTENSIONLESS_PATH_NAMES:
         return True
     if "." not in head:
         return False

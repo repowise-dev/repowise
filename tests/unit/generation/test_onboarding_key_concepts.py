@@ -518,15 +518,19 @@ def test_evidence_grounding_preserves_exact_dot_prefixed_paths() -> None:
     }
 
     cleaned, ungrounded = check_grounding(
-        "Read `.github/CONTRIBUTING.md` and `.env.example`, not `.github/FAKE.md`.",
+        (
+            "Read `.github/CONTRIBUTING.md` and `.env.example`, not "
+            "`.github/FAKE.md` or `.env.production`."
+        ),
         ctx,
         evidence,
     )
 
     assert "`.github/CONTRIBUTING.md`" in cleaned
     assert "`.env.example`" in cleaned
-    assert ungrounded == [".github/FAKE.md"]
+    assert ungrounded == [".github/FAKE.md", ".env.production"]
     assert "`.github/FAKE.md`" not in cleaned
+    assert "`.env.production`" not in cleaned
 
 
 def test_grounding_keeps_documentation_paths_from_structured_context() -> None:
