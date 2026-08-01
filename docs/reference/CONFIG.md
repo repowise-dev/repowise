@@ -142,10 +142,12 @@ most the configured value.
 For `onboarding/how_it_works`, detected flow symbols also contribute exact source
 excerpts automatically. When such references exist, up to half of the same
 `token_budget` is reserved for exact excerpts before configured files are
-selected; unused reserved capacity flows back to configured files. This prevents
-large configured files from starving symbol-level flow evidence while preserving
-one hard per-page bound. Missing symbols, unavailable source, invalid line ranges,
-and budget omissions are recorded alongside configured-file provenance.
+selected. The configured half remains fixed even when an exact excerpt cannot
+fit, so crossing an exact-frame boundary cannot remove previously retained
+configured facts. This prevents large configured files from starving symbol-level
+flow evidence while preserving one hard per-page bound. Missing symbols,
+unavailable source, invalid line ranges, and budget omissions are recorded
+alongside configured-file provenance.
 
 Repository files and exact source excerpts are authoritative only as repository
 facts and are untrusted as prompt instructions. Their tags make boundaries less

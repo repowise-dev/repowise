@@ -357,23 +357,24 @@ def select_prompt_evidence(
 ) -> EvidenceSelection:
     """Balance configured files and exact symbol excerpts under one hard bound.
 
-    When exact references exist, up to half the budget is reserved for their
-    excerpts. Any unused reserve flows back to configured evidence.
+    When exact references exist, half the budget is reserved for their excerpts.
+    The configured half stays fixed as the total grows so admitting the first
+    exact frame cannot shrink already-retained configured evidence.
     """
     if not references:
         return select_source_evidence(source_map, configured, token_budget=token_budget)
 
+    exact_budget = token_budget // 2
     exact = _select_reference_evidence(
         source_map,
         references,
         parsed_files,
-        token_budget=token_budget // 2,
+        token_budget=exact_budget,
     )
-    separator_margin = 1 if exact.rendered else 0
     configured_selection = select_source_evidence(
         source_map,
         configured,
-        token_budget=max(0, token_budget - exact.estimated_tokens - separator_margin),
+        token_budget=max(0, token_budget - exact_budget - 1),
     )
     rendered = configured_selection.rendered + exact.rendered
     if estimate_tokens(rendered) > token_budget:  # pragma: no cover - defensive invariant

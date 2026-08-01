@@ -263,7 +263,7 @@ def test_exact_excerpt_preserves_selected_line_content() -> None:
     assert selection.included[0].end_line == 2
 
 
-def test_prompt_evidence_reserves_half_and_returns_unused_exact_capacity() -> None:
+def test_prompt_evidence_keeps_configured_and_exact_halves_stable() -> None:
     source_map = {
         "docs/ARCHITECTURE.md": (b"configured architecture evidence\n" * 500),
         "src/main.py": b"def main():\n    return worker()\n",
@@ -287,11 +287,39 @@ def test_prompt_evidence_reserves_half_and_returns_unused_exact_capacity() -> No
     configured_at_half = select_source_evidence(
         source_map,
         ("docs/ARCHITECTURE.md",),
-        token_budget=300,
+        token_budget=299,
     )
     assert estimate_tokens(exact_rendered) <= 300
-    assert estimate_tokens(configured_rendered) > configured_at_half.estimated_tokens
+    assert configured_rendered == configured_at_half.rendered
     assert estimate_tokens(selection.rendered) <= 600
+
+
+def test_combined_evidence_does_not_shrink_configured_content() -> None:
+    source_map = {
+        "docs/ARCHITECTURE.md": (b"configured architecture evidence\n" * 500),
+        "src/main.py": (b"def main():\n" + b"    process_item()\n" * 500),
+    }
+    reference = "src/main.py::main"
+    parsed = SimpleNamespace(
+        file_info=SimpleNamespace(path="src/main.py"),
+        symbols=[SimpleNamespace(id=reference, start_line=1, end_line=501)],
+    )
+    previous_length = 0
+
+    for token_budget in range(1, 800):
+        selection = select_prompt_evidence(
+            source_map,
+            ("docs/ARCHITECTURE.md",),
+            token_budget=token_budget,
+            parsed_files=[parsed],
+            references=(reference,),
+        )
+        configured = next((item for item in selection.included if item.symbol is None), None)
+        current_length = (
+            len(configured.text.removesuffix("...[truncated]")) if configured is not None else 0
+        )
+        assert current_length >= previous_length
+        previous_length = current_length
 
 
 def test_prompt_evidence_zero_and_tiny_budgets_report_both_classes() -> None:
@@ -325,7 +353,7 @@ def test_prompt_evidence_zero_and_tiny_budgets_report_both_classes() -> None:
         ("src/main.py::main", "budget_disabled"),
     ]
     assert [(item.path, item.reason) for item in tiny.skipped] == [
-        ("docs/ARCHITECTURE.md", "budget_too_small"),
+        ("docs/ARCHITECTURE.md", "budget_disabled"),
         ("src/main.py::main", "budget_disabled"),
     ]
 
