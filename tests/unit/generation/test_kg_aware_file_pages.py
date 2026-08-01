@@ -11,7 +11,6 @@ import pytest
 from repowise.core.generation.context_assembler import ContextAssembler, FilePageContext
 from repowise.core.generation.kg_context import KGFileContext
 from repowise.core.generation.models import GenerationConfig
-from repowise.core.generation.structural_labels import resolve_structural_labels
 
 # ---------------------------------------------------------------------------
 # Helpers

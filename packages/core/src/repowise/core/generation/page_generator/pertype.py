@@ -123,9 +123,7 @@ class PerTypeGenerationMixin:
         return self._structural_symbol_spotlight(
             ctx,
             target,
-            structural_page_title(
-                self._language, "symbol_spotlight", symbol.qualified_name
-            ),
+            structural_page_title(self._language, "symbol_spotlight", symbol.qualified_name),
             subject_hash=parsed.content_hash or "",
         )
 
