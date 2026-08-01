@@ -139,8 +139,7 @@ def select_source_evidence(
     selected = list(eligible)
     while (
         selected
-        and len(_HEADER)
-        + sum(len(_wrapper(path)) + _MIN_TRUNCATED_CONTENT for path, _ in selected)
+        and len(_HEADER) + sum(len(_wrapper(path)) + _MIN_TRUNCATED_CONTENT for path, _ in selected)
         > hard_char_limit
     ):
         path, _ = selected.pop()
@@ -148,8 +147,16 @@ def select_source_evidence(
     if not selected:
         return EvidenceSelection(skipped=tuple(skipped))
 
-    remaining_chars = (
+    available_chars = (
         hard_char_limit - len(_HEADER) - sum(len(_wrapper(path)) for path, _ in selected)
+    )
+    # Until every eligible file fits, retain only the minimum source-bearing
+    # excerpt for the selected prefix. Otherwise admitting the next file would
+    # take content away from an earlier-priority file as the budget grows.
+    remaining_chars = (
+        available_chars
+        if len(selected) == len(eligible)
+        else _MIN_TRUNCATED_CONTENT * len(selected)
     )
     included: list[EvidenceItem] = []
     blocks: list[str] = []

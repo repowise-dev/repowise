@@ -494,6 +494,20 @@ def test_evidence_grounding_validates_configured_documentation_paths() -> None:
     assert "`other/guide.rst`" not in cleaned
 
 
+def test_evidence_grounding_validates_arbitrary_sibling_repository_paths() -> None:
+    evidence = {
+        "schemas/order.proto": "message Order {}",
+        "services/real.py": "def real(): pass",
+    }
+    content = "Do not cite `schemas/fabricated.proto` or `services/fabricated.py`."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding(), evidence)
+
+    assert ungrounded == ["schemas/fabricated.proto", "services/fabricated.py"]
+    assert "`schemas/fabricated.proto`" not in cleaned
+    assert "`services/fabricated.py`" not in cleaned
+
+
 def test_evidence_grounding_validates_extensionless_repository_paths() -> None:
     ctx = _ctx_for_grounding()
     evidence = {"deploy/Dockerfile": "Build instructions."}
@@ -644,6 +658,17 @@ def test_evidence_symbol_match_uses_qualified_identifier_boundaries() -> None:
 
     assert ungrounded == ["EvidenceRouter.dispatch"]
     assert "`EvidenceRouter.dispatch`" not in cleaned
+
+
+def test_grounding_validates_non_dot_qualified_symbols() -> None:
+    evidence = {"docs/notes.md": "Router#real Router:real Router/real"}
+    content = "`Router#fabricated`, `Router:fabricated`, and `Router/fabricated` are absent."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding(), evidence)
+
+    assert ungrounded == ["Router#fabricated", "Router:fabricated", "Router/fabricated"]
+    for token in ungrounded:
+        assert f"`{token}`" not in cleaned
 
 
 def test_grounding_cleans_reused_page_content() -> None:

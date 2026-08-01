@@ -10,7 +10,7 @@ import graph stays one-directional:
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -66,8 +66,30 @@ def _source_evidence_page_keys() -> set[str]:
     }
 
 
-class _FrozenEvidenceFiles(dict[str, tuple[str, ...]]):
+class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
     """Small immutable mapping that preserves the frozen config contract."""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, values: Mapping[str, tuple[str, ...]] | None = None) -> None:
+        self._items = tuple((key, tuple(paths)) for key, paths in (values or {}).items())
+
+    def __getitem__(self, key: str) -> tuple[str, ...]:
+        for candidate, paths in self._items:
+            if candidate == key:
+                return paths
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
 
     def __hash__(self) -> int:
         return hash(frozenset(self.items()))
@@ -81,19 +103,6 @@ class _FrozenEvidenceFiles(dict[str, tuple[str, ...]]):
 
     def __reduce__(self) -> tuple[type[_FrozenEvidenceFiles], tuple[dict[str, tuple[str, ...]]]]:
         return type(self), (dict(self),)
-
-    @staticmethod
-    def _immutable(*_args: object, **_kwargs: object) -> None:
-        raise TypeError("source_evidence_files is immutable")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
-    __ior__ = _immutable
 
 
 # ---------------------------------------------------------------------------

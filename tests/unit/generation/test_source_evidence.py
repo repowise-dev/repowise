@@ -89,6 +89,31 @@ def test_evidence_budget_never_includes_only_a_truncation_marker() -> None:
             assert retained
 
 
+def test_configured_evidence_priority_is_monotonic_across_budgets() -> None:
+    source_map = {
+        "docs/first.md": (b"first priority fact\n" * 200),
+        "docs/second.md": (b"second priority fact\n" * 200),
+    }
+    previous_lengths: dict[str, int] = {}
+
+    for token_budget in range(1, 500):
+        selection = select_source_evidence(
+            source_map,
+            tuple(source_map),
+            token_budget=token_budget,
+        )
+        included_paths = tuple(item.path for item in selection.included)
+        assert included_paths == tuple(source_map)[: len(included_paths)]
+        current_lengths = {
+            item.path: len(item.text.removesuffix("...[truncated]")) for item in selection.included
+        }
+        for path, length in previous_lengths.items():
+            assert current_lengths.get(path, 0) >= length
+        previous_lengths = current_lengths
+
+    assert tuple(previous_lengths) == tuple(source_map)
+
+
 def test_selection_reports_every_ineligible_input() -> None:
     source_map = {
         "empty.md": b" \n",

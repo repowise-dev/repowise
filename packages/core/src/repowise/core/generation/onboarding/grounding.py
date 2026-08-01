@@ -58,6 +58,7 @@ _CODE_EXTENSIONS = frozenset(
         "scala",
         "rb",
         "php",
+        "proto",
         "cs",
         "cpp",
         "cc",
@@ -130,12 +131,12 @@ _REPOSITORY_DIRECTORY_NAMES = frozenset(
         "tools",
     }
 )
-_ROUTE_ROOT_NAMES = frozenset({"api", "localhost", "service", "services", "user", "users"})
-
 # A bare identifier, optionally dotted or ``::``-qualified (e.g. ``LanguageSpec``,
 # ``get_session``, ``foo.Bar.baz``, ``path.py::Name``).
+_QUALIFIER = r"(?:\.|::|#|/|:)"
 _IDENT = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)+$|^[A-Za-z_][A-Za-z0-9_]*$"
+    rf"^[A-Za-z_][A-Za-z0-9_]*(?:{_QUALIFIER}[A-Za-z_][A-Za-z0-9_]*)+$"
+    r"|^[A-Za-z_][A-Za-z0-9_]*$"
 )
 
 
@@ -154,7 +155,13 @@ def _looks_like_path(token: str) -> bool:
         if not all(part not in {"", ".", ".."} for part in parts):
             return False
         versioned = any(re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts)
-        if first.lower() in _ROUTE_ROOT_NAMES and (versioned or first.lower() != "api"):
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        route_root = first.lower()
+        if (
+            route_root in {"localhost", "user", "users"}
+            or (route_root in {"api", "service", "services"} and versioned)
+            or (route_root == "api" and ext in _DOCUMENT_EXTENSIONS)
+        ):
             return False
         if name.startswith(".") or name.lower() in _EXTENSIONLESS_PATH_NAMES:
             return True
@@ -182,9 +189,14 @@ def _looks_like_path(token: str) -> bool:
 
 
 def _looks_like_evidence_path(token: str, evidence: Mapping[str, str] | None) -> bool:
-    """Recognize configured and documentation-shaped repository paths."""
+    """Recognize exact or sibling paths under configured evidence directories."""
     head = token.split("::", 1)[0].split("#", 1)[0].strip()
-    return bool(evidence and head in evidence)
+    if not evidence:
+        return False
+    if head in evidence:
+        return True
+    parent = head.rpartition("/")[0]
+    return bool(parent and any(path.rpartition("/")[0] == parent for path in evidence))
 
 
 def _looks_like_symbol(token: str) -> bool:
@@ -195,7 +207,11 @@ def _looks_like_symbol(token: str) -> bool:
     """
     if not _IDENT.match(token):
         return False
-    if "." in token or "::" in token:
+    if "/" in token:
+        owner = token.split("/", 1)[0]
+        if owner[:1].islower() or re.fullmatch(r"v\d+", owner, re.IGNORECASE):
+            return False
+    if re.search(_QUALIFIER, token):
         return True
     if "_" in token:
         return True
@@ -238,7 +254,7 @@ def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -
         known_paths.add(head.rsplit("/", 1)[-1])
     if _looks_like_symbol(token):
         known_symbols.add(token)
-        for part in re.split(r"\.|::", token):
+        for part in re.split(_QUALIFIER, token):
             if part:
                 known_symbols.add(part)
 
@@ -306,7 +322,7 @@ def _symbol_grounded(token: str, known_symbols: set[str]) -> bool:
     # A qualified member may be abbreviated from a known owner, but it may not
     # borrow a generic member name from an unrelated owner (``Ghost.run`` must
     # not ground merely because ``Real.run`` established ``run``).
-    parts = [p for p in re.split(r"\.|::", token) if p]
+    parts = [p for p in re.split(_QUALIFIER, token) if p]
     return bool(parts and parts[0] in known_symbols)
 
 
