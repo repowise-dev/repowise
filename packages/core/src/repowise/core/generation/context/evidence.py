@@ -288,7 +288,8 @@ def _select_reference_evidence(
     while selected and (
         len(_EXACT_HEADER)
         + sum(
-            len(_source_wrapper(path, reference, start, end, truncated=True)) + 1
+            len(_source_wrapper(path, reference, start, end, truncated=True))
+            + _MIN_TRUNCATED_CONTENT
             for path, reference, start, end, _ in selected
         )
         > hard_char_limit

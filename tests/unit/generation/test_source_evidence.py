@@ -352,6 +352,45 @@ def test_exact_excerpt_rejects_marker_only_budget() -> None:
     assert selection.skipped == (EvidenceSkip("src/main.py::main", "budget_too_small"),)
 
 
+def test_exact_excerpt_selection_is_a_monotonic_reference_prefix() -> None:
+    source_map = {
+        "src/main.py": (
+            b"def entry():\n    return middle()\n\n"
+            b"def middle():\n    return finish()\n\n"
+            b"def finish():\n    return True\n"
+        )
+    }
+    references = (
+        "src/main.py::entry",
+        "src/main.py::middle",
+        "src/main.py::finish",
+    )
+    parsed = SimpleNamespace(
+        file_info=SimpleNamespace(path="src/main.py"),
+        symbols=[
+            SimpleNamespace(id=references[0], start_line=1, end_line=2),
+            SimpleNamespace(id=references[1], start_line=4, end_line=5),
+            SimpleNamespace(id=references[2], start_line=7, end_line=8),
+        ],
+    )
+
+    previous: tuple[str, ...] = ()
+    for token_budget in range(1, 800):
+        selection = select_prompt_evidence(
+            source_map,
+            (),
+            token_budget=token_budget,
+            parsed_files=[parsed],
+            references=references,
+        )
+        included = tuple(item.symbol for item in selection.included if item.symbol is not None)
+        assert included == references[: len(included)]
+        assert included[: len(previous)] == previous
+        previous = included
+
+    assert previous == references
+
+
 def test_truncated_exact_provenance_does_not_count_marker_line() -> None:
     source_map = {"src/main.py": b"first line\nsecond line\nthird line\n" * 100}
     parsed = SimpleNamespace(
