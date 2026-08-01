@@ -1,10 +1,9 @@
 """Post-generation grounding check for onboarding pages.
 
-Onboarding prose is grounded ONLY by prompt instruction ("do not invent
-file paths or symbol names"). Nothing verified the model obeyed, so a
-fabricated citation - a file the payload never mentioned, a symbol that
-does not exist - reached the reader as an authoritative backticked
-reference.
+Onboarding prose is grounded in its structured context and, when configured,
+explicit repository evidence. A fabricated citation - a file neither input
+mentioned, or a symbol neither input establishes - must not reach the reader
+as an authoritative backticked reference.
 
 This module closes that gap deterministically. It collects the paths and
 symbols actually present in a subkind's context object, then scans the
@@ -32,6 +31,7 @@ cleaned on their next docs update even when the prompt is unchanged.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from typing import Any
 
@@ -132,7 +132,25 @@ def _iter_strings(obj: Any, _depth: int = 0) -> Any:
             yield from _iter_strings(item, _depth + 1)
 
 
-def collect_known(ctx: Any) -> tuple[set[str], set[str]]:
+def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -> None:
+    token = token.strip().strip(".,;:()[]{}<>\"'")
+    if not token:
+        return
+    if _looks_like_path(token):
+        head = token.split("::", 1)[0].split("#", 1)[0].strip()
+        known_paths.add(head)
+        known_paths.add(head.rsplit("/", 1)[-1])
+    if _looks_like_symbol(token):
+        known_symbols.add(token)
+        for part in re.split(r"\.|::", token):
+            if part:
+                known_symbols.add(part)
+
+
+def collect_known(
+    ctx: Any,
+    evidence: Mapping[str, str] | None = None,
+) -> tuple[set[str], set[str]]:
     """Collect the known paths and symbols from a subkind context object.
 
     Returns ``(known_paths, known_symbols)``. ``known_paths`` includes each
@@ -144,20 +162,13 @@ def collect_known(ctx: Any) -> tuple[set[str], set[str]]:
     known_paths: set[str] = set()
     known_symbols: set[str] = set()
     for s in _iter_strings(ctx):
-        token = s.strip()
-        if not token:
-            continue
-        if _looks_like_path(token):
-            head = token.split("::", 1)[0].split("#", 1)[0].strip()
-            known_paths.add(head)
-            known_paths.add(head.rsplit("/", 1)[-1])
-        # A string can carry both a path and a symbol vocabulary; also mine
-        # bare identifiers as known symbols.
-        if _looks_like_symbol(token):
-            known_symbols.add(token)
-            for part in re.split(r"\.|::", token):
-                if part:
-                    known_symbols.add(part)
+        _collect_token(s, known_paths, known_symbols)
+    for path, text in (evidence or {}).items():
+        _collect_token(path, known_paths, known_symbols)
+        # Evidence is free-form text rather than a context dataclass. Admit
+        # only path/identifier-shaped tokens that occur verbatim in it.
+        for match in re.finditer(r"[A-Za-z_][A-Za-z0-9_./:-]*", text):
+            _collect_token(match.group(0), known_paths, known_symbols)
     return known_paths, known_symbols
 
 
@@ -182,7 +193,11 @@ def _symbol_grounded(token: str, known_symbols: set[str]) -> bool:
     return any(p in known_symbols for p in parts)
 
 
-def check_grounding(content: str, ctx: Any) -> tuple[str, list[str]]:
+def check_grounding(
+    content: str,
+    ctx: Any,
+    evidence: Mapping[str, str] | None = None,
+) -> tuple[str, list[str]]:
     """Strip ungrounded path/symbol citations from *content*.
 
     Returns ``(cleaned_content, ungrounded_tokens)``. Each ungrounded token
@@ -192,7 +207,7 @@ def check_grounding(content: str, ctx: Any) -> tuple[str, list[str]]:
     """
     if not content:
         return content, []
-    known_paths, known_symbols = collect_known(ctx)
+    known_paths, known_symbols = collect_known(ctx, evidence)
     ungrounded: list[str] = []
     seen: set[str] = set()
 

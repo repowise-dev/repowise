@@ -124,7 +124,7 @@ async def test_overview_prompt_includes_repository_source_evidence(
     )
 
     prompt = generator._provider.calls[-1]["user_prompt"]
-    assert "## Authoritative repository evidence" in prompt
+    assert "## Additional repository evidence" in prompt
     assert '<repository-file path="README.md">' in prompt
     assert "turns source archives into indexed documentation" in prompt
     assert '<repository-file path="docs/ARCHITECTURE.md">' in prompt

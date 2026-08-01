@@ -416,6 +416,26 @@ def test_grounding_catches_fabricated_path_and_symbol() -> None:
     assert "SecretOrchestrator" in cleaned
 
 
+def test_grounding_accepts_citations_established_only_by_added_evidence() -> None:
+    ctx = _ctx_for_grounding()
+    content = (
+        "The `EvidenceRouter.dispatch` in `docs/runtime_flow.py` selects the worker, "
+        "while `FabricatedWorker` is not established."
+    )
+    evidence = {
+        "docs/runtime_flow.py": (
+            "EvidenceRouter.dispatch validates the request before selecting a worker."
+        )
+    }
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`EvidenceRouter.dispatch`" in cleaned
+    assert "`docs/runtime_flow.py`" in cleaned
+    assert "FabricatedWorker" in ungrounded
+    assert "`FabricatedWorker`" not in cleaned
+
+
 def test_grounding_cleans_reused_page_content() -> None:
     """The check runs on content, so a reused (cached) page carrying a stale
     fabrication is cleaned the same way a fresh one is."""

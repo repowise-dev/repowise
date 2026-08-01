@@ -192,12 +192,22 @@ def test_generation_config_reads_source_evidence_settings():
         {"token_budget": True},
         {"files": []},
         {"files": {"module_page": ["README.md"]}},
+        {"files": {"onboarding/project_overview": ["README.md"]}},
         {"files": {"repo_overview": "README.md"}},
     ],
 )
 def test_generation_config_rejects_invalid_source_evidence_settings(generation_context):
     with pytest.raises(ValueError, match="generation_context"):
         GenerationConfig.from_repo_config({"generation_context": generation_context})
+
+
+def test_direct_generation_config_rejects_an_unconsumed_evidence_key() -> None:
+    with pytest.raises(ValueError, match="project_overview is configured as repo_overview"):
+        GenerationConfig(
+            source_evidence_files={
+                "onboarding/project_overview": ("README.md",),
+            }
+        )
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "not-a-number"])

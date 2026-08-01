@@ -25,7 +25,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
-from ..context.evidence import render_source_evidence
+from ..context.evidence import EvidenceSelection, EvidenceSkip, select_source_evidence
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..models import (
     MODEL_PAGE_CONFIDENCE,
@@ -501,11 +501,62 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         user_prompt: str,
         page_key: str,
         source_map: dict[str, bytes],
-    ) -> str:
-        """Append configured repository files within the evidence budget."""
-        evidence = render_source_evidence(
+    ) -> tuple[str, EvidenceSelection]:
+        """Append configured repository files and report every selection decision."""
+        configured = self._config.source_evidence_files.get(page_key, ())
+        selection = select_source_evidence(
             source_map,
-            self._config.source_evidence_files.get(page_key, ()),
+            configured,
             token_budget=self._config.source_evidence_token_budget,
         )
-        return f"{user_prompt}\n\n{evidence}" if evidence else user_prompt
+        if selection.included:
+            log.info(
+                "source_evidence.selected",
+                page_key=page_key,
+                paths=[item.path for item in selection.included],
+                estimated_tokens=selection.estimated_tokens,
+                token_budget=self._config.source_evidence_token_budget,
+            )
+        if selection.skipped:
+            log.warning(
+                "source_evidence.skipped",
+                page_key=page_key,
+                skipped=[{"path": item.path, "reason": item.reason} for item in selection.skipped],
+            )
+        prompt = f"{user_prompt}\n\n{selection.rendered}" if selection.rendered else user_prompt
+        return prompt, selection
+
+    def _disabled_source_evidence(self, page_key: str, reason: str) -> EvidenceSelection:
+        """Report configured evidence that a non-model path cannot consume."""
+        skipped = tuple(
+            EvidenceSkip(path, reason)
+            for path in self._config.source_evidence_files.get(page_key, ())
+        )
+        selection = EvidenceSelection(skipped=skipped)
+        if skipped:
+            log.warning(
+                "source_evidence.skipped",
+                page_key=page_key,
+                skipped=[{"path": item.path, "reason": item.reason} for item in skipped],
+            )
+        return selection
+
+    def _attach_source_evidence(
+        self,
+        page: GeneratedPage,
+        page_key: str,
+        selection: EvidenceSelection,
+    ) -> GeneratedPage:
+        """Persist evidence provenance on a generated or fallback page."""
+        if not self._config.source_evidence_files.get(page_key, ()):
+            return page
+        page.metadata["source_evidence"] = {
+            "page_key": page_key,
+            "token_budget": self._config.source_evidence_token_budget,
+            "estimated_tokens": selection.estimated_tokens,
+            "included": [
+                {"path": item.path, "truncated": item.truncated} for item in selection.included
+            ],
+            "skipped": [{"path": item.path, "reason": item.reason} for item in selection.skipped],
+        }
+        return page

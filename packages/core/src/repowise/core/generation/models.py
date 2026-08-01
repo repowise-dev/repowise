@@ -56,6 +56,16 @@ DEFAULT_MAX_TOKENS = 16384
 DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET = 8000
 
 
+def _source_evidence_page_keys() -> set[str]:
+    """Return synthesis page keys that have a model-written consumer."""
+    from .onboarding.slots import ONBOARDING_ORDER, PROMOTED_SLOTS
+
+    promoted = set(PROMOTED_SLOTS.values())
+    return {"repo_overview"} | {
+        f"onboarding/{slot}" for slot in ONBOARDING_ORDER if slot not in promoted
+    }
+
+
 # ---------------------------------------------------------------------------
 # GenerationConfig
 # ---------------------------------------------------------------------------
@@ -244,9 +254,7 @@ class GenerationConfig:
             if not isinstance(raw_evidence, Mapping):
                 raise ValueError("generation_context must be a mapping")
 
-            raw_budget = raw_evidence.get(
-                "token_budget", DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET
-            )
+            raw_budget = raw_evidence.get("token_budget", DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET)
             if isinstance(raw_budget, bool) or not isinstance(raw_budget, int) or raw_budget < 0:
                 raise ValueError("generation_context.token_budget must be a non-negative integer")
             values["source_evidence_token_budget"] = raw_budget
@@ -254,17 +262,15 @@ class GenerationConfig:
             raw_files = raw_evidence.get("files", {})
             if not isinstance(raw_files, Mapping):
                 raise ValueError("generation_context.files must be a mapping")
-            from .onboarding.slots import ONBOARDING_ORDER
-
-            valid_page_keys = {"repo_overview"} | {
-                f"onboarding/{slot}" for slot in ONBOARDING_ORDER
-            }
+            valid_page_keys = _source_evidence_page_keys()
             evidence_files: dict[str, tuple[str, ...]] = {}
             for raw_page_key, raw_paths in raw_files.items():
                 page_key = str(raw_page_key).strip()
                 if page_key not in valid_page_keys:
                     raise ValueError(
-                        "generation_context.files keys must name repo_overview or a known onboarding slot"
+                        "generation_context.files keys must name repo_overview or a "
+                        "model-written onboarding slot; project_overview is configured "
+                        "as repo_overview"
                     )
                 if not isinstance(raw_paths, (list, tuple)) or not all(
                     isinstance(path, str) and path.strip() for path in raw_paths
@@ -293,6 +299,23 @@ class GenerationConfig:
             or self.source_evidence_token_budget < 0
         ):
             raise ValueError("source_evidence_token_budget must be a non-negative integer")
+        if not isinstance(self.source_evidence_files, Mapping):
+            raise ValueError("source_evidence_files must be a mapping")
+        valid_page_keys = _source_evidence_page_keys()
+        evidence_files: dict[str, tuple[str, ...]] = {}
+        for page_key, paths in self.source_evidence_files.items():
+            if page_key not in valid_page_keys:
+                raise ValueError(
+                    "source_evidence_files keys must name repo_overview or a "
+                    "model-written onboarding slot; project_overview is configured "
+                    "as repo_overview"
+                )
+            if not isinstance(paths, (list, tuple)) or not all(
+                isinstance(path, str) and path.strip() for path in paths
+            ):
+                raise ValueError(f"source_evidence_files.{page_key} must be a list of file paths")
+            evidence_files[page_key] = tuple(path.strip() for path in paths)
+        object.__setattr__(self, "source_evidence_files", evidence_files)
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
 
 

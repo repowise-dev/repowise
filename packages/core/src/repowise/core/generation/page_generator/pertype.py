@@ -335,9 +335,11 @@ class PerTypeGenerationMixin:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
-            return _with_architecture_map(stub, overview_mermaid)
+            page = _with_architecture_map(stub, overview_mermaid)
+            selection = self._disabled_source_evidence("repo_overview", "deterministic_generation")
+            return self._attach_source_evidence(page, "repo_overview", selection)
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
-        user_prompt = self._append_source_evidence(
+        user_prompt, evidence = self._append_source_evidence(
             user_prompt, "repo_overview", source_map or {}
         )
         try:
@@ -348,9 +350,10 @@ class PerTypeGenerationMixin:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
-            return _with_architecture_map(
+            page = _with_architecture_map(
                 _stub_fallback(stub, "repo_overview", exc), overview_mermaid
             )
+            return self._attach_source_evidence(page, "repo_overview", evidence)
         # The overview carries the architecture map itself. It is the
         # deterministic KG-derived diagram, not one the model drew, and
         # embedding is idempotent so a reused page picks it up too.
@@ -361,7 +364,7 @@ class PerTypeGenerationMixin:
                     response.content, overview_mermaid, heading="## Architecture map"
                 ),
             )
-        return self._build_generated_page(
+        page = self._build_generated_page(
             "repo_overview",
             repo_name,
             f"Repository Overview: {repo_name}",
@@ -369,6 +372,7 @@ class PerTypeGenerationMixin:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["repo_overview"],
         )
+        return self._attach_source_evidence(page, "repo_overview", evidence)
 
     async def generate_architecture_diagram(
         self,
@@ -438,21 +442,25 @@ class PerTypeGenerationMixin:
         Returns ``None`` when the subkind's gate fails (``build_context``
         returned ``None``) — the slot is silently skipped for this repo.
         """
+        page_key = f"onboarding/{spec.slot}"
         ctx = spec.build_context(signals)
         if ctx is None:
             log.debug("onboarding.gate_skipped", slot=spec.slot)
+            self._disabled_source_evidence(page_key, "page_not_generated")
             return None
 
         target = _onboarding.target_path(spec.slot)
         if self._config.deterministic:
             # No grounding post-check: a template can only cite what the
             # context handed it, so there is nothing ungrounded to strip.
-            return self._stub_onboarding_page(spec, ctx, target)
+            page = self._stub_onboarding_page(spec, ctx, target)
+            evidence = self._disabled_source_evidence(page_key, "deterministic_generation")
+            return self._attach_source_evidence(page, page_key, evidence)
 
         template_name = f"onboarding/{spec.template}"
         user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
-        user_prompt = self._append_source_evidence(
-            user_prompt, f"onboarding/{spec.slot}", signals.source_map
+        user_prompt, evidence = self._append_source_evidence(
+            user_prompt, page_key, signals.source_map
         )
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
@@ -465,12 +473,14 @@ class PerTypeGenerationMixin:
             # ``_stub_onboarding_page`` stamps the subkind metadata itself, so
             # the fallback is interchangeable with the deterministic path.
             stub = self._stub_onboarding_page(spec, ctx, target)
-            return _stub_fallback(stub, "onboarding", exc)
+            page = _stub_fallback(stub, "onboarding", exc)
+            return self._attach_source_evidence(page, page_key, evidence)
         # Grounding post-check: strip ungrounded path/symbol citations from the
         # output. Runs on fresh AND reused content (``response.content`` carries
         # the prior page's bytes on a cache hit), so an existing user's cached
         # page is cleaned on their next docs update.
-        cleaned, ungrounded = _onboarding.check_grounding(response.content, ctx)
+        grounding_evidence = {item.path: item.text for item in evidence.included}
+        cleaned, ungrounded = _onboarding.check_grounding(response.content, ctx, grounding_evidence)
         if ungrounded:
             log.info(
                 "onboarding.grounding_stripped",
@@ -491,7 +501,7 @@ class PerTypeGenerationMixin:
         # across all six generated onboarding slots.
         page.metadata["subkind"] = spec.slot
         page.metadata["onboarding_slot"] = spec.slot
-        return page
+        return self._attach_source_evidence(page, page_key, evidence)
 
     @staticmethod
     def _tag_promoted_pages(pages: list[GeneratedPage]) -> None:

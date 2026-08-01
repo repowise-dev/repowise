@@ -55,6 +55,10 @@ from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPT
 - New page type: add a `generate_*` method to `pertype.py`, a level builder to
   `levels.py`, and wire it into `_GenerationRun.execute()`.
 - New tier policy: extend `partition_file_tiers` / add a renderer template.
+- High-level synthesis evidence: use the provider-neutral
+  `generation_context.files` contract. `context/evidence.py` owns bounded file
+  selection and provenance; page methods must keep that evidence in prompt
+  hashes and any downstream grounding checks.
 
 ## Tests
 

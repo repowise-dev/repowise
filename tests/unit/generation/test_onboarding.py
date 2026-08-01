@@ -16,6 +16,7 @@ from typing import Any
 
 import jinja2
 import pytest
+from structlog.testing import capture_logs
 
 from repowise.core.generation import onboarding
 from repowise.core.generation.context_assembler import ContextAssembler
@@ -33,12 +34,14 @@ from repowise.core.generation.onboarding.slots import (
     target_path,
 )
 from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.generation.page_generator.core import PriorPage
 from repowise.core.ingestion.models import (
     FileInfo,
     ParsedFile,
     RepoStructure,
     Symbol,
 )
+from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
 from repowise.core.test_paths import is_test_related_path
 
@@ -470,6 +473,138 @@ async def test_onboarding_prompt_includes_configured_source_evidence() -> None:
     prompt = provider.calls[0]["user_prompt"]
     assert '<repository-file path="docs/ARCHITECTURE.md">' in prompt
     assert "validates input and dispatches the worker pipeline" in prompt
+    provenance = page.metadata["source_evidence"]
+    assert provenance["page_key"] == "onboarding/how_it_works"
+    assert provenance["token_budget"] == 8000
+    assert provenance["estimated_tokens"] <= 8000
+    assert provenance["included"] == [{"path": "docs/ARCHITECTURE.md", "truncated": False}]
+    assert provenance["skipped"] == []
+
+
+async def test_onboarding_evidence_survives_grounding_and_controls_cache_reuse() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    source_map = {
+        "docs/runtime-flow.md": (
+            b"`EvidenceRouter.dispatch` validates input, then calls `WorkerPipeline.run`."
+        )
+    }
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+        source_map=source_map,
+    )
+    config = GenerationConfig(
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/runtime-flow.md",),
+        },
+    )
+    response = GeneratedResponse(
+        content=(
+            "## Runtime flow\n\n`EvidenceRouter.dispatch` invokes "
+            "`WorkerPipeline.run`; `InventedDaemon` is unrelated."
+        ),
+        input_tokens=10,
+        output_tokens=20,
+    )
+    first_provider = MockProvider(responses=[response])
+    first_generator = PageGenerator(first_provider, ContextAssembler(config), config)
+
+    first = await first_generator.generate_onboarding_page(spec, signals)
+
+    assert first is not None
+    assert "`EvidenceRouter.dispatch`" in first.content
+    assert "`WorkerPipeline.run`" in first.content
+    assert "`InventedDaemon`" not in first.content
+
+    prior = {
+        first.page_id: PriorPage(
+            source_hash=first.source_hash,
+            model_name=first.model_name,
+            content=first.content,
+        )
+    }
+    reuse_provider = MockProvider()
+    reuse_generator = PageGenerator(
+        reuse_provider,
+        ContextAssembler(config),
+        config,
+        prior_pages=prior,
+    )
+
+    reused = await reuse_generator.generate_onboarding_page(spec, signals)
+
+    assert reused is not None
+    assert reuse_provider.call_count == 0
+    assert reused.metadata["reused_from_prior_run"] is True
+    assert reused.metadata["source_evidence"]["included"] == [
+        {"path": "docs/runtime-flow.md", "truncated": False}
+    ]
+
+    changed_signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+        source_map={"docs/runtime-flow.md": b"EvidenceRouter.dispatch now calls QueueWorker.run."},
+    )
+    changed_provider = MockProvider(responses=[response])
+    changed_generator = PageGenerator(
+        changed_provider,
+        ContextAssembler(config),
+        config,
+        prior_pages=prior,
+    )
+
+    changed = await changed_generator.generate_onboarding_page(spec, changed_signals)
+
+    assert changed is not None
+    assert changed_provider.call_count == 1
+    assert changed.source_hash != first.source_hash
+
+
+async def test_missing_onboarding_evidence_is_visible_in_page_provenance() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+    )
+    config = GenerationConfig(
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/missing.md",),
+        },
+    )
+    generator = PageGenerator(MockProvider(), ContextAssembler(config), config)
+
+    page = await generator.generate_onboarding_page(spec, signals)
+
+    assert page is not None
+    assert page.metadata["source_evidence"]["included"] == []
+    assert page.metadata["source_evidence"]["skipped"] == [
+        {"path": "docs/missing.md", "reason": "not_indexed"}
+    ]
+
+
+async def test_evidence_for_a_gated_page_is_reported_as_not_generated() -> None:
+    spec = onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE)
+    assert spec is not None
+    signals = _signals(files=[_file("src/one.py")])
+    config = GenerationConfig(
+        source_evidence_files={
+            "onboarding/development_guide": ("docs/development.md",),
+        },
+    )
+    generator = PageGenerator(MockProvider(), ContextAssembler(config), config)
+
+    with capture_logs() as logs:
+        page = await generator.generate_onboarding_page(spec, signals)
+
+    assert page is None
+    assert any(
+        entry.get("event") == "source_evidence.skipped"
+        and entry.get("skipped")
+        == [{"path": "docs/development.md", "reason": "page_not_generated"}]
+        for entry in logs
+    )
 
 
 # ---------------------------------------------------------------------------
