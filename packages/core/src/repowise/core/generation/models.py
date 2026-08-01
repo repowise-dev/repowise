@@ -85,7 +85,7 @@ class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
         return len(self._items)
 
     def __hash__(self) -> int:
-        return hash(self._items)
+        return hash(frozenset(self._items))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Mapping):

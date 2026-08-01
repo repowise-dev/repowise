@@ -175,6 +175,21 @@ def test_generation_config_remains_hashable_and_evidence_mapping_is_immutable():
     with pytest.raises(TypeError):
         config.source_evidence_files["repo_overview"] = ("other.md",)  # type: ignore[index]
 
+    reordered = GenerationConfig(
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/flow.md",),
+            "repo_overview": ("README.md",),
+        }
+    )
+    original_order = GenerationConfig(
+        source_evidence_files={
+            "repo_overview": ("README.md",),
+            "onboarding/how_it_works": ("docs/flow.md",),
+        }
+    )
+    assert reordered == original_order
+    assert hash(reordered) == hash(original_order)
+
 
 def test_generation_config_reads_repo_max_tokens():
     config = GenerationConfig.from_repo_config({"max_tokens": "2345"})
