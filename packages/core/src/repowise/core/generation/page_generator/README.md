@@ -59,8 +59,11 @@ from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPT
   bounded selection and provenance channel shared by explicit
   `generation_context.files` and automatically derived exact references. An
   onboarding subkind may expose exact references through
-  `SubkindSpec.evidence_references`; page methods must keep all rendered evidence
-  in prompt hashes and downstream grounding checks.
+  `SubkindSpec.evidence_references(context)`: return ordered canonical
+  `path::symbol` identifiers from the built subkind context. First occurrence
+  sets budget priority, duplicates are ignored, and unresolved references are
+  recorded as skips. Page methods must keep all rendered evidence in prompt
+  hashes and downstream grounding checks.
 
 ## Tests
 

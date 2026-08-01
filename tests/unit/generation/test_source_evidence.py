@@ -242,6 +242,27 @@ def test_exact_reference_skip_reasons_and_hostile_framing_are_observable() -> No
     ]
 
 
+def test_exact_excerpt_preserves_selected_line_content() -> None:
+    source = b"def wanted():\r\n    return worker()  \r\n"
+    reference = "src/main.py::wanted"
+    parsed = SimpleNamespace(
+        file_info=SimpleNamespace(path="src/main.py"),
+        symbols=[SimpleNamespace(id=reference, start_line=1, end_line=2)],
+    )
+
+    selection = select_prompt_evidence(
+        {"src/main.py": source},
+        (),
+        token_budget=600,
+        parsed_files=[parsed],
+        references=(reference,),
+    )
+
+    assert selection.included[0].text == source.decode()
+    assert selection.included[0].start_line == 1
+    assert selection.included[0].end_line == 2
+
+
 def test_prompt_evidence_reserves_half_and_returns_unused_exact_capacity() -> None:
     source_map = {
         "docs/ARCHITECTURE.md": (b"configured architecture evidence\n" * 500),

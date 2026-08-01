@@ -265,13 +265,13 @@ def _select_reference_evidence(
         if text is None:
             skipped.append(EvidenceSkip(reference, "binary_or_non_utf8"))
             continue
-        lines = text.splitlines()
+        lines = text.splitlines(keepends=True)
         end_line = min(end_line, len(lines))
         if end_line < start_line:
             skipped.append(EvidenceSkip(reference, "invalid_line_range"))
             continue
-        body = "\n".join(lines[start_line - 1 : end_line]).strip()
-        if not body:
+        body = "".join(lines[start_line - 1 : end_line])
+        if not body.strip():
             skipped.append(EvidenceSkip(reference, "empty_excerpt"))
             continue
         body = _EVIDENCE_FRAME_TAG.sub(lambda match: escape(match.group(), quote=False), body)

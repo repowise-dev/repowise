@@ -34,8 +34,11 @@ class SubkindSpec:
         template:      Jinja template filename, relative to
                        ``templates/onboarding/``.
         build_context: Returns the template context, or ``None`` to skip.
-        evidence_references: Extracts exact source references needed to ground
-                       this subkind's prompt.
+        evidence_references: Optional callback receiving the completed subkind
+                       context. It returns ordered canonical ``path::symbol``
+                       references; first occurrence sets priority and duplicates
+                       are ignored. Missing files, symbols, or ranges become
+                       observable evidence skips rather than generation errors.
     """
 
     slot: str

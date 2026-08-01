@@ -164,8 +164,10 @@ request the affected page. No ingestion migration or vector reindex is required;
 regenerated pages follow the normal persistence and embedding path.
 Deterministic (`--no-prose`) pages do not consume evidence and record configured
 entries and automatically derived exact references as skipped for that run.
-Disabled or gated onboarding pages likewise retain explicit skip provenance
-instead of silently consuming or discarding evidence inputs.
+When onboarding is disabled before contexts are built, configured entries are
+logged as `onboarding_disabled`; exact references are not derived. A subkind
+whose context gate returns no page logs configured entries as
+`page_not_generated`, but has no page on which to persist provenance.
 
 `max_tokens` bounds each model-written documentation response. It is a
 persistent repository setting rather than a per-command flag: `init`, `update`,
