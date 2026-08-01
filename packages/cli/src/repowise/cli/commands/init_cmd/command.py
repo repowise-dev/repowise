@@ -1533,7 +1533,7 @@ def init_command(
         # pair: `serve` pins the model from it, and the store-format upgrade
         # check reads it to notice an embedder change. Half the pair is not
         # enough for either.
-        from repowise.cli.providers.embedders import resolve_embedding_model
+        from repowise.core.providers.embedding.registry import resolve_embedding_model
 
         save_config_partial(
             repo_path,
@@ -1541,7 +1541,9 @@ def init_command(
             commit_limit=resolved_commit_limit if commit_limit is not None else None,
             embedder=_index_only_embedder,
             embedding_model=(
-                resolve_embedding_model(_index_only_embedder) if _index_only_embedder else None
+                resolve_embedding_model(_index_only_embedder, repo_path)
+                if _index_only_embedder
+                else None
             ),
         )
         # Fingerprint after config writes so the first update doesn't false-positive.

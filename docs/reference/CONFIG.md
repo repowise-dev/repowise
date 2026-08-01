@@ -74,7 +74,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
 | `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `mock` |
-| `embedding_model` | provider default | Embedding model identifier |
+| `embedding_model` | provider default | Embedding model the store was built with. Read wherever an embedder is constructed for this repo (init, update, reindex, search, doctor, and the MCP server's query embedding), so editing it takes effect; `OLLAMA_EMBEDDING_MODEL` / `REPOWISE_EMBEDDING_MODEL` env vars override it |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `max_tokens` | `16384` | Maximum output tokens requested for each model-written documentation page |
 | `commit_limit` | `500` | Max commits per file walked for git analysis, clamped to 1-10000 |
@@ -441,10 +441,14 @@ would match nothing in the narrower stored table.
 next `update` would read the old pin, write vectors at the old width, and the
 store would be rebuilt from scratch, discarding what the reindex just built.
 
-`REPOWISE_EMBEDDING_MODEL` overrides the model for whichever embedder is
-active. `REPOWISE_EMBEDDING_DIMS` and `REPOWISE_EMBEDDING_TIMEOUT` apply the
-same way; the `OLLAMA_EMBEDDING_*` variants below are Ollama-specific
-equivalents.
+The embedding model resolves the same way on every surface (CLI commands and
+the MCP server's query embedding): `OLLAMA_EMBEDDING_MODEL` (for the ollama
+backend), then `REPOWISE_EMBEDDING_MODEL`, then the `embedding_model` pinned
+in `config.yaml`, then the embedder's own default. The pin is what the store
+was embedded with, so a shell without the env vars still queries the table
+with the model that built it. `REPOWISE_EMBEDDING_DIMS` and
+`REPOWISE_EMBEDDING_TIMEOUT` remain env-only operational overrides; the
+`OLLAMA_EMBEDDING_*` variants below are Ollama-specific equivalents.
 
 ---
 

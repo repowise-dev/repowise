@@ -6,11 +6,12 @@ import os
 from typing import Any
 
 
-def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
+def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any]:
+    from repowise.core.providers.embedding.registry import resolve_embedding_model
+
     kwargs: dict[str, Any] = {}
-    model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
+    model = resolve_embedding_model(embedder_name, repo_path)
     if embedder_name == "ollama":
-        model = os.environ.get("OLLAMA_EMBEDDING_MODEL") or model
         base_url = os.environ.get("OLLAMA_BASE_URL")
         dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
             "REPOWISE_EMBEDDING_DIMS"
@@ -31,21 +32,6 @@ def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
     if model:
         kwargs["model"] = model
     return kwargs
-
-
-def resolve_embedding_model(embedder_name: str) -> str | None:
-    """Return the configured embedding model for *embedder_name*, if any.
-
-    Mirrors the precedence in :func:`_embedder_kwargs` so the value persisted
-    to ``config.yaml`` at init time is exactly what the embedder would build
-    with. Returns ``None`` when no model is configured (the embedder then uses
-    its own default), which keeps ``config.yaml`` free of empty keys.
-    """
-    if embedder_name == "ollama":
-        return os.environ.get("OLLAMA_EMBEDDING_MODEL") or os.environ.get(
-            "REPOWISE_EMBEDDING_MODEL"
-        )
-    return os.environ.get("REPOWISE_EMBEDDING_MODEL")
 
 
 def resolve_embedder(embedder_flag: str | None) -> str:
@@ -126,12 +112,16 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     return str(pinned) if pinned else resolve_embedder(None)
 
 
-def build_embedder(embedder_name_resolved: str) -> Any:
+def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
     """Construct the configured embedder, falling back to MockEmbedder.
 
     Shared by the generation flows and the decision semantic-dedup wiring so
     the same backend selection logic isn't duplicated. Real providers fall
     back to the deterministic mock when their SDK/credentials are unavailable.
+
+    *repo_path* lets the model resolution read the ``embedding_model`` pinned
+    in that repo's ``config.yaml`` when no env var overrides it; without it,
+    resolution is env-only and the embedder's own default fills the gap.
     """
     from repowise.core.providers.embedding.base import MockEmbedder
     from repowise.core.providers.embedding.registry import get_embedder
@@ -139,6 +129,8 @@ def build_embedder(embedder_name_resolved: str) -> Any:
     if embedder_name_resolved == "mock":
         return MockEmbedder()
     try:
-        return get_embedder(embedder_name_resolved, **_embedder_kwargs(embedder_name_resolved))
+        return get_embedder(
+            embedder_name_resolved, **_embedder_kwargs(embedder_name_resolved, repo_path)
+        )
     except Exception:
         return MockEmbedder()

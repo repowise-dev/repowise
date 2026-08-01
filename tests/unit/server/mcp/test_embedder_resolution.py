@@ -188,3 +188,34 @@ def test_build_meta_clean_when_healthy(monkeypatch):
     # And when nothing has been resolved at all.
     monkeypatch.setattr(_state, "_embedder_status", None)
     assert "embedder_degraded" not in build_meta(timing_ms=1.0)
+
+
+def test_pinned_embedding_model_reaches_the_server_embedder(monkeypatch, tmp_path):
+    """The `embedding_model` pinned in config.yaml must drive query embedding.
+
+    The server read only the generic env var, so the same repo could embed
+    queries with a different model than the one that built its table,
+    depending on which surface asked.
+    """
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir(parents=True)
+    (repowise_dir / "config.yaml").write_text(
+        "embedder: ollama\nembedding_model: qwen3-embedding:8b\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
+
+    kwargs = _server._embedder_kwargs("ollama")
+    assert kwargs.get("model") == "qwen3-embedding:8b"
+
+
+def test_env_model_still_outranks_the_pin_on_the_server(monkeypatch, tmp_path):
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir(parents=True)
+    (repowise_dir / "config.yaml").write_text(
+        "embedder: ollama\nembedding_model: pinned-model\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "env-model")
+
+    kwargs = _server._embedder_kwargs("ollama")
+    assert kwargs.get("model") == "env-model"

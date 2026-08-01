@@ -145,7 +145,7 @@ def test_semantic_search_reads_through_the_repo_resolver(
 
     seen: list[str] = []
 
-    def _record(name: str):
+    def _record(name: str, repo_path: Path | None = None):
         seen.append(name)
         return MockEmbedder()
 
@@ -253,7 +253,7 @@ async def test_reindex_persists_its_resolved_embedder(
     # _reindex imports build_embedder from this module inside the function, so
     # the module attribute is the one that takes effect.
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _repo=None: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -302,7 +302,7 @@ async def test_reindex_does_not_pin_an_embedder_that_wrote_nothing(
         "sqlalchemy.ext.asyncio.async_sessionmaker", lambda *a, **k: lambda: _Session()
     )
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _repo=None: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -420,7 +420,7 @@ def test_mock_width_with_a_real_pin_proposes_a_re_embed(
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     _patch_stored_dim(monkeypatch, 8)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _repo=None: _WideEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)
@@ -450,7 +450,8 @@ def test_two_real_widths_are_never_compared(
             return [[0.0] * 1024 for _ in texts]
 
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _MisreportingEmbedder()
+        "repowise.cli.providers.embedders.build_embedder",
+        lambda _n, _repo=None: _MisreportingEmbedder(),
     )
 
     assert _vector_dims(tmp_path) == (None, None)
@@ -541,3 +542,52 @@ def test_duplicate_reembed_actions_run_once() -> None:
     )
     asyncio.run(apply_auto(verdict, _Ctx()))
     assert calls == 1
+
+
+# --- the model pin: config.yaml embedding_model must be operative ------------
+#
+# The pin used to be write-only: recorded at init as the model the store was
+# embedded with, read by nothing. A shell without the embedding env vars then
+# silently built the embedder at its own default — a different model, and
+# potentially a different vector width, than the table it queries.
+
+
+def test_pinned_embedding_model_reaches_the_resolver(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.providers.embedding.registry import resolve_embedding_model
+
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("OLLAMA_EMBEDDING_MODEL", raising=False)
+    _write_config(tmp_path, embedder="ollama", embedding_model="qwen3-embedding:8b")
+    assert resolve_embedding_model("ollama", tmp_path) == "qwen3-embedding:8b"
+
+
+def test_env_still_overrides_the_pinned_embedding_model(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.providers.embedding.registry import resolve_embedding_model
+
+    _write_config(tmp_path, embedder="ollama", embedding_model="pinned-model")
+    monkeypatch.setenv("REPOWISE_EMBEDDING_MODEL", "generic-env-model")
+    assert resolve_embedding_model("ollama", tmp_path) == "generic-env-model"
+    # The ollama-specific variable outranks the generic one, matching the
+    # OllamaEmbedder constructor's own fallback chain.
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "ollama-env-model")
+    assert resolve_embedding_model("ollama", tmp_path) == "ollama-env-model"
+
+
+def test_no_repo_path_means_env_only(tmp_path: Path, monkeypatch) -> None:
+    """Embedder-drift detection measures what the environment alone resolves;
+    the pin must not answer for itself there."""
+    from repowise.core.providers.embedding.registry import resolve_embedding_model
+
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("OLLAMA_EMBEDDING_MODEL", raising=False)
+    _write_config(tmp_path, embedder="ollama", embedding_model="pinned-model")
+    assert resolve_embedding_model("ollama", None) is None
+
+
+def test_build_embedder_builds_with_the_pinned_model(tmp_path: Path, monkeypatch) -> None:
+    """End to end through the shared constructor: the pin, not the default."""
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("OLLAMA_EMBEDDING_MODEL", raising=False)
+    _write_config(tmp_path, embedder="ollama", embedding_model="qwen3-embedding:8b")
+    embedder = providers.build_embedder("ollama", tmp_path)
+    assert getattr(embedder, "_model", None) == "qwen3-embedding:8b"

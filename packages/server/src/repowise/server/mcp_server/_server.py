@@ -66,15 +66,24 @@ def _configured_embedder_name() -> str:
 
 
 def _embedder_kwargs(name: str) -> dict[str, Any]:
-    """Map repowise embedding env vars onto an embedder's constructor kwargs.
+    """Map embedding model config + env onto an embedder's constructor kwargs.
 
-    Kept backend-agnostic: ``REPOWISE_EMBEDDING_MODEL`` applies to any embedder
-    that accepts a ``model`` arg; ``REPOWISE_EMBEDDING_DIMS`` is gemini-specific
-    (its constructor exposes ``output_dimensionality``). Anything not set here
-    falls through to the embedder's own defaults.
+    The model comes from the shared resolver (env first, then the
+    ``embedding_model`` pinned in the repo's ``config.yaml``), the same one
+    the CLI build path uses — the server used to read only the generic env
+    var, so the same repo could embed queries with a different model than the
+    one that built its table, depending on which surface asked.
+    ``REPOWISE_EMBEDDING_DIMS`` stays gemini-specific (its constructor
+    exposes ``output_dimensionality``). Anything not set here falls through
+    to the embedder's own defaults.
     """
+    from pathlib import Path
+
+    from repowise.core.providers.embedding.registry import resolve_embedding_model
+
+    repo_path = Path(_state._repo_path) if _state._repo_path else None
     kwargs: dict[str, Any] = {}
-    model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
+    model = resolve_embedding_model(name, repo_path)
     if model:
         kwargs["model"] = model
     if name == "gemini":
