@@ -164,6 +164,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # table.
         self._prior_pages: dict[str, PriorPage] = prior_pages or {}
         self._reuse_count: int = 0
+        # Set by the active _GenerationRun after it creates its JobSystem
+        # checkpoint. Exposed read-only so callers can inspect this exact
+        # invocation without guessing from the checkpoint directory.
+        self._last_job_id: str | None = None
         # Per-template structural fingerprints, lazily computed; every input
         # they fold is fixed for the generator's lifetime. Keyed by template
         # name because each structural page type folds its own template source.
@@ -195,6 +199,11 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         self._jinja_env.filters.setdefault("oneline", oneline)
         self._jinja_env.filters.setdefault("as_markdown", as_markdown)
         self._jinja_env.filters.setdefault("signature", signature)
+
+    @property
+    def last_job_id(self) -> str | None:
+        """JobSystem checkpoint id created by the most recent generation call."""
+        return self._last_job_id
 
     # ------------------------------------------------------------------
     # generate_all — orchestration (delegates to orchestrate.py)
@@ -250,6 +259,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # this run's responses rather than every response since start-up.
         reset_artifact_check_counts()
 
+        self._last_job_id = None
         return await run_generate_all(
             self,
             parsed_files=parsed_files,

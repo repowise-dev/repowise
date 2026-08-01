@@ -6,6 +6,7 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,7 @@ async def run_generation(
     kg_data: dict | None = None,
     only_page_ids: set[str] | None = None,
     preserved_page_ids: set[str] | None = None,
+    on_generation_complete: Callable[[list[str]], None] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -154,6 +156,13 @@ async def run_generation(
         only_page_ids=only_page_ids,
         preserved_page_ids=preserved_page_ids,
     )
+
+    if on_generation_complete is not None and generator.last_job_id is not None:
+        try:
+            checkpoint = job_system.get_checkpoint(generator.last_job_id)
+            on_generation_complete(checkpoint.failed_page_ids)
+        except Exception as exc:
+            logger.warning("generation_completion_callback_failed", error=str(exc))
 
     # Onboarding summary — count generated slots and surface which ones
     # were gated out so the user can see the curated collection's state.
