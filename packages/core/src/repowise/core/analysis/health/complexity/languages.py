@@ -445,6 +445,13 @@ _KOTLIN = LanguageNodeMap(
     # ``assertTrue(...)`` are plain calls placed directly in the statement
     # list (no ``expression_statement`` wrapper).
     assert_call_kinds=frozenset({"call_expression"}),
+    # The perf pass. Kotlin has no ``new``: a constructor (``OkHttpClient()``)
+    # is an ordinary ``call_expression`` over a bare ``identifier``, so one kind
+    # covers calls and construction alike. ``suspend`` is a modifier TOKEN, not
+    # a node type, so ``async_function_kinds`` stays empty and
+    # ``KotlinPerfDialect.is_async_fn`` sniffs the modifier instead (the same
+    # posture Rust takes for ``async fn``).
+    call_kinds=frozenset({"call_expression"}),
 )
 
 _DART = LanguageNodeMap(
@@ -512,6 +519,12 @@ _CPP = LanguageNodeMap(
     # ``ASSERT_TRUE`` are ordinary calls (``expect``/``assert`` prefix matched
     # case-insensitively).
     assert_call_kinds=frozenset({"call_expression"}),
+    # The perf pass needs both forms: ``db.execute()`` / ``std::fs::read()``
+    # (``call_expression``) and ``new Client()`` (``new_expression``, which the
+    # grammar does NOT spell as a call). C++ has no ``async``/``await``, so
+    # ``async_function_kinds`` stays empty and ``blocking_sync_in_async`` is
+    # deliberately unimplemented rather than faked onto ``std::async``.
+    call_kinds=frozenset({"call_expression", "new_expression"}),
 )
 
 _CSHARP = LanguageNodeMap(
@@ -676,9 +689,7 @@ _SHELL = LanguageNodeMap(
     branch_kinds=frozenset({"if_statement", "elif_clause"}),
     # `until ...` parses as `while_statement` in tree-sitter-bash, so it is
     # covered here; `for ((;;))` is `c_style_for_statement`.
-    loop_kinds=frozenset(
-        {"for_statement", "c_style_for_statement", "while_statement"}
-    ),
+    loop_kinds=frozenset({"for_statement", "c_style_for_statement", "while_statement"}),
     # No exceptions in shell (`trap` is not `try`).
     try_kinds=frozenset(),
     catch_kinds=frozenset(),

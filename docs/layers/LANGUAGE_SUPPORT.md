@@ -213,8 +213,8 @@ is "Full" vs "Good".
 | Go | ✅ | n/a¹ | ✅ | ✅ | ✅ |
 | Rust | ✅ | ✅ | ✅ | ✅ | ✅² |
 | C# | ✅ | ✅ | ✅ | later | ✅ |
-| Kotlin | ✅ | ✅ | ✅ | later | later |
-| C++ | ✅ | ✅ | ✅ | later | later |
+| Kotlin | ✅ | ✅ | ✅ | later | ✅¹¹ |
+| C++ | ✅ | ✅ | ✅ | later | ✅¹² |
 | Dart | ✅ | n/a³ | ✅ | later | ✅ |
 | Scala | ✅ | ✅ | ✅⁴ | later | ✅⁵ |
 | Ruby | ✅ | ✅⁶ | ✅⁷ | later | ✅⁸ |
@@ -263,6 +263,41 @@ component reaches them as a TypeScript buffer. Markers therefore cover the
 structure and `<style>` carry no health signal, so a component's markers
 describe its logic, not its template size.
 
+¹¹ Kotlin rides the JVM sink lexicon (JDBC / JPA / Spring-Data interop) plus
+Kotlin-native boundaries (JetBrains Exposed, `File`-only `kotlin.io`
+extensions). **Loops include combinator iteration**: a call with a trailing
+lambda whose method is a full-iteration combinator (`forEach` / `map` /
+`filter` / `fold` …) is a loop scope via the shared `block_loop_body` hook Ruby
+established — scope functions (`let` / `apply` / `run`) and early-exit searches
+(`firstOrNull`) deliberately are not. `suspend` is a modifier *token*, so
+`blocking_sync_in_async` fires on `runBlocking` / `Thread.sleep` inside a
+`suspend fun`. Three deliberate recall ceilings, each set after a false
+positive on a real corpus: bare HTTP verbs are excluded (they are the
+route-registration DSL of every Kotlin web framework), the generic
+`kotlin.io` stream verbs `readText` / `writeText` / `readBytes` / `copyTo` are
+excluded (`kotlinx-io` reuses them on in-memory buffers), and the ambiguous db
+stratum drops `find` / `get` / `count` (they are stdlib collection
+combinators here, unlike in Java). A regex pattern containing a string
+template is not reported, because it is not hoistable.
+
+¹² C++ is deliberately narrow, and omits three markers other languages carry
+because each would be a guaranteed false positive: `string_concat_in_loop`
+(`std::string::operator+=` appends in place into a geometrically-grown buffer —
+amortized O(1), the same reason Rust omits it), `resource_construction_in_loop`
+(a loop-built `std::ifstream` is opened over a per-iteration *path*, and
+`std::thread` in a loop is how a thread pool is built), and
+`blocking_io_under_lock` (an RAII `lock_guard` holds to the end of the
+*enclosing* block, so no node's body is the held region). What remains:
+`io_in_loop` over POSIX / `std::filesystem` / libcurl / sqlite3 / MySQL /
+libpq entry points, `regex_compile_in_loop` on a constant-pattern `std::regex`,
+and `lock_in_loop`. Two ceilings: a C free function classifies only when
+*truly unqualified* (a namespaced call merely sharing a POSIX name — `json::accept`,
+`std::fprintf` — never does), and the socket verbs that double as plausible
+member names (`send` / `recv` / `connect` / `bind` / `listen` / `accept`) are
+excluded, because an implicit-`this` member call is spelled identically. C has
+no `LanguageNodeMap` at all, so it reaches no dialect despite sharing the
+grammar.
+
 ⁹ Shell gets function-level complexity only (CCN / nesting / cognitive / NLOC).
 `&&` / `||` command lists count toward CCN (`cmd || exit 1` is +1), which is
 honest: shell branching is chained command lists. There are no classes,
@@ -285,7 +320,8 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 | Dart | Good | Shipped: AST, health control-flow + class facts, perf dialect, Flutter edges. Next: riverpod/get_it dynamic hints, dataflow dialect |
 | Scala | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, `.r` recompile, sync-over-Future). Next: dataflow dialect, combinator (`.map`/`.foreach`) loop tracking via the shared `block_loop_body` hook Ruby established |
 | Ruby | Full (health) | Shipped: complexity/class/assertion markers + perf dialect with block-iteration loops (`.each`/`.map` blocks) and the stratified ActiveRecord N+1 lexicon. Next: dataflow dialect, LCOM4 via `@ivar` grouping |
-| Kotlin / C++ | Full (health) | Perf + dataflow dialects pending; everything else shipped |
+| Kotlin | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, Exposed, combinator loops via `block_loop_body`, `suspend` sync-in-async). Next: dataflow dialect |
+| C++ | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (POSIX / `std::filesystem` / sqlite3 sinks, constant-pattern `std::regex` recompile, `lock_in_loop`). Next: dataflow dialect |
 | C# | Full (health) | Dataflow dialect pending; perf shipped |
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |

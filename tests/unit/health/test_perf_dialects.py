@@ -559,9 +559,7 @@ _DART_CASES = [
         "immutable-string += accumulation in a loop is O(n^2)",
     ),
     (
-        "void f(List<int> xs) {\n"
-        "  for (final x in xs) { final d = Dio(); }\n"
-        "}\n",
+        "void f(List<int> xs) {\n  for (final x in xs) { final d = Dio(); }\n}\n",
         [("resource_construction_in_loop", "")],
         "a Dio client constructed per-iteration",
     ),
@@ -665,9 +663,7 @@ _SCALA_CASES = [
         "generic .send with NO network import is gated out",
     ),
     (
-        "object A { def m(paths: List[String]): Unit = {\n"
-        "  for (p <- paths) { os.read(p) }\n"
-        "} }\n",
+        "object A { def m(paths: List[String]): Unit = {\n  for (p <- paths) { os.read(p) }\n} }\n",
         [("io_in_loop", "filesystem")],
         "os-lib os.read is method-gated (no import needed)",
     ),
@@ -699,7 +695,7 @@ _SCALA_CASES = [
         "  acc\n"
         "} }\n",
         [("string_concat_in_loop", "")],
-        "`acc = acc + \"lit\"` reassignment form on a string var",
+        '`acc = acc + "lit"` reassignment form on a string var',
     ),
 ]
 
@@ -783,8 +779,7 @@ _RUBY_CASES = [
         "bare get (Sinatra route DSL shape) is not a network sink",
     ),
     (
-        'require "faraday"\n'
-        "def m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n",
+        'require "faraday"\ndef m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n',
         [("io_in_loop", "network")],
         "instance client verb WITH a network require",
     ),
@@ -799,7 +794,7 @@ _RUBY_CASES = [
         "loop do ... end is an unconditional-repeat loop scope",
     ),
     (
-        "def m\n  3.times do\n    File.read(\"x\")\n  end\nend\n",
+        'def m\n  3.times do\n    File.read("x")\n  end\nend\n',
         [],
         "literal-receiver .times is a constant-bound loop",
     ),
@@ -846,5 +841,346 @@ def test_ruby_same_collection_nested_block_loops_fact():
         "end\n"
     )
     fc = walk_file("t.rb", "ruby", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# Kotlin
+# ---------------------------------------------------------------------------
+
+_KOTLIN_CASES = [
+    (
+        "fun m(ids: List<Long>) {\n    for (id in ids) {\n        repo.findById(id)\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "Spring-Data derived query in a native for loop",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.forEach { repo.findById(it) }\n}\n",
+        [("io_in_loop", "db")],
+        "the combinator form is a loop scope (block_loop_body)",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.map { repo.findById(it) }\n}\n",
+        [("io_in_loop", "db")],
+        "map with a trailing lambda is full iteration",
+    ),
+    (
+        "fun m(x: Foo) {\n    x.let { repo.findById(1) }\n    x.apply { repo.findById(2) }\n}\n",
+        [],
+        "let/apply are scope functions that run once, never loops",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.firstOrNull { repo.findById(it) != null }\n}\n",
+        [],
+        "an early-exit search is not a full-iteration loop",
+    ),
+    (
+        "fun m() {\n    for (u in repo.findAll()) {\n        use(u)\n    }\n}\n",
+        [],
+        "the loop HEADER runs once - loop_body scoping (grammar has no body field)",
+    ),
+    (
+        "fun m(paths: List<String>) {\n"
+        "    for (p in paths) {\n        File(p).forEachLine { use(it) }\n    }\n}\n",
+        [("io_in_loop", "filesystem")],
+        "File-exclusive kotlin.io extension functions fire ungated",
+    ),
+    (
+        "fun m(frames: List<Frame>) {\n    for (f in frames) {\n        f.readText()\n    }\n}\n",
+        [],
+        "generic stream verbs are reused by kotlinx-io on in-memory buffers",
+    ),
+    (
+        "fun m(hosts: List<String>) {\n"
+        "    for (h in hosts) {\n        InetAddress.getByName(h)\n    }\n}\n",
+        [],
+        "a static factory is not a derived query despite matching ...By[A-Z]",
+    ),
+    (
+        "fun m(ids: List<Long>, userRepository: Repo) {\n"
+        "    for (id in ids) {\n        userRepository.findByEmail(id)\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "a derived query on a repository instance still classifies",
+    ),
+    (
+        "fun m(xs: List<String>) {\n"
+        '    for (x in xs) {\n        val r = Regex("\\\\b$x\\\\b")\n    }\n}\n',
+        [],
+        "an interpolated pattern varies per iteration - not hoistable",
+    ),
+    (
+        'fun m() {\n    for (i in 0..9) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "a literal range is a constant-bound loop",
+    ),
+    (
+        "fun m() {\n"
+        '    for (i in 0 until 8) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "0 until 8 is an infix call, not a range node, but still constant",
+    ),
+    (
+        "fun m() {\n"
+        '    for (i in 8 downTo 0) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "downTo is the descending spelling of the same constant bound",
+    ),
+    (
+        "fun m(n: Int) {\n"
+        '    for (i in 0 until n) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "a variable upper bound is data-dependent, not constant",
+    ),
+    (
+        'fun m() {\n    repeat(3) {\n        File("x").readText()\n    }\n}\n',
+        [],
+        "repeat(<literal>) is the combinator spelling of a constant bound",
+    ),
+    (
+        'fun m(app: Javalin, sizes: List<Int>) {\n    sizes.forEach { s -> app.routes.get("/x") }\n}\n',
+        [],
+        "a bare HTTP verb is the route-registration DSL, not a client call",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    var acc = ""\n    for (x in xs) {\n        acc += "a"\n    }\n}\n',
+        [("string_concat_in_loop", "")],
+        "+= onto a same-file string var accumulates across iterations",
+    ),
+    (
+        "fun m(xs: List<String>) {\n    val out = mutableListOf<String>()\n"
+        '    for (x in xs) {\n        out += "a"\n    }\n}\n',
+        [],
+        "+= onto a MutableList is an amortized append, not a rebuild",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        var part = ""\n'
+        '        part += "a"\n        use(part)\n    }\n}\n',
+        [],
+        "an accumulator declared inside the loop is reset every iteration",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = Regex("^a")\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "Regex(literal) recompiled per iteration",
+    ),
+    (
+        "fun m(xs: List<String>, pat: String) {\n"
+        "    for (x in xs) {\n        val r = Regex(pat)\n    }\n}\n",
+        [],
+        "a dynamic pattern may legitimately vary - not hoistable",
+    ),
+    (
+        "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "a lock taken every iteration is a contention site",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _KOTLIN_CASES, ids=[c[2] for c in _KOTLIN_CASES])
+def test_kotlin_cases(src, expected, note):
+    assert _hits("kotlin", src) == sorted(expected), note
+
+
+def test_kotlin_suspend_is_async_via_modifier_token():
+    # ``suspend`` is a ``function_modifier`` TOKEN, not a node type - the case
+    # ``BasePerfDialect.is_async_fn`` documents.
+    src = "suspend fun m() {\n    Thread.sleep(10)\n    runBlocking { g() }\n}\n"
+    assert _hits("kotlin", src) == [
+        ("blocking_sync_in_async", "Thread.sleep"),
+        ("blocking_sync_in_async", "runBlocking"),
+    ]
+
+
+def test_kotlin_blocking_calls_outside_suspend_are_silent():
+    src = "fun m() {\n    Thread.sleep(10)\n    runBlocking { g() }\n}\n"
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_combinator_receiver_runs_once():
+    # Only the lambda is per-iteration; the receiver chain runs once.
+    src = "fun m() {\n    repo.findAll().forEach { use(it) }\n}\n"
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_deferred_lambda_in_loop_is_not_per_iteration():
+    # A lambda that is NOT an iteration combinator's body opens a new execution
+    # scope: it is merely DEFINED per iteration, so loop_depth resets there.
+    src = (
+        "fun m(ids: List<Long>) {\n"
+        "    for (id in ids) {\n"
+        "        register { repo.findById(id) }\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_same_collection_nested_combinators_fact():
+    src = "fun m(xs: List<Long>) {\n    xs.forEach { a -> xs.forEach { b -> combine(a, b) } }\n}\n"
+    fc = walk_file("t.kt", "kotlin", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# C++
+# ---------------------------------------------------------------------------
+
+_CPP_CASES = [
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        sqlite3_step(stmt);\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "a library-prefixed db round-trip in a range-for",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        fopen("a.txt", "r");\n    }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "an unqualified POSIX open in a loop",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        std::fprintf(stderr, "%d", x);\n    }\n}\n',
+        [],
+        "buffered stdio is not a round-trip, and std:: is a qualifier",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        json::accept(x);\n    }\n}\n",
+        [],
+        "a namespaced call merely sharing a POSIX name never classifies",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        buf.read();\n        set.remove(x);\n    }\n}\n",
+        [],
+        "member calls are container vocabulary, not I/O",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::filesystem::remove(p);\n    }\n}\n",
+        [("io_in_loop", "filesystem")],
+        "std::filesystem free functions key off the qualifier segment",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        std::regex re("^a");\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "a regex declaration recompiles the pattern every iteration",
+    ),
+    (
+        "void m(std::vector<int> v, std::string pat) {\n"
+        "    for (auto x : v) {\n        std::regex re(pat);\n    }\n}\n",
+        [],
+        "a dynamic pattern is not provably hoistable",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::ifstream in(paths[x]);\n    }\n}\n",
+        [],
+        "a stream over a per-iteration path has nothing to hoist",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        threads.push_back(std::thread(work));\n    }\n}\n",
+        [],
+        "constructing threads in a loop is how a pool is built",
+    ),
+    (
+        "void m(std::vector<int> v) {\n    std::string s;\n"
+        '    for (auto x : v) {\n        s += "a";\n    }\n}\n',
+        [],
+        "std::string += appends in place - amortized O(1), never a rebuild",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        auto* p = new Widget();\n"
+        "        auto q = std::make_unique<Widget>();\n"
+        "    }\n}\n",
+        [],
+        "allocation in a loop is ordinary C++",
+    ),
+    (
+        'void m() {\n    for (int i = 0; i < 8; i++) {\n        fopen("a.txt", "r");\n    }\n}\n',
+        [],
+        "a literal C-style bound is a constant loop",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::lock_guard<std::mutex> g(mu);\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "an RAII guard taken every iteration is a contention site",
+    ),
+    (
+        "void m(std::vector<int> v) {\n    for (auto x : v) {\n        mu.lock();\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "the explicit acquire form of the same site",
+    ),
+    (
+        "void m() {\n    for (auto x : load_all()) {\n        use(x);\n    }\n}\n",
+        [],
+        "the range-for header runs once",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _CPP_CASES, ids=[c[2] for c in _CPP_CASES])
+def test_cpp_cases(src, expected, note):
+    assert _hits("cpp", src) == sorted(expected), note
+
+
+def test_cpp_implicit_this_socket_verbs_do_not_classify():
+    # In C++ a member call from inside its own class is spelled unqualified, so
+    # ``send(pkt)`` is indistinguishable from POSIX ``send`` (seastar's
+    # ``ipv4::get_packet`` does exactly this).
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        send(a, b, c);\n"
+        "        connect(addr);\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("cpp", src) == []
+
+
+def test_cpp_suffixed_socket_verbs_still_classify():
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        ::sendmsg(fd, &msg, 0);\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("cpp", src) == [("io_in_loop", "network")]
+
+
+def test_cpp_function_name_resolves_through_the_declarator_chain():
+    src = (
+        "void outer(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        sqlite3_step(stmt);\n"
+        "    }\n"
+        "}\n"
+    )
+    fc = walk_file("t.cpp", "cpp", src.encode())
+    assert [h.function for h in fc.perf_hits] == ["outer"]
+
+
+def test_cpp_same_collection_nested_range_for_fact():
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto a : v) {\n"
+        "        for (auto b : v) {\n"
+        "            combine(a, b);\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+    fc = walk_file("t.cpp", "cpp", src.encode())
     assert any(f.nested_loop_line for f in fc.perf_fn_facts)
     assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)

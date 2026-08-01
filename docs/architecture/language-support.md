@@ -360,6 +360,26 @@ per-language plugin pattern, registered in a dict exactly like `resolvers/`:
   Java/Go contribute `regex_compile_in_loop`, C# contributes
   `blocking_sync_in_async`, and the Phase-7a loop markers are opt-in per
   dialect. Every method has a safe "no signal" default.
+
+  Three hooks answer questions that recur in every language, so a new dialect
+  reuses them instead of re-deriving them:
+  - `block_loop_body(node)` — the per-iteration body when the language's real
+    iteration idiom is a call taking a block/lambda (Ruby `items.each do … end`,
+    Kotlin `ids.forEach { … }`). The walker then applies every loop rule (body
+    scoping, constant-bound skip, nesting, the same-collection quadratic gate)
+    to it exactly as to a native loop. A lambda returned this way is *not*
+    treated as a deferred scope, so `loop_depth` survives the boundary.
+  - `loop_body(node)` — the per-iteration body of a *native* loop, defaulting to
+    the `body` field. Only tree-sitter-kotlin leaves that field unlabeled; the
+    override is what keeps a sink in a `for (u in repo.findAll())` **header**
+    from reading as a sink inside the loop.
+  - `resets_per_iteration(node, name, loop_kinds)` + `binds_name(node, name)` —
+    the shared answer to the top `string_concat_in_loop` false positive, an
+    accumulator declared fresh each pass (`var s = ""; s += part`) which is
+    bounded per iteration rather than an O(n²) rebuild. The traversal is shared;
+    only the "does this statement bind the name" question is per-grammar. (The
+    Python, Ruby and Dart dialects predate the hook and keep their own tuned
+    versions.)
 - **`analysis/health/dataflow/dialects/`** (`DEFUSE_DIALECTS`), the
   **dataflow** layer (intra-procedural CFG + def/use + reaching definitions,
   powering **Extract Method**). A `DefUseDialect` owns the read-vs-write
