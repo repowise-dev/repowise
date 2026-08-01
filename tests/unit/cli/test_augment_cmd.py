@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
+from repowise.cli.commands.augment_cmd import command as augment_cmd
 from repowise.cli.main import cli
 
 
@@ -41,6 +42,28 @@ def _init_repowise_repo(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_augment_silences_logs_before_hook_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[str, bool]] = []
+
+    def fake_silence_logs_for_machine_output() -> None:
+        events.append(("logging", True))
+
+    def fake_run_augment(*, client: str | None = None) -> None:
+        events.append(("dispatch", client is not None))
+
+    monkeypatch.setattr(
+        augment_cmd,
+        "silence_logs_for_machine_output",
+        fake_silence_logs_for_machine_output,
+    )
+    monkeypatch.setattr(augment_cmd, "_run_augment", fake_run_augment)
+
+    result = CliRunner().invoke(cli, ["augment"])
+
+    assert result.exit_code == 0
+    assert events == [("logging", True), ("dispatch", False)]
 
 
 def test_codex_session_start_payload_returns_mcp_context(runner: CliRunner, tmp_path: Path) -> None:

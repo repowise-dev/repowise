@@ -79,6 +79,8 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.helpers import silence_logs_for_machine_output
+
 from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
@@ -99,6 +101,7 @@ _EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
 def augment_command(client: str | None = None) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     try:
+        silence_logs_for_machine_output()
         _run_augment(client=client)
     except (SystemExit, KeyboardInterrupt):
         raise
