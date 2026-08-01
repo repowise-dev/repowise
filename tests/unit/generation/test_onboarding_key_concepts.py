@@ -514,13 +514,24 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
     content = (
         "Call `https://example.com/docs`, `github.com/org/repo`, `api/v1/users`, "
         "`api/V1/users`, `localhost:3000/api`, `v2/users`, `V2/users`, "
-        "`service/v1/users`, `users/V2/profile`, `GET /health`, or `/health`."
+        "`service/v1/users`, `users/V2/profile`, `users/profile`, "
+        "`GET /health`, or `/health`."
     )
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
 
     assert cleaned == content
     assert ungrounded == []
+
+
+def test_grounding_validates_paths_in_versioned_repository_directories() -> None:
+    content = "Do not cite `docs/v2/fake.md` or `src/v1/missing.py`."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
+
+    assert ungrounded == ["docs/v2/fake.md", "src/v1/missing.py"]
+    assert "`docs/v2/fake.md`" not in cleaned
+    assert "`src/v1/missing.py`" not in cleaned
 
 
 def test_qualified_evidence_paths_cannot_borrow_a_structured_bare_path() -> None:

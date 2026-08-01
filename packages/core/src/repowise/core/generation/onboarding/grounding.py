@@ -111,6 +111,25 @@ _EXTENSIONLESS_PATH_NAMES = frozenset(
         "readme",
     }
 )
+_REPOSITORY_DIRECTORY_NAMES = frozenset(
+    {
+        ".github",
+        "app",
+        "apps",
+        "config",
+        "deploy",
+        "docs",
+        "examples",
+        "include",
+        "lib",
+        "packages",
+        "scripts",
+        "src",
+        "test",
+        "tests",
+        "tools",
+    }
+)
 
 # A bare identifier, optionally dotted or ``::``-qualified (e.g. ``LanguageSpec``,
 # ``get_session``, ``foo.Bar.baz``, ``path.py::Name``).
@@ -129,16 +148,19 @@ def _looks_like_path(token: str) -> bool:
             return False
         parts = head.split("/")
         first = parts[0]
-        has_version_segment = any(
-            re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts
-        )
-        if (
-            ("." in first and not first.startswith("."))
-            or ":" in first
-            or has_version_segment
-        ):
+        if ("." in first and not first.startswith(".")) or ":" in first:
             return False
-        return all(part not in {"", ".", ".."} for part in head.split("/"))
+        if not all(part not in {"", ".", ".."} for part in parts):
+            return False
+        if name.startswith(".") or name.lower() in _EXTENSIONLESS_PATH_NAMES:
+            return True
+        if "." in name:
+            ext = name.rsplit(".", 1)[-1].lower()
+            return ext in _CODE_EXTENSIONS or ext in _DOCUMENT_EXTENSIONS
+        # Extensionless slash tokens are inherently ambiguous with HTTP routes.
+        # Validate them only under conventional repository directories; exact
+        # configured evidence paths are recognized separately.
+        return first.lower() in _REPOSITORY_DIRECTORY_NAMES
     if (
         name.startswith(".")
         or head.lower() in _EXTENSIONLESS_PATH_NAMES
