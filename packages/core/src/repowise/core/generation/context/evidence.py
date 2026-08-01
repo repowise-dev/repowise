@@ -153,15 +153,18 @@ def select_source_evidence(
     # Until every eligible file fits, retain only the minimum source-bearing
     # excerpt for the selected prefix. Otherwise admitting the next file would
     # take content away from an earlier-priority file as the budget grows.
+    all_eligible_selected = len(selected) == len(eligible)
     remaining_chars = (
-        available_chars
-        if len(selected) == len(eligible)
-        else _MIN_TRUNCATED_CONTENT * len(selected)
+        available_chars if all_eligible_selected else _MIN_TRUNCATED_CONTENT * len(selected)
     )
     included: list[EvidenceItem] = []
     blocks: list[str] = []
     for index, (path, text) in enumerate(selected):
-        allowance = remaining_chars // (len(selected) - index)
+        allowance = (
+            remaining_chars // (len(selected) - index)
+            if all_eligible_selected
+            else _MIN_TRUNCATED_CONTENT
+        )
         excerpt, truncated = _truncate_chars(text, allowance)
         if truncated and len(excerpt) <= len(_TRUNCATED):  # pragma: no cover - selection invariant
             raise AssertionError("selected evidence retained no source content")

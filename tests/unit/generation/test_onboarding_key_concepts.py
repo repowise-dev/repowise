@@ -425,6 +425,13 @@ def test_qualified_symbol_cannot_borrow_an_unrelated_member() -> None:
     assert "`Ghost.run`" not in cleaned
 
 
+def test_qualified_symbol_cannot_borrow_a_known_owner() -> None:
+    cleaned, ungrounded = check_grounding("`Real.fabricated` is absent.", {"known": "Real.run"})
+
+    assert ungrounded == ["Real.fabricated"]
+    assert "`Real.fabricated`" not in cleaned
+
+
 def test_grounding_accepts_citations_established_only_by_added_evidence() -> None:
     ctx = _ctx_for_grounding()
     content = (
@@ -530,6 +537,7 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
         "`api/V1/users`, `localhost:3000/api`, `v2/users`, `V2/users`, "
         "`service/v1/users`, `service/v2/schema.yaml`, `api/v1/openapi.json`, "
         "`localhost/openapi.json`, `users/V2/profile`, `users/profile`, "
+        "`v1/openapi.json`, `accounts/v1/users.json`, `GET/api`, "
         "`GET /health`, or `/health`."
     )
 

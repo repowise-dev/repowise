@@ -91,8 +91,9 @@ def test_evidence_budget_never_includes_only_a_truncation_marker() -> None:
 
 def test_configured_evidence_priority_is_monotonic_across_budgets() -> None:
     source_map = {
-        "docs/first.md": (b"first priority fact\n" * 200),
+        "docs/first.md": b"short first fact",
         "docs/second.md": (b"second priority fact\n" * 200),
+        "docs/third.md": (b"third priority fact\n" * 200),
     }
     previous_lengths: dict[str, int] = {}
 

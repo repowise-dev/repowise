@@ -157,10 +157,16 @@ def _looks_like_path(token: str) -> bool:
         versioned = any(re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts)
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         route_root = first.lower()
+        versioned_repository_path = route_root in _REPOSITORY_DIRECTORY_NAMES or (
+            bool(re.fullmatch(r"v\d+", first, re.IGNORECASE))
+            and len(parts) > 1
+            and parts[1].lower() in _REPOSITORY_DIRECTORY_NAMES
+        )
         if (
             route_root in {"localhost", "user", "users"}
             or (route_root in {"api", "service", "services"} and versioned)
             or (route_root == "api" and ext in _DOCUMENT_EXTENSIONS)
+            or (versioned and not versioned_repository_path)
         ):
             return False
         if name.startswith(".") or name.lower() in _EXTENSIONLESS_PATH_NAMES:
@@ -209,7 +215,12 @@ def _looks_like_symbol(token: str) -> bool:
         return False
     if "/" in token:
         owner = token.split("/", 1)[0]
-        if owner[:1].islower() or re.fullmatch(r"v\d+", owner, re.IGNORECASE):
+        if (
+            owner[:1].islower()
+            or owner.upper()
+            in {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
+            or re.fullmatch(r"v\d+", owner, re.IGNORECASE)
+        ):
             return False
     if re.search(_QUALIFIER, token):
         return True
@@ -317,13 +328,7 @@ def _path_grounded(token: str, known_paths: set[str]) -> bool:
 
 
 def _symbol_grounded(token: str, known_symbols: set[str]) -> bool:
-    if token in known_symbols:
-        return True
-    # A qualified member may be abbreviated from a known owner, but it may not
-    # borrow a generic member name from an unrelated owner (``Ghost.run`` must
-    # not ground merely because ``Real.run`` established ``run``).
-    parts = [p for p in re.split(_QUALIFIER, token) if p]
-    return bool(parts and parts[0] in known_symbols)
+    return token in known_symbols
 
 
 def check_grounding(

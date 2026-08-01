@@ -178,6 +178,8 @@ def test_generation_config_remains_hashable_and_evidence_mapping_is_immutable():
         config.source_evidence_files["repo_overview"] = ("other.md",)  # type: ignore[index]
     with pytest.raises(TypeError):
         dict.__setitem__(config.source_evidence_files, "repo_overview", ("other.md",))  # type: ignore[arg-type]
+    with pytest.raises((AttributeError, TypeError)):
+        config.source_evidence_files._items = ()  # type: ignore[attr-defined]
 
     reordered = GenerationConfig(
         source_evidence_files={

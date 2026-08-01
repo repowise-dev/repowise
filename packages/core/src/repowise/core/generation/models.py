@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import asdict, dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -66,25 +67,31 @@ def _source_evidence_page_keys() -> set[str]:
     }
 
 
-class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
+class _FrozenEvidenceFiles(tuple[tuple[str, tuple[str, ...]], ...], Mapping[str, tuple[str, ...]]):
     """Small immutable mapping that preserves the frozen config contract."""
 
-    __slots__ = ("_items",)
+    __slots__ = ()
 
-    def __init__(self, values: Mapping[str, tuple[str, ...]] | None = None) -> None:
-        self._items = tuple((key, tuple(paths)) for key, paths in (values or {}).items())
+    def __new__(
+        cls,
+        values: Mapping[str, tuple[str, ...]] | None = None,
+    ) -> _FrozenEvidenceFiles:
+        return tuple.__new__(
+            cls,
+            ((key, tuple(paths)) for key, paths in (values or {}).items()),
+        )
 
     def __getitem__(self, key: str) -> tuple[str, ...]:
-        for candidate, paths in self._items:
+        for candidate, paths in tuple.__iter__(self):
             if candidate == key:
                 return paths
         raise KeyError(key)
 
     def __iter__(self) -> Iterator[str]:
-        return (key for key, _ in self._items)
+        return (key for key, _ in tuple.__iter__(self))
 
     def __len__(self) -> int:
-        return len(self._items)
+        return tuple.__len__(self)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Mapping):
@@ -271,7 +278,7 @@ class GenerationConfig:
 
     def to_dict(self) -> dict[str, Any]:
         """Return the supported plain, rehydratable configuration snapshot."""
-        snapshot = asdict(self)
+        snapshot = {item.name: deepcopy(getattr(self, item.name)) for item in fields(self)}
         snapshot["source_evidence_files"] = {
             page_key: tuple(paths) for page_key, paths in self.source_evidence_files.items()
         }
