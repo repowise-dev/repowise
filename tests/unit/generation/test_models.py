@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-import dataclasses
+import pickle
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -193,13 +193,14 @@ def test_generation_config_remains_hashable_and_evidence_mapping_is_immutable():
     assert hash(reordered) == hash(original_order)
 
 
-def test_generation_config_asdict_preserves_public_evidence_mapping_shape():
+def test_generation_config_to_dict_preserves_public_evidence_mapping_shape():
     config = GenerationConfig(
         source_evidence_files={"repo_overview": ("README.md",)},
     )
 
-    snapshot = dataclasses.asdict(config)
+    snapshot = config.to_dict()
 
+    assert type(snapshot["source_evidence_files"]) is dict
     assert snapshot["source_evidence_files"] == {"repo_overview": ("README.md",)}
     restored = GenerationConfig(**snapshot)
     assert restored.source_evidence_files == config.source_evidence_files
@@ -212,6 +213,7 @@ def test_generation_config_remains_copyable_with_immutable_evidence_mapping():
 
     assert copy.copy(config) == config
     assert copy.deepcopy(config) == config
+    assert pickle.loads(pickle.dumps(config)) == config
 
 
 def test_generation_config_reads_repo_max_tokens():

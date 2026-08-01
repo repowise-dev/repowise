@@ -510,6 +510,15 @@ def test_evidence_grounding_validates_extensionless_repository_paths() -> None:
     assert "`deploy/Fakefile`" not in cleaned
 
 
+def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() -> None:
+    content = "Call `https://example.com/docs`, `GET /health`, or `/health`."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
+
+    assert cleaned == content
+    assert ungrounded == []
+
+
 def test_evidence_grounding_preserves_exact_dot_prefixed_paths() -> None:
     ctx = _ctx_for_grounding()
     evidence = {

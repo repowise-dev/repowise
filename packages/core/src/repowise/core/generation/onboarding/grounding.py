@@ -106,7 +106,11 @@ def _looks_like_path(token: str) -> bool:
     head = token.split("::", 1)[0]
     head = head.split("#", 1)[0].strip()
     name = head.rsplit("/", 1)[-1]
-    if "/" in head or name.startswith(".") or head.lower() in _EXTENSIONLESS_PATH_NAMES:
+    if "/" in head:
+        if head.startswith("/") or "://" in head or any(char.isspace() for char in head):
+            return False
+        return all(part not in {"", ".", ".."} for part in head.split("/"))
+    if name.startswith(".") or head.lower() in _EXTENSIONLESS_PATH_NAMES:
         return True
     if "." not in head:
         return False

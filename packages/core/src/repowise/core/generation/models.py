@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -78,6 +78,9 @@ class _FrozenEvidenceFiles(dict[str, tuple[str, ...]]):
     def __deepcopy__(self, memo: dict[int, object]) -> _FrozenEvidenceFiles:
         memo[id(self)] = self
         return self
+
+    def __reduce__(self) -> tuple[type[_FrozenEvidenceFiles], tuple[dict[str, tuple[str, ...]]]]:
+        return type(self), (dict(self),)
 
     @staticmethod
     def _immutable(*_args: object, **_kwargs: object) -> None:
@@ -252,6 +255,14 @@ class GenerationConfig:
     # Page key -> explicit repository-relative files to add. Supported keys are
     # ``repo_overview`` and ``onboarding/<slot>``.
     source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the public, rehydratable configuration snapshot shape."""
+        snapshot = asdict(self)
+        snapshot["source_evidence_files"] = {
+            page_key: tuple(paths) for page_key, paths in self.source_evidence_files.items()
+        }
+        return snapshot
 
     @classmethod
     def from_repo_config(
