@@ -105,6 +105,10 @@ class _FrozenEvidenceFiles(dict[str, tuple[str, ...]]):
 class GenerationConfig:
     """Configuration for the generation engine.
 
+    Use :meth:`to_dict` for a plain, rehydratable public snapshot. Direct
+    ``dataclasses.asdict`` output is not a public serialization contract because
+    frozen nested values may retain their immutable implementation types.
+
     Attributes:
         max_tokens:               Max tokens in LLM completion.
         temperature:              Sampling temperature (0.3 for consistent docs).
@@ -257,7 +261,7 @@ class GenerationConfig:
     source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the public, rehydratable configuration snapshot shape."""
+        """Return the supported plain, rehydratable configuration snapshot."""
         snapshot = asdict(self)
         snapshot["source_evidence_files"] = {
             page_key: tuple(paths) for page_key, paths in self.source_evidence_files.items()

@@ -513,7 +513,7 @@ def test_evidence_grounding_validates_extensionless_repository_paths() -> None:
 def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() -> None:
     content = (
         "Call `https://example.com/docs`, `github.com/org/repo`, `api/v1/users`, "
-        "`localhost:3000/api`, `v2/users`, `GET /health`, or `/health`."
+        "`api/V1/users`, `localhost:3000/api`, `v2/users`, `V2/users`, `GET /health`, or `/health`."
     )
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
@@ -545,6 +545,16 @@ def test_grounding_validates_root_documentation_paths_with_punctuation() -> None
     assert ungrounded == ["MIGRATION-GUIDE.md", "CODE-OF-CONDUCT.md#policy"]
     assert "`MIGRATION-GUIDE.md`" not in cleaned
     assert "`CODE-OF-CONDUCT.md#policy`" not in cleaned
+
+
+def test_grounding_validates_qualified_root_build_and_config_paths() -> None:
+    content = "Do not cite `pom.xml#fake`, `Cargo.lock#fake`, or `justfile#fake`."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
+
+    assert ungrounded == ["pom.xml#fake", "Cargo.lock#fake", "justfile#fake"]
+    for token in ungrounded:
+        assert f"`{token}`" not in cleaned
 
 
 def test_evidence_grounding_preserves_exact_dot_prefixed_paths() -> None:

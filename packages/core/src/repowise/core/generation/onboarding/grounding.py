@@ -102,6 +102,7 @@ _EXTENSIONLESS_PATH_NAMES = frozenset(
         "copying",
         "dockerfile",
         "gemfile",
+        "justfile",
         "license",
         "makefile",
         "notice",
@@ -131,12 +132,20 @@ def _looks_like_path(token: str) -> bool:
         if (
             ("." in first and not first.startswith("."))
             or ":" in first
-            or re.fullmatch(r"v\d+", first)
-            or (first.lower() == "api" and len(parts) > 1 and re.fullmatch(r"v\d+", parts[1]))
+            or re.fullmatch(r"v\d+", first, re.IGNORECASE)
+            or (
+                first.lower() == "api"
+                and len(parts) > 1
+                and re.fullmatch(r"v\d+", parts[1], re.IGNORECASE)
+            )
         ):
             return False
         return all(part not in {"", ".", ".."} for part in head.split("/"))
-    if name.startswith(".") or head.lower() in _EXTENSIONLESS_PATH_NAMES:
+    if (
+        name.startswith(".")
+        or head.lower() in _EXTENSIONLESS_PATH_NAMES
+        or ("#" in token and "." in head)
+    ):
         return True
     if "." not in head:
         return False
