@@ -1,17 +1,26 @@
 """Render tests for deterministic templates the sample repo cannot reach.
 
 ``tests/integration/test_deterministic_generation.py`` covers the page types
-the fixture repo actually produces. Four templates are unreachable there: the
-layer page needs a knowledge graph, and three onboarding slots gate themselves
-off on a fixture with no git history and no dependency manifest. Rendering
-them here keeps a Jinja typo from shipping unnoticed.
+the fixture repo actually produces. Three onboarding slots are unreachable
+there because they gate themselves off on a fixture with no git history and no
+dependency manifest. Rendering them here keeps a Jinja typo from shipping
+unnoticed.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from repowise.core.generation.context_assembler import ApiContractContext, ContextAssembler
+from repowise.core.generation.context_assembler import (
+    ApiContractContext,
+    ContextAssembler,
+    FilePageContext,
+    InfraPageContext,
+    SccPageContext,
+    SymbolSpotlightContext,
+)
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.onboarding.subkinds.active_landscape import (
     ActiveLandscapeContext,
@@ -31,6 +40,7 @@ from repowise.core.generation.onboarding.subkinds.getting_started import (
     ReadmeSection,
 )
 from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.generation.structural_labels import structural_page_title
 from repowise.core.providers.llm.template import TemplateProvider
 
 
@@ -38,6 +48,218 @@ from repowise.core.providers.llm.template import TemplateProvider
 def generator() -> PageGenerator:
     config = GenerationConfig(deterministic=True)
     return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+
+
+@pytest.fixture
+def german_generator() -> PageGenerator:
+    config = GenerationConfig(deterministic=True, language="de")
+    return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+
+
+def _render_representative_structural_pages(generator: PageGenerator):
+    """Render every structural template with populated contexts."""
+    file_page = generator._structural_page(
+        page_type="file_page",
+        target_path="src/service.py",
+        title=structural_page_title(generator._language, "file_page", "src/service.py"),
+        template="file_page.j2",
+        ctx=FilePageContext(
+            file_path="src/service.py",
+            language="Python",
+            docstring=None,
+            symbols=[
+                {
+                    "name": "parse_file",
+                    "kind": "function",
+                    "signature": "def parse_file()",
+                    "visibility": "public",
+                },
+                {
+                    "name": "format_file",
+                    "kind": "function",
+                    "signature": "def format_file()",
+                    "visibility": "public",
+                },
+            ],
+            imports=[],
+            exports=[],
+            file_source_snippet="",
+            pagerank_score=0,
+            betweenness_score=0,
+            community_id=0,
+            dependents=["src/consumer.py", "src/worker.py"],
+            dependencies=["src/config.py", "src/parser.py"],
+            is_api_contract=False,
+            is_entry_point=False,
+            is_test=False,
+            parse_errors=[],
+            estimated_tokens=0,
+        ),
+    )
+    symbol_page = generator._structural_symbol_spotlight(
+        ctx=SymbolSpotlightContext(
+            symbol_name="parse_file",
+            qualified_name="service.parse_file",
+            kind="function",
+            signature="def parse_file()",
+            docstring=None,
+            file_path="src/service.py",
+            decorators=[],
+            is_async=False,
+            complexity_estimate=0,
+            callers=["src/consumer.py", "src/worker.py"],
+        ),
+        target_path="src/service.py::parse_file",
+        title=structural_page_title(generator._language, "symbol_spotlight", "service.parse_file"),
+    )
+    infra_page = generator._structural_infra_page(
+        InfraPageContext("Dockerfile", "dockerfile", "FROM python", ["runtime", "build"]),
+        "Dockerfile",
+        structural_page_title(generator._language, "infra_page", "Dockerfile"),
+    )
+    scc_page = generator._structural_scc_page(
+        SccPageContext(
+            "cycle:service",
+            ["src/service.py", "src/consumer.py"],
+            "",
+            2,
+            cross_imports=[
+                {"from": "src/service.py", "to": "src/consumer.py"},
+                {"from": "src/consumer.py", "to": "src/service.py"},
+            ],
+        ),
+        "cycle:service",
+        structural_page_title(generator._language, "scc_page", "cycle:service"),
+    )
+    api_page = generator._structural_api_contract(
+        ApiContractContext(
+            "src/api.py",
+            "Python",
+            "def list_items(): pass",
+            ["list_items", "create_item"],
+            ["Item", "CreateItem"],
+        ),
+        "src/api.py",
+        structural_page_title(generator._language, "api_contract", "src/api.py"),
+    )
+
+    return (
+        file_page,
+        symbol_page,
+        infra_page,
+        scc_page,
+        api_page,
+    )
+
+
+def test_structural_pages_render_german_labels(german_generator):
+    """All deterministic structural templates use the configured language."""
+    (
+        file_page,
+        symbol_page,
+        infra_page,
+        scc_page,
+        api_page,
+    ) = _render_representative_structural_pages(german_generator)
+
+    assert "## Überblick" in file_page.content
+    assert "## Öffentliche API" in file_page.content
+    assert "## Wo es verwendet wird" in symbol_page.content
+    assert "## Deklarierte Ziele" in infra_page.content
+    assert "## Dateien im Zyklus" in scc_page.content
+    assert "## Operationen" in api_page.content
+    assert "Aus dem Code selbst erstellt" in file_page.content
+    assert "Built from the code itself" not in file_page.content
+    assert "`src/service.py`" in file_page.content
+    assert "def parse_file()" in symbol_page.content
+    assert "Sie stellt 2 öffentliche Symbole und hängt von 2 weiteren Dateien." in file_page.content
+    assert "Importiert von 2 Dateien in diesem Repository." in file_page.content
+    assert "2 Dateien importieren das Modul, das es definiert." in symbol_page.content
+    assert "Sie deklariert 2 benannte Ziele, unten aufgeführt." in infra_page.content
+    assert "| Datei | Importe im Zyklus | Importiert von | Gesamt |" in scc_page.content
+    assert "Es deklariert 2 aufrufbare Operationen und 2 Typen." in api_page.content
+
+
+def test_all_structural_pages_unknown_language_render_complete_english_fallback():
+    """Every structural template must resolve unknown languages before StrictUndefined renders it."""
+    config = GenerationConfig(deterministic=True, language="xx")
+    generator = PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+    (
+        file_page,
+        symbol_page,
+        infra_page,
+        scc_page,
+        api_page,
+    ) = _render_representative_structural_pages(generator)
+
+    pages = (file_page, symbol_page, infra_page, scc_page, api_page)
+    footer = (
+        "*Built from the code itself: parsed symbols, the import graph, git history and\n"
+        "the knowledge graph. Every statement here is checked against the source rather\n"
+        "than written about it.*"
+    )
+
+    assert [page.title for page in pages] == [
+        "File: src/service.py",
+        "Symbol: service.parse_file",
+        "Infrastructure: Dockerfile",
+        "Circular Dependency: cycle:service",
+        "API Contract: src/api.py",
+    ]
+    assert "## Overview\n" in file_page.content
+    assert "## Where it is used\n" in symbol_page.content
+    assert "## Declared targets\n" in infra_page.content
+    assert "## Files in the cycle\n" in scc_page.content
+    assert "## Operations\n" in api_page.content
+    assert "It exposes 2 public symbols and depends on 2 other files." in file_page.content
+    assert "2 files import the module that defines it." in symbol_page.content
+    assert "It declares 2 named targets, listed below." in infra_page.content
+    assert "2 files import each other in a loop, directly or transitively." in scc_page.content
+    assert "It declares 2 callable operations and 2 types." in api_page.content
+    assert all(footer in page.content for page in pages)
+
+
+async def test_structural_file_page_unknown_language_renders_complete_english_fallback():
+    """Unsupported languages must still render every structural label under StrictUndefined."""
+    config = GenerationConfig(deterministic=True, language="xx")
+    generator = PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+
+    page = await generator._render_file_page(
+        SimpleNamespace(
+            file_info=SimpleNamespace(path="src/empty.py"),
+            content_hash="empty-file-content-hash",
+        ),
+        ctx=FilePageContext(
+            file_path="src/empty.py",
+            language="Python",
+            docstring=None,
+            symbols=[],
+            imports=[],
+            exports=[],
+            file_source_snippet="",
+            pagerank_score=0,
+            betweenness_score=0,
+            community_id=0,
+            dependents=[],
+            dependencies=[],
+            is_api_contract=False,
+            is_entry_point=False,
+            is_test=False,
+            parse_errors=[],
+            estimated_tokens=0,
+        ),
+    )
+
+    assert page.title == "File: src/empty.py"
+    assert "## Overview\n" in page.content
+    assert "## Public API" not in page.content
+    assert "## Depends on" not in page.content
+    assert "## Used by" not in page.content
+    assert (
+        "*Built from the code itself: parsed symbols, the import graph, git history and\n"
+        "the knowledge graph. Every statement here is checked against the source rather\n"
+        "than written about it.*"
+    ) in page.content
 
 
 def _onboarding_spec(slot: str, template: str):

@@ -17,7 +17,7 @@
 -#}
 # {{ ctx.qualified_name }}
 
-**Kind:** {{ ctx.kind }}{% if ctx.is_async %} (async){% endif %} | **Defined in:** `{{ ctx.file_path }}`{% if ctx.complexity_estimate %} | **Estimated complexity:** {{ ctx.complexity_estimate }}{% endif %}
+**{{ labels.kind }}:** {{ ctx.kind }}{% if ctx.is_async %} ({{ labels.async }}){% endif %} | **{{ labels.defined_in }}:** `{{ ctx.file_path }}`{% if ctx.complexity_estimate %} | **{{ labels.estimated_complexity }}:** {{ ctx.complexity_estimate }}{% endif %}
 {%- if ctx.signature %}
 
 ```
@@ -25,33 +25,36 @@
 ```
 {%- endif %}
 
-## Overview
+## {{ labels.overview }}
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.symbol_name }}` is {{ "an" if ctx.kind and ctx.kind[0] in "aeiou" else "a" }} {{ ctx.kind or "symbol" }} defined in `{{ ctx.file_path }}`. It carries no docstring.{% endif %}
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.symbol_name }}` {{ labels.is_a }} {{ ctx.kind or (labels.symbol | lower) }} {{ labels.defined_in | lower }} `{{ ctx.file_path }}`. {{ labels.no_docstring }}{% endif %}
 {%- if ctx.decorators %}
 
-## Decorators
+## {{ labels.decorators }}
 {% for d in ctx.decorators %}
 - `{{ d }}`
 {%- endfor %}
 {%- endif %}
 {%- if ctx.callers %}
+## {{ labels.where_used }}
 
-## Where it is used
-
-{{ ctx.callers | length }} file{{ "s" if ctx.callers | length != 1 else "" }} import{{ "" if ctx.callers | length != 1 else "s" }} the module that defines it. These are import-level references, not confirmed call sites.
-{% for c in ctx.callers %}
+{{ labels.importers_summary.format(
+    count=ctx.callers | length,
+    file_word=labels.file_plural if ctx.callers | length != 1 else labels.file_singular,
+    import_verb=labels.import_verb_plural if ctx.callers | length != 1 else labels.import_verb_singular,
+) }}
+{% for c in ctx.callers -%}
 - `{{ c }}`
-{%- endfor %}
-{%- endif %}
-{%- if ctx.source_body %}
+{% endfor %}
+{%- endif -%}
 
-## Implementation
+{%- if ctx.source_body %}
+## {{ labels.implementation }}
 
 ```
 {{ ctx.source_body }}
 ```
-{%- endif %}
+{%- endif -%}
 {#- Question-shaped text, built from structure rather than prose. The file
     page carries the same block; the identifiers are what make it worth
     anything, since otherwise it is one sentence repeated across the corpus.
@@ -62,7 +65,6 @@
     cannot honestly ask. Two it can always answer, plus one when there are
     importers — fewer than the file page, and honest rather than padded.
 #}
-
 ## Questions this page answers
 
 - Where is `{{ ctx.symbol_name }}` defined?

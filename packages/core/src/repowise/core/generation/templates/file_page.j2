@@ -21,16 +21,19 @@
 {%- set public_syms = ctx.symbols | selectattr("visibility", "equalto", "public") | list -%}
 # {{ ctx.file_path }}
 
-## Overview
+## {{ labels.overview }}
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` is a {{ ctx.language }} {% if ctx.is_entry_point %}entry-point {% endif %}{% if ctx.is_test %}test {% endif %}source file{% if ctx.kg_layer_name %} in the {{ ctx.kg_layer_name }} layer{% endif %}{% if ctx.community_label %}, part of the {{ ctx.community_label }} module cluster{% endif %}.{% endif %}
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` {{ labels.is_a }} {{ ctx.language }} {% if ctx.is_entry_point %}{{ labels.entry_point }} {% endif %}{% if ctx.is_test %}{{ labels.test }} {% endif %}{{ labels.source_file }}{% if ctx.kg_layer_name %} {{ labels.in_layer.format(layer=ctx.kg_layer_name) }}{% endif %}{% if ctx.community_label %}, {{ labels.part_of_module_cluster_intro.format(community=ctx.community_label) }}{% endif %}.{% endif %}
 {%- if public_syms %}
 
-It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | length != 1 else "" }}{% if ctx.dependencies %} and depends on {{ ctx.dependencies | length }} other file{{ "s" if ctx.dependencies | length != 1 else "" }}{% endif %}.
+{{ labels.exposes }} {{ public_syms | length }} {{ labels.public_symbols if public_syms | length != 1 else labels.public_symbol }}{% if ctx.dependencies %} {{ labels.depends_on_other_files }} {{ ctx.dependencies | length }} {{ labels.other_files if ctx.dependencies | length != 1 else labels.other_file }}{% endif %}.
+{%- endif %}
 
-## Public API
+{%- if public_syms %}
 
-| Symbol | Kind | Signature |
+## {{ labels.public_api }}
+
+| {{ labels.symbol }} | {{ labels.kind }} | {{ labels.signature }} |
 | --- | --- | --- |
 {%- for s in public_syms %}
 | `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
@@ -38,36 +41,35 @@ It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | lengt
 {%- endif %}
 {%- if ctx.dependencies %}
 
-## Depends on
-{% for dep in ctx.dependencies[:25] %}
+## {{ labels.depends_on }}
+{% for dep in ctx.dependencies[:25] -%}
 - `{{ dep }}`
-{%- endfor %}
+{% endfor %}
 {%- if ctx.dependencies | length > 25 %}
 
-_and {{ ctx.dependencies | length - 25 }} more._
+_{{ labels.and_more.format(count=ctx.dependencies | length - 25) }}_
 {%- endif %}
 {%- endif %}
+
 {%- if ctx.dependents %}
+## {{ labels.used_by }}
 
-## Used by
-
-Imported by {{ ctx.dependents | length }} file{{ "s" if ctx.dependents | length != 1 else "" }} in this repository.
-{% for dep in ctx.dependents[:25] %}
+{{ labels.imported_by_files.format(count=ctx.dependents | length, file_word=labels.file_plural if ctx.dependents | length != 1 else labels.file_singular) }}
+{% for dep in ctx.dependents[:25] -%}
 - `{{ dep }}`
-{%- endfor %}
+{% endfor %}
 {%- if ctx.dependents | length > 25 %}
 
-_and {{ ctx.dependents | length - 25 }} more._
+_{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
 {%- endif %}
 {%- endif %}
+
 {%- if ctx.community_label or ctx.kg_layer_name %}
 
-## Usage Notes
-{% if ctx.community_label %}
-Part of the **{{ ctx.community_label }}** module cluster.
+## {{ labels.usage_notes }}
+{% if ctx.community_label %}{{ labels.part_of_module_cluster.format(community=ctx.community_label) }}
 {%- endif %}
-{%- if ctx.kg_layer_name %}
-**Layer:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **Role:** {{ ctx.kg_layer_role }}{% endif %}
+{%- if ctx.kg_layer_name %}**{{ labels.layer }}:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **{{ labels.role }}:** {{ ctx.kg_layer_role }}{% endif %}
 {%- endif %}
 {%- endif %}
 {#- Question-shaped text, built from structure rather than prose.
@@ -99,7 +101,6 @@ Part of the **{{ ctx.community_label }}** module cluster.
 {%- set _ = questions.append("What does `" ~ ctx.file_path ~ "` depend on?") -%}
 {%- endif -%}
 {%- if questions %}
-
 ## Questions this page answers
 {% for q in questions[:3] %}
 - {{ q }}

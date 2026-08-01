@@ -26,6 +26,7 @@ from ..models import (
     GeneratedPage,
     compute_source_hash,
 )
+from ..structural_labels import structural_page_title
 
 log = structlog.get_logger(__name__)
 
@@ -122,7 +123,7 @@ class PerTypeGenerationMixin:
         return self._structural_symbol_spotlight(
             ctx,
             target,
-            f"Symbol: {symbol.qualified_name}",
+            structural_page_title(self._language, "symbol_spotlight", symbol.qualified_name),
             subject_hash=parsed.content_hash or "",
         )
 
@@ -285,7 +286,9 @@ class PerTypeGenerationMixin:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_scc_page(scc_id, scc_files, file_contexts)
         members = sorted(scc_files)
-        page = self._structural_scc_page(ctx, scc_id, f"Circular Dependency: {scc_id}")
+        page = self._structural_scc_page(
+            ctx, scc_id, structural_page_title(self._language, "scc_page", scc_id)
+        )
         page.metadata["file_paths"] = members
         return page
 
@@ -421,7 +424,9 @@ class PerTypeGenerationMixin:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_api_contract(parsed, source_bytes)
         return self._structural_api_contract(
-            ctx, parsed.file_info.path, f"API Contract: {parsed.file_info.path}"
+            ctx,
+            parsed.file_info.path,
+            structural_page_title(self._language, "api_contract", parsed.file_info.path),
         )
 
     async def generate_onboarding_page(
@@ -506,5 +511,7 @@ class PerTypeGenerationMixin:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_infra_page(parsed, source_bytes)
         return self._structural_infra_page(
-            ctx, parsed.file_info.path, f"Infrastructure: {parsed.file_info.path}"
+            ctx,
+            parsed.file_info.path,
+            structural_page_title(self._language, "infra_page", parsed.file_info.path),
         )
