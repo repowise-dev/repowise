@@ -375,6 +375,7 @@ def test_exact_excerpt_selection_is_a_monotonic_reference_prefix() -> None:
     )
 
     previous: tuple[str, ...] = ()
+    previous_lengths: dict[str, int] = {}
     for token_budget in range(1, 800):
         selection = select_prompt_evidence(
             source_map,
@@ -386,7 +387,15 @@ def test_exact_excerpt_selection_is_a_monotonic_reference_prefix() -> None:
         included = tuple(item.symbol for item in selection.included if item.symbol is not None)
         assert included == references[: len(included)]
         assert included[: len(previous)] == previous
+        current_lengths = {
+            item.symbol: len(item.text.removesuffix("...[truncated]"))
+            for item in selection.included
+            if item.symbol is not None
+        }
+        for symbol, length in previous_lengths.items():
+            assert current_lengths.get(symbol, 0) >= length
         previous = included
+        previous_lengths = current_lengths
 
     assert previous == references
 

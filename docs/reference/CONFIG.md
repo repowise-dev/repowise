@@ -110,9 +110,11 @@ an API call.
 ### Grounded generation context
 
 Use `generation_context.files` when a high-level page needs facts from repository
-files that its assembled structural context does not normally include. This is
-explicit evidence selection, not automatic discovery. With no `files` entries
-the feature is a no-op; the default `token_budget` is `8000`.
+files that its assembled structural context does not normally include. Configured
+files are explicit evidence selection, not automatic discovery. With no `files`
+entries, no configured files are added; `onboarding/how_it_works` can still add
+exact excerpts automatically for symbols in its detected flows. The default
+shared `token_budget` is `8000`.
 
 Keys name model-written synthesis pages: `repo_overview` or
 `onboarding/<slot>` for `guided_tour`, `getting_started`, `codebase_map`,
@@ -161,7 +163,9 @@ regenerated merely by editing `config.yaml`: run `repowise generate --all` or
 request the affected page. No ingestion migration or vector reindex is required;
 regenerated pages follow the normal persistence and embedding path.
 Deterministic (`--no-prose`) pages do not consume evidence and record configured
-entries as skipped for that run.
+entries and automatically derived exact references as skipped for that run.
+Disabled or gated onboarding pages likewise retain explicit skip provenance
+instead of silently consuming or discarding evidence inputs.
 
 `max_tokens` bounds each model-written documentation response. It is a
 persistent repository setting rather than a per-command flag: `init`, `update`,

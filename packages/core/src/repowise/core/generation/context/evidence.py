@@ -299,13 +299,18 @@ def _select_reference_evidence(
     if not selected:
         return EvidenceSelection(skipped=tuple(skipped))
 
-    remaining_chars = (
+    available_chars = (
         hard_char_limit
         - len(_EXACT_HEADER)
         - sum(
             len(_source_wrapper(path, reference, start, end, truncated=True))
             for path, reference, start, end, _ in selected
         )
+    )
+    remaining_chars = (
+        available_chars
+        if len(selected) == len(eligible)
+        else _MIN_TRUNCATED_CONTENT * len(selected)
     )
     included: list[EvidenceItem] = []
     blocks: list[str] = []
