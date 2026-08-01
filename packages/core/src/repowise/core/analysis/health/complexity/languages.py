@@ -525,6 +525,20 @@ _CPP = LanguageNodeMap(
     # ``async_function_kinds`` stays empty and ``blocking_sync_in_async`` is
     # deliberately unimplemented rather than faked onto ``std::async``.
     call_kinds=frozenset({"call_expression", "new_expression"}),
+    # ``x = …`` and ``x += …`` are both an ``assignment_expression`` (the
+    # dialect tells them apart by the ``operator`` token, as in Java and Go), so
+    # the augmented set stays empty. ``int x = 1, y = 2;`` is one
+    # ``declaration`` nesting one ``init_declarator`` per bound name.
+    # ``conditional_expression`` is in ``branch_kinds`` for CCN but NOT in
+    # ``if_kinds``: a ternary is an expression, not a CFG statement.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"compound_statement"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _CSHARP = LanguageNodeMap(

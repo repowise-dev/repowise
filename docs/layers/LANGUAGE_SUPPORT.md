@@ -214,7 +214,7 @@ is "Full" vs "Good".
 | Rust | ✅ | ✅ | ✅ | ✅ | ✅² |
 | C# | ✅ | ✅ | ✅ | later | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | later | ✅¹¹ |
-| C++ | ✅ | ✅ | ✅ | later | ✅¹² |
+| C++ | ✅ | ✅ | ✅ | ✅ | ✅¹² |
 | Dart | ✅ | n/a³ | ✅ | later | ✅ |
 | Scala | ✅ | ✅ | ✅⁴ | later | ✅⁵ |
 | Ruby | ✅ | ✅⁶ | ✅⁷ | later | ✅⁸ |
@@ -298,6 +298,22 @@ excluded, because an implicit-`this` member call is spelled identically. C has
 no `LanguageNodeMap` at all, so it reaches no dialect despite sharing the
 grammar.
 
+¹³ **Kotlin dataflow is blocked on tree-sitter-kotlin, not merely unscheduled.**
+The def/use dialect itself would be routine; the CFG builder and the Extract
+Method slicer are what the grammar defeats, in four independent places:
+`function_declaration` labels no `body` field (and wraps its block in a
+`function_body` sibling, so the existing single-child unwrap misses it);
+`for_statement` / `while_statement` label no `body` field either;
+`if_expression` labels no `alternative` field and has no `else_clause` node, so
+an `else` body would be silently dropped from the CFG; and a bare `break` /
+`continue` parses as a plain `identifier`, with no node type to key on. That
+last one is the blocker that matters: the slicer refuses any span containing a
+jump, so invisible jumps would let it propose an Extract Method that silently
+changes control flow — a wrong suggestion, not a missing one. Kotlin therefore
+stays at "no dataflow signal", which is the correct degradation. Reviving this
+needs either a grammar upgrade or a text-based jump seam plus positional
+body/else resolution in the CFG core.
+
 ⁹ Shell gets function-level complexity only (CCN / nesting / cognitive / NLOC).
 `&&` / `||` command lists count toward CCN (`cmd || exit 1` is +1), which is
 honest: shell branching is chained command lists. There are no classes,
@@ -320,8 +336,8 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 | Dart | Good | Shipped: AST, health control-flow + class facts, perf dialect, Flutter edges. Next: riverpod/get_it dynamic hints, dataflow dialect |
 | Scala | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, `.r` recompile, sync-over-Future). Next: dataflow dialect, combinator (`.map`/`.foreach`) loop tracking via the shared `block_loop_body` hook Ruby established |
 | Ruby | Full (health) | Shipped: complexity/class/assertion markers + perf dialect with block-iteration loops (`.each`/`.map` blocks) and the stratified ActiveRecord N+1 lexicon. Next: dataflow dialect, LCOM4 via `@ivar` grouping |
-| Kotlin | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, Exposed, combinator loops via `block_loop_body`, `suspend` sync-in-async). Next: dataflow dialect |
-| C++ | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (POSIX / `std::filesystem` / sqlite3 sinks, constant-pattern `std::regex` recompile, `lock_in_loop`). Next: dataflow dialect |
+| Kotlin | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, Exposed, combinator loops via `block_loop_body`, `suspend` sync-in-async). Dataflow is **blocked on the grammar**, not unstarted — see ¹³ |
+| C++ | Full | Shipped: complexity/class/assertion markers, perf dialect (POSIX / `std::filesystem` / sqlite3 sinks, constant-pattern `std::regex` recompile, `lock_in_loop`), and the dataflow dialect powering Extract Method |
 | C# | Full (health) | Dataflow dialect pending; perf shipped |
 | Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |

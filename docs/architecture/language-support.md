@@ -390,6 +390,17 @@ per-language plugin pattern, registered in a dict exactly like `resolvers/`:
   already flagged (`large_method` / `brain_method` / `complex_method`), so it
   stays within the health-pass budget.
 
+  A dialect is only half the requirement: the CFG builder resolves bodies,
+  conditions and jumps through *field names* (`body` / `consequence` /
+  `alternative`) and *node types* (`break_kinds` / `continue_kinds`), so a
+  grammar that labels none of them cannot be served by a dialect alone. The
+  slicer additionally refuses any span containing a jump — which means an
+  untyped jump is worse than no signal, because it would license an extraction
+  that silently changes control flow. `find_extractions` also refuses a function
+  whose subtree carries a parse error (`Node.has_error`): macro-heavy C/C++
+  headers make tree-sitter emit one bogus `function_definition` spanning a whole
+  class, and proposing to lift "statements" out of that is a wrong suggestion.
+
 All tiers are purely additive and degrade to silence: an unmapped language
 produces no findings rather than wrong ones.
 

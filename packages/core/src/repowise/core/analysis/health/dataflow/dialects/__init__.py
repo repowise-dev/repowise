@@ -14,6 +14,7 @@ def/use pass is silent for it (no dialect = no signal), the safe default.
 
 from __future__ import annotations
 
+from . import cpp as _cpp
 from . import go as _go
 from . import java as _java
 from . import python as _python
@@ -41,6 +42,7 @@ _REGISTER: tuple[tuple[str, BaseDefUseDialect], ...] = (
     ("jsx", _ts_js.DIALECT),
     ("java", _java.DIALECT),
     ("rust", _rust.DIALECT),
+    ("cpp", _cpp.DIALECT),
 )
 
 for _tag, _dialect in _REGISTER:
