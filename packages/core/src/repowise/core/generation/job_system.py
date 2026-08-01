@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,6 +112,11 @@ class JobSystem:
             config_dict: dict[str, object] = dataclasses.asdict(config)
         except TypeError:
             config_dict = {}
+        evidence_files = getattr(config, "source_evidence_files", None)
+        if isinstance(evidence_files, Mapping):
+            config_dict["source_evidence_files"] = {
+                str(page_key): list(paths) for page_key, paths in evidence_files.items()
+            }
 
         now = _now_iso()
         checkpoint = Checkpoint(
