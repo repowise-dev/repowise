@@ -538,7 +538,8 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
         "`service/v1/users`, `service/v2/schema.yaml`, `api/v1/openapi.json`, "
         "`localhost/openapi.json`, `users/V2/profile`, `users/profile`, "
         "`v1/openapi.json`, `accounts/v1/users.json`, `GET/api`, "
-        "`npm:test`, `example.com`, `GET /health`, or `/health`."
+        "`npm:test`, `example.com`, `EXAMPLE.COM`, `Github.COM/org/repo`, "
+        "`API/v1/users`, `Service/v1/users`, `GET /health`, or `/health`."
     )
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())

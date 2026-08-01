@@ -134,14 +134,44 @@ _REPOSITORY_DIRECTORY_NAMES = frozenset(
 # A bare identifier, optionally dotted or ``::``-qualified (e.g. ``LanguageSpec``,
 # ``get_session``, ``foo.Bar.baz``, ``path.py::Name``).
 _QUALIFIER = r"(?:\.|::|#|/|:)"
+_COMMON_TLDS = frozenset({"ai", "app", "com", "dev", "io", "net", "org"})
+_HTTP_METHODS = frozenset({"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"})
 _IDENT = re.compile(
     rf"^[A-Za-z_][A-Za-z0-9_]*(?:{_QUALIFIER}[A-Za-z_][A-Za-z0-9_]*)+$"
     r"|^[A-Za-z_][A-Za-z0-9_]*$"
 )
 
 
+def _looks_like_external_reference(token: str) -> bool:
+    """Recognize URL, route, host, and command shapes before code classification."""
+    if token.startswith("/") or "://" in token or any(char.isspace() for char in token):
+        return True
+    parts = token.split("/")
+    first = parts[0]
+    if (
+        re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", first, re.IGNORECASE)
+        and first.rsplit(".", 1)[-1].lower() in _COMMON_TLDS
+    ):
+        return True
+    if re.fullmatch(r"[^:]+:\d+", first) or first.upper() in _HTTP_METHODS:
+        return True
+    if len(parts) == 1:
+        return False
+    versioned = any(re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts)
+    versioned_repository_path = first.lower() in _REPOSITORY_DIRECTORY_NAMES or (
+        bool(re.fullmatch(r"v\d+", first, re.IGNORECASE))
+        and len(parts) > 1
+        and parts[1].lower() in _REPOSITORY_DIRECTORY_NAMES
+    )
+    return first.lower() in {"localhost", "user", "users"} or (
+        versioned and not versioned_repository_path
+    )
+
+
 def _looks_like_path(token: str) -> bool:
     """True when *token* is shaped like a source file path we can verify."""
+    if _looks_like_external_reference(token):
+        return False
     head = token.split("::", 1)[0]
     head = head.split("#", 1)[0].strip()
     name = head.rsplit("/", 1)[-1]
@@ -154,20 +184,7 @@ def _looks_like_path(token: str) -> bool:
             return False
         if not all(part not in {"", ".", ".."} for part in parts):
             return False
-        versioned = any(re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts)
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        route_root = first.lower()
-        versioned_repository_path = route_root in _REPOSITORY_DIRECTORY_NAMES or (
-            bool(re.fullmatch(r"v\d+", first, re.IGNORECASE))
-            and len(parts) > 1
-            and parts[1].lower() in _REPOSITORY_DIRECTORY_NAMES
-        )
-        if (
-            route_root in {"localhost", "user", "users"}
-            or (route_root in {"api", "service", "services"} and versioned)
-            or (versioned and not versioned_repository_path)
-        ):
-            return False
         if name.startswith(".") or name.lower() in _EXTENSIONLESS_PATH_NAMES:
             return True
         if "." in name:
@@ -212,18 +229,19 @@ def _looks_like_symbol(token: str) -> bool:
     """
     if not _IDENT.match(token):
         return False
+    if _looks_like_external_reference(token):
+        return False
     if ":" in token and "::" not in token and not token[:1].isupper():
         return False
     if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", token):
         tld = token.rsplit(".", 1)[-1]
-        if tld in {"ai", "app", "com", "dev", "io", "net", "org"}:
+        if tld in _COMMON_TLDS:
             return False
     if "/" in token:
         owner = token.split("/", 1)[0]
         if (
             owner[:1].islower()
-            or owner.upper()
-            in {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
+            or owner.upper() in _HTTP_METHODS
             or re.fullmatch(r"v\d+", owner, re.IGNORECASE)
         ):
             return False
@@ -356,6 +374,8 @@ def check_grounding(
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(1).strip()
+        if _looks_like_external_reference(token):
+            return match.group(0)
         is_path = _looks_like_path(token) or _looks_like_evidence_path(token, evidence)
         is_symbol = (not is_path) and _looks_like_symbol(token)
         if not is_path and not is_symbol:
