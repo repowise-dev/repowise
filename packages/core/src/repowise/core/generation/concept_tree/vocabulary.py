@@ -22,10 +22,14 @@ enough that a model adds cost and variance without adding much.
 
 from __future__ import annotations
 
+import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from .grouping import ConceptGroup
+
+logger = logging.getLogger(__name__)
 
 #: Documents worth mining, relative to the repository root. A doc that names a
 #: subsystem in a heading is a much stronger signal than one that mentions it
@@ -56,15 +60,69 @@ _BOLD_TERM = re.compile(r"\*\*([A-Z][^*\n]{2,40})\*\*")
 
 _STOPWORDS = frozenset(
     {
-        "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "with",
-        "how", "what", "why", "when", "is", "are", "it", "this", "that", "you",
-        "your", "we", "our", "using", "use", "usage", "getting", "started",
-        "installation", "install", "quickstart", "quick", "start", "license",
-        "contributing", "changelog", "table", "contents", "overview",
-        "introduction", "intro", "example", "examples", "faq", "notes",
-        "requirements", "setup", "configuration", "config", "options", "api",
-        "reference", "guide", "tutorial", "docs", "documentation", "features",
-        "roadmap", "credits", "acknowledgements", "badges", "support",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "with",
+        "how",
+        "what",
+        "why",
+        "when",
+        "is",
+        "are",
+        "it",
+        "this",
+        "that",
+        "you",
+        "your",
+        "we",
+        "our",
+        "using",
+        "use",
+        "usage",
+        "getting",
+        "started",
+        "installation",
+        "install",
+        "quickstart",
+        "quick",
+        "start",
+        "license",
+        "contributing",
+        "changelog",
+        "table",
+        "contents",
+        "overview",
+        "introduction",
+        "intro",
+        "example",
+        "examples",
+        "faq",
+        "notes",
+        "requirements",
+        "setup",
+        "configuration",
+        "config",
+        "options",
+        "api",
+        "reference",
+        "guide",
+        "tutorial",
+        "docs",
+        "documentation",
+        "features",
+        "roadmap",
+        "credits",
+        "acknowledgements",
+        "badges",
+        "support",
     }
 )
 
@@ -76,10 +134,39 @@ _MAX_TERM_WORDS = 4
 # real headings from this repository's own docs, and neither is a subsystem.
 _SENTENCE_VERBS = frozenset(
     {
-        "is", "are", "was", "were", "has", "have", "had", "do", "does", "did",
-        "can", "will", "would", "should", "must", "may", "updated", "added",
-        "removed", "fixed", "works", "means", "needs", "gets", "goes", "runs",
-        "returns", "uses", "supports", "requires", "shows", "makes", "keeps",
+        "is",
+        "are",
+        "was",
+        "were",
+        "has",
+        "have",
+        "had",
+        "do",
+        "does",
+        "did",
+        "can",
+        "will",
+        "would",
+        "should",
+        "must",
+        "may",
+        "updated",
+        "added",
+        "removed",
+        "fixed",
+        "works",
+        "means",
+        "needs",
+        "gets",
+        "goes",
+        "runs",
+        "returns",
+        "uses",
+        "supports",
+        "requires",
+        "shows",
+        "makes",
+        "keeps",
     }
 )
 
@@ -115,15 +202,34 @@ def _is_useful(term: str) -> bool:
     return len(words) == 1 or words[0][:1].isupper()
 
 
-def extract_terms(repo_root: Path, *, max_terms: int = 200) -> list[str]:
-    """Lift candidate subsystem names from the repository's own documentation.
+@dataclass(frozen=True)
+class HouseTerm:
+    """A term the repository uses for itself, with what it was read from.
 
-    Returns terms in document order with duplicates removed. Never raises: a
-    repository with no docs returns an empty list, which is a supported and
-    common outcome, not a degraded one.
+    ``definition`` is the repository's own sentence about the term — the line
+    following the heading that names it, or the clause after a bolded lead-in.
+    It is ``None`` far more often than not; a term with no sentence near it is
+    still a term, and inventing one would be the whole failure this module
+    exists to avoid.
     """
-    seen: set[str] = set()
-    terms: list[str] = []
+
+    term: str
+    definition: str | None
+    definition_source: str | None
+    #: Repository-relative POSIX paths of every document that names the term,
+    #: in the order they were read.
+    source_paths: tuple[str, ...]
+    #: How many distinct documents name it. ``len(source_paths)``, named
+    #: because it is the ranking signal rather than an incidental count.
+    doc_frequency: int
+    #: Whether the codebase has a symbol by this name. A term that is also a
+    #: symbol can be rendered in backticks; a coined one cannot, because the
+    #: grounding pass strips backticks off tokens it cannot resolve.
+    is_indexed_symbol: bool
+
+
+def _doc_paths(repo_root: Path) -> list[Path]:
+    """The documents worth mining, in a fixed order. Never raises."""
     files: list[Path] = []
     try:
         for name in DOC_FILES:
@@ -142,24 +248,182 @@ def extract_terms(repo_root: Path, *, max_terms: int = 200) -> list[str]:
             if len(files) >= _MAX_DOCS:
                 break
     except OSError:
+        logger.warning(
+            "vocabulary: could not list documents under %s; mining no terms for this repository",
+            repo_root,
+        )
         return []
+    return files
 
-    for path in files:
+
+# A line that opens a new section. The definition scan stops here: running on
+# into the next section hands back a sentence about a different subject, which
+# reads as authoritative and is wrong.
+_HEADING_LINE = re.compile(r"^\s{0,3}#{1,4}\s+\S")
+# Lines that are structure rather than prose — tables, fences, lists, quotes.
+_NOT_PROSE = ("|", "```", "-", "*", ">", "!")
+# Shorter than this is a lead-in ("See below.", "Two parts:"), not a meaning.
+_MIN_DEFINITION_CHARS = 20
+_MAX_DEFINITION_CHARS = 300
+# How far past a heading to look for the sentence that explains it.
+_DEFINITION_SCAN_LINES = 5
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])(?:\s|$)")
+
+# A bolded lead-in that carries its own definition: "**Blast radius** — ...".
+_BOLD_DEFINITION = re.compile(r"\*\*([A-Z][^*\n]{2,40})\*\*\s*[—–:-]\s*([^\n]{10,300})")
+
+
+def _first_sentence(line: str) -> str:
+    match = _SENTENCE_END.search(line)
+    return (line[: match.start() + 1] if match else line).strip()
+
+
+def _definition_after_heading(text: str, offset: int) -> str | None:
+    """The first prose sentence between a heading and the next one.
+
+    ``offset`` is the *end* of the heading text, not its start. ``_HEADING``
+    opens with ``\\s{0,3}``, which in multiline mode lets a match begin on the
+    blank line above; anchoring on the end sidesteps that entirely.
+    """
+    lines = text[offset:].split("\n")[1 : _DEFINITION_SCAN_LINES + 1]
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _HEADING_LINE.match(line):
+            return None
+        if stripped.startswith(_NOT_PROSE):
+            continue
+        sentence = _first_sentence(stripped)
+        if _MIN_DEFINITION_CHARS <= len(sentence) <= _MAX_DEFINITION_CHARS:
+            return sentence
+        return None
+    return None
+
+
+@dataclass
+class _Candidate:
+    """A term under construction, accumulating across documents."""
+
+    term: str
+    definition: str | None = None
+    definition_source: str | None = None
+    source_paths: list[str] | None = None
+
+
+def _harvest(repo_root: Path, *, limit: int | None = None) -> list[_Candidate]:
+    """Every candidate term in document order, deduplicated, first spelling wins.
+
+    ``limit`` stops the walk early, so a caller wanting the first N terms does
+    not pay to read documents it will discard.
+    """
+    candidates: dict[str, _Candidate] = {}
+    order: list[str] = []
+    unreadable = 0
+
+    for path in _doc_paths(repo_root):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_DOC_BYTES]
         except OSError:
+            unreadable += 1
+            logger.warning("vocabulary: could not read %s; skipping it", path)
             continue
-        for match in list(_HEADING.finditer(text)) + list(_BOLD_TERM.finditer(text)):
+        try:
+            rel = path.relative_to(repo_root).as_posix()
+        except ValueError:  # pragma: no cover — path came from repo_root
+            rel = path.name
+
+        # Definitions found for terms seen in *this* document, keyed the same
+        # way as candidates so a repeat mention can fill a gap left earlier.
+        definitions = {
+            _normalise(m.group(1)).lower(): m.group(2).strip()
+            for m in _BOLD_DEFINITION.finditer(text)
+        }
+
+        # Headings first, then bolded lead-ins — the order the planner's
+        # binding was measured against. Which of the two a term came from
+        # decides where its definition may be looked for: the sentence under a
+        # heading belongs to that heading, but the lines under a bolded term
+        # mid-paragraph belong to the paragraph, not to the term.
+        matches = [(True, m) for m in _HEADING.finditer(text)]
+        matches += [(False, m) for m in _BOLD_TERM.finditer(text)]
+        for is_heading, match in matches:
             term = _normalise(match.group(1))
             if not _is_useful(term):
                 continue
             key = term.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            terms.append(term)
-            if len(terms) >= max_terms:
-                return terms
+            candidate = candidates.get(key)
+            if candidate is None:
+                if limit is not None and len(order) >= limit:
+                    return [candidates[k] for k in order]
+                candidate = _Candidate(term=term, source_paths=[])
+                candidates[key] = candidate
+                order.append(key)
+            assert candidate.source_paths is not None
+            if rel not in candidate.source_paths:
+                candidate.source_paths.append(rel)
+            if candidate.definition is None:
+                definition = definitions.get(key)
+                if not definition and is_heading:
+                    definition = _definition_after_heading(text, match.end())
+                if definition:
+                    candidate.definition = definition
+                    candidate.definition_source = rel
+
+    if unreadable:
+        logger.warning(
+            "vocabulary: %d of the repository's documents could not be read",
+            unreadable,
+        )
+    return [candidates[k] for k in order]
+
+
+def extract_terms(repo_root: Path, *, max_terms: int = 200) -> list[str]:
+    """Lift candidate subsystem names from the repository's own documentation.
+
+    Returns terms in document order with duplicates removed. Never raises: a
+    repository with no docs returns an empty list, which is a supported and
+    common outcome, not a degraded one.
+    """
+    return [c.term for c in _harvest(repo_root, limit=max_terms)]
+
+
+def extract_house_terms(
+    repo_root: Path,
+    *,
+    max_terms: int = 200,
+    known_symbols: frozenset[str] | set[str] | None = None,
+) -> list[HouseTerm]:
+    """The same terms as :func:`extract_terms`, with their sources and meanings.
+
+    ``known_symbols`` are the names the codebase actually defines; a term is
+    marked ``is_indexed_symbol`` when it matches one. Pass nothing and every
+    term reports ``False``, which is the safe direction — an unbackticked term
+    renders as plain prose, a wrongly-backticked one gets silently demoted.
+    """
+    symbols = {s.lower() for s in known_symbols} if known_symbols else set()
+    terms = [
+        HouseTerm(
+            term=c.term,
+            definition=c.definition,
+            definition_source=c.definition_source,
+            source_paths=tuple(c.source_paths or ()),
+            doc_frequency=len(c.source_paths or ()),
+            is_indexed_symbol=c.term.lower() in symbols,
+        )
+        for c in _harvest(repo_root, limit=max_terms)
+    ]
+    if not terms:
+        # "We found nothing to read" must never be rendered as "this
+        # repository has no vocabulary". Callers decide what to do with an
+        # empty list; they cannot decide if they never learn it was empty.
+        logger.warning(
+            "vocabulary: no house terms found under %s — "
+            "no readable %s and no top-level docs directory",
+            repo_root,
+            "/".join(DOC_FILES),
+        )
     return terms
 
 
