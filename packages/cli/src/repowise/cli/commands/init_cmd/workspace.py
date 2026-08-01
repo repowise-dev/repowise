@@ -203,13 +203,13 @@ def _run_workspace_deterministic_generation(
     from repowise.core.generation import GenerationConfig
     from repowise.core.providers.llm.template import TemplateProvider
 
-    requested = embedder_was_requested or pin_names_an_embedder(
-        load_config(repo_path).get("embedder")
-    )
+    repo_config = load_config(repo_path)
+    requested = embedder_was_requested or pin_names_an_embedder(repo_config.get("embedder"))
     hosted = embedder_name_resolved not in ("mock", "ollama")
     embedder = "mock" if hosted and not requested else embedder_name_resolved
 
-    gen_config = GenerationConfig(
+    gen_config = GenerationConfig.from_repo_config(
+        repo_config,
         deterministic=True,
         max_concurrency=concurrency,
         language=language,
@@ -217,7 +217,7 @@ def _run_workspace_deterministic_generation(
         wiki_style=wiki_style,
         # No question is asked in the workspace flow, so this only picks up a cap
         # already recorded for this repo (by a single-repo init, or by hand).
-        max_file_pages=resolve_max_file_pages(config=load_config(repo_path)),
+        max_file_pages=resolve_max_file_pages(config=repo_config),
     )
     generated_pages = run_repo_generation(
         repo_path=repo_path,

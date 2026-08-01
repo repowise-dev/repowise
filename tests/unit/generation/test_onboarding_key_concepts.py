@@ -436,6 +436,19 @@ def test_grounding_accepts_citations_established_only_by_added_evidence() -> Non
     assert "`FabricatedWorker`" not in cleaned
 
 
+def test_evidence_grounding_requires_complete_identifier_and_path() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"src/foo.py": "Existing.run"}
+    content = "`Existing.run` is real; `FabricatedType.run` and `other/place/foo.py` are not."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`Existing.run`" in cleaned
+    assert ungrounded == ["FabricatedType.run", "other/place/foo.py"]
+    assert "`FabricatedType.run`" not in cleaned
+    assert "`other/place/foo.py`" not in cleaned
+
+
 def test_grounding_cleans_reused_page_content() -> None:
     """The check runs on content, so a reused (cached) page carrying a stale
     fabrication is cleaned the same way a fresh one is."""

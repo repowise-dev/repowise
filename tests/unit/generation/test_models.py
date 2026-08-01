@@ -159,6 +159,13 @@ def test_generation_config_defaults():
     assert config.reasoning == "auto"
 
 
+def test_generation_config_preserves_existing_positional_constructor_order():
+    config = GenerationConfig(4096, 0.2, 12000, 4)
+
+    assert config.max_concurrency == 4
+    assert config.source_evidence_token_budget == 8000
+
+
 def test_generation_config_reads_repo_max_tokens():
     config = GenerationConfig.from_repo_config({"max_tokens": "2345"})
     assert config.max_tokens == 2345

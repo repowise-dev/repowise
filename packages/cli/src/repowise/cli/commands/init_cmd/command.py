@@ -218,7 +218,8 @@ def _run_deterministic_generation_phase(
             f"{embedder_name_resolved}[/bold] if you want it.[/dim]"
         )
 
-    gen_config = GenerationConfig(
+    gen_config = GenerationConfig.from_repo_config(
+        load_config(repo_path),
         deterministic=True,
         max_concurrency=concurrency,
         language=language,

@@ -12,6 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from repowise.cli.commands.init_cmd import command as init_command
 from repowise.cli.commands.init_cmd import workspace as ws
 
 
@@ -52,6 +53,77 @@ def test_deterministic_generation_uses_template_provider_and_config(
     assert captured["gen_config"].deterministic is True
     assert captured["verbose"] is False
     assert embedder == "mock"
+
+
+def test_deterministic_generation_loads_source_evidence_config(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    captured = _capture_run_repo_generation(monkeypatch)
+    monkeypatch.setattr(
+        ws,
+        "load_config",
+        lambda _path: {
+            "generation_context": {
+                "token_budget": 321,
+                "files": {"repo_overview": ["README.md"]},
+            }
+        },
+    )
+
+    ws._run_workspace_deterministic_generation(
+        repo_path=tmp_path,
+        result=SimpleNamespace(repo_name="demo"),
+        embedder_name_resolved="mock",
+        embedder_was_requested=False,
+        concurrency=8,
+        resume=False,
+        onboarding=True,
+        wiki_style="comprehensive",
+        language="en",
+    )
+
+    config = captured["gen_config"]
+    assert config.source_evidence_token_budget == 321
+    assert config.source_evidence_files == {"repo_overview": ("README.md",)}
+
+
+def test_single_repo_deterministic_generation_loads_source_evidence_config(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        init_command,
+        "load_config",
+        lambda _path: {
+            "generation_context": {
+                "token_budget": 654,
+                "files": {"repo_overview": ["docs/purpose.md"]},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        init_command,
+        "run_repo_generation",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    init_command._run_deterministic_generation_phase(
+        repo_path=tmp_path,
+        result=SimpleNamespace(repo_name="demo"),
+        total_phases=3,
+        concurrency=8,
+        language="en",
+        onboarding=True,
+        wiki_style="comprehensive",
+        max_file_pages=None,
+        embedder_name_resolved="mock",
+        embedder_was_requested=False,
+        resume=False,
+    )
+
+    config = captured["gen_config"]
+    assert config.source_evidence_token_budget == 654
+    assert config.source_evidence_files == {"repo_overview": ("docs/purpose.md",)}
 
 
 def test_deterministic_generation_drops_inferred_hosted_embedder(

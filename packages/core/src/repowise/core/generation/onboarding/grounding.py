@@ -147,10 +147,7 @@ def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -
                 known_symbols.add(part)
 
 
-def collect_known(
-    ctx: Any,
-    evidence: Mapping[str, str] | None = None,
-) -> tuple[set[str], set[str]]:
+def collect_known(ctx: Any) -> tuple[set[str], set[str]]:
     """Collect the known paths and symbols from a subkind context object.
 
     Returns ``(known_paths, known_symbols)``. ``known_paths`` includes each
@@ -163,13 +160,33 @@ def collect_known(
     known_symbols: set[str] = set()
     for s in _iter_strings(ctx):
         _collect_token(s, known_paths, known_symbols)
-    for path, text in (evidence or {}).items():
-        _collect_token(path, known_paths, known_symbols)
-        # Evidence is free-form text rather than a context dataclass. Admit
-        # only path/identifier-shaped tokens that occur verbatim in it.
-        for match in re.finditer(r"[A-Za-z_][A-Za-z0-9_./:-]*", text):
-            _collect_token(match.group(0), known_paths, known_symbols)
     return known_paths, known_symbols
+
+
+def _evidence_grounded(
+    token: str,
+    *,
+    is_path: bool,
+    evidence: Mapping[str, str] | None,
+) -> bool:
+    """Require the complete evidence-derived citation to occur verbatim.
+
+    Context matching intentionally permits abbreviations, but applying that
+    policy to free-form evidence lets an unrelated qualifier borrow a shared
+    basename or member. Evidence therefore has the stricter contract promised
+    by the prompt: the complete normalized citation must be in the included
+    excerpt (or exactly name the included file).
+    """
+    if not evidence:
+        return False
+    normalized = token.strip().strip(".,;:()[]{}<>\"'")
+    if is_path:
+        head = normalized.split("::", 1)[0].split("#", 1)[0].strip()
+        if head in evidence:
+            return True
+        normalized = head
+    pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(normalized)}(?![A-Za-z0-9_])")
+    return any(pattern.search(text) is not None for text in evidence.values())
 
 
 def _path_grounded(token: str, known_paths: set[str]) -> bool:
@@ -207,7 +224,7 @@ def check_grounding(
     """
     if not content:
         return content, []
-    known_paths, known_symbols = collect_known(ctx, evidence)
+    known_paths, known_symbols = collect_known(ctx)
     ungrounded: list[str] = []
     seen: set[str] = set()
 
@@ -217,10 +234,13 @@ def check_grounding(
         is_symbol = (not is_path) and _looks_like_symbol(token)
         if not is_path and not is_symbol:
             return match.group(0)
-        grounded = (
+        grounded_in_context = (
             _path_grounded(token, known_paths)
             if is_path
             else _symbol_grounded(token, known_symbols)
+        )
+        grounded = grounded_in_context or _evidence_grounded(
+            token, is_path=is_path, evidence=evidence
         )
         if grounded:
             return match.group(0)

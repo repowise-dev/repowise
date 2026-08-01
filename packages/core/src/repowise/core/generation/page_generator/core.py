@@ -523,7 +523,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                 page_key=page_key,
                 skipped=[{"path": item.path, "reason": item.reason} for item in selection.skipped],
             )
-        prompt = f"{user_prompt}\n\n{selection.rendered}" if selection.rendered else user_prompt
+        prompt = user_prompt + selection.rendered if selection.rendered else user_prompt
         return prompt, selection
 
     def _disabled_source_evidence(self, page_key: str, reason: str) -> EvidenceSelection:

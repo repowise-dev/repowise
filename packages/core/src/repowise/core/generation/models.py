@@ -93,13 +93,6 @@ class GenerationConfig:
     max_tokens: int = DEFAULT_MAX_TOKENS
     temperature: float = 0.3
     token_budget: int = 48000
-    # Repository-source excerpts appended to model-written synthesis prompts.
-    # The normal context budget above still owns per-file structural assembly;
-    # this independent cap keeps high-level evidence bounded and predictable.
-    source_evidence_token_budget: int = DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET
-    # Page key -> explicit repository-relative files to add. Supported keys are
-    # ``repo_overview`` and ``onboarding/<slot>``.
-    source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     max_concurrency: int = 12
     embed_concurrency: int | None = None
     reasoning: ReasoningMode = "auto"
@@ -223,6 +216,15 @@ class GenerationConfig:
     # (emit an arbitrary subset from the complete repo view) and is what
     # ``repowise generate`` uses to refresh those repo-wide pages on demand.
     file_pages_only: bool = False
+    # New fields stay at the end to preserve GenerationConfig's positional
+    # constructor contract for direct-library callers.
+    # Repository-source excerpts appended to model-written synthesis prompts.
+    # The normal context budget above still owns per-file structural assembly;
+    # this independent cap keeps high-level evidence bounded and predictable.
+    source_evidence_token_budget: int = DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET
+    # Page key -> explicit repository-relative files to add. Supported keys are
+    # ``repo_overview`` and ``onboarding/<slot>``.
+    source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_repo_config(

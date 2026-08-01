@@ -70,6 +70,7 @@ def test_tiny_and_multiple_file_budgets_are_hard_bounds() -> None:
     assert tiny.rendered == ""
     assert {item.reason for item in tiny.skipped} == {"budget_too_small"}
     assert estimate_tokens(bounded.rendered) <= 120
+    assert bounded.rendered.startswith("\n\n## Additional repository evidence")
     assert [item.path for item in bounded.included] == list(source_map)
     assert all(item.truncated for item in bounded.included)
 
