@@ -65,6 +65,77 @@ def _configured_embedder_name() -> str:
     return ""
 
 
+# Keyed embedders and the env vars each reads its credential from. The first
+# entry is the canonical name the CLI persists under; the rest are accepted
+# aliases. Embedders outside this map (ollama, mock, custom) need no API key.
+_EMBEDDER_KEY_ENV: dict[str, tuple[str, ...]] = {
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openrouter": ("OPENROUTER_API_KEY",),
+}
+
+
+def _persisted_embedder_key(name: str) -> str | None:
+    """Recover the configured embedder's API key from where the CLI persists it.
+
+    ``repowise mcp`` loads ``<repo>/.repowise/.env`` before starting, but that
+    covers only the repo it was pointed at: a workspace serves sibling repos
+    whose ``.env`` is never read, and embedded callers reach :func:`run_mcp`
+    without going through the CLI at all. ``repowise serve`` already falls back
+    to the ``embedder_api_key`` saved in ``~/.repowise/config.yaml``. Without
+    the same fallback here the server builds a ``MockEmbedder`` and queries a
+    real index with vectors that cannot match it — semantic search silently
+    degrades to full-text-only.
+
+    Order: the served repo's ``.repowise/.env`` first, then the global config.
+    Returns ``None`` when the embedder needs no key or none is persisted.
+    """
+    from pathlib import Path
+
+    env_vars = _EMBEDDER_KEY_ENV.get(name)
+    if not env_vars:
+        return None
+    canonical = env_vars[0]
+
+    if _state._repo_path:
+        try:
+            # Reuse the reader get_answer already uses for the LLM credential,
+            # rather than a third copy of .env parsing.
+            from repowise.server.mcp_server.tool_answer.synthesis import (
+                _load_repo_provider_config,
+            )
+
+            _, _, overlay = _load_repo_provider_config(Path(_state._repo_path))
+            for var in env_vars:
+                if overlay.get(var):
+                    return overlay[var]
+        except Exception:
+            _log.debug("Failed to read repo .env for embedder key", exc_info=True)
+
+    try:
+        cfg_path = Path.home() / ".repowise" / "config.yaml"
+        if cfg_path.is_file():
+            import yaml  # type: ignore[import-untyped]
+
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            # Only honour the saved key when it belongs to the embedder being
+            # resolved — handing an openai key to gemini fails confusingly.
+            if (cfg.get("embedder") or "").strip().lower() == name:
+                key = str(cfg.get("embedder_api_key") or "").strip()
+                if key:
+                    _log.info(
+                        "Embedder key for '%s' recovered from ~/.repowise/config.yaml "
+                        "(%s not set in the MCP server's environment).",
+                        name,
+                        canonical,
+                    )
+                    return key
+    except Exception:
+        _log.debug("Failed to read global config for embedder key", exc_info=True)
+
+    return None
+
+
 def _embedder_kwargs(name: str) -> dict[str, Any]:
     """Map repowise embedding env vars onto an embedder's constructor kwargs.
 
@@ -72,6 +143,10 @@ def _embedder_kwargs(name: str) -> dict[str, Any]:
     that accepts a ``model`` arg; ``REPOWISE_EMBEDDING_DIMS`` is gemini-specific
     (its constructor exposes ``output_dimensionality``). Anything not set here
     falls through to the embedder's own defaults.
+
+    When the embedder needs an API key and the environment has none, the key is
+    recovered from the repo/global config so the server matches the index it
+    was pointed at instead of falling back to mock vectors.
     """
     kwargs: dict[str, Any] = {}
     model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
@@ -80,6 +155,12 @@ def _embedder_kwargs(name: str) -> dict[str, Any]:
     if name == "gemini":
         dims = os.environ.get("REPOWISE_EMBEDDING_DIMS")
         kwargs["output_dimensionality"] = int(dims) if dims else 768
+
+    env_vars = _EMBEDDER_KEY_ENV.get(name, ())
+    if env_vars and not any(os.environ.get(var) for var in env_vars):
+        key = _persisted_embedder_key(name)
+        if key:
+            kwargs["api_key"] = key
     return kwargs
 
 
