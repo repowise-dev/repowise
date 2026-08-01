@@ -462,15 +462,21 @@ class PerTypeGenerationMixin:
             )
             return self._attach_source_evidence(page, page_key, evidence)
 
-        template_name = f"onboarding/{spec.template}"
-        user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
-        user_prompt, evidence = self._append_source_evidence(
-            user_prompt,
+        evidence = self._select_source_evidence(
             page_key,
             signals.source_map,
             parsed_files=signals.parsed_files,
             references=references,
         )
+        template_name = f"onboarding/{spec.template}"
+        user_prompt = self._render(
+            template_name,
+            ctx=ctx,
+            slot=spec.slot,
+            exact_source_available=any(item.symbol is not None for item in evidence.included),
+        )
+        if evidence.rendered:
+            user_prompt += evidence.rendered
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
         salt = _onboarding.ONBOARDING_GENERATION_VERSION

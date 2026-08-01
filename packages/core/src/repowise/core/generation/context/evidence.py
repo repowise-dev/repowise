@@ -264,6 +264,10 @@ def _select_reference_evidence(
             skipped.append(EvidenceSkip(reference, "binary_or_non_utf8"))
             continue
         lines = text.splitlines()
+        end_line = min(end_line, len(lines))
+        if end_line < start_line:
+            skipped.append(EvidenceSkip(reference, "invalid_line_range"))
+            continue
         body = "\n".join(lines[start_line - 1 : end_line]).strip()
         if not body:
             skipped.append(EvidenceSkip(reference, "empty_excerpt"))

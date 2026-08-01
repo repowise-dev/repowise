@@ -163,9 +163,9 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
             continue
         flows.append(
             FlowTrace(
-                entry_point=str(getattr(flow, "entry_point", "")),
+                entry_point=str(getattr(flow, "entry_point_id", "")),
                 hops=trace[:_TRACE_DISPLAY_HOPS],
-                score=float(getattr(flow, "score", 0.0) or 0.0),
+                score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
             )
         )
     return flows

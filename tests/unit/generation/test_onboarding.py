@@ -18,6 +18,7 @@ import jinja2
 import pytest
 from structlog.testing import capture_logs
 
+from repowise.core.analysis.execution_flows import ExecutionFlow
 from repowise.core.generation import onboarding
 from repowise.core.generation.context.token_budget import estimate_tokens
 from repowise.core.generation.context_assembler import ContextAssembler
@@ -450,6 +451,84 @@ def test_how_it_works_fires_on_cli_archetype_via_entry_point() -> None:
     assert ctx.archetype == "cli"
 
 
+async def test_how_it_works_without_a_detected_flow_preserves_generic_fallback() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+    )
+    config = GenerationConfig(cache_enabled=False)
+    provider = MockProvider()
+
+    page = await PageGenerator(provider, ContextAssembler(config), config).generate_onboarding_page(
+        spec, signals
+    )
+
+    assert page is not None
+    prompt = provider.calls[0]["user_prompt"]
+    assert "narrate the transition generically" in prompt
+    assert "Attribute behavior only to the symbol whose exact source excerpt" not in prompt
+    assert "## Exact source excerpts" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("token_budget", "include_source", "skip_reason"),
+    ((0, True, "budget_disabled"), (300, False, "source_not_indexed")),
+)
+async def test_how_it_works_without_usable_exact_source_preserves_generic_fallback(
+    token_budget: int,
+    include_source: bool,
+    skip_reason: str,
+) -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    hop_specs = (
+        ("src/cli.py", "main"),
+        ("src/parser.py", "parse_request"),
+        ("src/worker.py", "enqueue_job"),
+    )
+    files = []
+    references = []
+    source_map = {}
+    for path, symbol_name in hop_specs:
+        parsed = _file(path, is_entry_point=path == "src/cli.py", symbols=[symbol_name])
+        parsed.symbols[0].start_line = 1
+        parsed.symbols[0].end_line = 2
+        files.append(parsed)
+        references.append(f"{path}::{symbol_name}")
+        if include_source:
+            source_map[path] = f"def {symbol_name}():\n    return None\n".encode()
+    flow = ExecutionFlow(
+        entry_point_id=references[0],
+        entry_point_name="main",
+        entry_point_score=0.9,
+        trace=references,
+        depth=2,
+        crosses_community=False,
+        communities_visited=[0],
+    )
+    signals = _signals(files=files, source_map=source_map, flows=(flow,))
+    config = GenerationConfig(
+        cache_enabled=False,
+        source_evidence_token_budget=token_budget,
+    )
+    provider = MockProvider()
+
+    page = await PageGenerator(provider, ContextAssembler(config), config).generate_onboarding_page(
+        spec, signals
+    )
+
+    assert page is not None
+    prompt = provider.calls[0]["user_prompt"]
+    assert "narrate the transition generically" in prompt
+    assert "Attribute behavior only to the symbol whose exact source excerpt" not in prompt
+    assert "## Exact source excerpts" not in prompt
+    assert page.metadata["source_evidence"]["skipped"] == [
+        {"path": reference, "reason": skip_reason} for reference in references
+    ]
+
+
 async def test_onboarding_prompt_includes_configured_source_evidence() -> None:
     spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
     assert spec is not None
@@ -501,17 +580,20 @@ async def test_how_it_works_balances_configured_and_distinct_exact_flow_evidence
         files.append(parsed)
         source_map[path] = source
         references.append(f"{path}::{symbol_name}")
+    execution_flow = ExecutionFlow(
+        entry_point_id=references[0],
+        entry_point_name="main",
+        entry_point_score=1.0,
+        trace=references,
+        depth=2,
+        crosses_community=True,
+        communities_visited=[0, 1],
+    )
     signals = _signals(
         files=files,
         source_map=source_map,
         entry_points=["src/cli.py"],
-        flows=(
-            SimpleNamespace(
-                entry_point=references[0],
-                trace=references,
-                score=1.0,
-            ),
-        ),
+        flows=(execution_flow,),
     )
     config = GenerationConfig(
         source_evidence_token_budget=500,
@@ -564,13 +646,7 @@ async def test_how_it_works_balances_configured_and_distinct_exact_flow_evidence
         files=files,
         source_map=changed_source_map,
         entry_points=["src/cli.py"],
-        flows=(
-            SimpleNamespace(
-                entry_point=references[0],
-                trace=references,
-                score=1.0,
-            ),
-        ),
+        flows=(execution_flow,),
     )
     changed_provider = MockProvider()
     changed_generator = PageGenerator(

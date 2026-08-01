@@ -516,6 +516,24 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         references: Sequence[str] = (),
     ) -> tuple[str, EvidenceSelection]:
         """Append bounded repository evidence and report every selection decision."""
+        selection = self._select_source_evidence(
+            page_key,
+            source_map,
+            parsed_files=parsed_files,
+            references=references,
+        )
+        prompt = user_prompt + selection.rendered if selection.rendered else user_prompt
+        return prompt, selection
+
+    def _select_source_evidence(
+        self,
+        page_key: str,
+        source_map: dict[str, bytes],
+        *,
+        parsed_files: Sequence[ParsedFile] = (),
+        references: Sequence[str] = (),
+    ) -> EvidenceSelection:
+        """Select bounded repository evidence and log every decision."""
         configured = self._config.source_evidence_files.get(page_key, ())
         selection = select_prompt_evidence(
             source_map,
@@ -538,8 +556,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                 page_key=page_key,
                 skipped=[{"path": item.path, "reason": item.reason} for item in selection.skipped],
             )
-        prompt = user_prompt + selection.rendered if selection.rendered else user_prompt
-        return prompt, selection
+        return selection
 
     def _disabled_source_evidence(
         self,

@@ -54,11 +54,18 @@ Produce a How It Works markdown page. Required structure:
    - pipeline → "when input enters at `<the real source>`, …"
    - module → narrate the highest-scoring flow above as a generic
      control-flow story.
+{% if exact_source_available | default(false) %}
    Walk through only behavior established by exact source excerpts. A detected
    flow is a static graph path, not permission to invent a chronological
    transition between adjacent hops. Use file/symbol names as-is; if an excerpt
    is absent or does not establish a transition, state only that the symbol is
    on the detected path.
+{% else %}
+   Walk through the hops above (or, if no flow was detected, the entry point and
+   its immediate neighbors). Use the file/symbol names as-is. If a flow hop is
+   unfamiliar, narrate the transition generically rather than inventing what the
+   file does internally.
+{% endif %}
 3. **## Why it's shaped this way** — 2–3 sentences linking the flow to
    the archetype: why this structure makes sense for a service / cli /
    etc. Do not invent decisions; restrict yourself to observations the
@@ -70,6 +77,7 @@ Produce a How It Works markdown page. Required structure:
 
 Hard rules:
 - Every file path or symbol you name must come from the data above.
+{% if exact_source_available | default(false) %}
 - Attribute behavior only to the symbol whose exact source excerpt establishes
   it. Never transfer behavior from one hop to an adjacent hop.
 - State that one symbol calls or triggers another only when an excerpt shows
@@ -78,4 +86,5 @@ Hard rules:
   user-event semantics from adjacency.
 - When a transition is not established, describe supported facts in separate
   sentences without a chronological or causal bridge.
+{% endif %}
 - Output markdown only. No preamble, no apologies, no closing summary.
