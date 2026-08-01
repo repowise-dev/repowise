@@ -143,13 +143,7 @@ def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | 
 # included (not the extra git-blame-only languages).
 
 # Excludes "openapi" (handled by special_handlers) and "unknown".
-_PASSTHROUGH_LANGUAGES: frozenset[str] = frozenset(
-    spec.tag
-    for spec in _LANG_REGISTRY.all_specs()
-    if spec.is_passthrough
-    and (not spec.is_code or spec.is_infra)
-    and spec.tag not in ("openapi", "unknown")
-)
+_PASSTHROUGH_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_data_languages()
 
 # ---------------------------------------------------------------------------
 # Language registry — maps language tag → tree-sitter Language object

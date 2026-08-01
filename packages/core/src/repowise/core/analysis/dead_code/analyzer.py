@@ -493,6 +493,23 @@ class DeadCodeAnalyzer:
         self._dynamic_import_files = find_dynamic_import_files(
             parsed_files or {}
         ) | find_dynamic_edge_files(graph)
+        # Parent directories of the above, precomputed once.
+        #
+        # ``_make_unreachable_finding`` asks "does any dynamic-import file sit
+        # in the same package as this node". That used to be a scan over
+        # ``_dynamic_import_files`` constructing a ``Path`` per candidate, run
+        # once per unreachable candidate: O(candidates x dynamic_files) with a
+        # pathlib constant. A set of parent strings makes it one hash lookup,
+        # so the pass is linear in candidates again. On a 30k-file JS monorepo
+        # (8.8k files carrying dynamic-import markers) that took the dead-code
+        # phase from 374.9s to 10.1s with byte-identical findings.
+        #
+        # Derived state: this is only valid for the current
+        # ``_dynamic_import_files``. Treat both as immutable after __init__,
+        # or update them together.
+        self._dynamic_import_dirs: set[str] = {
+            str(Path(dif).parent) for dif in self._dynamic_import_files
+        }
         self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(parsed_files or {})
         # Files substituted in via bundler ``resolve.alias`` config — named
         # by the config, never imported by path.
@@ -711,12 +728,8 @@ class DeadCodeAnalyzer:
             confidence = 0.4
 
         # Reduce confidence when dynamic imports exist in the same package.
-        if self._dynamic_import_files:
-            node_pkg = str(Path(node).parent)
-            for dif in self._dynamic_import_files:
-                if str(Path(dif).parent) == node_pkg:
-                    confidence = min(confidence, 0.4)
-                    break
+        if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
+            confidence = min(confidence, 0.4)
 
         # Runtime-load risk factors (config / bootstrap / database /
         # environment / script). These are files the never-flag allowlist

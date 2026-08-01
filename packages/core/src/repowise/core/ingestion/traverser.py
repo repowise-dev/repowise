@@ -211,13 +211,7 @@ _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
 # adds no value.
 # Languages for which generated-file detection is skipped — same as parser's
 # passthrough set (no AST parsing, so reading 512 bytes for markers is pointless).
-_SKIP_GENERATED_CHECK: frozenset[str] = frozenset(
-    spec.tag
-    for spec in _LANG_REGISTRY.all_specs()
-    if spec.is_passthrough
-    and (not spec.is_code or spec.is_infra)
-    and spec.tag not in ("openapi", "unknown")
-)
+_SKIP_GENERATED_CHECK: frozenset[str] = _LANG_REGISTRY.unparseable_data_languages()
 
 
 class FileTraverser:
