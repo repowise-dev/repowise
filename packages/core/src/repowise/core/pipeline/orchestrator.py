@@ -484,7 +484,9 @@ async def run_pipeline(
         # decision extraction is I/O/LLM-bound and its wall clock hides
         # entirely behind the CPU-bound dead-code + health work.
         dead_code_report, health_report, decision_report = await asyncio.gather(
-            _run_dead_code_analysis(graph_builder, git_meta_map, progress=progress),
+            _run_dead_code_analysis(
+                graph_builder, git_meta_map, source_map=source_map, progress=progress
+            ),
             _run_health_analysis(
                 graph_builder,
                 git_meta_map,

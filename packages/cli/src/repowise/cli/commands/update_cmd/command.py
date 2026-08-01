@@ -1065,7 +1065,7 @@ def run_update(
         return UpdateOutcome.DRY_RUN
 
     partial_health_report, dead_code_report = _run_partial_analysis(
-        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs
+        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs, source_map
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before

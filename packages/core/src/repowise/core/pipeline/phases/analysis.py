@@ -41,6 +41,7 @@ async def _run_dead_code_analysis(
     graph_builder: Any,
     git_meta_map: dict[str, dict],
     *,
+    source_map: dict[str, bytes] | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Run dead code detection (pure graph traversal, no LLM)."""
@@ -54,7 +55,10 @@ async def _run_dead_code_analysis(
             progress.on_phase_start("dead_code", dead_code_steps)
 
         analyzer = DeadCodeAnalyzer(
-            graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+            graph_builder.graph(),
+            git_meta_map,
+            parsed_files=graph_builder._parsed_files,
+            source_map=source_map,
         )
 
         def _step(_stage: str) -> None:

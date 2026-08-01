@@ -17,9 +17,37 @@ in Phase 2 stays mechanical.
 
 from __future__ import annotations
 
+import locale
 from pathlib import Path
 
 from repowise.core.ids import is_external
+
+
+def read_source_text(
+    rel_path: str,
+    abs_path: str,
+    source_map: dict[str, bytes] | None,
+) -> str:
+    """Decoded source for *rel_path*, preferring ingestion's already-read bytes.
+
+    The dead-code prepasses each scan the whole indexed file set for text
+    markers. Ingestion already read every one of those files into
+    ``source_map`` (keyed by the same repo-relative path as ``parsed_files``),
+    so a hit here replaces a full-repo disk pass with a dict lookup.
+
+    Decoding is deliberately identical on both paths, and identical to the
+    ``Path.read_text(errors="ignore")`` these prepasses used to call, which
+    resolves ``encoding=None`` to the locale encoding at call time. Every
+    marker is ASCII, but pinning the codec keeps a source_map hit and a disk
+    fallback from ever disagreeing about the same bytes.
+    """
+    data: bytes | None = None
+    if source_map is not None:
+        data = source_map.get(rel_path)
+    if data is None:
+        data = Path(abs_path).read_bytes()
+    return data.decode(locale.getpreferredencoding(False), errors="ignore")
+
 
 # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
 _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
@@ -449,7 +477,10 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def find_dynamic_import_files(parsed_files: dict) -> set[str]:
+def find_dynamic_import_files(
+    parsed_files: dict,
+    source_map: dict[str, bytes] | None = None,
+) -> set[str]:
     """Return the set of file paths whose source contains a dynamic-import marker."""
     result: set[str] = set()
     for path, pf in parsed_files.items():
@@ -461,7 +492,7 @@ def find_dynamic_import_files(parsed_files: dict) -> set[str]:
             markers = _DYNAMIC_IMPORT_MARKERS.get(src_path.suffix)
             if not markers:
                 continue
-            source = src_path.read_text(errors="ignore")
+            source = read_source_text(path, file_info.abs_path, source_map)
             if any(marker in source for marker in markers):
                 result.add(path)
         except Exception:

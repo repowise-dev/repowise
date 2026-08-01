@@ -155,6 +155,7 @@ def build_repo_graph(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
+    graph_builder.set_source_map(source_map)
     graph_builder.build()
     if parse_cache is not None:
         parse_cache.save()
@@ -307,12 +308,16 @@ def run_partial_analysis(
     parsed_files: list,
     file_diffs: list,
     *,
+    source_map: dict[str, bytes] | None = None,
     log: LogFn | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + dead-code analysis for the changed files.
 
     Returns ``(partial_health_report, dead_code_report)`` — either may be
     ``None`` if its analysis failed (both are best-effort).
+
+    *source_map* is ingestion's ``{path: raw bytes}`` for this rebuild; the
+    dead-code prepasses read it instead of re-reading the repo from disk.
     """
     log = log or _noop_log
 
@@ -360,7 +365,10 @@ def run_partial_analysis(
         # parsed_files enables the source-scan rescues (dynamic markers,
         # bundler aliases, export aliases) on the update path, matching init.
         _analyzer_partial = DeadCodeAnalyzer(
-            graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+            graph_builder.graph(),
+            git_meta_map,
+            parsed_files=graph_builder._parsed_files,
+            source_map=source_map,
         )
         _changed_paths_partial = [fd.path for fd in file_diffs]
         dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)

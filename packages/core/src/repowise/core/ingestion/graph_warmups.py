@@ -159,7 +159,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
                                 node["visibility"] = "public"
                         break
 
-    _mark_cpp_entry_point_files(parsed_files, graph)
+    _mark_cpp_entry_point_files(parsed_files, graph, getattr(ctx, "source_map", None))
 
 
 # Tokens whose presence means the surrounding TU wires itself into a
@@ -189,25 +189,46 @@ _CPP_ENTRY_MARKERS = (
 )
 
 
-def _mark_cpp_entry_point_files(parsed_files: dict, graph: Any) -> None:
+def _read_warmup_source(
+    path: str,
+    parsed: Any,
+    source_map: dict[str, bytes] | None,
+) -> str | None:
+    """Text of *path* for a marker scan, from *source_map* if it has it.
+
+    Neither ``ParsedFile`` nor ``FileInfo`` carries the source, so before
+    ``source_map`` existed these scans always re-opened the file. Decoding
+    matches what the disk fallback below does (utf-8 / replace) so a hit and
+    a miss can never disagree about the same bytes. Returns None when the
+    file is unavailable, which the callers treat as "no markers".
+    """
+    if source_map is not None:
+        data = source_map.get(path)
+        if data is not None:
+            return data.decode("utf-8", errors="replace")
+    abs_path = getattr(parsed.file_info, "abs_path", None)
+    if not abs_path:
+        return None
+    try:
+        with open(abs_path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _mark_cpp_entry_point_files(
+    parsed_files: dict,
+    graph: Any,
+    source_map: dict[str, bytes] | None = None,
+) -> None:
     """Stamp ``is_entry_point=True`` on TU file nodes matching an entry marker."""
     for path, parsed in parsed_files.items():
         lang = parsed.file_info.language
         if lang not in ("cpp", "c"):
             continue
-        # The parser already loaded the source; reuse it via the
-        # ParsedFile (avoids a second filesystem read).
-        src = getattr(parsed, "source", None) or getattr(parsed.file_info, "source", None)
+        src = _read_warmup_source(path, parsed, source_map)
         if src is None:
-            # ParsedFile doesn't always carry the source — fall back to disk.
-            abs_path = getattr(parsed.file_info, "abs_path", None)
-            if not abs_path:
-                continue
-            try:
-                with open(abs_path, encoding="utf-8", errors="replace") as f:
-                    src = f.read()
-            except OSError:
-                continue
+            continue
         if not any(tok in src for tok in _CPP_ENTRY_MARKERS):
             continue
         node = graph.nodes.get(path)
@@ -235,18 +256,14 @@ def _warmup_swift(ctx: ResolverContext) -> None:
 
     graph = getattr(ctx, "graph", None)
     parsed_files = getattr(ctx, "parsed_files", None) or {}
+    source_map = getattr(ctx, "source_map", None)
     if graph is None:
         return
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "swift":
             continue
-        abs_path = getattr(parsed.file_info, "abs_path", None)
-        if not abs_path:
-            continue
-        try:
-            with open(abs_path, encoding="utf-8", errors="replace") as f:
-                src = f.read()
-        except OSError:
+        src = _read_warmup_source(path, parsed, source_map)
+        if src is None:
             continue
         if not _SWIFT_ENTRY_RE.search(src):
             continue

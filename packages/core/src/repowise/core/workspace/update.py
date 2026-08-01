@@ -372,7 +372,7 @@ async def _incremental_repo_update(
     git_decay_map: dict[str, dict] = {}
     (
         parsed_files,
-        _source_map,
+        source_map,
         graph_builder,
         _structure,
         file_count,
@@ -390,7 +390,13 @@ async def _incremental_repo_update(
     )
 
     partial_health_report, dead_code_report = run_partial_analysis(
-        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs, log=_log.info
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        parsed_files,
+        file_diffs,
+        source_map=source_map,
+        log=_log.info,
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before

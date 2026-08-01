@@ -51,6 +51,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
     ) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
+        # Raw source bytes the caller already read, keyed like _parsed_files.
+        # Populated via ``set_source_map`` before ``build()``; the language
+        # warmups that scan file text read it instead of re-opening every
+        # file. Empty means "not supplied": every reader falls back to disk.
+        self._source_map: dict[str, bytes] = {}
         self._built = False
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
@@ -171,6 +176,14 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
     # Building
     # ------------------------------------------------------------------
 
+    def set_source_map(self, source_map: dict[str, bytes] | None) -> None:
+        """Hand the builder the source bytes already read for the indexed set.
+
+        Call before :meth:`build`. Keys must match ``file_info.path`` (the
+        same repo-relative POSIX key ``add_file`` registers under).
+        """
+        self._source_map = source_map or {}
+
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
@@ -285,6 +298,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             parsed_files=self._parsed_files,
+            source_map=self._source_map,
         )
 
         # --- Phase 1 prelude: language-specific warmups ---
