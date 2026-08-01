@@ -62,6 +62,14 @@ A dated note.
 **Dead code** — code no import path reaches.
 
 **Co-change** is how often two files land in the same commit.
+
+## 2 · Reconciliation: matching two ledgers
+
+Reconciliation pairs a bank line against a book line.
+
+## Hotspots
+
+## Response
 """
 
 _ARCHITECTURE = """\
@@ -118,18 +126,105 @@ Polished the report.
 ## v1.9.0
 
 Introduced the audit trail.
+
+## Audit trail
+
+The audit trail records every posting.
+"""
+
+
+# Source prose. A term has to be spelled by the code as well as by the docs,
+# so the fixture is a repository rather than a documents folder. Half of it is
+# TypeScript on purpose: a miner that reads only Python scores a TypeScript
+# repository zero and then rejects its whole vocabulary.
+
+_SRC_ANALYSIS = '''\
+"""Blast radius for the ledger.
+
+Blast radius is every file a change can reach by following imports.
+"""
+
+
+def walk():
+    """Change risk is the history of the files a diff touches."""
+'''
+
+_SRC_HISTORY = '''\
+"""Co-change table.
+
+Co-change counts how often two files land in the same commit.
+"""
+'''
+
+_SRC_HOTSPOTS = '''\
+"""Churn ranking for hotspots."""
+'''
+
+_SRC_RESPONSE = '''\
+"""Response helpers.
+
+Response objects are built here. Response shaping happens later.
+"""
+'''
+
+_SRC_RECONCILE = '''\
+"""Reconciliation of bank lines against book lines."""
+'''
+
+_WEB_GRAPH = """\
+/**
+ * Bug magnet detection for the graph view.
+ *
+ * A bug magnet is a file that has absorbed far more fixes than its neighbours.
+ */
+export function bugMagnets() {}
+"""
+
+_WEB_DEAD = """\
+/**
+ * Dead code overlay.
+ */
+export function deadCode() {}
 """
 
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "README.md").write_text(_README, encoding="utf-8")
-    (tmp_path / "ARCHITECTURE.md").write_text(_ARCHITECTURE, encoding="utf-8")
-    docs = tmp_path / "docs"
+    # The repository is a named directory, not tmp_path itself: its own name
+    # is one of the things the miner has to exclude.
+    root = tmp_path / "ledger"
+    root.mkdir()
+    (root / "README.md").write_text(_README, encoding="utf-8")
+    (root / "ARCHITECTURE.md").write_text(_ARCHITECTURE, encoding="utf-8")
+    docs = root / "docs"
     docs.mkdir()
     (docs / "CHANGELOG.md").write_text(_DOCS_CHANGELOG, encoding="utf-8")
     (docs / "guide.md").write_text(_DOCS_GUIDE, encoding="utf-8")
-    return tmp_path
+
+    src = root / "src"
+    src.mkdir()
+    (src / "analysis.py").write_text(_SRC_ANALYSIS, encoding="utf-8")
+    (src / "history.py").write_text(_SRC_HISTORY, encoding="utf-8")
+    (src / "http_helpers.py").write_text(_SRC_RESPONSE, encoding="utf-8")
+    reconciliation = src / "reconciliation"
+    reconciliation.mkdir()
+    (reconciliation / "engine.py").write_text(_SRC_RECONCILE, encoding="utf-8")
+    hotspots = src / "hotspots"
+    hotspots.mkdir()
+    (hotspots / "rank.py").write_text(_SRC_HOTSPOTS, encoding="utf-8")
+
+    web = root / "web"
+    web.mkdir()
+    (web / "graph.ts").write_text(_WEB_GRAPH, encoding="utf-8")
+    (web / "dead.tsx").write_text(_WEB_DEAD, encoding="utf-8")
+
+    # Vendored code is somebody else's vocabulary and must not be counted.
+    vendored = root / "node_modules" / "other"
+    vendored.mkdir(parents=True)
+    (vendored / "index.js").write_text(
+        "/** Ingestion pipeline for a different project. */", encoding="utf-8"
+    )
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -142,21 +237,26 @@ def repo(tmp_path: Path) -> Path:
 #: reviewed change to which concept pages the planner produces, and never to
 #: make a failing test pass.
 EXPECTED_TERMS = [
-    "Ledger",
+    "Ledger",  # the repository's own name
     "Blast radius",
     "Change risk",
-    # A marketing heading. It survives the harvest today, and it stays here:
-    # the harvest is the planner's input and the planner discards non-binders
-    # anyway. Filtering claims belongs to the ranked view, which renders terms
-    # directly and cannot afford them.
-    "Your ledger stops guessing",
+    "Your ledger stops guessing",  # a marketing heading
+    "Hotspots",
+    "Response",  # an ordinary English word
     "Dead code",
     "Co-change",
     "Architecture",
-    "Ingestion pipeline",
+    "Ingestion pipeline",  # named by a document, built nowhere
+    "Audit trail",  # from the changelog
     "Query guide",
     "Bug magnet",
 ]
+
+#: Five of the thirteen above are things a reader should never be shown, and
+#: every one of them stays. This list is the planner's input, and the planner
+#: discards whatever fails to bind to a real directory, so none of them costs
+#: it anything. Rejecting them is the ranked view's job — the tests below
+#: assert each is gone from *that*.
 
 
 def test_extract_terms_output_is_byte_identical(repo: Path) -> None:
@@ -178,14 +278,118 @@ def test_extract_terms_on_a_repository_with_no_docs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_house_terms_carry_the_same_terms_in_the_same_order(repo: Path) -> None:
-    """The enrichment adds fields; it does not add, drop or reorder terms."""
-    assert [t.term for t in extract_house_terms(repo)] == EXPECTED_TERMS
+def by_term(repo: Path, **kwargs) -> dict[str, object]:
+    return {t.term: t for t in extract_house_terms(repo, **kwargs)}
 
 
-def test_a_heading_yields_its_following_sentence_as_the_definition(repo: Path) -> None:
-    by_term = {t.term: t for t in extract_house_terms(repo)}
-    blast = by_term["Blast radius"]
+def test_the_ranked_view_keeps_only_what_the_code_also_spells(repo: Path) -> None:
+    """The gate, end to end.
+
+    Every term here is named by a document. What separates the survivors is
+    whether the source prose uses the term too.
+    """
+    terms = [t.term for t in extract_house_terms(repo)]
+    assert terms == [
+        # Two documents name it; nothing else here is named twice.
+        "Blast radius",
+        # Then multi-word terms, then single-word ones. Within each group,
+        # how much of the code uses the term.
+        "Bug magnet",
+        "Change risk",
+        "Co-change",
+        "Dead code",
+        "Hotspots",
+        "Reconciliation",
+    ]
+
+
+def test_a_term_the_documents_name_but_the_code_never_uses_is_dropped(
+    repo: Path,
+) -> None:
+    """A marketed feature with nothing behind it does not become vocabulary."""
+    assert "Ingestion pipeline" not in by_term(repo)
+
+
+def test_a_claim_is_not_a_name(repo: Path) -> None:
+    """A heading with a pronoun is a sentence about the reader."""
+    assert "Your ledger stops guessing" not in by_term(repo)
+
+
+def test_the_repository_does_not_define_its_own_name(repo: Path) -> None:
+    """It leads every frequency count in every repository and teaches nothing."""
+    assert "Ledger" not in by_term(repo)
+
+
+def test_release_notes_are_not_mined(repo: Path) -> None:
+    """The changelog names "Audit trail" under a plain heading, and the code
+    spells it, so only skipping the document keeps it out."""
+    assert "Audit trail" not in by_term(repo)
+
+
+def test_an_ordinary_word_does_not_become_a_term(repo: Path) -> None:
+    """ "Response" is named by a heading and used by the code, and is still not
+    a subsystem: no acronym shape, no internal capital, no directory."""
+    assert "Response" not in by_term(repo)
+
+
+def test_a_single_word_the_codebase_spells_in_a_directory_survives(
+    repo: Path,
+) -> None:
+    """The same test :func:`bind_terms` applies. "Hotspots" has src/hotspots/."""
+    assert "Hotspots" in by_term(repo)
+
+
+def test_a_numbered_heading_with_a_gloss_yields_its_name(repo: Path) -> None:
+    """ "2 · Reconciliation: matching two ledgers" names Reconciliation.
+
+    Without stripping the number the whole heading is rejected for carrying a
+    digit, and the section contributes nothing.
+    """
+    assert "Reconciliation" in by_term(repo)
+
+
+def test_ranking_is_by_how_many_documents_name_the_term(repo: Path) -> None:
+    terms = extract_house_terms(repo)
+    assert terms[0].term == "Blast radius"
+    assert terms[0].doc_frequency == 2
+    assert all(t.doc_frequency == 1 for t in terms[1:])
+
+
+def test_code_frequency_is_counted_but_never_added_to_document_frequency(
+    repo: Path,
+) -> None:
+    """Kept apart on purpose.
+
+    Summing them lets a word appearing in hundreds of docstrings outrank the
+    name of a real subsystem. "Response" would win on a sum and is not a term
+    at all.
+    """
+    blast = by_term(repo)["Blast radius"]
+    assert blast.doc_frequency == 2
+    assert blast.code_frequency == 1
+
+
+def test_typescript_prose_counts_as_the_code_spelling_the_term(repo: Path) -> None:
+    """A JSDoc block is a maintainer writing about a unit of code.
+
+    Reading only Python scores a TypeScript repository zero on every term and
+    the gate then rejects its entire vocabulary.
+    """
+    assert by_term(repo)["Bug magnet"].code_frequency == 1
+    assert by_term(repo)["Dead code"].code_frequency == 1
+
+
+def test_vendored_code_is_not_the_repository_talking_about_itself(
+    repo: Path,
+) -> None:
+    """node_modules names "Ingestion pipeline"; it must not gate it in."""
+    assert "Ingestion pipeline" not in by_term(repo)
+
+
+def test_a_heading_yields_its_following_sentence_as_the_definition(
+    repo: Path,
+) -> None:
+    blast = by_term(repo)["Blast radius"]
     assert blast.definition == (
         "Blast radius is the set of files a change can reach through the import graph."
     )
@@ -193,34 +397,45 @@ def test_a_heading_yields_its_following_sentence_as_the_definition(repo: Path) -
 
 
 def test_a_bolded_lead_in_yields_its_definition(repo: Path) -> None:
-    by_term = {t.term: t for t in extract_house_terms(repo)}
-    assert by_term["Dead code"].definition == "code no import path reaches."
-    assert by_term["Dead code"].definition_source == "README.md"
+    dead = by_term(repo)["Dead code"]
+    assert dead.definition == "code no import path reaches."
+    assert dead.definition_source == "README.md"
 
 
-def test_a_term_named_by_two_documents_records_both(repo: Path) -> None:
-    by_term = {t.term: t for t in extract_house_terms(repo)}
-    assert by_term["Blast radius"].source_paths == ("README.md", "ARCHITECTURE.md")
-    assert by_term["Blast radius"].doc_frequency == 2
-    assert by_term["Change risk"].doc_frequency == 1
+def test_a_documented_definition_wins_over_a_code_one(repo: Path) -> None:
+    """The docs are where a term is explained for a reader; a docstring is
+    where it is explained for whoever is editing that file."""
+    magnet = by_term(repo)["Bug magnet"]
+    assert magnet.definition == (
+        "A file that has absorbed an unusual share of the repository's bug fixes."
+    )
+    assert magnet.definition_source == "docs/guide.md"
+
+
+def test_code_prose_supplies_a_definition_the_documents_did_not(repo: Path) -> None:
+    """ "Co-change" is a bolded term with no dash, so the documents name it and
+    never explain it. The code does."""
+    co = by_term(repo)["Co-change"]
+    assert co.definition == ("Co-change counts how often two files land in the same commit.")
+    assert co.definition_source == "src/history.py"
+
+
+def test_a_term_records_every_document_that_names_it(repo: Path) -> None:
+    blast = by_term(repo)["Blast radius"]
+    assert blast.source_paths[:2] == ("README.md", "ARCHITECTURE.md")
+    assert "src/analysis.py" in blast.source_paths
 
 
 def test_source_paths_are_repository_relative_and_posix(repo: Path) -> None:
-    by_term = {t.term: t for t in extract_house_terms(repo)}
-    assert by_term["Bug magnet"].source_paths == ("docs/guide.md",)
+    assert by_term(repo)["Bug magnet"].source_paths[0] == "docs/guide.md"
 
 
-def test_the_definition_scan_stops_at_the_next_heading(repo: Path) -> None:
-    """A section with no prose of its own has no definition.
-
-    Without a stop the scan runs on into the following section and hands back
-    a sentence about a different subject — a confident, wrong definition,
-    which is worse than none.
-    """
-    by_term = {t.term: t for t in extract_house_terms(repo)}
-    assert by_term["Architecture"].definition is None
-    assert by_term["Architecture"].definition_source is None
-    assert by_term["Query guide"].definition is None
+def test_a_term_with_no_sentence_anywhere_reports_none(repo: Path) -> None:
+    """No definition beats a confident wrong one."""
+    hotspots = by_term(repo)["Hotspots"]
+    assert hotspots.code_frequency == 1, "the code does mention it"
+    assert hotspots.definition is None, "but never in a sentence that defines it"
+    assert hotspots.definition_source is None
 
 
 def test_a_term_the_codebase_defines_is_marked_as_a_symbol(repo: Path) -> None:
@@ -230,15 +445,18 @@ def test_a_term_the_codebase_defines_is_marked_as_a_symbol(repo: Path) -> None:
     resolve, so a coined term dressed as code is demoted mid-page — silently,
     which is the failure shape this repository has shipped before.
     """
-    by_term = {
-        t.term: t for t in extract_house_terms(repo, known_symbols={"Blast radius", "Ledger"})
-    }
-    assert by_term["Blast radius"].is_indexed_symbol is True
-    assert by_term["Bug magnet"].is_indexed_symbol is False
+    found = by_term(repo, known_symbols={"Blast radius"})
+    assert found["Blast radius"].is_indexed_symbol is True
+    assert found["Bug magnet"].is_indexed_symbol is False
 
 
 def test_without_a_symbol_set_nothing_claims_to_be_one(repo: Path) -> None:
     assert all(not t.is_indexed_symbol for t in extract_house_terms(repo))
+
+
+def test_extraction_is_deterministic(repo: Path) -> None:
+    """It runs on the keyless path and has to give the same answer twice."""
+    assert extract_house_terms(repo) == extract_house_terms(repo)
 
 
 def test_house_terms_on_a_repository_with_no_docs(
@@ -248,3 +466,17 @@ def test_house_terms_on_a_repository_with_no_docs(
     with caplog.at_level(logging.WARNING, logger=_LOGGER):
         assert extract_house_terms(tmp_path) == []
     assert "no house terms found" in caplog.text
+
+
+def test_documents_read_but_nothing_survived_is_a_different_report(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A repository whose code this cannot read looks identical to one with no
+    docs unless the two are logged apart."""
+    (tmp_path / "README.md").write_text(
+        "# Widget\n\n## Blast radius\n\nSomething about it here.\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        assert extract_house_terms(tmp_path) == []
+    assert "none survived" in caplog.text

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -219,9 +220,13 @@ class HouseTerm:
     #: Repository-relative POSIX paths of every document that names the term,
     #: in the order they were read.
     source_paths: tuple[str, ...]
-    #: How many distinct documents name it. ``len(source_paths)``, named
-    #: because it is the ranking signal rather than an incidental count.
+    #: How many distinct documents name it. This is the primary ranking
+    #: signal: "how often do we write about this".
     doc_frequency: int
+    #: How many source files use it in their own prose. This is the gate:
+    #: "was it built". It is deliberately not added to ``doc_frequency`` —
+    #: see :func:`extract_house_terms`.
+    code_frequency: int
     #: Whether the codebase has a symbol by this name. A term that is also a
     #: symbol can be rendered in backticks; a coined one cannot, because the
     #: grounding pass strips backticks off tokens it cannot resolve.
@@ -302,6 +307,101 @@ def _definition_after_heading(text: str, offset: int) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Which documents to read
+# ---------------------------------------------------------------------------
+
+#: Files whose headings are version numbers and shipped-feature blurbs rather
+#: than subsystem names. A changelog is usually the largest document in a
+#: repository and the least useful one to mine: on this repository it consumed
+#: 142 of the first 200 term slots before the tool guide was ever opened.
+_RELEASE_NOTE_NAMES = re.compile(r"(change ?log|releases?|news|history)\.(md|rst)$", re.I)
+_VERSION_HEADING = re.compile(r"^v?\d+\.\d+")
+#: A document has to be overwhelmingly version headings before it is dropped. A
+#: guide that cites a few release numbers is not release notes, and dropping a
+#: large guide by accident loses more vocabulary than a changelog ever adds.
+_RELEASE_NOTE_HEADING_RATIO = 0.6
+_MIN_HEADINGS_TO_JUDGE = 8
+
+
+def _is_release_notes(path: Path, text: str) -> bool:
+    if _RELEASE_NOTE_NAMES.search(path.name):
+        return True
+    headings = _HEADING.findall(text)
+    if len(headings) < _MIN_HEADINGS_TO_JUDGE:
+        return False
+    versiony = sum(1 for h in headings if _VERSION_HEADING.match(h.strip()))
+    return versiony / len(headings) > _RELEASE_NOTE_HEADING_RATIO
+
+
+# ---------------------------------------------------------------------------
+# Which headings name something
+# ---------------------------------------------------------------------------
+
+#: A pronoun makes a heading a sentence about the reader or about us, never a
+#: name: "Your agent stops guessing", "See all of it", "Who it's for". This is
+#: grammar rather than a list of words we happened to dislike, so it carries
+#: to a repository whose marketing copy reads nothing like ours.
+_PRONOUN = re.compile(
+    r"\b(you|your|yours|i|me|my|we|us|our|ours|it|its|they|them|their|theirs|he|she|him|her|his|hers)\b",
+    re.I,
+)
+
+#: Numbering a heading carries ("2 · Distill: command-output compression",
+#: "3. Ingestion") is document structure, not part of the name.
+_ENUMERATOR = re.compile(r"^\s*\d+[.)]?\s*[·•\-–—]?\s+")
+#: A heading of the form "Name: what it does" names the thing before the colon
+#: and explains it after. Both halves are worth offering as candidates; the
+#: lead is usually the term.
+_COLON_SPLIT = re.compile(r"^([^:]{2,40}):\s+(\S.*)$")
+
+
+def _is_name_like(term: str, *, excluded: frozenset[str]) -> bool:
+    """Whether a heading names a thing, as opposed to claiming something.
+
+    Applied on top of :func:`_is_useful`, which already rejects the obvious
+    sentence shapes. This adds the two tests that matter for a term list that
+    gets rendered: no pronouns, and not the repository's own name — which
+    leads every frequency count in every repository and teaches nobody
+    anything.
+    """
+    if term.lower() in excluded:
+        return False
+    return not _PRONOUN.search(term)
+
+
+def _expand_heading(raw: str) -> list[str]:
+    """The spellings of a heading worth considering as a name.
+
+    A numbered heading yields its text without the number; a "Name: gloss"
+    heading yields the name. Both are offered alongside the original, and
+    :func:`_is_useful` decides which survive — a heading carrying a digit is
+    rejected outright, so without stripping the enumerator a numbered section
+    contributes nothing at all.
+    """
+    spellings = [raw]
+    stripped = _ENUMERATOR.sub("", raw).strip()
+    if stripped and stripped != raw:
+        spellings.append(stripped)
+    for candidate in list(spellings):
+        colon = _COLON_SPLIT.match(candidate)
+        if colon:
+            lead = colon.group(1).strip()
+            if lead and lead not in spellings:
+                spellings.append(lead)
+    return spellings
+
+
+def _repo_own_names(repo_root: Path) -> frozenset[str]:
+    """What this repository calls itself, read from the repository."""
+    names = {repo_root.name.lower()}
+    for name in list(names):
+        names.add(name.replace("-", " "))
+        names.add(name.replace("_", " "))
+        names.add(name.replace("-", ""))
+    return frozenset(n for n in names if n)
+
+
 @dataclass
 class _Candidate:
     """A term under construction, accumulating across documents."""
@@ -312,15 +412,31 @@ class _Candidate:
     source_paths: list[str] | None = None
 
 
-def _harvest(repo_root: Path, *, limit: int | None = None) -> list[_Candidate]:
+def _harvest(
+    repo_root: Path,
+    *,
+    limit: int | None = None,
+    expand: Callable[[str], list[str]] | None = None,
+    accept: Callable[[str], bool] | None = None,
+    skip_release_notes: bool = False,
+) -> list[_Candidate]:
     """Every candidate term in document order, deduplicated, first spelling wins.
 
     ``limit`` stops the walk early, so a caller wanting the first N terms does
     not pay to read documents it will discard.
+
+    The three hooks are how the ranked view asks for more than the planner
+    does without moving the planner's input. Called with none of them this is
+    the harvest ``extract_terms`` has always performed, term for term.
+
+    ``expand`` turns one raw heading into several candidate spellings.
+    ``accept`` is an extra test applied after :func:`_is_useful`.
+    ``skip_release_notes`` drops documents whose headings are version numbers.
     """
     candidates: dict[str, _Candidate] = {}
     order: list[str] = []
     unreadable = 0
+    skipped: list[str] = []
 
     for path in _doc_paths(repo_root):
         try:
@@ -328,6 +444,9 @@ def _harvest(repo_root: Path, *, limit: int | None = None) -> list[_Candidate]:
         except OSError:
             unreadable += 1
             logger.warning("vocabulary: could not read %s; skipping it", path)
+            continue
+        if skip_release_notes and _is_release_notes(path, text):
+            skipped.append(path.name)
             continue
         try:
             rel = path.relative_to(repo_root).as_posix()
@@ -349,34 +468,184 @@ def _harvest(repo_root: Path, *, limit: int | None = None) -> list[_Candidate]:
         matches = [(True, m) for m in _HEADING.finditer(text)]
         matches += [(False, m) for m in _BOLD_TERM.finditer(text)]
         for is_heading, match in matches:
-            term = _normalise(match.group(1))
-            if not _is_useful(term):
-                continue
-            key = term.lower()
-            candidate = candidates.get(key)
-            if candidate is None:
-                if limit is not None and len(order) >= limit:
-                    return [candidates[k] for k in order]
-                candidate = _Candidate(term=term, source_paths=[])
-                candidates[key] = candidate
-                order.append(key)
-            assert candidate.source_paths is not None
-            if rel not in candidate.source_paths:
-                candidate.source_paths.append(rel)
-            if candidate.definition is None:
-                definition = definitions.get(key)
-                if not definition and is_heading:
-                    definition = _definition_after_heading(text, match.end())
-                if definition:
-                    candidate.definition = definition
-                    candidate.definition_source = rel
+            # Expansion runs on the raw heading, before normalisation:
+            # normalising strips the punctuation — the colon, the bullet —
+            # that says where the name ends and the gloss begins.
+            raw = match.group(1)
+            spellings = expand(raw) if expand is not None else [raw]
+            for spelling in spellings:
+                term = _normalise(spelling)
+                if not _is_useful(term):
+                    continue
+                if accept is not None and not accept(term):
+                    continue
+                key = term.lower()
+                candidate = candidates.get(key)
+                if candidate is None:
+                    if limit is not None and len(order) >= limit:
+                        return [candidates[k] for k in order]
+                    candidate = _Candidate(term=term, source_paths=[])
+                    candidates[key] = candidate
+                    order.append(key)
+                assert candidate.source_paths is not None
+                if rel not in candidate.source_paths:
+                    candidate.source_paths.append(rel)
+                if candidate.definition is None:
+                    definition = definitions.get(key)
+                    if not definition and is_heading:
+                        definition = _definition_after_heading(text, match.end())
+                    if definition:
+                        candidate.definition = definition
+                        candidate.definition_source = rel
 
     if unreadable:
         logger.warning(
             "vocabulary: %d of the repository's documents could not be read",
             unreadable,
         )
+    if skipped:
+        logger.info(
+            "vocabulary: skipped %d release-note document(s): %s",
+            len(skipped),
+            ", ".join(sorted(skipped)),
+        )
     return [candidates[k] for k in order]
+
+
+# ---------------------------------------------------------------------------
+# What the code says about itself
+# ---------------------------------------------------------------------------
+
+#: Directories that hold somebody else's code. Their prose is about their
+#: subsystems, not ours, and on a large repository they are most of the files.
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".tox",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        "node_modules",
+        "site-packages",
+        "vendor",
+        "third_party",
+        "thirdparty",
+        "dist",
+        "build",
+        "target",
+        "out",
+        ".next",
+        ".cache",
+        "coverage",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "migrations",
+    }
+)
+
+#: Python docstrings, and the block comments JSDoc and TSDoc are written in.
+#: Both are prose a maintainer wrote about a unit of code, which is what makes
+#: them the right place to ask whether a term names something that was built.
+#: Reading only Python here would score every TypeScript-first repository zero
+#: and reject its entire vocabulary.
+_SOURCE_PROSE = {
+    ".py": re.compile(r'(?:^|\n)\s*(?:[rubfRUBF]{0,2})"""(.*?)"""', re.S),
+    ".js": re.compile(r"/\*\*(.*?)\*/", re.S),
+}
+for _ext in (".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"):
+    _SOURCE_PROSE[_ext] = _SOURCE_PROSE[".js"]
+
+_MAX_SOURCE_FILES = 6_000
+_MAX_SOURCE_BYTES = 60_000
+_MAX_PROSE_BLOCKS = 8
+#: Leading ``*`` on every line of a JSDoc block is layout, not text.
+_JSDOC_GUTTER = re.compile(r"^\s*\*[ \t]?", re.M)
+
+
+def _source_prose(repo_root: Path) -> list[tuple[str, str]]:
+    """``(path, prose)`` for every source file that documents itself.
+
+    Walks the tree once. Never raises — an unreadable file is one fewer
+    signal, not a failed generation.
+    """
+    out: list[tuple[str, str]] = []
+    unreadable = 0
+    try:
+        walk = sorted(repo_root.rglob("*"))
+    except OSError:
+        logger.warning("vocabulary: could not walk %s for source prose", repo_root)
+        return []
+    for path in walk:
+        if len(out) >= _MAX_SOURCE_FILES:
+            logger.info(
+                "vocabulary: stopped reading source prose at %d files",
+                _MAX_SOURCE_FILES,
+            )
+            break
+        pattern = _SOURCE_PROSE.get(path.suffix)
+        if pattern is None:
+            continue
+        if any(part in _SKIP_DIRS or part.startswith(".") for part in path.parts):
+            continue
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_SOURCE_BYTES]
+        except OSError:
+            unreadable += 1
+            continue
+        blocks = pattern.findall(text)[:_MAX_PROSE_BLOCKS]
+        if not blocks:
+            continue
+        prose = "\n".join(_JSDOC_GUTTER.sub("", b) for b in blocks)
+        try:
+            rel = path.relative_to(repo_root).as_posix()
+        except ValueError:  # pragma: no cover — path came from repo_root
+            rel = path.name
+        out.append((rel, prose))
+    if unreadable:
+        logger.warning("vocabulary: %d source files could not be read for prose", unreadable)
+    return out
+
+
+#: The gaps between a term's words. Prose writes "co-change", an identifier
+#: writes "co_change" and a heading writes "Co change"; they are one term.
+_WORD_GAP = re.compile(r"[\s_\-]+")
+
+
+def _term_words(term: str) -> list[str]:
+    return [w for w in _WORD_GAP.split(term) if w]
+
+
+def _phrase_pattern(term: str) -> re.Pattern[str]:
+    """Match a term however the code spells the gaps between its words.
+
+    ``bug magnet`` has to find ``bug magnet``, ``bug-magnet`` and
+    ``bug_magnet``, because the docs write it one way and the code the other.
+    """
+    words = [re.escape(w) for w in _term_words(term)]
+    return re.compile(r"\b" + r"[\s_\-]+".join(words) + r"\b", re.I)
+
+
+def _definition_from_prose(prose: str, pattern: re.Pattern[str]) -> str | None:
+    """A sentence in code prose that opens by naming the term.
+
+    A sentence leading with the term is usually the best definition in the
+    repository — better than a heading's follow-on line, which is often a
+    lead-in rather than a meaning. A sentence that merely mentions it is not a
+    definition and is not taken.
+    """
+    for raw in re.split(r"(?<=[.!?])\s+", prose):
+        sentence = " ".join(raw.split())
+        if not (_MIN_DEFINITION_CHARS <= len(sentence) <= _MAX_DEFINITION_CHARS):
+            continue
+        if pattern.match(sentence):
+            return sentence
+    return None
 
 
 def extract_terms(repo_root: Path, *, max_terms: int = 200) -> list[str]:
@@ -389,40 +658,205 @@ def extract_terms(repo_root: Path, *, max_terms: int = 200) -> list[str]:
     return [c.term for c in _harvest(repo_root, limit=max_terms)]
 
 
+#: How many source paths to keep on a term. A term used by 300 files does not
+#: need 300 citations; the count is kept in full on ``code_frequency``.
+_MAX_CODE_PATHS = 40
+
+
+def _warn_empty(repo_root: Path) -> None:
+    """Nothing was read at all — as opposed to read and rejected."""
+    logger.warning(
+        "vocabulary: no house terms found under %s — no readable %s and no "
+        "top-level docs directory",
+        repo_root,
+        "/".join(DOC_FILES),
+    )
+
+
+def _survives_single_word_test(term: str, dir_names: frozenset[str]) -> bool:
+    """Whether a one-word term is a name rather than an ordinary word.
+
+    A single common English word is never a house term however often it
+    appears — "Code", "Response", "Query" and "Bare" all rank near the top on
+    raw frequency and none of them names a subsystem. A single word earns its
+    place when its *shape* marks it as a name (an acronym like MCP or FTS, an
+    internal capital like PageRank), or when the codebase has named a whole
+    directory after it.
+
+    The directory test is deliberately a match against the **whole** directory
+    name rather than against the words inside one. Matching word-by-word looks
+    stricter than it is: a repository of a few thousand files spells almost
+    every common English word somewhere inside some path, so the test passes
+    everything and stops nothing. "dead_code" must not be what lets "Code"
+    through.
+    """
+    words = _term_words(term)
+    if len(words) != 1:
+        return True
+    word = words[0]
+    acronym = word.isupper() and 2 <= len(word) <= 5
+    internal_capital = any(c.isupper() for c in word[1:])
+    return acronym or internal_capital or _singular(word.lower()) in dir_names
+
+
+def _singular(word: str) -> str:
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith("es") and len(word) > 4:
+        return word[:-2]
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
+        return word[:-1]
+    return word
+
+
+def _directory_names(repo_root: Path) -> frozenset[str]:
+    """Every directory the repository has named, as a whole name."""
+    names: set[str] = set()
+    try:
+        entries = sorted(repo_root.rglob("*"))
+    except OSError:
+        logger.warning("vocabulary: could not walk %s for directory names", repo_root)
+        return frozenset()
+    for path in entries:
+        if any(part in _SKIP_DIRS or part.startswith(".") for part in path.parts):
+            continue
+        try:
+            if not path.is_dir():
+                continue
+        except OSError:
+            continue
+        names.add(_singular(path.name.lower()))
+    return frozenset(names)
+
+
 def extract_house_terms(
     repo_root: Path,
     *,
     max_terms: int = 200,
     known_symbols: frozenset[str] | set[str] | None = None,
 ) -> list[HouseTerm]:
-    """The same terms as :func:`extract_terms`, with their sources and meanings.
+    """The repository's own words for its own subsystems, ranked and gated.
 
-    ``known_symbols`` are the names the codebase actually defines; a term is
-    marked ``is_indexed_symbol`` when it matches one. Pass nothing and every
-    term reports ``False``, which is the safe direction — an unbackticked term
-    renders as plain prose, a wrongly-backticked one gets silently demoted.
+    The same harvest :func:`extract_terms` performs, plus three things it does
+    not need and a rendered term list cannot do without.
+
+    **Release notes are skipped.** Their headings are version numbers, and a
+    changelog is usually the largest document in the repository.
+
+    **Two frequency signals, kept apart on purpose.** ``doc_frequency`` counts
+    the documents that name the term — "is this something we write about",
+    and the ranking key. ``code_frequency`` counts the source files whose own
+    prose uses it — "was it built", and the gate. Adding them together lets a
+    common English word appearing in 180 docstrings outrank the name of an
+    actual subsystem; ranking on one and gating on the other does not. The
+    gate is the same bind-or-drop discipline the planner already applies: a
+    marketed term with nothing behind it does not survive.
+
+    **A term must look like a name.** No pronouns, no repository name, and a
+    single word must be shaped like one or be spelled in a directory.
+
+    ``known_symbols`` are the names the codebase defines; a term is marked
+    ``is_indexed_symbol`` when it matches one. Pass nothing and every term
+    reports ``False``, which is the safe direction — an unbackticked term
+    renders as plain prose, a wrongly-backticked one is silently demoted.
     """
     symbols = {s.lower() for s in known_symbols} if known_symbols else set()
-    terms = [
-        HouseTerm(
-            term=c.term,
-            definition=c.definition,
-            definition_source=c.definition_source,
-            source_paths=tuple(c.source_paths or ()),
-            doc_frequency=len(c.source_paths or ()),
-            is_indexed_symbol=c.term.lower() in symbols,
+    excluded = _repo_own_names(repo_root)
+    dir_names = _directory_names(repo_root)
+
+    candidates = _harvest(
+        repo_root,
+        limit=max_terms,
+        expand=_expand_heading,
+        accept=lambda t: _is_name_like(t, excluded=excluded),
+        skip_release_notes=True,
+    )
+    if not candidates:
+        _warn_empty(repo_root)
+        return []
+
+    patterns = {c.term.lower(): _phrase_pattern(c.term) for c in candidates}
+    code_files: dict[str, list[str]] = {c.term.lower(): [] for c in candidates}
+    code_definitions: dict[str, tuple[str, str]] = {}
+    prose_corpus = _source_prose(repo_root)
+    for rel, prose in prose_corpus:
+        for key, pattern in patterns.items():
+            if not pattern.search(prose):
+                continue
+            code_files[key].append(rel)
+            if key not in code_definitions:
+                sentence = _definition_from_prose(prose, pattern)
+                if sentence:
+                    code_definitions[key] = (sentence, rel)
+
+    terms: list[HouseTerm] = []
+    dropped_unbuilt = 0
+    dropped_common_word = 0
+    for candidate in candidates:
+        key = candidate.term.lower()
+        hits = code_files[key]
+        if not hits:
+            dropped_unbuilt += 1
+            continue
+        if not _survives_single_word_test(candidate.term, dir_names):
+            dropped_common_word += 1
+            continue
+        definition = candidate.definition
+        definition_source = candidate.definition_source
+        if definition is None and key in code_definitions:
+            definition, definition_source = code_definitions[key]
+        doc_paths = tuple(candidate.source_paths or ())
+        terms.append(
+            HouseTerm(
+                term=candidate.term,
+                definition=definition,
+                definition_source=definition_source,
+                source_paths=doc_paths + tuple(hits[:_MAX_CODE_PATHS]),
+                doc_frequency=len(doc_paths),
+                code_frequency=len(hits),
+                is_indexed_symbol=key in symbols,
+            )
         )
-        for c in _harvest(repo_root, limit=max_terms)
-    ]
+
+    # How many documents name it, then multi-word terms ahead of single-word
+    # ones, then how much of the code uses it.
+    #
+    # The middle key is the one doing the work. Document frequency is the
+    # right primary signal and it discriminates poorly in practice: most
+    # repositories have two or three documents worth mining, so nearly every
+    # term ties at one and the sort falls through. Word count breaks that tie
+    # in the right direction, because a subsystem is almost always named with
+    # two words ("blast radius", "dead code", "change risk") and an ordinary
+    # English word is almost always one.
+    terms.sort(
+        key=lambda t: (
+            -t.doc_frequency,
+            len(_term_words(t.term)) == 1,
+            -t.code_frequency,
+            t.term.lower(),
+        )
+    )
+    logger.info(
+        "vocabulary: %d house terms from %d candidates "
+        "(%d named but not built, %d ordinary words), %d source files read",
+        len(terms),
+        len(candidates),
+        dropped_unbuilt,
+        dropped_common_word,
+        len(prose_corpus),
+    )
     if not terms:
-        # "We found nothing to read" must never be rendered as "this
-        # repository has no vocabulary". Callers decide what to do with an
-        # empty list; they cannot decide if they never learn it was empty.
+        # Distinct from having nothing to read: the documents were read and
+        # every term in them failed the gate. Usually that means the source
+        # prose was not found — a language this cannot read, or a layout where
+        # the code sits outside the walked tree.
         logger.warning(
-            "vocabulary: no house terms found under %s — "
-            "no readable %s and no top-level docs directory",
+            "vocabulary: no house terms found under %s — %d candidates were "
+            "read from the documents and none survived; %d source files "
+            "contributed prose",
             repo_root,
-            "/".join(DOC_FILES),
+            len(candidates),
+            len(prose_corpus),
         )
     return terms
 
