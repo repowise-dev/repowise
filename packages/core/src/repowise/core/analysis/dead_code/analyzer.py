@@ -89,8 +89,13 @@ _LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
 # Kinds allowed as top-level imports in TS/JS (top-level `export const` literals/objects)
 _TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
 
-# Every kind a Svelte component prop can take — see _non_importable_kinds.
-_SVELTE_PROP_KINDS: frozenset[str] = frozenset(
+# Single-file-component languages: the whole file is one component, so their
+# exports behave unlike an ordinary module's — see _non_importable_kinds.
+_SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue"})
+
+# Every kind an SFC component prop can take, plus "class" for the synthetic
+# component symbol itself — see _non_importable_kinds.
+_SFC_NON_IMPORTABLE_KINDS: frozenset[str] = frozenset(
     {"constant", "variable", "function", "class", "interface", "type_alias"}
 )
 
@@ -102,16 +107,25 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     additions. Cheap to call — short lookup, no per-call allocation
     when the language has no additions.
     """
-    # A .svelte component's top-level exports are its props: ``export let x``
-    # is set by the PARENT as a markup attribute (``<Foo x={1} />``), never by
-    # an ``import { x }``. repowise models component instantiation as a call
-    # edge on the component, not as symbol-level edges on each prop, so every
-    # prop would read as an unused export. Suppressing the whole pass for
-    # svelte is the honest ceiling: it costs the genuinely-dead exports of a
-    # ``<script context="module">`` block, which cannot be told apart from
-    # props without modelling attribute-to-prop binding across files.
-    if language == "svelte":
-        return _UNIVERSAL_NON_IMPORTABLE | _SVELTE_PROP_KINDS
+    # An SFC's top-level exports are its props: Svelte's ``export let x`` is
+    # set by the PARENT as a markup attribute (``<Foo x={1} />``), never by an
+    # ``import { x }``. repowise models component instantiation as a call edge
+    # on the component, not as symbol-level edges on each prop, so every prop
+    # would read as an unused export.
+    #
+    # The component symbol itself needs the same treatment, which is why
+    # "class" is in the set. A component is reached as a whole module — by a
+    # markup tag, or by a router's ``import('@/views/profile')``, which binds
+    # no name at all — so it never carries the symbol-level inbound edge the
+    # unused-export pass looks for. On vue-element-admin that alone accounted
+    # for 45 of 53 findings, every one of them a false positive.
+    #
+    # Suppressing the whole pass is the honest ceiling: it costs the
+    # genuinely-dead named exports of a Svelte ``<script context="module">``
+    # or a Vue non-setup ``<script>``, which cannot be told apart from props
+    # without modelling attribute-to-prop binding across files.
+    if language in _SFC_LANGUAGES:
+        return _UNIVERSAL_NON_IMPORTABLE | _SFC_NON_IMPORTABLE_KINDS
 
     extra = _LANGUAGE_NON_IMPORTABLE.get(language)
     if extra is None:

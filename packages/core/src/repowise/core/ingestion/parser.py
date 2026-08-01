@@ -74,8 +74,8 @@ from .parser_helpers import (
     _run_query,
 )
 from .python_local_refs import extract_python_local_refs
+from .sfc_source import component_call_sites, prepare_source
 from .special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
-from .svelte_source import component_call_sites, prepare_source
 
 log = structlog.get_logger(__name__)
 
@@ -93,6 +93,11 @@ QUERIES_DIR = Path(__file__).parent / "queries"
 # the callable-ancestor filter must not apply — and for TS/JS declarators
 # it would misfire on the parent lexical_declaration kind mapping.
 _MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
+
+# Languages whose source reaches the parser as TypeScript/JavaScript. The two
+# SFC tags are here because ``sfc_source`` projects their <script> blocks into
+# a TS buffer at identical offsets, so every TS/JS code path applies verbatim.
+_TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 
 
 @cache
@@ -273,10 +278,11 @@ class ASTParser:
                 content_hash=content_hash,
             )
 
-        # Svelte components are three languages in one file. ``prepare_source``
-        # blanks the markup and <style> so what reaches the TypeScript grammar
-        # is valid TS at byte-identical offsets — no offset translation is
-        # needed anywhere downstream. A no-op for every other language.
+        # An SFC (.svelte, .vue) is three languages in one file.
+        # ``prepare_source`` blanks the markup and <style> so what reaches the
+        # TypeScript grammar is valid TS at byte-identical offsets — no offset
+        # translation is needed anywhere downstream. A no-op for every other
+        # language.
         # ``content_hash`` above deliberately hashes the ORIGINAL bytes, so
         # incremental update still tracks the real file.
         original_source = source
@@ -293,11 +299,18 @@ class ASTParser:
         # tree-sitter-typescript produces ERROR nodes. Re-parse using the TSX
         # grammar ONLY IF:
         #   1. Initial parse yielded error nodes (parse_errors is non-empty)
-        #   2. The file is TypeScript (lang == "typescript" and grammar_tag != "tsx")
+        #   2. The file projects to TypeScript and is not already on tsx
         #   3. Source contains JSX-specific closing tokens (b"/>" or b"</")
+        # A .vue render function may be written in JSX
+        # (``vnodes.push(<i class={c} />)``), which is the single TS parse
+        # failure across a 1,593-file .vue corpus. ``source`` here is the
+        # markup-blanked projection, so the template's own ``</`` and ``/>``
+        # are already spaces — the token test still keys on real JSX only.
+        # The swap is strictly safe: it only takes effect when TSX yields
+        # FEWER errors than the first parse.
         if (
             parse_errors
-            and lang == "typescript"
+            and lang in ("typescript", "vue")
             and grammar_tag != "tsx"
             and (b"/>" in source or b"</" in source)
         ):
@@ -341,12 +354,12 @@ class ASTParser:
             symbols.extend(s for s in synthetic if s.id not in existing_ids)
         imports = self._extract_imports(matches, config, file_info, src)
         calls = self._extract_calls(matches, config, file_info, src, symbols)
-        # Svelte instantiates a component by writing its tag in the markup
+        # An SFC instantiates a component by writing its tag in the markup
         # (``<Foo />``), which the blanked TS buffer no longer contains. Mint
-        # those call sites from the Svelte grammar directly — the same way
-        # tsx.scm turns ``<Component />`` into a call for React.
-        if lang == "svelte":
-            calls.extend(component_call_sites(original_source, symbols))
+        # those call sites from the markup grammar directly — the same way
+        # tsx.scm turns ``<Component />`` into a call for React. Returns [] for
+        # every non-SFC language.
+        calls.extend(component_call_sites(lang, original_source, symbols))
         heritage = extract_heritage(matches, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
@@ -412,7 +425,7 @@ class ASTParser:
         # Deferred-export names (``export { x }`` / ``export default x``),
         # computed once per file for the TS/JS visibility refinement.
         ts_deferred_exports: frozenset[str] | None = None
-        if file_info.language in ("typescript", "javascript", "svelte"):
+        if file_info.language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
 
         for capture_dict in matches:
@@ -543,7 +556,7 @@ class ASTParser:
                 visibility, is_exported_symbol = refine_cpp_visibility(def_node, visibility, src)
             # TS/JS: a top-level declaration is only public when exported —
             # inline, via ``export { x }`` lists, or ``export default x``.
-            elif file_info.language in ("typescript", "javascript", "svelte"):
+            elif file_info.language in _TS_JS_LANGUAGES:
                 visibility = refine_ts_visibility(def_node, visibility, name, ts_deferred_exports)
 
             # Parent class detection
@@ -734,6 +747,32 @@ class ASTParser:
                         resolved_file=None,
                         bindings=bindings,
                         is_reexport=stmt_node.type == "library_export",
+                    )
+                )
+                continue
+
+            # Dynamic ESM import: ``import('./mod')``. The query captures the
+            # call_expression, which would otherwise fall into the CommonJS
+            # branch below and be dropped on the floor — a dynamic import
+            # holds no ``require()`` for ``collect_cjs_requires`` to find.
+            # ``imported_names`` is empty because the construct binds a module
+            # namespace at runtime, not a static name; the file-to-file edge is
+            # what reachability needs.
+            if (
+                file_info.language in _TS_JS_LANGUAGES
+                and stmt_node.type == "call_expression"
+                and (_fn := stmt_node.child_by_field_name("function")) is not None
+                and _fn.type == "import"
+            ):
+                imports.append(
+                    Import(
+                        raw_statement=raw,
+                        module_path=module_text,
+                        imported_names=[],
+                        is_relative=module_text.startswith("."),
+                        resolved_file=None,
+                        bindings=[],
+                        is_reexport=False,
                     )
                 )
                 continue

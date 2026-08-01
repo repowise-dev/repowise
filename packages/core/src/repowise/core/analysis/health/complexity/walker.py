@@ -115,10 +115,10 @@ def walk_file(
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
     try:
-        from repowise.core.ingestion.svelte_source import prepare_source
+        from repowise.core.ingestion.sfc_source import prepare_source
 
         parser = Parser(grammar)
-        # Svelte components reach the TS grammar as a markup-blanked buffer at
+        # SFCs reach the TS grammar as a markup-blanked buffer at
         # byte-identical offsets, so every offset below (including the NLOC
         # slices, which read the ORIGINAL bytes) stays valid. No-op elsewhere.
         tree = parser.parse(prepare_source(language, source))

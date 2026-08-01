@@ -148,6 +148,9 @@ _FULL = {
     "svelte",
     "swift",
     "typescript",
+    # vue components project to TypeScript through the same SFC pass as
+    # svelte, so their <script> imports are ordinary ESM.
+    "vue",
 }
 _PARTIAL = {
     "luau",

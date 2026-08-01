@@ -157,10 +157,10 @@ def tokenize_file(language: str, source: bytes) -> list[Token]:
     if grammar is None:
         return []
     try:
-        from repowise.core.ingestion.svelte_source import prepare_source
+        from repowise.core.ingestion.sfc_source import prepare_source
 
         parser = Parser(grammar)
-        # Markup-blanked TS buffer for .svelte, identical offsets. No-op else.
+        # Markup-blanked TS buffer for SFCs, identical offsets. No-op else.
         source = prepare_source(language, source)
         tree = parser.parse(source)
     except Exception:

@@ -369,7 +369,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     ),
 }
 
-# A .svelte component's <script> block IS TypeScript, and svelte_source hands
-# the parser a TS buffer, so the TypeScript config applies verbatim. Aliasing
-# rather than copying keeps the two from drifting apart.
+# An SFC's <script> block IS TypeScript, and sfc_source hands the parser a TS
+# buffer, so the TypeScript config applies verbatim. Aliasing rather than
+# copying keeps them from drifting apart.
 LANGUAGE_CONFIGS["svelte"] = LANGUAGE_CONFIGS["typescript"]
+LANGUAGE_CONFIGS["vue"] = LANGUAGE_CONFIGS["typescript"]

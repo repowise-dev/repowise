@@ -39,7 +39,21 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
             "/index.js",
         )
         if ctx.has_sfc_files:
-            exts = (*exts, ".vue", ".svelte", ".astro")
+            # Both the bare file (``./Foo`` -> ``Foo.vue``) and the directory
+            # index (``./components/TodoList`` -> ``.../TodoList/index.vue``).
+            # The index forms were missing here while ``/index.ts`` and
+            # ``/index.js`` were present, so a directory-index component
+            # resolved to nothing and read as unreachable — the same gap
+            # ``subpath_imports`` already handles via ``/index.svelte``.
+            exts = (
+                *exts,
+                ".vue",
+                ".svelte",
+                ".astro",
+                "/index.vue",
+                "/index.svelte",
+                "/index.astro",
+            )
         for ext in exts:
             candidate = base_posix + ext
             if candidate in ctx.path_set:

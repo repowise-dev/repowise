@@ -23,7 +23,7 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
         |
         +-- Config/data language?  -> empty ParsedFile (passthrough)
         +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile/SQL)
-        +-- Multi-language file?   -> svelte_source.py projects it to one
+        +-- Multi-language file?   -> sfc_source.py projects it to one
         |                             grammar's language at identical offsets
         +-- Has grammar?           -> tree-sitter AST parsing
                 |
@@ -116,7 +116,7 @@ ingestion/
     registry.py        #   HintRegistry
     django.py  pytest_hints.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
-  svelte_source.py     # Multi-language-file projection (see below)
+  sfc_source.py        # Multi-language-file (SFC) projection (see below)
   parser.py            # ASTParser (language-agnostic orchestration)
   graph.py             # GraphBuilder (import/call/heritage resolution)
 
@@ -277,23 +277,24 @@ language sets from the registry automatically.
 
 ---
 
-## Multi-language files (the Svelte pattern)
+## Multi-language files (the SFC pattern)
 
-Some file types hold more than one language. A `.svelte` component is TS/JS in
-its `<script>` blocks, Svelte-flavoured HTML in its markup, and CSS in
-`<style>`. `tree-sitter-svelte` parses the markup but returns each `<script>`
-body as one opaque `raw_text` node, so a `.scm` query against it captures no
+Some file types hold more than one language. A `.svelte` or `.vue` component is
+TS/JS in its `<script>` blocks, framework-flavoured HTML in its markup, and CSS
+in `<style>`. The markup grammars parse the file but return each `<script>`
+body as one opaque `raw_text` node, so a `.scm` query against them captures no
 symbol, import, or call — a grammar alone cannot support such a language.
 
-`ingestion/svelte_source.py` solves this with a **byte-preserving projection**
+`ingestion/sfc_source.py` solves this with a **byte-preserving projection**
 rather than a second coordinate space:
 
-1. the Svelte grammar *locates* the JS-bearing regions — every `<script>` body,
-   every markup `{expression}`, and the `{#if}` / `{@html}` heads;
+1. a markup grammar *locates* the JS-bearing regions — every `<script>` body
+   and every markup expression;
 2. every byte outside those regions is blanked to a space, with newlines kept;
-3. each kept markup expression is fenced by rewriting its surrounding `{` and
-   `}` to `;`, so `{a}{b}` cannot run together and an unterminated final script
-   statement cannot swallow the following expression via ASI.
+3. each kept markup expression is fenced by rewriting its two surrounding
+   delimiter bytes to `;`, so adjacent expressions cannot run together and an
+   unterminated final script statement cannot swallow the following expression
+   via ASI.
 
 The result is valid TypeScript whose every byte offset and line number matches
 the original file. That single property is what makes the rest free: the spec
@@ -302,16 +303,42 @@ declares `shares_grammar_with="typescript"` and `scm_file="typescript.scm"`, the
 registries alias the TS entries. Each consumer that hands raw bytes to a
 tree-sitter `Parser` calls `prepare_source(language, source)` first — the
 ingestion parser plus the complexity, dataflow, and duplication walkers. It is
-a no-op for every other language.
+a no-op for every language without a registered locator.
+
+### The locator registry
+
+Only step 1 differs per language, so it lives behind `_LOCATORS`, a dict of
+`Locator(grammar_module, visit, component_name)`. The blanking, fencing,
+caching and offset invariants are shared; adding a markup language means adding
+a `Locator`, not a second copy of the walker.
+
+| | Svelte | Vue |
+|---|---|---|
+| Grammar | `tree-sitter-svelte` | `tree-sitter-html` |
+| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` |
+| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling |
+
+There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC
+cleanly anyway, because `<template>`, `<script>` and `<style>` are ordinary
+elements to it — so one dependency covers Vue and, later, plain HTML.
+
+Vue's expressions live in attribute *values*, which is why the fence bytes are
+quotes rather than braces, and why only directive attributes (`:`, `@`, `v-`)
+are projected: `class="btn primary"` is a literal string, and projecting it
+would put two juxtaposed identifiers at statement position.
 
 Two things markup carries that the projection cannot express are minted
 separately: the component symbol itself (via
-`extractors/synthetic_symbols/svelte_component.py`, since the filename is the
-only thing that names a component) and `<Foo />` instantiation call edges (via
-`component_call_sites`, the analogue of `tsx.scm`'s JSX captures).
+`extractors/synthetic_symbols/sfc_component.py`, since the filename is the only
+thing that names a component) and `<Foo />` instantiation call edges (via
+`component_call_sites`, the analogue of `tsx.scm`'s JSX captures). For Vue both
+run the filename and the tag through the *same* normaliser, so
+`back-to-top.vue` and `<back-to-top />` cannot disagree about the name
+`BackToTop`.
 
-The same three steps would fit Vue SFCs or Astro components; only the
-region-locating grammar changes.
+The same steps would fit Astro components; only the locator changes.
 
 ---
 

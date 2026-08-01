@@ -88,6 +88,30 @@
   source: (string) @import.module
 ) @import.statement
 
+; Re-export (barrel) statements — only those with a `source` are imports of
+; another module's symbols. Captured as @import.statement so the existing
+; import pipeline resolves the edge and carries the re-exported names:
+;   export { A, B } from "./module"
+;   export { default as AppMain } from "./AppMain"
+;   export * from "./module"
+; Kept in step with typescript.scm, which has carried this pattern all along.
+; Without it a .js barrel yielded no edge whatsoever, so every component it
+; re-exported read as unreachable — 6 of the 8 residual dead-code findings on
+; vue-element-admin traced back to exactly this.
+(export_statement
+  source: (string) @import.module
+) @import.statement
+
+; Dynamic import: import("./module") — the ESM code-splitting form, and how a
+; router lazy-loads a route component:
+;     component: () => import('@/views/user/profile')
+; The specifier is a real module edge, so without this the target carries no
+; inbound import and reads as unreachable. Kept in step with typescript.scm.
+(call_expression
+  function: (import)
+  arguments: (arguments (string) @import.module)
+) @import.statement
+
 ; CommonJS: const svc = require('./svc')  /  const { a, b } = require('./svc')
 ; Tag the individual declarator so multi-declarator statements aren't deduped.
 (variable_declarator

@@ -409,7 +409,7 @@ async def _run_ingestion(
     # Only runs when the repo has TS/JS files. On large TS monorepos the
     # resolver indexes hundreds of tsconfig files up-front; without a phase
     # label this shows up as a silent gap right after parsing.
-    _ts_langs = {"typescript", "javascript", "svelte"}
+    _ts_langs = {"typescript", "javascript", "svelte", "vue"}
     if any(pf.file_info.language in _ts_langs for pf in parsed_files):
         if progress:
             progress.on_phase_start("tsconfig", None)

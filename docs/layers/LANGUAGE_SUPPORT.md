@@ -1,7 +1,7 @@
 # Language Support
 
-repowise parses **17 languages to a full AST**, resolves imports and call
-graphs across them, and scores **12 at the Full tier** with code-health markers.
+repowise parses **18 languages to a full AST**, resolves imports and call
+graphs across them, and scores **13 at the Full tier** with code-health markers.
 Everything else in your repo is still tracked through git history and appears in
 the wiki. This page is the "what works for my language today" reference.
 
@@ -19,7 +19,7 @@ produce meaningful output.
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Svelte · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
+| **Full** | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
 | **Good** | C · Swift · PHP · Dart | Everything above except code-health markers (C, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
 | **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
 | **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
@@ -62,6 +62,7 @@ extractors, and code-health markers.
 | **TypeScript** | `.ts` `.tsx` | ESM / `require()` with tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels, optional `.vue`/`.svelte`/`.astro` probing |
 | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` / `require()` including CommonJS re-export shapes and member picks |
 | **Svelte** | `.svelte` | Same resolver as TS/JS, plus SvelteKit's `$lib` alias and Node `#`-prefixed subpath imports; `$app/*` / `$env/*` stay external (virtual modules) |
+| **Vue** | `.vue` | Same resolver as TS/JS, including `jsconfig`/`tsconfig` path aliases (`@/* → src/*`), directory-index components (`./Foo` → `Foo/index.vue`), and router `import()` specifiers |
 | **Java** | `.java` | `import pkg.Class` / `.*` / `import static` with Maven + Gradle reactor discovery, JPMS recognition, package fan-out |
 | **Kotlin** | `.kt` `.kts` | Shares the JVM workspace index with Java (cross-language resolution); `.kt` under `src/main/java` recognised |
 | **Go** | `.go` | `import "path"` with multi-module `go.mod` discovery; a package import fans out to every file in the package |
@@ -75,28 +76,56 @@ All twelve also support three-tier call resolution (same-file, cross-file,
 global stem match) and docstring extraction (Python, Ruby comments, JSDoc,
 GoDoc, Rustdoc, Javadoc, Scaladoc, Doxygen, XML doc).
 
-**Svelte components** are three languages in one file, so they get a dedicated
-projection rather than a grammar of their own. `tree-sitter-svelte` locates the
-`<script>` blocks and the markup `{expressions}`; everything else (markup,
-`<style>`) is blanked to spaces with newlines preserved, and the result is
-parsed as TypeScript at **byte-identical offsets**. So a component reuses the
-TypeScript queries, config, and all three health dialects verbatim, and every
-line number points at the real `.svelte` file. Three Svelte-specific pieces sit
-on top:
+**Single-file components** (`.svelte`, `.vue`) are three languages in one file,
+so they get a shared projection rather than a grammar of their own. A markup
+grammar locates the `<script>` blocks and the markup expressions; everything
+else (markup, `<style>`) is blanked to spaces with newlines preserved, and the
+result is parsed as TypeScript at **byte-identical offsets**. So a component
+reuses the TypeScript queries, config, and all three health dialects verbatim,
+and every line number points at the real source file. Only the region-location
+step differs per language, behind a small locator registry in `sfc_source.py`.
+
+Vue has no grammar on PyPI, but `tree-sitter-html` parses an SFC cleanly —
+`<template>`, `<script>` and `<style>` are just elements to it — so one
+dependency covers both Vue and plain HTML.
+
+| | Svelte | Vue |
+|---|---|---|
+| Script blocks | `<script>`, `<script context="module">` | `<script>`, `<script setup>` |
+| Markup expressions | `{expr}`, `on:click={inc}`, `{#if}` heads | `:class="c"`, `@click="inc"`, `v-if="ok"`, `{{ interp }}` |
+| Expression fence | the surrounding `{` `}` | the surrounding attribute quotes |
+| Skipped binding forms | `{#each x as y}`, `{#await}` | `v-for="x in xs"`, `v-slot` / `#default` |
+
+Three pieces sit on top for both:
 
 - the **component itself** becomes a class-kind symbol named after the file
-  (`Button.svelte` → `Button`), since nothing in the source names it;
+  (`Button.svelte` → `Button`), since nothing in the source names it. Vue
+  normalises the stem the same way it normalises a tag, so `warningBar.vue`,
+  `back-to-top.vue` and `Logo/index.vue` declare `WarningBar`, `BackToTop` and
+  `Logo` — which is what a parent actually imports and writes;
 - **`<Foo />` in markup** mints a call edge on `Foo`, the same way `tsx.scm`
-  treats a JSX element;
+  treats a JSX element. Framework intrinsics never do: Svelte's `svelte:*`
+  namespace, and Vue's `<KeepAlive>` / `<Transition>` / `<RouterView>` in
+  either the PascalCase or kebab spelling;
 - **markup expressions are kept**, so a handler referenced only from
-  `on:click={inc}` still carries an edge instead of reading as dead code.
+  `on:click={inc}` or `@click="inc"` still carries an edge instead of reading
+  as dead code.
 
-Two deliberate ceilings: `{#each x as y}` / `{#await …}` heads are Svelte block
-syntax rather than JS expressions and are skipped, as are object-literal
-attributes (`use:action={{ a, b }}`), which read as a block at statement
-position. And a component's `export let` props are set by the parent as markup
-attributes, never imported by name, so the unused-export pass is suppressed for
-`.svelte` — the alternative would flag every prop in the repo.
+Deliberate ceilings. Binding forms (the table above) *parse* as JS but mean
+something else, so they are skipped — a parse that succeeds with the wrong
+meaning is worse than a skip. Object-literal attributes (`use:action={{ a, b }}`,
+`#default="{ row }"`) read as a block at statement position and are dropped. A
+component's props are set by the parent as markup attributes and never imported
+by name, so the unused-export pass is suppressed for both languages — the
+alternative flags every prop, and every component, in the repo.
+
+One ceiling is Vue-specific: an Options-API member spelled
+`foo: function () {}` or `foo: () => {}` is not captured, because
+`typescript.scm` has no pattern for a `pair` with a function value. The
+shorthand `foo() {}` spelling **is** captured, which covers 1,588 of 1,592
+member functions (99.7%) across the 275 Options-API files in the validation
+corpus. The remaining 0.3% is a general TS/JS object-literal gap, not a Vue
+one, so lifting it belongs in `typescript.scm`.
 
 **Framework-aware edges** connect routes to handlers, DI registrations to
 implementations, and ORM entities to relationships:
@@ -209,6 +238,7 @@ is "Full" vs "Good".
 | Python | ✅ | ✅ | ✅ | ✅ | ✅ |
 | TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Svelte | ✅¹⁰ | ✅ | ✅ | ✅ | ✅ |
+| Vue | ✅¹⁰ | ✅ | ✅ | ✅ | ✅ |
 | Java | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Go | ✅ | n/a¹ | ✅ | ✅ | ✅ |
 | Rust | ✅ | ✅ | ✅ | ✅ | ✅² |
@@ -257,7 +287,7 @@ keeps in-memory `Registry.find(name)` lookups silent. Backticks / `system` /
 `Open3` are subprocess sinks; `s += "…"` in a loop is flagged while `s << x`
 (amortized append) never is.
 
-¹⁰ Svelte rides the TypeScript dialect on all three health layers, because a
+¹⁰ Svelte and Vue ride the TypeScript dialect on all three health layers, because a
 component reaches them as a TypeScript buffer. Markers therefore cover the
 `<script>` blocks and markup expressions — the parts that *are* JS. Markup
 structure and `<style>` carry no health signal, so a component's markers
@@ -332,6 +362,7 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 
 | Language | Target tier | Status |
 |----------|------------|--------|
+| Vue | Full | Shipped: TS projection of `<script>` / `<script setup>` + template expressions, component symbols with tag-consistent naming, `<Foo />` call edges, alias + directory-index + dynamic-`import()` resolution, all three health dialects. Next: Options-API `pair`-function members, `v-for` head bindings |
 | Svelte | Full | Shipped: TS projection of `<script>` + markup expressions, component symbols, `<Foo />` call edges, `$lib` / `#`-subpath resolution, SvelteKit route edges, all three health dialects. Next: `{#each}` head bindings, object-literal attributes, `.svelte.ts` rune modules |
 | Dart | Good | Shipped: AST, health control-flow + class facts, perf dialect, Flutter edges. Next: riverpod/get_it dynamic hints, dataflow dialect |
 | Scala | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, `.r` recompile, sync-over-Future). Next: dataflow dialect, combinator (`.map`/`.foreach`) loop tracking via the shared `block_loop_body` hook Ruby established |

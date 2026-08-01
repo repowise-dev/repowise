@@ -1,10 +1,10 @@
 """LanguageSpec for svelte.
 
-A ``.svelte`` component is parsed as TypeScript: ``svelte_source`` blanks the
+A ``.svelte`` component is parsed as TypeScript: ``sfc_source`` blanks the
 markup and ``<style>`` so the ``<script>`` blocks and markup expressions sit at
 byte-identical offsets in a valid TS buffer. Hence ``shares_grammar_with`` and
 ``scm_file`` both point at typescript — the Svelte grammar itself is loaded
-separately by ``svelte_source`` and only locates regions, it extracts nothing.
+separately by ``sfc_source`` and only locates regions, it extracts nothing.
 """
 
 from ..spec import LanguageSpec

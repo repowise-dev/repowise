@@ -47,6 +47,7 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "typescript": _extract_ts_js_heritage,
     "javascript": _extract_ts_js_heritage,
     "svelte": _extract_ts_js_heritage,
+    "vue": _extract_ts_js_heritage,
     "java": _extract_java_heritage,
     "go": _extract_go_heritage,
     "rust": _extract_rust_heritage,

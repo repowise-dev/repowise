@@ -51,9 +51,13 @@ dependencies = [
     "tree-sitter-php>=0.23,<1",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
-    # Svelte: locates <script> blocks and markup expressions only; the JS
-    # inside them is parsed with the TypeScript grammar (see svelte_source.py).
+    # Markup grammars for single-file components: these locate <script> blocks
+    # and markup expressions only; the JS inside them is parsed with the
+    # TypeScript grammar (see sfc_source.py). There is no tree-sitter-vue on
+    # PyPI — the HTML grammar parses a .vue SFC cleanly, since <template>,
+    # <script> and <style> are just elements to it.
     "tree-sitter-svelte>=1,<2",
+    "tree-sitter-html>=0.23,<1",
     # SQL parsing (multi-dialect, error-tolerant, pure Python)
     "sqlglot>=26,<28",
     # Dependency graph

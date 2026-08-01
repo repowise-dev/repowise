@@ -132,6 +132,20 @@
   source: (string) @import.module
 ) @import.statement
 
+; Dynamic import: import("./module") — the ESM code-splitting form, and how
+; a router lazy-loads a route component:
+;     component: () => import('@/views/user/profile')
+; The specifier is a real module edge, so without this the target carries no
+; inbound import and reads as unreachable. That is the dominant dead-code
+; false positive on any app with a lazy route table (Vue Router, React.lazy,
+; Angular loadChildren) — it flagged 94 of 131 components on vue-element-admin.
+; Named as @import.statement on the call so multiple lazy imports in one route
+; table are not deduped into a single edge.
+(call_expression
+  function: (import)
+  arguments: (arguments (string) @import.module)
+) @import.statement
+
 ; CommonJS: const svc = require('./svc')  /  const { a, b } = require('./svc')
 ; Tag the individual declarator so multi-declarator statements aren't deduped.
 (variable_declarator

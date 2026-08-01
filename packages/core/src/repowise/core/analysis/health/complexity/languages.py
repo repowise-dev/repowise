@@ -723,9 +723,10 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
     "tsx": _TS,
-    # A .svelte component reaches the walker as a TypeScript buffer (see
-    # ingestion/svelte_source.py), so the TS node map applies verbatim.
+    # An SFC reaches the walker as a TypeScript buffer (see
+    # ingestion/sfc_source.py), so the TS node map applies verbatim.
     "svelte": _TS,
+    "vue": _TS,
     "javascript": _JS,
     "jsx": _JS,
     "go": _GO,

@@ -41,7 +41,7 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers** — Graph (tree-sitter AST across 17 languages, two-tier
+- **Five intelligence layers** — Graph (tree-sitter AST across 18 languages, two-tier
   dependency graph, call resolution, heritage extraction, Leiden communities,
   PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
   factor, significant commits, contributor profiles, module health), Documentation
