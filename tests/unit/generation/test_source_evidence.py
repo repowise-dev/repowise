@@ -329,3 +329,32 @@ def test_truncated_exact_wrapper_respects_250_to_257_token_boundaries() -> None:
         assert 'truncated="true"' in exact_rendered
         assert estimate_tokens(exact_rendered) <= exact_budget
         assert estimate_tokens(selection.rendered) <= total_budget
+
+
+def test_truncated_exact_provenance_does_not_count_marker_line() -> None:
+    source_map = {"src/main.py": b"first line\nsecond line\nthird line\n" * 100}
+    parsed = SimpleNamespace(
+        file_info=SimpleNamespace(path="src/main.py"),
+        symbols=[SimpleNamespace(id="src/main.py::main", start_line=1, end_line=300)],
+    )
+
+    included = None
+    for exact_budget in range(50, 500):
+        selection = select_prompt_evidence(
+            source_map,
+            (),
+            token_budget=exact_budget * 2,
+            parsed_files=[parsed],
+            references=("src/main.py::main",),
+        )
+        if not selection.included:
+            continue
+        candidate = selection.included[0]
+        retained_source = candidate.text.removesuffix("...[truncated]")
+        if candidate.truncated and retained_source.endswith("\n"):
+            included = candidate
+            break
+
+    assert included is not None
+    retained_source = included.text.removesuffix("...[truncated]")
+    assert included.end_line == included.start_line + retained_source.count("\n") - 1

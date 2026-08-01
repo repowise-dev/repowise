@@ -311,7 +311,12 @@ def _select_reference_evidence(
     for index, (path, reference, start_line, end_line, body) in enumerate(selected):
         allowance = remaining_chars // (len(selected) - index)
         excerpt, truncated = _truncate_chars(body, allowance)
-        actual_end = min(end_line, start_line + excerpt.count("\n"))
+        retained_length = max(0, allowance - len(_TRUNCATED)) if truncated else len(excerpt)
+        retained_source = body[:retained_length]
+        retained_breaks = retained_source.count("\n")
+        if retained_source.endswith("\n"):
+            retained_breaks -= 1
+        actual_end = min(end_line, start_line + max(0, retained_breaks))
         included.append(EvidenceItem(path, excerpt, truncated, reference, start_line, actual_end))
         blocks.append(
             _source_wrapper(

@@ -673,6 +673,60 @@ async def test_how_it_works_balances_configured_and_distinct_exact_flow_evidence
     ]
 
 
+async def test_how_it_works_grounds_identifiers_found_only_in_exact_evidence() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    parsed = _file("src/router.py", is_entry_point=True, symbols=["entry", "finish", "exit"])
+    parsed.symbols[0].start_line = parsed.symbols[0].end_line = 1
+    parsed.symbols[1].start_line = parsed.symbols[1].end_line = 2
+    parsed.symbols[2].start_line = parsed.symbols[2].end_line = 3
+    references = (
+        "src/router.py::entry",
+        "src/router.py::finish",
+        "src/router.py::exit",
+    )
+    flow = ExecutionFlow(
+        entry_point_id=references[0],
+        entry_point_name="entry",
+        entry_point_score=1.0,
+        trace=list(references),
+        depth=2,
+        crosses_community=False,
+        communities_visited=[0],
+    )
+    signals = _signals(
+        files=[parsed],
+        source_map={
+            "src/router.py": (
+                b"ExactWorker.dispatch routes the request\n"
+                b"ExactQueue.finish records completion\n"
+                b"return response\n"
+            )
+        },
+        flows=(flow,),
+    )
+    response = GeneratedResponse(
+        content=(
+            "`ExactWorker.dispatch` hands work to `ExactQueue.finish`; "
+            "`FabricatedWorker.run` is not real."
+        ),
+        input_tokens=100,
+        output_tokens=30,
+    )
+    provider = MockProvider(responses=[response])
+    config = GenerationConfig(source_evidence_token_budget=500)
+
+    page = await PageGenerator(provider, ContextAssembler(config), config).generate_onboarding_page(
+        spec, signals
+    )
+
+    assert page is not None
+    assert "`ExactWorker.dispatch`" in page.content
+    assert "`ExactQueue.finish`" in page.content
+    assert "`FabricatedWorker.run`" not in page.content
+    assert "FabricatedWorker.run" in page.content
+
+
 async def test_onboarding_evidence_survives_grounding_and_controls_cache_reuse() -> None:
     spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
     assert spec is not None
