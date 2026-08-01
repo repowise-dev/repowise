@@ -94,16 +94,13 @@ def _looks_like_path(token: str) -> bool:
     if "." not in head:
         return False
     ext = head.rsplit(".", 1)[-1].lower()
-    return ext in _CODE_EXTENSIONS
+    return ext in _CODE_EXTENSIONS or "/" in head
 
 
 def _looks_like_evidence_path(token: str, evidence: Mapping[str, str] | None) -> bool:
     """Recognize configured and documentation-shaped repository paths."""
     head = token.split("::", 1)[0].split("#", 1)[0].strip()
-    if evidence and head in evidence:
-        return True
-    basename = head.rsplit("/", 1)[-1]
-    return "/" in head and "." in basename
+    return bool(evidence and head in evidence)
 
 
 def _looks_like_symbol(token: str) -> bool:
@@ -193,7 +190,8 @@ def _evidence_grounded(
         head = normalized.split("::", 1)[0].split("#", 1)[0].strip()
         if normalized == head and head in evidence:
             return True
-    pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(normalized)}(?![A-Za-z0-9_])")
+    boundary_chars = r"A-Za-z0-9_./:-" if is_path else r"A-Za-z0-9_"
+    pattern = re.compile(rf"(?<![{boundary_chars}]){re.escape(normalized)}(?![{boundary_chars}])")
     return any(pattern.search(text) is not None for text in evidence.values())
 
 

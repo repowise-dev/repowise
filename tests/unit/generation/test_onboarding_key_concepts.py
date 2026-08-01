@@ -485,6 +485,27 @@ def test_evidence_grounding_validates_configured_documentation_paths() -> None:
     assert "`other/guide.rst`" not in cleaned
 
 
+def test_grounding_keeps_documentation_paths_from_structured_context() -> None:
+    ctx = {"hot_files": ["docs/guide.md"]}
+
+    cleaned, ungrounded = check_grounding("Read `docs/guide.md` first.", ctx)
+
+    assert cleaned == "Read `docs/guide.md` first."
+    assert ungrounded == []
+
+
+def test_evidence_path_match_uses_path_boundaries() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"docs/notes.md": "old/src/foo.py.bak differs; use src/real.py instead."}
+    content = "`src/foo.py` is fabricated; `src/real.py` is established."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert ungrounded == ["src/foo.py"]
+    assert "`src/foo.py`" not in cleaned
+    assert "`src/real.py`" in cleaned
+
+
 def test_grounding_cleans_reused_page_content() -> None:
     """The check runs on content, so a reused (cached) page carrying a stale
     fabrication is cleaned the same way a fresh one is."""
