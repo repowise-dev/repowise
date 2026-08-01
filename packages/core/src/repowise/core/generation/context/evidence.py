@@ -312,6 +312,9 @@ def _select_reference_evidence(
         allowance = remaining_chars // (len(selected) - index)
         excerpt, truncated = _truncate_chars(body, allowance)
         retained_length = max(0, allowance - len(_TRUNCATED)) if truncated else len(excerpt)
+        if retained_length == 0:
+            skipped.append(EvidenceSkip(reference, "budget_too_small"))
+            continue
         retained_source = body[:retained_length]
         retained_breaks = retained_source.count("\n")
         if retained_source.endswith("\n"):
@@ -330,6 +333,8 @@ def _select_reference_evidence(
         )
         remaining_chars -= len(excerpt)
 
+    if not included:
+        return EvidenceSelection(skipped=tuple(skipped))
     rendered = _EXACT_HEADER + "".join(blocks)
     if estimate_tokens(rendered) > token_budget:  # pragma: no cover - defensive invariant
         raise AssertionError("rendered exact source evidence exceeded its token budget")

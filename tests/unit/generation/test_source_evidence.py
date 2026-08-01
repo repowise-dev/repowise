@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from repowise.core.generation.context.evidence import (
     EvidenceItem,
+    EvidenceSkip,
     select_prompt_evidence,
     select_source_evidence,
 )
@@ -329,6 +330,26 @@ def test_truncated_exact_wrapper_respects_250_to_257_token_boundaries() -> None:
         assert 'truncated="true"' in exact_rendered
         assert estimate_tokens(exact_rendered) <= exact_budget
         assert estimate_tokens(selection.rendered) <= total_budget
+
+
+def test_exact_excerpt_rejects_marker_only_budget() -> None:
+    source_map = {"src/main.py": b"def main():\n    return worker()\n"}
+    parsed = SimpleNamespace(
+        file_info=SimpleNamespace(path="src/main.py"),
+        symbols=[SimpleNamespace(id="src/main.py::main", start_line=1, end_line=2)],
+    )
+
+    selection = select_prompt_evidence(
+        source_map,
+        (),
+        token_budget=258,
+        parsed_files=[parsed],
+        references=("src/main.py::main",),
+    )
+
+    assert selection.rendered == ""
+    assert selection.included == ()
+    assert selection.skipped == (EvidenceSkip("src/main.py::main", "budget_too_small"),)
 
 
 def test_truncated_exact_provenance_does_not_count_marker_line() -> None:
