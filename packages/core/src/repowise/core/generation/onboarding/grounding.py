@@ -97,6 +97,15 @@ def _looks_like_path(token: str) -> bool:
     return ext in _CODE_EXTENSIONS
 
 
+def _looks_like_evidence_path(token: str, evidence: Mapping[str, str] | None) -> bool:
+    """Recognize configured and documentation-shaped repository paths."""
+    head = token.split("::", 1)[0].split("#", 1)[0].strip()
+    if evidence and head in evidence:
+        return True
+    basename = head.rsplit("/", 1)[-1]
+    return "/" in head and "." in basename
+
+
 def _looks_like_symbol(token: str) -> bool:
     """True when *token* is an unambiguous code identifier worth checking.
 
@@ -229,7 +238,7 @@ def check_grounding(
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(1).strip()
-        is_path = _looks_like_path(token)
+        is_path = _looks_like_path(token) or _looks_like_evidence_path(token, evidence)
         is_symbol = (not is_path) and _looks_like_symbol(token)
         if not is_path and not is_symbol:
             return match.group(0)

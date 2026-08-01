@@ -465,6 +465,26 @@ def test_evidence_grounding_requires_qualified_path_member_to_occur() -> None:
     assert "`src/foo.py#FabricatedWorker`" not in cleaned
 
 
+def test_evidence_grounding_validates_configured_documentation_paths() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        "README.md": "Project purpose.",
+        "docs/ARCHITECTURE.md": "System boundaries.",
+    }
+    content = (
+        "Read `README.md` and `docs/ARCHITECTURE.md`, not "
+        "`docs/FABRICATED.md` or `other/guide.rst`."
+    )
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`README.md`" in cleaned
+    assert "`docs/ARCHITECTURE.md`" in cleaned
+    assert ungrounded == ["docs/FABRICATED.md", "other/guide.rst"]
+    assert "`docs/FABRICATED.md`" not in cleaned
+    assert "`other/guide.rst`" not in cleaned
+
+
 def test_grounding_cleans_reused_page_content() -> None:
     """The check runs on content, so a reused (cached) page carrying a stale
     fabrication is cleaned the same way a fresh one is."""
