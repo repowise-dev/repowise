@@ -515,6 +515,20 @@ def test_evidence_path_match_uses_path_boundaries() -> None:
     assert "`src/real.py`" in cleaned
 
 
+def test_evidence_symbol_match_uses_qualified_identifier_boundaries() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        "docs/notes.md": (
+            "Other.EvidenceRouter.dispatch and EvidenceRouter.dispatch.extra are unrelated."
+        )
+    }
+
+    cleaned, ungrounded = check_grounding("Use `EvidenceRouter.dispatch`.", ctx, evidence)
+
+    assert ungrounded == ["EvidenceRouter.dispatch"]
+    assert "`EvidenceRouter.dispatch`" not in cleaned
+
+
 def test_grounding_cleans_reused_page_content() -> None:
     """The check runs on content, so a reused (cached) page carrying a stale
     fabrication is cleaned the same way a fresh one is."""
