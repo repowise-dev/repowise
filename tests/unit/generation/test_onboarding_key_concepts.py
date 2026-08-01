@@ -513,13 +513,28 @@ def test_evidence_grounding_validates_extensionless_repository_paths() -> None:
 def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() -> None:
     content = (
         "Call `https://example.com/docs`, `github.com/org/repo`, `api/v1/users`, "
-        "`GET /health`, or `/health`."
+        "`localhost:3000/api`, `v2/users`, `GET /health`, or `/health`."
     )
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
 
     assert cleaned == content
     assert ungrounded == []
+
+
+def test_qualified_evidence_paths_cannot_borrow_a_structured_bare_path() -> None:
+    ctx = {"known_files": ["src/foo.py", "README.md"]}
+    evidence = {
+        "src/foo.py": "RealWorker handles requests.",
+        "README.md": "Documented setup.",
+    }
+    content = "`src/foo.py::FabricatedWorker` and `README.md#fabricated` are not established."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert ungrounded == ["src/foo.py::FabricatedWorker", "README.md#fabricated"]
+    assert "`src/foo.py::FabricatedWorker`" not in cleaned
+    assert "`README.md#fabricated`" not in cleaned
 
 
 def test_grounding_validates_root_documentation_paths_with_punctuation() -> None:

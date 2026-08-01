@@ -128,8 +128,11 @@ def _looks_like_path(token: str) -> bool:
             return False
         parts = head.split("/")
         first = parts[0]
-        if ("." in first and not first.startswith(".")) or (
-            first.lower() == "api" and len(parts) > 1 and re.fullmatch(r"v\d+", parts[1])
+        if (
+            ("." in first and not first.startswith("."))
+            or ":" in first
+            or re.fullmatch(r"v\d+", first)
+            or (first.lower() == "api" and len(parts) > 1 and re.fullmatch(r"v\d+", parts[1]))
         ):
             return False
         return all(part not in {"", ".", ".."} for part in head.split("/"))
@@ -193,6 +196,7 @@ def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -
         return
     if _looks_like_path(token):
         head = token.split("::", 1)[0].split("#", 1)[0].strip()
+        known_paths.add(token)
         known_paths.add(head)
         known_paths.add(head.rsplit("/", 1)[-1])
     if _looks_like_symbol(token):
@@ -245,6 +249,9 @@ def _evidence_grounded(
 
 
 def _path_grounded(token: str, known_paths: set[str]) -> bool:
+    normalized = _normalize_token(token)
+    if "::" in normalized or "#" in normalized:
+        return normalized in known_paths
     head = token.split("::", 1)[0].split("#", 1)[0].strip()
     if head in known_paths:
         return True
