@@ -174,6 +174,10 @@ def test_generation_config_remains_hashable_and_evidence_mapping_is_immutable():
     )
 
     assert isinstance(hash(config), int)
+    assert "repo_overview" in config.source_evidence_files
+    assert ("repo_overview", ("README.md",)) not in config.source_evidence_files
+    assert config.source_evidence_files != tuple(config.source_evidence_files.items())
+    assert tuple(config.source_evidence_files.items()) != config.source_evidence_files
     with pytest.raises(TypeError):
         config.source_evidence_files["repo_overview"] = ("other.md",)  # type: ignore[index]
     with pytest.raises(TypeError):

@@ -538,7 +538,7 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
         "`service/v1/users`, `service/v2/schema.yaml`, `api/v1/openapi.json`, "
         "`localhost/openapi.json`, `users/V2/profile`, `users/profile`, "
         "`v1/openapi.json`, `accounts/v1/users.json`, `GET/api`, "
-        "`GET /health`, or `/health`."
+        "`npm:test`, `example.com`, `GET /health`, or `/health`."
     )
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
@@ -556,6 +556,13 @@ def test_grounding_validates_paths_in_versioned_repository_directories() -> None
     assert "`docs/v2/fake.md`" not in cleaned
     assert "`src/v1/missing.py`" not in cleaned
     assert "`v1/src/handler`" not in cleaned
+
+
+def test_grounding_validates_structured_paths_under_api_directory() -> None:
+    cleaned, ungrounded = check_grounding("Do not cite `api/openapi.yaml`.", _ctx_for_grounding())
+
+    assert ungrounded == ["api/openapi.yaml"]
+    assert "`api/openapi.yaml`" not in cleaned
 
 
 def test_qualified_evidence_paths_cannot_borrow_a_structured_bare_path() -> None:

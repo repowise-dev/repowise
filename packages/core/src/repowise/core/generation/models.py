@@ -67,31 +67,32 @@ def _source_evidence_page_keys() -> set[str]:
     }
 
 
-class _FrozenEvidenceFiles(tuple[tuple[str, tuple[str, ...]], ...], Mapping[str, tuple[str, ...]]):
+class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
     """Small immutable mapping that preserves the frozen config contract."""
 
-    __slots__ = ()
+    __slots__ = ("_items",)
 
-    def __new__(
-        cls,
-        values: Mapping[str, tuple[str, ...]] | None = None,
-    ) -> _FrozenEvidenceFiles:
-        return tuple.__new__(
-            cls,
-            ((key, tuple(paths)) for key, paths in (values or {}).items()),
+    def __init__(self, values: Mapping[str, tuple[str, ...]] | None = None) -> None:
+        object.__setattr__(
+            self,
+            "_items",
+            tuple((key, tuple(paths)) for key, paths in (values or {}).items()),
         )
 
+    def __setattr__(self, name: str, value: object) -> None:
+        raise TypeError("source_evidence_files is immutable")
+
     def __getitem__(self, key: str) -> tuple[str, ...]:
-        for candidate, paths in tuple.__iter__(self):
+        for candidate, paths in self._items:
             if candidate == key:
                 return paths
         raise KeyError(key)
 
     def __iter__(self) -> Iterator[str]:
-        return (key for key, _ in tuple.__iter__(self))
+        return (key for key, _ in self._items)
 
     def __len__(self) -> int:
-        return tuple.__len__(self)
+        return len(self._items)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Mapping):

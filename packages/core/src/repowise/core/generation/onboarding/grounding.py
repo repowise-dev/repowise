@@ -165,7 +165,6 @@ def _looks_like_path(token: str) -> bool:
         if (
             route_root in {"localhost", "user", "users"}
             or (route_root in {"api", "service", "services"} and versioned)
-            or (route_root == "api" and ext in _DOCUMENT_EXTENSIONS)
             or (versioned and not versioned_repository_path)
         ):
             return False
@@ -213,6 +212,12 @@ def _looks_like_symbol(token: str) -> bool:
     """
     if not _IDENT.match(token):
         return False
+    if ":" in token and "::" not in token and not token[:1].isupper():
+        return False
+    if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", token):
+        tld = token.rsplit(".", 1)[-1]
+        if tld in {"ai", "app", "com", "dev", "io", "net", "org"}:
+            return False
     if "/" in token:
         owner = token.split("/", 1)[0]
         if (
