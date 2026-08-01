@@ -180,9 +180,7 @@ Install the [GitHub App](https://github.com/apps/repowise-bot) and the index sho
 where the decision actually gets made. One comment per pull request, edited in place on
 every push rather than reposted, and **a green PR gets no comment at all**.
 
-<img src=".github/assets/pr-bot/pr-comment.jpg" alt="The Repowise PR bot comment on a real pull request: repository health and change risk, an at-a-glance line, a before-you-merge checklist of missing tests and co-change partners, the symbol-level blast radius listing nine callers outside the PR, and AI versus human authorship of the changed files" width="100%" />
-
-<sub>A real comment on a real PR, not a mockup:
+<sub>See a real comment on a real PR, not a mockup:
 [repowise-dev/repowise#1204](https://github.com/repowise-dev/repowise/pull/1204).</sub>
 
 What decides a review is inline. What is context sits behind one fold, so the comment
@@ -260,6 +258,12 @@ repowise health --trend                # snapshots plus declining-health alerts
 The dashboard renders each plan as a card with a copy-to-agent button. An optional LLM
 step, never in the indexing path and only on request, expands any plan into generated
 code and a unified diff.
+
+<sub>Validated on <strong>21 open-source repos across 9 languages</strong> (2,826 files,
+scored at a fixed point and checked against the following 6 months of bug fixes,
+keyword-labelled): <strong>ROC AUC 0.737</strong> [0.683, 0.787]. The signal is
+correlated with file size and weakens sharply within a fixed size band, which we report
+rather than bury. Independently recomputed from the raw data.</sub>
 
 <sub>Against <strong>CodeScene</strong>, the leading commercial code-health tool, on the
 same 2,770 files and the same defect labels, ranking by repowise health surfaces
