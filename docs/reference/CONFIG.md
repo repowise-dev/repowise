@@ -51,6 +51,13 @@ wiki_style: comprehensive            # comprehensive | caveman | reference | tut
 language: en                         # Output language for generated pages (en, zh, ru, hi, ...)
 enable_onboarding: true               # Show first-run onboarding prompts
 max_file_pages: 2000                  # Cap file pages (omit = size policy, 0 = one page per file)
+generation_context:                   # Optional source evidence for synthesis pages
+  token_budget: 8000
+  files:
+    repo_overview:
+      - docs/ARCHITECTURE.md
+    onboarding/how_it_works:
+      - docs/runtime-flow.md
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -84,6 +91,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `language` | `en` | Output language for generated wiki pages: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh` |
 | `enable_onboarding` | `true` | Show first-run onboarding prompts (CLI and web) |
 | `max_file_pages` | unset | Most file pages a run emits, highest importance first. Three states: **unset** lets the size policy decide (untouched below 4,500 documentable files, held to 4,500 above, which is about 1 repo in 100), **0** means one page per eligible file however many that is, and a **positive value** is a hard cap. `repowise init` offers a tighter cap in advanced mode above 2,000 documentable files, and `--max-file-pages N` sets it non-interactively. `update --full` and `generate` honour whatever is recorded. Capping file pages does not reduce model spend: file pages are rendered from structure |
+| `generation_context` | see below | Repository-source evidence appended to model-written overview and onboarding prompts |
 | `distill` | see below | Output distillation config |
 | `mcp` | see below | MCP tool surface config |
 | `refactoring` | see below | Refactoring-intelligence config |
@@ -98,6 +106,16 @@ matching effort level from providers and model families that support it (for
 example OpenAI reasoning models and OpenRouter's `reasoning.effort`).
 Providers or models that cannot translate an explicit mode fail before making
 an API call.
+
+### Grounded generation context
+
+Use `generation_context.files` to add repository-relative evidence for a specific
+page. Supported keys are `repo_overview` and the known `onboarding/<slot>` values.
+Files are opt-in: duplicates are removed, and missing, absolute, or
+parent-traversing paths are ignored. The `token_budget` bounds repository
+evidence added to one prompt; set it to `0` to disable source evidence. Selected
+evidence becomes part of the prompt hash, so changing a source file invalidates
+cached prose on the next full or scoped generation.
 
 `max_tokens` bounds each model-written documentation response. It is a
 persistent repository setting rather than a per-command flag: `init`, `update`,

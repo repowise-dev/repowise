@@ -25,6 +25,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
+from ..context.evidence import render_source_evidence
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..models import (
     MODEL_PAGE_CONFIDENCE,
@@ -494,3 +495,17 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         is_onboarding = template_name.startswith("onboarding/")
         prefix = self._style.user_prompt_prefix(is_onboarding=is_onboarding)
         return prefix + body if prefix else body
+
+    def _append_source_evidence(
+        self,
+        user_prompt: str,
+        page_key: str,
+        source_map: dict[str, bytes],
+    ) -> str:
+        """Append configured repository files within the evidence budget."""
+        evidence = render_source_evidence(
+            source_map,
+            self._config.source_evidence_files.get(page_key, ()),
+            token_budget=self._config.source_evidence_token_budget,
+        )
+        return f"{user_prompt}\n\n{evidence}" if evidence else user_prompt

@@ -18,7 +18,8 @@ import jinja2
 import pytest
 
 from repowise.core.generation import onboarding
-from repowise.core.generation.models import GENERATION_LEVELS, GeneratedPage
+from repowise.core.generation.context_assembler import ContextAssembler
+from repowise.core.generation.models import GENERATION_LEVELS, GeneratedPage, GenerationConfig
 from repowise.core.generation.onboarding.signals import OnboardingSignals
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
@@ -38,6 +39,7 @@ from repowise.core.ingestion.models import (
     RepoStructure,
     Symbol,
 )
+from repowise.core.providers.llm.mock import MockProvider
 from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
@@ -441,6 +443,33 @@ def test_how_it_works_fires_on_cli_archetype_via_entry_point() -> None:
     ctx = spec.build_context(sig)
     assert ctx is not None
     assert ctx.archetype == "cli"
+
+
+async def test_onboarding_prompt_includes_configured_source_evidence() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+        source_map={
+            "docs/ARCHITECTURE.md": b"The CLI validates input and dispatches the worker pipeline."
+        },
+    )
+    config = GenerationConfig(
+        cache_enabled=False,
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/ARCHITECTURE.md",),
+        },
+    )
+    provider = MockProvider()
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+
+    page = await generator.generate_onboarding_page(spec, signals)
+
+    assert page is not None
+    prompt = provider.calls[0]["user_prompt"]
+    assert '<repository-file path="docs/ARCHITECTURE.md">' in prompt
+    assert "validates input and dispatches the worker pipeline" in prompt
 
 
 # ---------------------------------------------------------------------------

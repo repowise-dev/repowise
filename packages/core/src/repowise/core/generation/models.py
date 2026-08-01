@@ -53,6 +53,7 @@ GENERATION_LEVELS: dict[str, int] = {
 
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
 DEFAULT_MAX_TOKENS = 16384
+DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET = 8000
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,13 @@ class GenerationConfig:
     max_tokens: int = DEFAULT_MAX_TOKENS
     temperature: float = 0.3
     token_budget: int = 48000
+    # Repository-source excerpts appended to model-written synthesis prompts.
+    # The normal context budget above still owns per-file structural assembly;
+    # this independent cap keeps high-level evidence bounded and predictable.
+    source_evidence_token_budget: int = DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET
+    # Page key -> explicit repository-relative files to add. Supported keys are
+    # ``repo_overview`` and ``onboarding/<slot>``.
+    source_evidence_files: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     max_concurrency: int = 12
     embed_concurrency: int | None = None
     reasoning: ReasoningMode = "auto"
@@ -230,7 +238,44 @@ class GenerationConfig:
         if max_tokens <= 0:
             raise ValueError("max_tokens must be a positive integer")
 
-        values = {"max_tokens": max_tokens, **overrides}
+        values: dict[str, Any] = {"max_tokens": max_tokens}
+        raw_evidence = config.get("generation_context")
+        if raw_evidence is not None:
+            if not isinstance(raw_evidence, Mapping):
+                raise ValueError("generation_context must be a mapping")
+
+            raw_budget = raw_evidence.get(
+                "token_budget", DEFAULT_SOURCE_EVIDENCE_TOKEN_BUDGET
+            )
+            if isinstance(raw_budget, bool) or not isinstance(raw_budget, int) or raw_budget < 0:
+                raise ValueError("generation_context.token_budget must be a non-negative integer")
+            values["source_evidence_token_budget"] = raw_budget
+
+            raw_files = raw_evidence.get("files", {})
+            if not isinstance(raw_files, Mapping):
+                raise ValueError("generation_context.files must be a mapping")
+            from .onboarding.slots import ONBOARDING_ORDER
+
+            valid_page_keys = {"repo_overview"} | {
+                f"onboarding/{slot}" for slot in ONBOARDING_ORDER
+            }
+            evidence_files: dict[str, tuple[str, ...]] = {}
+            for raw_page_key, raw_paths in raw_files.items():
+                page_key = str(raw_page_key).strip()
+                if page_key not in valid_page_keys:
+                    raise ValueError(
+                        "generation_context.files keys must name repo_overview or a known onboarding slot"
+                    )
+                if not isinstance(raw_paths, (list, tuple)) or not all(
+                    isinstance(path, str) and path.strip() for path in raw_paths
+                ):
+                    raise ValueError(
+                        f"generation_context.files.{page_key} must be a list of file paths"
+                    )
+                evidence_files[page_key] = tuple(path.strip() for path in raw_paths)
+            values["source_evidence_files"] = evidence_files
+
+        values.update(overrides)
         return cls(**values)
 
     def __post_init__(self) -> None:
@@ -242,6 +287,12 @@ class GenerationConfig:
             raise ValueError("max_tokens must be a positive integer")
         if self.embed_concurrency is None:
             object.__setattr__(self, "embed_concurrency", self.max_concurrency)
+        if (
+            isinstance(self.source_evidence_token_budget, bool)
+            or not isinstance(self.source_evidence_token_budget, int)
+            or self.source_evidence_token_budget < 0
+        ):
+            raise ValueError("source_evidence_token_budget must be a non-negative integer")
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
 
 

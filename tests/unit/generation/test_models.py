@@ -147,6 +147,8 @@ def test_generation_config_defaults():
     assert config.max_tokens == 16384
     assert config.temperature == 0.3
     assert config.token_budget == 48000
+    assert config.source_evidence_token_budget == 8000
+    assert config.source_evidence_files == {}
     assert config.max_concurrency == 12
     assert config.embed_concurrency == 12
     assert config.cache_enabled is True
@@ -160,6 +162,42 @@ def test_generation_config_defaults():
 def test_generation_config_reads_repo_max_tokens():
     config = GenerationConfig.from_repo_config({"max_tokens": "2345"})
     assert config.max_tokens == 2345
+
+
+def test_generation_config_reads_source_evidence_settings():
+    config = GenerationConfig.from_repo_config(
+        {
+            "generation_context": {
+                "token_budget": 4321,
+                "files": {
+                    "repo_overview": ["README.md", "docs/architecture.md"],
+                    "onboarding/how_it_works": ["docs/flow.md"],
+                },
+            }
+        }
+    )
+
+    assert config.source_evidence_token_budget == 4321
+    assert config.source_evidence_files == {
+        "repo_overview": ("README.md", "docs/architecture.md"),
+        "onboarding/how_it_works": ("docs/flow.md",),
+    }
+
+
+@pytest.mark.parametrize(
+    "generation_context",
+    [
+        [],
+        {"token_budget": -1},
+        {"token_budget": True},
+        {"files": []},
+        {"files": {"module_page": ["README.md"]}},
+        {"files": {"repo_overview": "README.md"}},
+    ],
+)
+def test_generation_config_rejects_invalid_source_evidence_settings(generation_context):
+    with pytest.raises(ValueError, match="generation_context"):
+        GenerationConfig.from_repo_config({"generation_context": generation_context})
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "not-a-number"])

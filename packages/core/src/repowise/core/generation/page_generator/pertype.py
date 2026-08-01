@@ -301,6 +301,7 @@ class PerTypeGenerationMixin:
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
         overview_mermaid: str | None = None,
+        source_map: dict[str, bytes] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -336,6 +337,9 @@ class PerTypeGenerationMixin:
             )
             return _with_architecture_map(stub, overview_mermaid)
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
+        user_prompt = self._append_source_evidence(
+            user_prompt, "repo_overview", source_map or {}
+        )
         try:
             response = await self._call_provider(
                 "repo_overview", user_prompt, str(uuid.uuid4()), target_path=repo_name
@@ -447,6 +451,9 @@ class PerTypeGenerationMixin:
 
         template_name = f"onboarding/{spec.template}"
         user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
+        user_prompt = self._append_source_evidence(
+            user_prompt, f"onboarding/{spec.slot}", signals.source_map
+        )
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
         salt = _onboarding.ONBOARDING_GENERATION_VERSION

@@ -310,6 +310,7 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     external_systems=run.external_systems,
                     decision_records=run.decisions_all[:10],
                     overview_mermaid=overview_mermaid,
+                    source_map=run.source_map,
                 ),
             )
         )
