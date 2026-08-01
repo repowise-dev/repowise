@@ -538,7 +538,8 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
         "`service/v1/users`, `service/v2/schema.yaml`, `api/v1/openapi.json`, "
         "`localhost/openapi.json`, `users/V2/profile`, `users/profile`, "
         "`v1/openapi.json`, `accounts/v1/users.json`, `GET/api`, "
-        "`npm:test`, `example.com`, `EXAMPLE.COM`, `Github.COM/org/repo`, "
+        "`npm:test`, `NPM:test`, `example.com`, `EXAMPLE.COM`, "
+        "`example.xyz/path`, `EXAMPLE.XYZ/path`, `Github.COM/org/repo`, "
         "`API/v1/users`, `Service/v1/users`, `GET /health`, or `/health`."
     )
 
@@ -549,14 +550,22 @@ def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() 
 
 
 def test_grounding_validates_paths_in_versioned_repository_directories() -> None:
-    content = "Do not cite `docs/v2/fake.md`, `src/v1/missing.py`, or `v1/src/handler`."
+    content = (
+        "Do not cite `docs/v2/fake.md`, `src/v1/missing.py`, `v1/src/handler`, or `V1/Src/handler`."
+    )
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
 
-    assert ungrounded == ["docs/v2/fake.md", "src/v1/missing.py", "v1/src/handler"]
+    assert ungrounded == [
+        "docs/v2/fake.md",
+        "src/v1/missing.py",
+        "v1/src/handler",
+        "V1/Src/handler",
+    ]
     assert "`docs/v2/fake.md`" not in cleaned
     assert "`src/v1/missing.py`" not in cleaned
     assert "`v1/src/handler`" not in cleaned
+    assert "`V1/Src/handler`" not in cleaned
 
 
 def test_grounding_validates_structured_paths_under_api_directory() -> None:

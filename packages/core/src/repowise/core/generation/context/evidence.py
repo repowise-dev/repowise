@@ -116,8 +116,7 @@ def select_source_evidence(
         if text is None:
             skipped.append(EvidenceSkip(path, "binary_or_non_utf8"))
             continue
-        text = text.strip()
-        if not text:
+        if not text.strip():
             skipped.append(EvidenceSkip(path, "empty"))
             continue
         # Neutralize our framing markers, including case/spacing variants.

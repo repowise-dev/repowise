@@ -135,6 +135,7 @@ _REPOSITORY_DIRECTORY_NAMES = frozenset(
 # ``get_session``, ``foo.Bar.baz``, ``path.py::Name``).
 _QUALIFIER = r"(?:\.|::|#|/|:)"
 _COMMON_TLDS = frozenset({"ai", "app", "com", "dev", "io", "net", "org"})
+_COMMAND_PREFIXES = frozenset({"cargo", "make", "npm", "pnpm", "poe", "uv", "yarn"})
 _HTTP_METHODS = frozenset({"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"})
 _IDENT = re.compile(
     rf"^[A-Za-z_][A-Za-z0-9_]*(?:{_QUALIFIER}[A-Za-z_][A-Za-z0-9_]*)+$"
@@ -148,11 +149,14 @@ def _looks_like_external_reference(token: str) -> bool:
         return True
     parts = token.split("/")
     first = parts[0]
-    if (
-        re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", first, re.IGNORECASE)
-        and first.rsplit(".", 1)[-1].lower() in _COMMON_TLDS
-    ):
-        return True
+    if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", first, re.IGNORECASE):
+        raw_tld = first.rsplit(".", 1)[-1]
+        if len(parts) > 1 or raw_tld.lower() in _COMMON_TLDS or raw_tld.isupper():
+            return True
+    if ":" in first and "::" not in first:
+        command = first.split(":", 1)[0].lower()
+        if command in _COMMAND_PREFIXES:
+            return True
     if re.fullmatch(r"[^:]+:\d+", first) or first.upper() in _HTTP_METHODS:
         return True
     if len(parts) == 1:
@@ -233,10 +237,6 @@ def _looks_like_symbol(token: str) -> bool:
         return False
     if ":" in token and "::" not in token and not token[:1].isupper():
         return False
-    if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", token):
-        tld = token.rsplit(".", 1)[-1]
-        if tld in _COMMON_TLDS:
-            return False
     if "/" in token:
         owner = token.split("/", 1)[0]
         if (

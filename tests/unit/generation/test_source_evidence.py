@@ -147,6 +147,18 @@ def test_selection_reports_every_ineligible_input() -> None:
     ]
 
 
+def test_configured_evidence_preserves_boundary_whitespace() -> None:
+    source = b"  child: value\n"
+
+    selection = select_source_evidence(
+        {"config/example.yaml": source},
+        ("config/example.yaml",),
+        token_budget=300,
+    )
+
+    assert selection.included[0].text == source.decode()
+
+
 def test_hostile_repository_content_cannot_close_its_frame() -> None:
     source_map = {
         "docs/hostile.md": (
