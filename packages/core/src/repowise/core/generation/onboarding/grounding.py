@@ -79,6 +79,23 @@ _CODE_EXTENSIONS = frozenset(
         "mm",
     }
 )
+_DOCUMENT_EXTENSIONS = frozenset(
+    {
+        "adoc",
+        "asciidoc",
+        "cfg",
+        "conf",
+        "ini",
+        "json",
+        "md",
+        "mdx",
+        "rst",
+        "toml",
+        "txt",
+        "yaml",
+        "yml",
+    }
+)
 _EXTENSIONLESS_PATH_NAMES = frozenset(
     {
         "containerfile",
@@ -109,13 +126,19 @@ def _looks_like_path(token: str) -> bool:
     if "/" in head:
         if head.startswith("/") or "://" in head or any(char.isspace() for char in head):
             return False
+        parts = head.split("/")
+        first = parts[0]
+        if ("." in first and not first.startswith(".")) or (
+            first.lower() == "api" and len(parts) > 1 and re.fullmatch(r"v\d+", parts[1])
+        ):
+            return False
         return all(part not in {"", ".", ".."} for part in head.split("/"))
     if name.startswith(".") or head.lower() in _EXTENSIONLESS_PATH_NAMES:
         return True
     if "." not in head:
         return False
     ext = head.rsplit(".", 1)[-1].lower()
-    return ext in _CODE_EXTENSIONS
+    return ext in _CODE_EXTENSIONS or ext in _DOCUMENT_EXTENSIONS
 
 
 def _looks_like_evidence_path(token: str, evidence: Mapping[str, str] | None) -> bool:
