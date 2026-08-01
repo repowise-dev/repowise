@@ -449,6 +449,22 @@ def test_evidence_grounding_requires_complete_identifier_and_path() -> None:
     assert "`other/place/foo.py`" not in cleaned
 
 
+def test_evidence_grounding_requires_qualified_path_member_to_occur() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"src/foo.py": "ExistingWorker handles requests."}
+    content = (
+        "`src/foo.py` is included, but `src/foo.py::FabricatedWorker` and "
+        "`src/foo.py#FabricatedWorker` are not established."
+    )
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`src/foo.py`" in cleaned
+    assert ungrounded == ["src/foo.py::FabricatedWorker", "src/foo.py#FabricatedWorker"]
+    assert "`src/foo.py::FabricatedWorker`" not in cleaned
+    assert "`src/foo.py#FabricatedWorker`" not in cleaned
+
+
 def test_grounding_cleans_reused_page_content() -> None:
     """The check runs on content, so a reused (cached) page carrying a stale
     fabrication is cleaned the same way a fresh one is."""

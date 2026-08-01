@@ -182,9 +182,8 @@ def _evidence_grounded(
     normalized = token.strip().strip(".,;:()[]{}<>\"'")
     if is_path:
         head = normalized.split("::", 1)[0].split("#", 1)[0].strip()
-        if head in evidence:
+        if normalized == head and head in evidence:
             return True
-        normalized = head
     pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(normalized)}(?![A-Za-z0-9_])")
     return any(pattern.search(text) is not None for text in evidence.values())
 
