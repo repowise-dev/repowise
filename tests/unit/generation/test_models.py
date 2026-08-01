@@ -166,6 +166,16 @@ def test_generation_config_preserves_existing_positional_constructor_order():
     assert config.source_evidence_token_budget == 8000
 
 
+def test_generation_config_remains_hashable_and_evidence_mapping_is_immutable():
+    config = GenerationConfig.from_repo_config(
+        {"generation_context": {"files": {"repo_overview": ["README.md"]}}}
+    )
+
+    assert isinstance(hash(config), int)
+    with pytest.raises(TypeError):
+        config.source_evidence_files["repo_overview"] = ("other.md",)  # type: ignore[index]
+
+
 def test_generation_config_reads_repo_max_tokens():
     config = GenerationConfig.from_repo_config({"max_tokens": "2345"})
     assert config.max_tokens == 2345

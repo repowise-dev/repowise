@@ -117,8 +117,9 @@ def select_source_evidence(
         if not text:
             skipped.append(EvidenceSkip(path, "empty"))
             continue
-        # Neutralize only our framing marker. This reduces delimiter ambiguity;
+        # Neutralize our framing markers. This reduces delimiter ambiguity;
         # it is not content sanitization and the prompt says so explicitly.
+        text = text.replace("<repository-file", "&lt;repository-file")
         eligible.append((path, text.replace("</repository-file>", "&lt;/repository-file&gt;")))
 
     if not eligible:

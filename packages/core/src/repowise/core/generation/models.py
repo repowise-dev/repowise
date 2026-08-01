@@ -66,6 +66,33 @@ def _source_evidence_page_keys() -> set[str]:
     }
 
 
+@dataclass(frozen=True, eq=False)
+class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
+    """Small immutable mapping that preserves the frozen config contract."""
+
+    _items: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def __getitem__(self, key: str) -> tuple[str, ...]:
+        for item_key, paths in self._items:
+            if item_key == key:
+                return paths
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _paths in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
+
+
 # ---------------------------------------------------------------------------
 # GenerationConfig
 # ---------------------------------------------------------------------------
@@ -317,7 +344,11 @@ class GenerationConfig:
             ):
                 raise ValueError(f"source_evidence_files.{page_key} must be a list of file paths")
             evidence_files[page_key] = tuple(path.strip() for path in paths)
-        object.__setattr__(self, "source_evidence_files", evidence_files)
+        object.__setattr__(
+            self,
+            "source_evidence_files",
+            _FrozenEvidenceFiles(tuple(evidence_files.items())),
+        )
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
 
 
