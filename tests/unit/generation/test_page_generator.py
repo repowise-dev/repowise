@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+from structlog.testing import capture_logs
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import (
@@ -479,6 +480,50 @@ async def test_generate_all_returns_pages():
         [p], {"pkg/main.py": b"def main(): pass"}, builder, repo, "test-repo"
     )
     assert len(pages) >= 1
+
+
+async def test_generate_all_reports_evidence_skipped_when_onboarding_is_disabled():
+    config = GenerationConfig(
+        max_tokens=256,
+        token_budget=500,
+        max_concurrency=2,
+        enable_onboarding=False,
+        source_evidence_files={"onboarding/how_it_works": ("docs/flow.md",)},
+    )
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    fi = _make_file_info("pkg/main.py", language="python")
+    parsed = ParsedFile(
+        file_info=fi,
+        symbols=[_make_symbol(file_path="pkg/main.py")],
+        imports=[],
+        exports=[],
+        docstring=None,
+        parse_errors=[],
+    )
+    repo = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=1,
+        total_loc=20,
+        entry_points=[],
+    )
+
+    with capture_logs() as logs:
+        await gen.generate_all(
+            [parsed],
+            {"pkg/main.py": b"def main(): pass", "docs/flow.md": b"flow"},
+            _make_builder_with([parsed]),
+            repo,
+            "test-repo",
+        )
+
+    assert {
+        "event": "source_evidence.skipped",
+        "page_key": "onboarding/how_it_works",
+        "skipped": [{"path": "docs/flow.md", "reason": "onboarding_disabled"}],
+        "log_level": "warning",
+    } in logs
 
 
 async def test_generate_all_level_values_in_range():

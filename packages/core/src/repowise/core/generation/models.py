@@ -66,31 +66,24 @@ def _source_evidence_page_keys() -> set[str]:
     }
 
 
-@dataclass(frozen=True, eq=False)
-class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
+class _FrozenEvidenceFiles(dict[str, tuple[str, ...]]):
     """Small immutable mapping that preserves the frozen config contract."""
 
-    _items: tuple[tuple[str, tuple[str, ...]], ...] = ()
-
-    def __getitem__(self, key: str) -> tuple[str, ...]:
-        for item_key, paths in self._items:
-            if item_key == key:
-                return paths
-        raise KeyError(key)
-
-    def __iter__(self):
-        return (key for key, _paths in self._items)
-
-    def __len__(self) -> int:
-        return len(self._items)
-
     def __hash__(self) -> int:
-        return hash(frozenset(self._items))
+        return hash(frozenset(self.items()))
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Mapping):
-            return NotImplemented
-        return dict(self.items()) == dict(other.items())
+    @staticmethod
+    def _immutable(*_args: object, **_kwargs: object) -> None:
+        raise TypeError("source_evidence_files is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +340,7 @@ class GenerationConfig:
         object.__setattr__(
             self,
             "source_evidence_files",
-            _FrozenEvidenceFiles(tuple(evidence_files.items())),
+            _FrozenEvidenceFiles(evidence_files),
         )
         object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
 

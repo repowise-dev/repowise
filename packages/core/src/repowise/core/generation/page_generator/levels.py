@@ -338,6 +338,9 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     if not getattr(run.config, "enable_onboarding", True):
+        for page_key in run.config.source_evidence_files:
+            if page_key.startswith("onboarding/"):
+                gen._disabled_source_evidence(page_key, "onboarding_disabled")
         return coros
     specs = _onboarding.iter_specs()
     if not specs:
