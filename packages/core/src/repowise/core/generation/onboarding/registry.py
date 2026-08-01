@@ -12,7 +12,7 @@ silently skips the slot — both the page and any UI nav entry.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from .signals import OnboardingSignals
@@ -21,6 +21,7 @@ from .slots import ONBOARDING_ORDER, PROMOTED_SLOTS
 # A builder returns either a context object the template can render, or None
 # to indicate the gate failed and the slot should be skipped for this repo.
 BuildContext = Callable[[OnboardingSignals], object | None]
+EvidenceReferences = Callable[[object], Sequence[str]]
 
 
 @dataclass(frozen=True)
@@ -33,12 +34,15 @@ class SubkindSpec:
         template:      Jinja template filename, relative to
                        ``templates/onboarding/``.
         build_context: Returns the template context, or ``None`` to skip.
+        evidence_references: Extracts exact source references needed to ground
+                       this subkind's prompt.
     """
 
     slot: str
     title: str
     template: str
     build_context: BuildContext
+    evidence_references: EvidenceReferences | None = None
 
 
 _REGISTRY: dict[str, SubkindSpec] = {}
@@ -49,15 +53,13 @@ def register(spec: SubkindSpec) -> None:
     if spec.slot in PROMOTED_SLOTS.values():
         # Defensive: promoted slots are not generated through this path.
         raise ValueError(
-            f"Slot '{spec.slot}' is promoted and must not be registered "
-            "as a generated subkind."
+            f"Slot '{spec.slot}' is promoted and must not be registered as a generated subkind."
         )
     if spec.slot in _REGISTRY:
         raise ValueError(f"Duplicate onboarding subkind: {spec.slot}")
     if spec.slot not in ONBOARDING_ORDER:
         raise ValueError(
-            f"Unknown onboarding slot '{spec.slot}'. "
-            f"Add it to ONBOARDING_ORDER in slots.py first."
+            f"Unknown onboarding slot '{spec.slot}'. Add it to ONBOARDING_ORDER in slots.py first."
         )
     _REGISTRY[spec.slot] = spec
 
@@ -75,7 +77,5 @@ def iter_specs() -> list[SubkindSpec]:
     """
     promoted = set(PROMOTED_SLOTS.values())
     return [
-        _REGISTRY[slot]
-        for slot in ONBOARDING_ORDER
-        if slot not in promoted and slot in _REGISTRY
+        _REGISTRY[slot] for slot in ONBOARDING_ORDER if slot not in promoted and slot in _REGISTRY
     ]

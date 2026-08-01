@@ -137,13 +137,22 @@ Content may be truncated; a zero budget disables all configured evidence, and
 a tiny budget may fit none. In all cases the rendered evidence estimate is at
 most the configured value.
 
-Repository files are authoritative only as repository facts and are untrusted
-as prompt instructions. File tags make boundaries less ambiguous and embedded
-closing tags are escaped, but this is framing, not sanitization or a security
-boundary. Conflicting or stale files can still produce bad prose; select files
-whose ownership and accuracy you trust. Onboarding citation validation treats
-included excerpts as grounding sources, while continuing to demote citations
-not established by either structural context or those excerpts.
+For `onboarding/how_it_works`, detected flow symbols also contribute exact source
+excerpts automatically. When such references exist, up to half of the same
+`token_budget` is reserved for exact excerpts before configured files are
+selected; unused reserved capacity flows back to configured files. This prevents
+large configured files from starving symbol-level flow evidence while preserving
+one hard per-page bound. Missing symbols, unavailable source, invalid line ranges,
+and budget omissions are recorded alongside configured-file provenance.
+
+Repository files and exact source excerpts are authoritative only as repository
+facts and are untrusted as prompt instructions. Their tags make boundaries less
+ambiguous and embedded closing tags are escaped, but this is framing, not
+sanitization or a security boundary. Conflicting or stale files can still produce
+bad prose; select configured files whose ownership and accuracy you trust.
+Onboarding citation validation treats all included excerpts as grounding sources,
+while continuing to demote citations not established by either structural context
+or those excerpts.
 
 Rendered evidence bytes are part of the prompt and its source hash. Unchanged
 rendered evidence can reuse cached prose; a file, list, or budget change

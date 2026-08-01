@@ -30,24 +30,56 @@ _TOP_FLOWS = 3
 _TRACE_DISPLAY_HOPS = 8
 
 # Framework hints by ecosystem — anything matching tilts the archetype.
-_SERVICE_FRAMEWORK_HINTS: frozenset[str] = frozenset({
-    "fastapi", "flask", "starlette", "django", "uvicorn", "gunicorn",
-    "express", "koa", "hapi", "nestjs",
-    "Microsoft.AspNetCore", "Microsoft.AspNetCore.App",
-    "actix-web", "axum", "rocket",
-    "gin", "echo", "fiber",
-    "spring-boot", "spring-webmvc",
-})
-_CLI_FRAMEWORK_HINTS: frozenset[str] = frozenset({
-    "click", "typer", "argparse", "fire",
-    "commander", "yargs", "oclif",
-    "cobra", "urfave/cli",
-    "clap", "structopt",
-})
-_PIPELINE_HINTS: frozenset[str] = frozenset({
-    "celery", "airflow", "prefect", "dagster",
-    "apache-beam", "kafka", "rabbitmq",
-})
+_SERVICE_FRAMEWORK_HINTS: frozenset[str] = frozenset(
+    {
+        "fastapi",
+        "flask",
+        "starlette",
+        "django",
+        "uvicorn",
+        "gunicorn",
+        "express",
+        "koa",
+        "hapi",
+        "nestjs",
+        "Microsoft.AspNetCore",
+        "Microsoft.AspNetCore.App",
+        "actix-web",
+        "axum",
+        "rocket",
+        "gin",
+        "echo",
+        "fiber",
+        "spring-boot",
+        "spring-webmvc",
+    }
+)
+_CLI_FRAMEWORK_HINTS: frozenset[str] = frozenset(
+    {
+        "click",
+        "typer",
+        "argparse",
+        "fire",
+        "commander",
+        "yargs",
+        "oclif",
+        "cobra",
+        "urfave/cli",
+        "clap",
+        "structopt",
+    }
+)
+_PIPELINE_HINTS: frozenset[str] = frozenset(
+    {
+        "celery",
+        "airflow",
+        "prefect",
+        "dagster",
+        "apache-beam",
+        "kafka",
+        "rabbitmq",
+    }
+)
 
 
 @dataclass
@@ -79,9 +111,7 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
     cli_hits = dep_names & _CLI_FRAMEWORK_HINTS
     pipeline_hits = dep_names & _PIPELINE_HINTS
 
-    api_contract_count = sum(
-        1 for pf in signals.parsed_files if pf.file_info.is_api_contract
-    )
+    api_contract_count = sum(1 for pf in signals.parsed_files if pf.file_info.is_api_contract)
 
     # Service tilt wins if we have either framework deps or API contract files.
     if service_hits or api_contract_count > 0:
@@ -101,7 +131,9 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
 
     # Entry-point shape — `__main__.py` or `bin/` is CLI-shaped.
     entry_points = list(getattr(signals.repo_structure, "entry_points", []))
-    if any(ep.endswith("__main__.py") or "/bin/" in ep or ep.startswith("bin/") for ep in entry_points):
+    if any(
+        ep.endswith("__main__.py") or "/bin/" in ep or ep.startswith("bin/") for ep in entry_points
+    ):
         evidence.append("entry point shape suggests a CLI (__main__ or bin/)")
         return "cli", evidence
 
@@ -177,11 +209,24 @@ def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
     )
 
 
+def _evidence_references(ctx: object) -> tuple[str, ...]:
+    """Return distinct symbols shown in detected execution flows."""
+    if not isinstance(ctx, HowItWorksContext):
+        return ()
+    references: list[str] = []
+    for flow in ctx.flows:
+        if flow.entry_point:
+            references.append(flow.entry_point)
+        references.extend(hop for hop in flow.hops if hop)
+    return tuple(dict.fromkeys(references))
+
+
 register(
     SubkindSpec(
         slot=SLOT_HOW_IT_WORKS,
         title=SLOT_TITLES[SLOT_HOW_IT_WORKS],
         template="how_it_works.j2",
         build_context=_build,
+        evidence_references=_evidence_references,
     )
 )

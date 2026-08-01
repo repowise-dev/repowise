@@ -14,7 +14,7 @@ The level-by-level orchestration of ``generate_all`` lives in
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,7 +25,12 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
-from ..context.evidence import EvidenceSelection, EvidenceSkip, select_source_evidence
+from ..context.evidence import (
+    EvidenceItem,
+    EvidenceSelection,
+    EvidenceSkip,
+    select_prompt_evidence,
+)
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..models import (
     MODEL_PAGE_CONFIDENCE,
@@ -506,13 +511,18 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         user_prompt: str,
         page_key: str,
         source_map: dict[str, bytes],
+        *,
+        parsed_files: Sequence[ParsedFile] = (),
+        references: Sequence[str] = (),
     ) -> tuple[str, EvidenceSelection]:
-        """Append configured repository files and report every selection decision."""
+        """Append bounded repository evidence and report every selection decision."""
         configured = self._config.source_evidence_files.get(page_key, ())
-        selection = select_source_evidence(
+        selection = select_prompt_evidence(
             source_map,
             configured,
             token_budget=self._config.source_evidence_token_budget,
+            parsed_files=parsed_files,
+            references=references,
         )
         if selection.included:
             log.info(
@@ -531,12 +541,19 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         prompt = user_prompt + selection.rendered if selection.rendered else user_prompt
         return prompt, selection
 
-    def _disabled_source_evidence(self, page_key: str, reason: str) -> EvidenceSelection:
-        """Report configured evidence that a non-model path cannot consume."""
-        skipped = tuple(
+    def _disabled_source_evidence(
+        self,
+        page_key: str,
+        reason: str,
+        references: Sequence[str] = (),
+    ) -> EvidenceSelection:
+        """Report repository evidence that a non-model path cannot consume."""
+        configured_skips = tuple(
             EvidenceSkip(path, reason)
             for path in self._config.source_evidence_files.get(page_key, ())
         )
+        reference_skips = tuple(EvidenceSkip(str(reference), reason) for reference in references)
+        skipped = configured_skips + reference_skips
         selection = EvidenceSelection(skipped=skipped)
         if skipped:
             log.warning(
@@ -553,15 +570,25 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         selection: EvidenceSelection,
     ) -> GeneratedPage:
         """Persist evidence provenance on a generated or fallback page."""
-        if not self._config.source_evidence_files.get(page_key, ()):
+        if not selection.included and not selection.skipped:
             return page
         page.metadata["source_evidence"] = {
             "page_key": page_key,
             "token_budget": self._config.source_evidence_token_budget,
             "estimated_tokens": selection.estimated_tokens,
-            "included": [
-                {"path": item.path, "truncated": item.truncated} for item in selection.included
-            ],
+            "included": [self._source_evidence_metadata(item) for item in selection.included],
             "skipped": [{"path": item.path, "reason": item.reason} for item in selection.skipped],
         }
         return page
+
+    @staticmethod
+    def _source_evidence_metadata(item: EvidenceItem) -> dict[str, object]:
+        """Keep configured-file metadata stable while identifying exact excerpts."""
+        metadata: dict[str, object] = {"path": item.path, "truncated": item.truncated}
+        if item.symbol is not None:
+            metadata.update(
+                symbol=item.symbol,
+                start_line=item.start_line,
+                end_line=item.end_line,
+            )
+        return metadata

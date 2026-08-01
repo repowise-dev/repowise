@@ -450,17 +450,26 @@ class PerTypeGenerationMixin:
             return None
 
         target = _onboarding.target_path(spec.slot)
+        references = spec.evidence_references(ctx) if spec.evidence_references else ()
         if self._config.deterministic:
             # No grounding post-check: a template can only cite what the
             # context handed it, so there is nothing ungrounded to strip.
             page = self._stub_onboarding_page(spec, ctx, target)
-            evidence = self._disabled_source_evidence(page_key, "deterministic_generation")
+            evidence = self._disabled_source_evidence(
+                page_key,
+                "deterministic_generation",
+                references,
+            )
             return self._attach_source_evidence(page, page_key, evidence)
 
         template_name = f"onboarding/{spec.template}"
         user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
         user_prompt, evidence = self._append_source_evidence(
-            user_prompt, page_key, signals.source_map
+            user_prompt,
+            page_key,
+            signals.source_map,
+            parsed_files=signals.parsed_files,
+            references=references,
         )
         # Fold the onboarding generation version into the reuse hash so a
         # builder/template upgrade forces a one-time regen of cached pages.
@@ -479,7 +488,11 @@ class PerTypeGenerationMixin:
         # output. Runs on fresh AND reused content (``response.content`` carries
         # the prior page's bytes on a cache hit), so an existing user's cached
         # page is cleaned on their next docs update.
-        grounding_evidence = {item.path: item.text for item in evidence.included}
+        grounding_evidence: dict[str, str] = {}
+        for item in evidence.included:
+            grounding_evidence[item.path] = "\n".join(
+                filter(None, (grounding_evidence.get(item.path), item.text))
+            )
         cleaned, ungrounded = _onboarding.check_grounding(response.content, ctx, grounding_evidence)
         if ungrounded:
             log.info(
