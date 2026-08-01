@@ -139,6 +139,38 @@ def _resolve_embedder():
         return MockEmbedder()
 
 
+async def _cancel_task(task: asyncio.Task) -> None:
+    """Cancel a lifespan background task and swallow its unwind."""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
+async def _warm_lancedb() -> None:
+    """Import lancedb once, off the event loop, and signal when it is done.
+
+    The import pulls in numpy/pyarrow and their native extensions, which costs
+    seconds on a cold filesystem. Running it on a worker thread keeps the loop
+    answering, but a worker-thread import holds Python's import locks, and tool
+    bodies lazily import as they run. When the two overlap they block each
+    other and the event loop stops making progress entirely — at which point
+    the timeouts that would cap the call cannot fire either, because firing
+    them needs the loop.
+
+    Tool dispatch waits on this event before running any handler body (see
+    ``_failure_shield``), so the two never overlap.
+    """
+    try:
+        await asyncio.to_thread(__import__, "lancedb")
+    except ImportError:
+        pass  # optional dependency — the InMemory fallback covers it
+    except Exception:
+        _log.warning("lancedb import failed — vector search falls back to InMemory")
+    finally:
+        if _state._lancedb_ready is not None:
+            _state._lancedb_ready.set()
+
+
 async def _load_vector_stores(repo_path: str | None) -> None:
     """Load embedder + vector stores in the background.
 
@@ -249,6 +281,12 @@ async def _lifespan(server: FastMCP):
     _state._vector_store_ready before querying the vector store.
     """
 
+    # Start the lancedb import immediately and gate tool dispatch on it. Both
+    # modes load vector stores in the background, and in both the first tool
+    # call can otherwise land mid-import and wedge the loop.
+    _state._lancedb_ready = asyncio.Event()
+    _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
+
     # --- Workspace detection ------------------------------------------------
     ws_root, ws_config, ws_repo_alias = _detect_workspace(_state._repo_path)
 
@@ -320,6 +358,8 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        await _cancel_task(_warm_task)
+        _state._lancedb_ready = None
         _state._cross_repo_enricher = None
         await registry.close()
         _state._registry = None
@@ -373,9 +413,9 @@ async def _lifespan(server: FastMCP):
 
     yield
 
-    _bg_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await _bg_task
+    await _cancel_task(_bg_task)
+    await _cancel_task(_warm_task)
+    _state._lancedb_ready = None
 
     await engine.dispose()
     # _decision_store is an alias for _vector_store — close only once.

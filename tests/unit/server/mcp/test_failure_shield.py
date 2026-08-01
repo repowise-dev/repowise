@@ -119,3 +119,93 @@ def test_server_composes_shield_into_middleware():
     source = _inspect.getsource(mcp_mod)
     assert "_failure_shield" in source
     assert "_savings_instrument(_failure_shield(fn))" in source
+
+
+# ---------------------------------------------------------------------------
+# Import warm-up gate
+#
+# The deferred `import lancedb` runs on a worker thread and holds Python's
+# import locks. A tool body that lazily imports while it is in flight blocks
+# against it, and the event loop stops making progress — which also stops the
+# asyncio timeouts that would otherwise cap the call from ever firing. The
+# observed symptom was the first tool call of a session never returning. The
+# shield holds calls until the import is done so the two never overlap.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_waits_for_the_lancedb_import(monkeypatch):
+    """A call that arrives mid-import runs only after the import signals done."""
+    import asyncio
+
+    from repowise.server.mcp_server import _state
+
+    ready = asyncio.Event()
+    monkeypatch.setattr(_state, "_lancedb_ready", ready, raising=False)
+
+    started = asyncio.Event()
+
+    async def tool() -> dict:
+        started.set()
+        return {"ok": True}
+
+    task = asyncio.create_task(shield(tool)())
+    await asyncio.sleep(0.05)
+    assert not started.is_set(), "handler body ran while the import was in flight"
+
+    ready.set()
+    assert await task == {"ok": True}
+    assert started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_no_wait_once_the_import_is_done(monkeypatch):
+    """A warmed server pays nothing: the gate is a set-Event check."""
+    import asyncio
+
+    from repowise.server.mcp_server import _state
+
+    ready = asyncio.Event()
+    ready.set()
+    monkeypatch.setattr(_state, "_lancedb_ready", ready, raising=False)
+
+    async def tool() -> dict:
+        return {"ok": True}
+
+    assert await shield(tool)() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_no_gate_when_no_import_was_started(monkeypatch):
+    """No background import (no event) means no wait at all."""
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_lancedb_ready", None, raising=False)
+
+    async def tool() -> dict:
+        return {"ok": True}
+
+    assert await shield(tool)() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_gate_is_bounded(monkeypatch):
+    """A pathological import degrades to a slow answer, never a stuck client."""
+    import asyncio
+
+    # Reach the module through importlib: the package re-exports `shield`
+    # under the name `_failure_shield`, so attribute access finds the function
+    # rather than the submodule.
+    import importlib
+
+    from repowise.server.mcp_server import _state
+
+    shield_mod = importlib.import_module("repowise.server.mcp_server._failure_shield")
+
+    monkeypatch.setattr(_state, "_lancedb_ready", asyncio.Event(), raising=False)
+    monkeypatch.setattr(shield_mod, "_WARMUP_TIMEOUT_S", 0.05)
+
+    async def tool() -> dict:
+        return {"ok": True}
+
+    assert await shield(tool)() == {"ok": True}

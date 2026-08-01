@@ -15,6 +15,7 @@ still sees (and dead-end-debits) the shaped error response.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 import inspect
@@ -22,7 +23,14 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from repowise.server.mcp_server import _state
+
 logger = logging.getLogger(__name__)
+
+# Ceiling on how long a tool call waits for the deferred `import lancedb` to
+# finish. The import is seconds, not minutes; the bound exists only so a
+# pathological environment degrades to a slow answer rather than a stuck one.
+_WARMUP_TIMEOUT_S = 60.0
 
 # _get_repo raises LookupError with these two message shapes; matching on the
 # message keeps _helpers.py free of any import back-reference to this module.
@@ -84,6 +92,34 @@ def _shape_exception(tool: str, exc: Exception) -> dict[str, Any]:
     return _shape_internal_error(tool, exc)
 
 
+async def _await_import_warmup(tool: str) -> None:
+    """Hold a tool call until the deferred ``import lancedb`` has finished.
+
+    That import runs on a worker thread so the loop keeps answering while it
+    proceeds. But an import on a worker thread holds Python's import locks, and
+    every tool body lazily imports something: when the two overlap they block
+    each other and the *event loop itself* stops making progress. Nothing
+    recovers from that state, because the pending ``asyncio.wait_for`` bounds
+    that would otherwise cap the call need the loop in order to fire. The
+    observed symptom is the first tool call of a session never returning.
+
+    Waiting here, before any handler body runs, keeps the main thread out of
+    the import machinery for the duration, which is what breaks the cycle.
+    """
+    ready = _state._lancedb_ready
+    if ready is None or ready.is_set():
+        return
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=_WARMUP_TIMEOUT_S)
+    except TimeoutError:
+        logger.warning(
+            "mcp tool %s proceeding after waiting %.0fs for the lancedb import; "
+            "vector search may be unavailable for this call",
+            tool,
+            _WARMUP_TIMEOUT_S,
+        )
+
+
 def shield(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap an async MCP tool so no exception escapes to FastMCP.
 
@@ -98,6 +134,7 @@ def shield(fn: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(fn)
     async def _wrapped(*args: Any, **kwargs: Any) -> Any:
         try:
+            await _await_import_warmup(tool)
             return await fn(*args, **kwargs)
         except Exception as exc:
             logger.warning("mcp tool %s shielded exception: %s", tool, exc, exc_info=True)
