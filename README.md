@@ -368,9 +368,10 @@ Set Up This Repository**. Guide: **[docs/agent/VSCODE.md →](docs/agent/VSCODE.
 </p>
 
 SQL and dbt projects get real `ref()` / `source()` lineage, shell scripts get
-function-level symbols, and OpenAPI, Protobuf, GraphQL, Dockerfile, Terraform and
-friends get dedicated handlers. Anything else is still tracked through git history:
-blame, hotspots, co-change.
+function-level symbols, HTML pages contribute their `<script src>` / `<link href>`
+dependencies (including `index.html` → `src/main.ts`), and OpenAPI, Protobuf,
+GraphQL, Dockerfile, Terraform and friends get dedicated handlers. Anything else is
+still tracked through git history: blame, hotspots, co-change.
 
 Adding a language takes **one `.scm` query file and one config entry**, with no changes
 to the parser core. Full matrix and the contributor recipe:

@@ -322,7 +322,19 @@ a `Locator`, not a second copy of the walker.
 
 There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC
 cleanly anyway, because `<template>`, `<script>` and `<style>` are ordinary
-elements to it — so one dependency covers Vue and, later, plain HTML.
+elements to it — so one dependency covers both Vue and plain HTML.
+
+**Plain HTML deliberately has no locator.** It reuses the same grammar but not
+the projection, and the distinction is the point: a projection exists to turn a
+`<script>` block into analysable TypeScript, which is worth it when that block
+is where the component lives. A plain `.html` file's inline script almost never
+carries a module import — 13 of the 6162 `.html` files in the validation corpus
+(0.2%) — so projecting would buy a rounding error and would mint symbols,
+contradicting HTML's import-only tier. Its `<script src>` / `<link href>`
+attributes are read directly in
+`lightweight_imports/html.py`, which is extractor work, not projection work.
+Adding a `Locator` for HTML purely for symmetry with Vue and Svelte would be a
+mistake; `_LOCATORS` is for languages whose *script blocks* need projecting.
 
 Vue's expressions live in attribute *values*, which is why the fence bytes are
 quotes rather than braces, and why only directive attributes (`:`, `@`, `v-`)

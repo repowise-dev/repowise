@@ -71,6 +71,8 @@ LanguageTag = Literal[
     "sql",
     "openapi",
     "xaml",
+    # Markup with no symbols, but <script src>/<link href> are real edges.
+    "html",
     "unknown",
 ]
 

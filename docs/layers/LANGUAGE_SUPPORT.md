@@ -24,7 +24,7 @@ produce meaningful output.
 | **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
 | **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
-| **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# | Regex-tier file-level import graph (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
+| **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | File-level import graph only (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
 | **Partial** | Luau / Roblox | AST symbols + `require()` resolution (Rojo / `.luaurc` aware); no health markers yet |
 | **Structural** | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only (blame, hotspots, co-change). No AST parsing |
 
@@ -34,7 +34,7 @@ produce meaningful output.
 |-------|:----:|:----:|:-----------:|:----------:|:-------------:|
 | File discovery & git history | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AST symbol extraction | ✅ | ✅ | - | - | - |
-| Import resolution | ✅¹ | ✅ | regex | - | - |
+| Import resolution | ✅¹ | ✅ | file-level³ | - | - |
 | Call graph edges | ✅ | ✅ | - | - | - |
 | Heritage (extends/implements) | ✅ | ✅ | - | - | - |
 | Named bindings | ✅ | ✅ | - | - | - |
@@ -47,6 +47,10 @@ build-file fallback); every other Full and Good language resolves imports
 fully.
 ² See [code-health coverage](#code-health-coverage), a language is only "Full"
 once it clears the health checklist.
+³ File-to-file only, no symbol resolution. Regex-extracted for every
+Lightweight language except HTML, which uses the `tree-sitter-html` grammar.
+Dead-code detection covers the Lightweight tier except HTML, which is never
+flagged (see below).
 
 ---
 
@@ -191,12 +195,38 @@ rather than tree-sitter, plus the lightweight import tier for dbt lineage.
 
 ## Lightweight, Partial, and Structural tiers
 
-**Lightweight** (Elixir, Clojure, Haskell, Lean 4, Erlang, F#), no AST parsing,
-but a real file-level import graph from a regex tier: import statements are
-extracted per-language and resolved against a declared module-name index. The
-knowledge graph runs in flow/sparse mode on the result: honest file-to-file
-dependencies, no symbol-level claims. F# additionally honours the fsproj
-`<Compile Include>` compile-order spine.
+**Lightweight** (Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML), no symbol
+extraction, but a real file-level import graph: import statements are extracted
+per-language and resolved against a declared module-name index. The knowledge
+graph runs in flow/sparse mode on the result: honest file-to-file dependencies,
+no symbol-level claims. F# additionally honours the fsproj `<Compile Include>`
+compile-order spine. All of these use a regex tier except HTML, which uses the
+`tree-sitter-html` grammar repowise already ships for Vue.
+
+**HTML** (`.html` / `.htm`) is import-tier *only*, and deliberately so: HTML has
+no functions, classes or calls, so there are no symbols to claim. What it does
+carry is `<script src>` and `<link href>`, which become file-level edges —
+including the one every Vite/webpack SPA depends on, `index.html` →
+`src/main.ts`. References are resolved as document- or root-relative asset
+paths, never as module specifiers: there is no extension inference and no
+`index.*` lookup, because `src="./app"` in a browser fetches a file literally
+named `app`. A root-relative `/src/main.tsx` is anchored first at the
+referencing page's own directory (the bundler convention), then at its
+`public/`, then by unique path suffix; a tie yields no edge rather than a
+guessed one. CDN and `data:` references are external and mint no edge.
+
+`.html` files are **never flagged as dead code**. Whether a page is reachable
+is not statically decidable — a server serves it, a human navigates to it, a
+build copies it — and checked-in generated HTML is everywhere. Their outbound
+edges still anchor everything they reference.
+
+The known ceiling is **template dialects**. Django/Jinja, Go templates, ERB,
+Handlebars, Blade, Thymeleaf and Angular's `*ngIf` are invisible to an HTML
+parser: `{% extends "base.html" %}` is plain text, so such a file parses
+cleanly and yields nothing. Measured on the validation corpus, 744 of 749
+template-dialect files (99.3%) produce no edges at all. Covering them needs a
+per-dialect regex tier gated on a framework manifest — a different mechanism,
+not yet built.
 
 **Partial** (Luau / Roblox), AST symbols, Luau type aliases, and `require(...)`
 capture are wired. Import resolution handles string literals, `script` relative
@@ -374,6 +404,7 @@ where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
 | F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
 | SQL / dbt | - | DDL symbols, dbt lineage, app-to-database contracts, health markers shipped. Next: column-level blast radius |
 | Shell | - | Function symbols, `source` import edges, function-level complexity shipped. Next: shebang-based detection of extensionless executables (a traverser capability) |
+| HTML | Lightweight | Shipped: `<script src>` / `<link href>` edges with document-, `public/`- and root-relative resolution; never dead-code flagged. Stays import-tier — HTML has no symbols. Next: a regex import tier for template dialects (Django/Jinja, Go templates, ERB, Handlebars), gated on a framework manifest |
 
 ---
 

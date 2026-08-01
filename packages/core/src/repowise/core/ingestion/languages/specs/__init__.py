@@ -27,6 +27,7 @@ from .fsharp import SPEC as _FSHARP
 from .go import SPEC as _GO
 from .graphql import SPEC as _GRAPHQL
 from .haskell import SPEC as _HASKELL
+from .html import SPEC as _HTML
 from .java import SPEC as _JAVA
 from .javascript import SPEC as _JAVASCRIPT
 from .json import SPEC as _JSON
@@ -106,6 +107,11 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _ASCIIDOC,
     _SQL,
     _OPENAPI,
+    # HTML carries no symbols, but <script src>/<link href> are real file-level
+    # edges — extracted on the no-grammar path and resolved as document- or
+    # root-relative asset paths. Markup, so it is never reported as dead code
+    # while its edges still anchor what it references.
+    _HTML,
     # XAML / AXAML markup for WPF, WinUI 3, UWP, MAUI, Avalonia, Uno.
     # No AST grammar — handled by the XamlDynamicHints extractor which
     # emits ``dynamic_uses`` edges to bound C# types. Registered here so

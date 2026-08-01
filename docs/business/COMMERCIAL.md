@@ -82,13 +82,13 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise treats **12 languages at Full tier** (Python, TypeScript, JavaScript, Svelte, Java,
-Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import resolution,
-named bindings, call resolution, heritage extraction, multi-project workspace
-resolvers, framework-aware edges, per-language dynamic-hint extractors, and
+Repowise treats **13 languages at Full tier** (Python, TypeScript, JavaScript, Svelte,
+Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import
+resolution, named bindings, call resolution, heritage extraction, multi-project
+workspace resolvers, framework-aware edges, per-language dynamic-hint extractors, and
 code-health markers. A further 4 languages (C, Swift, PHP, Dart) sit at Good tier,
-and Luau is partial. SQL/dbt, shell, and the config formats are handled by dedicated
-extractors on top of that.
+and Luau is partial. SQL/dbt, shell, HTML, and the config formats are handled by
+dedicated extractors on top of that.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
 worth calling out. For **.NET**, as one example:

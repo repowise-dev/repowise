@@ -15,6 +15,7 @@ from .fsharp import resolve_fsharp_import
 from .generic import resolve_generic_import
 from .go import resolve_go_import
 from .haskell import resolve_haskell_import
+from .html import resolve_html_asset
 from .java import resolve_java_import
 from .kotlin import resolve_kotlin_import
 from .lean import resolve_lean_import
@@ -63,6 +64,9 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "fsharp": resolve_fsharp_import,
     # dbt ref()/source(), gated on dbt_project.yml via the model index.
     "sql": resolve_dbt_import,
+    # <script src>/<link href> are asset paths, not module specifiers — they
+    # get their own document-/root-relative resolution, never the TS/JS one.
+    "html": resolve_html_asset,
 }
 
 
