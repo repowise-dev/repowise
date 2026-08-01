@@ -513,7 +513,8 @@ def test_evidence_grounding_validates_extensionless_repository_paths() -> None:
 def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() -> None:
     content = (
         "Call `https://example.com/docs`, `github.com/org/repo`, `api/v1/users`, "
-        "`api/V1/users`, `localhost:3000/api`, `v2/users`, `V2/users`, `GET /health`, or `/health`."
+        "`api/V1/users`, `localhost:3000/api`, `v2/users`, `V2/users`, "
+        "`service/v1/users`, `users/V2/profile`, `GET /health`, or `/health`."
     )
 
     cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
@@ -599,6 +600,22 @@ def test_evidence_path_match_uses_path_boundaries() -> None:
     assert ungrounded == ["src/foo.py"]
     assert "`src/foo.py`" not in cleaned
     assert "`src/real.py`" in cleaned
+
+
+def test_evidence_path_match_uses_complete_fragment_boundaries() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        "docs/notes.md": (
+            "README.md#setup#fabricated and src/foo.py#Worker#fabricated are unrelated."
+        )
+    }
+    content = "`README.md#setup` and `src/foo.py#Worker` are not established."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert ungrounded == ["README.md#setup", "src/foo.py#Worker"]
+    assert "`README.md#setup`" not in cleaned
+    assert "`src/foo.py#Worker`" not in cleaned
 
 
 def test_evidence_symbol_match_uses_qualified_identifier_boundaries() -> None:

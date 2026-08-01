@@ -129,15 +129,13 @@ def _looks_like_path(token: str) -> bool:
             return False
         parts = head.split("/")
         first = parts[0]
+        has_version_segment = any(
+            re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts
+        )
         if (
             ("." in first and not first.startswith("."))
             or ":" in first
-            or re.fullmatch(r"v\d+", first, re.IGNORECASE)
-            or (
-                first.lower() == "api"
-                and len(parts) > 1
-                and re.fullmatch(r"v\d+", parts[1], re.IGNORECASE)
-            )
+            or has_version_segment
         ):
             return False
         return all(part not in {"", ".", ".."} for part in head.split("/"))
@@ -252,7 +250,7 @@ def _evidence_grounded(
         head = normalized.split("::", 1)[0].split("#", 1)[0].strip()
         if normalized == head and head in evidence:
             return True
-    boundary_chars = r"A-Za-z0-9_./:-" if is_path else r"A-Za-z0-9_.:"
+    boundary_chars = r"A-Za-z0-9_./:#-" if is_path else r"A-Za-z0-9_.:"
     pattern = re.compile(rf"(?<![{boundary_chars}]){re.escape(normalized)}(?![{boundary_chars}])")
     return any(pattern.search(text) is not None for text in evidence.values())
 
