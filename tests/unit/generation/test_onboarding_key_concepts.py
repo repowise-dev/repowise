@@ -494,6 +494,41 @@ def test_evidence_grounding_validates_configured_documentation_paths() -> None:
     assert "`other/guide.rst`" not in cleaned
 
 
+def test_evidence_grounding_validates_extensionless_repository_paths() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"deploy/Dockerfile": "Build instructions."}
+
+    cleaned, ungrounded = check_grounding(
+        "Use `deploy/Dockerfile`, not `docs/LICENSE` or `deploy/Fakefile`.",
+        ctx,
+        evidence,
+    )
+
+    assert "`deploy/Dockerfile`" in cleaned
+    assert ungrounded == ["docs/LICENSE", "deploy/Fakefile"]
+    assert "`docs/LICENSE`" not in cleaned
+    assert "`deploy/Fakefile`" not in cleaned
+
+
+def test_evidence_grounding_preserves_exact_dot_prefixed_paths() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        ".github/CONTRIBUTING.md": "Contribution workflow.",
+        ".env.example": "EXAMPLE=true",
+    }
+
+    cleaned, ungrounded = check_grounding(
+        "Read `.github/CONTRIBUTING.md` and `.env.example`, not `.github/FAKE.md`.",
+        ctx,
+        evidence,
+    )
+
+    assert "`.github/CONTRIBUTING.md`" in cleaned
+    assert "`.env.example`" in cleaned
+    assert ungrounded == [".github/FAKE.md"]
+    assert "`.github/FAKE.md`" not in cleaned
+
+
 def test_grounding_keeps_documentation_paths_from_structured_context() -> None:
     ctx = {"hot_files": ["docs/guide.md"]}
 

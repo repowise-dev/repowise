@@ -79,6 +79,20 @@ _CODE_EXTENSIONS = frozenset(
         "mm",
     }
 )
+_EXTENSIONLESS_PATH_NAMES = frozenset(
+    {
+        "containerfile",
+        "copying",
+        "dockerfile",
+        "gemfile",
+        "license",
+        "makefile",
+        "notice",
+        "procfile",
+        "rakefile",
+        "readme",
+    }
+)
 
 # A bare identifier, optionally dotted or ``::``-qualified (e.g. ``LanguageSpec``,
 # ``get_session``, ``foo.Bar.baz``, ``path.py::Name``).
@@ -91,10 +105,12 @@ def _looks_like_path(token: str) -> bool:
     """True when *token* is shaped like a source file path we can verify."""
     head = token.split("::", 1)[0]
     head = head.split("#", 1)[0].strip()
+    if "/" in head or head.lower() in _EXTENSIONLESS_PATH_NAMES:
+        return True
     if "." not in head:
         return False
     ext = head.rsplit(".", 1)[-1].lower()
-    return ext in _CODE_EXTENSIONS or "/" in head
+    return ext in _CODE_EXTENSIONS
 
 
 def _looks_like_evidence_path(token: str, evidence: Mapping[str, str] | None) -> bool:
@@ -138,8 +154,13 @@ def _iter_strings(obj: Any, _depth: int = 0) -> Any:
             yield from _iter_strings(item, _depth + 1)
 
 
+def _normalize_token(token: str) -> str:
+    """Remove surrounding prose punctuation without stripping a leading dot path."""
+    return token.strip().strip(",;:()[]{}<>\"'").rstrip(".")
+
+
 def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -> None:
-    token = token.strip().strip(".,;:()[]{}<>\"'")
+    token = _normalize_token(token)
     if not token:
         return
     if _looks_like_path(token):
@@ -185,7 +206,7 @@ def _evidence_grounded(
     """
     if not evidence:
         return False
-    normalized = token.strip().strip(".,;:()[]{}<>\"'")
+    normalized = _normalize_token(token)
     if is_path:
         head = normalized.split("::", 1)[0].split("#", 1)[0].strip()
         if normalized == head and head in evidence:
