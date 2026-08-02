@@ -642,6 +642,12 @@ Co-change
 
 Co-change counts how often two files land in the same commit.
 
+Bug magnet
+~~~~~~~~~~
+
+A bug magnet is a file that has absorbed an unusual share of the
+repository's bug fixes over its lifetime.
+
 Blast radius
 ~~~~~~~~~~~~
 
@@ -667,6 +673,7 @@ def toc_repo(tmp_path: Path) -> Path:
     hotspots = src / "hotspots"
     hotspots.mkdir()
     (hotspots / "rank.py").write_text('"""Churn ranking for hotspots."""\n', encoding="utf-8")
+    (src / "magnet.py").write_text('"""Scoring for the bug magnet view."""\n', encoding="utf-8")
     # Both spell their term, so both pass the code gate; neither *opens* a
     # sentence with it, so neither supplies a definition of its own. What is
     # left is whatever the document offered — which is the point of the tests.
@@ -711,6 +718,20 @@ def test_a_bolded_label_alone_on_its_line_claims_no_definition(toc_repo: Path) -
     """
     hotspots = {t.term: t for t in extract_house_terms(toc_repo)}["Hotspots"]
     assert hotspots.definition is None
+
+
+def test_a_hard_wrapped_sentence_is_read_whole(toc_repo: Path) -> None:
+    """reStructuredText wraps prose at the column, so a line is not a sentence.
+
+    Reading one line is how django's Forms section defined itself as "Django
+    provides a rich framework to facilitate the creation of forms and the" —
+    the author's sentence, cut where the editor wrapped it.
+    """
+    magnet = {t.term: t for t in extract_house_terms(toc_repo)}["Bug magnet"]
+    assert magnet.definition == (
+        "A bug magnet is a file that has absorbed an unusual share of the "
+        "repository's bug fixes over its lifetime."
+    )
 
 
 def test_prose_after_the_section_title_is_still_taken(toc_repo: Path) -> None:

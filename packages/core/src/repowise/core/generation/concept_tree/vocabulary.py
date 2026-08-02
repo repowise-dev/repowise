@@ -370,11 +370,37 @@ def _definition_after_rst_section(lines: list[str], underline: int) -> str | Non
             # Markup, not a sentence. Skipped rather than taken, exactly as the
             # markdown scan skips a table row or a badge line above the prose.
             continue
-        sentence = _first_sentence(_strip_rst_roles(stripped))
+        paragraph = _join_wrapped(lines, offset, stop)
+        sentence = _first_sentence(_strip_rst_roles(paragraph))
         if _MIN_DEFINITION_CHARS <= len(sentence) <= _MAX_DEFINITION_CHARS:
             return sentence
         return None
     return None
+
+
+def _join_wrapped(lines: list[str], start: int, stop: int) -> str:
+    """The paragraph beginning at ``start``, rejoined into one string.
+
+    reStructuredText hard-wraps prose at the column, so a line is a line and
+    not a sentence. Reading one line was how django's Forms section defined
+    itself as "Django provides a rich framework to facilitate the creation of
+    forms and the" — the author's sentence, cut where the editor wrapped it.
+
+    Stops at the paragraph break, at markup, and at the next section title,
+    which are the same boundaries the caller respects; the caller's scan
+    window bounds it.
+    """
+    parts = [lines[start].strip()]
+    for offset in range(start + 1, stop):
+        if _SENTENCE_END.search(" ".join(parts)):
+            break
+        nxt = lines[offset].strip()
+        if not nxt or _RST_MARKUP_LINE.match(nxt) or _RST_DIRECTIVE.match(lines[offset]):
+            break
+        if offset + 1 < len(lines) and _is_rst_underline(lines[offset + 1], nxt):
+            break
+        parts.append(nxt)
+    return " ".join(parts)
 
 
 #: ``:doc:`quickstart``` and ``:class:`Flask``` are cross-references. The text
