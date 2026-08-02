@@ -46,6 +46,29 @@ def test_dimensions_unknown_model_defaults_to_1536():
     assert emb.dimensions == 1536
 
 
+def test_dimensions_explicit_override_wins_for_unknown_model():
+    emb = OpenAIEmbedder(api_key="k", model="local-embedder", dimensions=2560)
+    assert emb.dimensions == 2560
+
+
+def test_dimensions_from_env(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "2560")
+    emb = OpenAIEmbedder(api_key="k", model="local-embedder")
+    assert emb.dimensions == 2560
+
+
+def test_explicit_dimensions_beats_env(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "2560")
+    emb = OpenAIEmbedder(api_key="k", model="local-embedder", dimensions=1024)
+    assert emb.dimensions == 1024
+
+
+@pytest.mark.parametrize("bad", [0, -5, True])
+def test_invalid_dimensions_raises(bad):
+    with pytest.raises(ValueError, match="dimensions must be a positive integer"):
+        OpenAIEmbedder(api_key="k", model="local-embedder", dimensions=bad)
+
+
 # ---------------------------------------------------------------------------
 # Embedding
 # ---------------------------------------------------------------------------

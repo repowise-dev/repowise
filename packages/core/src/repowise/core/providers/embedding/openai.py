@@ -37,6 +37,9 @@ class OpenAIEmbedder:
         api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
         model:   Embedding model name. Default: "text-embedding-3-small".
         base_url: Optional custom base URL for OpenAI-compatible endpoints.
+        dimensions: Output width for a model not in ``_DIMS`` (e.g. a local
+            OpenAI-compatible embedder). Falls back to REPOWISE_EMBEDDING_DIMS,
+            then to the known-model table, then 1536.
     """
 
     _DIMS: ClassVar[dict[str, int]] = {
@@ -54,6 +57,7 @@ class OpenAIEmbedder:
         model: str = "text-embedding-3-small",
         timeout: float = _DEFAULT_TIMEOUT,
         base_url: str | None = None,
+        dimensions: int | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self._api_key:
@@ -63,11 +67,30 @@ class OpenAIEmbedder:
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._model = model
         self._timeout = timeout
+        self._dimensions = self._resolve_dimensions(dimensions, model)
         self._client: object | None = None  # cached; created once on first embed()
+
+    @classmethod
+    def _resolve_dimensions(cls, dimensions: int | None, model: str) -> int:
+        """Explicit arg > REPOWISE_EMBEDDING_DIMS > known-model table > 1536.
+
+        A local OpenAI-compatible embedder (e.g. a self-hosted model) is not in
+        ``_DIMS``; without an override its width would silently default to 1536
+        and mismatch the store. Mirrors the Ollama/Gemini embedders, which
+        already honour REPOWISE_EMBEDDING_DIMS.
+        """
+        if dimensions is None:
+            env = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+            dimensions = int(env) if env else None
+        if dimensions is None:
+            return cls._DIMS.get(model, 1536)
+        if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
+            raise ValueError("dimensions must be a positive integer")
+        return dimensions
 
     @property
     def dimensions(self) -> int:
-        return self._DIMS.get(self._model, 1536)
+        return self._dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts using OpenAI.
