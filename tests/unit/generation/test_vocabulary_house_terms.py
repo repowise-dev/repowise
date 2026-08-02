@@ -616,6 +616,109 @@ def test_an_overlined_title_is_read_once(rst_repo: Path) -> None:
     assert all(t.strip("=-~ ") for t in terms)
 
 
+# ---------------------------------------------------------------------------
+# A reStructuredText section that opens with markup has no definition
+# ---------------------------------------------------------------------------
+#
+# Mined from django, whose ``docs/index.txt`` is a table of contents: its
+# "Models" section opens with a grid of ``:doc:`` links, and the sentence taken
+# from it was ``:doc:`Introduction to models <topics/db/models>` |``. Markup, a
+# wrong definition, and a stray pipe that breaks any table it lands in.
+
+_RST_TOC = """\
+Models
+======
+
+:doc:`Introduction to models <topics/db/models>` |
+:doc:`Field types <ref/models/fields>` |
+:doc:`Indexes <ref/models/indexes>`
+
+* **Hotspots:**
+  :doc:`Churn ranking <ref/hotspots>` |
+  :doc:`Bug history <ref/history>`
+
+Co-change
+~~~~~~~~~
+
+Co-change counts how often two files land in the same commit.
+
+Blast radius
+~~~~~~~~~~~~
+
++------------------+-------------------+
+| Column           | Meaning           |
++==================+===================+
+| depth            | hops from the seed|
++------------------+-------------------+
+"""
+
+
+@pytest.fixture
+def toc_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "ledger"
+    root.mkdir()
+    docs = root / "docs"
+    docs.mkdir()
+    (docs / "index.rst").write_text(_RST_TOC, encoding="utf-8")
+
+    src = root / "src"
+    src.mkdir()
+    (src / "history.py").write_text(_SRC_HISTORY, encoding="utf-8")
+    hotspots = src / "hotspots"
+    hotspots.mkdir()
+    (hotspots / "rank.py").write_text('"""Churn ranking for hotspots."""\n', encoding="utf-8")
+    # Both spell their term, so both pass the code gate; neither *opens* a
+    # sentence with it, so neither supplies a definition of its own. What is
+    # left is whatever the document offered — which is the point of the tests.
+    (src / "radius.py").write_text(
+        '"""Rendering for the blast radius overlay."""\n', encoding="utf-8"
+    )
+    # A directory named for the term: how a one-word term earns its place.
+    models = src / "models"
+    models.mkdir()
+    (models / "base.py").write_text('"""Declarations that back the models."""\n', encoding="utf-8")
+    return root
+
+
+def test_a_toctree_entry_is_not_a_definition(toc_repo: Path) -> None:
+    """A section whose opening lines are list markup defines nothing.
+
+    Reporting no sentence is correct. Reporting a link out of a contents grid
+    as the repository's own definition is confidently wrong, which is the one
+    outcome this module exists to avoid.
+    """
+    models = {t.term: t for t in extract_house_terms(toc_repo)}["Models"]
+    assert models.definition is None
+
+
+def test_a_definition_never_carries_a_table_cell_separator(toc_repo: Path) -> None:
+    """Definitions are rendered into markdown tables downstream."""
+    for term in extract_house_terms(toc_repo):
+        assert "|" not in (term.definition or "")
+
+
+def test_a_grid_table_row_is_not_a_definition(toc_repo: Path) -> None:
+    blast = {t.term: t for t in extract_house_terms(toc_repo)}["Blast radius"]
+    assert blast.definition is None
+
+
+def test_a_bolded_label_alone_on_its_line_claims_no_definition(toc_repo: Path) -> None:
+    """A lead-in and the sentence defining it share a line.
+
+    A bolded label standing alone above a list of links defines nothing, and
+    reading the next line as its meaning is how ``:doc:`` markup became a
+    definition of "Hotspots".
+    """
+    hotspots = {t.term: t for t in extract_house_terms(toc_repo)}["Hotspots"]
+    assert hotspots.definition is None
+
+
+def test_prose_after_the_section_title_is_still_taken(toc_repo: Path) -> None:
+    """Skipping markup must not skip the sentence that follows it."""
+    co = {t.term: t for t in extract_house_terms(toc_repo)}["Co-change"]
+    assert co.definition == "Co-change counts how often two files land in the same commit."
+
+
 def test_extract_terms_ignores_rst_headings(rst_repo: Path) -> None:
     """The planner's input does not move. README.rst is already read today and
     its bolded lead-ins already count; its section titles do not, and this
