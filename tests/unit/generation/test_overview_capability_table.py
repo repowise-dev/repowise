@@ -187,6 +187,11 @@ def test_prose_that_is_not_a_statement_is_not_offered_as_a_definition(text):
         "Dead code is code no import path reaches.",
         "Blast radius is the set of files a change can reach through the import graph.",
         "Middleware for utilizing Web-server-provided authentication.",
+        # Terse, and still the repository's own answer. Both of these were
+        # rejected by a first cut of the test that was tuned too strict.
+        "Blast-radius request/response models.",
+        "Decisions are co-located in the page vector store under the "
+        "``decision:<record_id>`` namespace (no separate table).",
     ],
 )
 def test_a_real_sentence_survives(text):

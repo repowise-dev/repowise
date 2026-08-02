@@ -243,7 +243,12 @@ def select_capabilities(
 
 #: A command line rather than a sentence: a shell comment, a prompt, an option
 #: flag, a redirect or a pipeline.
-_LOOKS_LIKE_COMMAND = re.compile(r"(^\s*[$>]|\s#\s|\s--?[a-zA-Z]|[|<>]\s*\S)")
+#:
+#: The redirect and pipe test requires whitespace on both sides. Bare ``<`` and
+#: ``>`` reject real prose: "Decisions are co-located ... under the
+#: ``decision:<record_id>`` namespace" is a sentence, and the angle brackets in
+#: it are a placeholder, not a redirect.
+_LOOKS_LIKE_COMMAND = re.compile(r"(^\s*[$>]\s|\s#\s|\s--?[a-zA-Z]|\s[|<>]\s)")
 #: Ends where the real explanation begins — a colon, or an unclosed opener.
 _TRAILS_OFF = (":", ",", ";", "-", "—", "–", "(", "[")
 
@@ -258,7 +263,10 @@ def _is_a_sentence(text: str) -> bool:
     page as though it explained something.
     """
     text = " ".join(text.split())
-    if len(text.split()) < 4:
+    # Three, not four: "Blast-radius request/response models." is terse and is
+    # still the repository's own answer to what the term means. Two words is
+    # where the fragments live ("See below", "Two parts").
+    if len(text.split()) < 3:
         return False
     if text.rstrip().endswith(_TRAILS_OFF):
         return False
