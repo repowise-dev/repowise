@@ -162,6 +162,26 @@ def test_generation_config_reads_repo_max_tokens():
     assert config.max_tokens == 2345
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, 0.0), (0.15, 0.15), ("0.7", 0.7)],
+)
+def test_generation_config_reads_repo_temperature(value, expected):
+    config = GenerationConfig.from_repo_config({"temperature": value})
+    assert config.temperature == expected
+
+
+@pytest.mark.parametrize("value", [-0.1, True, float("inf"), float("nan"), "not-a-number"])
+def test_generation_config_rejects_invalid_repo_temperature(value):
+    with pytest.raises(ValueError, match="finite, non-negative number"):
+        GenerationConfig.from_repo_config({"temperature": value})
+
+
+def test_generation_config_rejects_invalid_direct_temperature():
+    with pytest.raises(ValueError, match="finite, non-negative number"):
+        GenerationConfig(temperature=-0.1)
+
+
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "not-a-number"])
 def test_generation_config_rejects_invalid_repo_max_tokens(value):
     with pytest.raises(ValueError, match="positive integer"):

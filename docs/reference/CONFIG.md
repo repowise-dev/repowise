@@ -33,8 +33,9 @@ flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
 
 > **Limited schema validation.** `config.yaml` is loaded as a plain YAML dict.
 > Unknown or misspelled keys are silently ignored, they won't error and won't
-> take effect. `max_tokens` must be a positive integer when documentation is
-> generated. The `distill:` block is validated only when you run
+> take effect. `max_tokens` must be a positive integer and `temperature` must
+> be a finite, non-negative number when documentation is generated. The
+> `distill:` block is validated only when you run
 > `repowise doctor`. If a setting doesn't seem to be taking effect, check
 > spelling and indentation first.
 
@@ -45,6 +46,7 @@ embedder: mock                       # Embedding provider (mock if no key detect
 embedding_model: text-embedding-3-small  # Embedding model (provider default if omitted)
 reasoning: auto                      # auto | off | none | minimal | low | medium | high | xhigh | max
 max_tokens: 16384                    # Max output tokens for each generated documentation page
+temperature: 0.3                     # Sampling temperature for generated documentation
 commit_limit: 500                    # Max commits per file for git analysis (clamped 1-10000)
 follow_renames: false                # Track file renames in git history
 wiki_style: comprehensive            # comprehensive | caveman | reference | tutorial | custom
@@ -77,6 +79,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `embedding_model` | provider default | Embedding model identifier |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `max_tokens` | `16384` | Maximum output tokens requested for each model-written documentation page |
+| `temperature` | `0.3` | Sampling temperature requested for each model-written documentation page |
 | `commit_limit` | `500` | Max commits per file walked for git analysis, clamped to 1-10000 |
 | `follow_renames` | `false` | Track file renames through git history |
 | `exclude_patterns` | `[]` | Extra gitignore-style patterns, on top of `.gitignore` |
@@ -105,6 +108,12 @@ persistent repository setting rather than a per-command flag: `init`, `update`,
 all use the same value. Providers may enforce a lower model limit. If
 generation reaches a token limit before the page is complete, repowise rejects
 the partial page instead of saving it.
+
+`temperature` controls sampling for the same model-written documentation
+calls. It is a persistent repository setting consumed by the same generation
+entry points as `max_tokens`. The value must be finite and non-negative.
+Providers may enforce a narrower range or normalize the requested value for
+particular model families.
 
 `wiki_style` controls the voice and density of generated wiki pages. Set it with
 `init --wiki-style` or switch later with `repowise restyle <style>` (which also

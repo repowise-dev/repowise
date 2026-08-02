@@ -199,14 +199,18 @@ def test_repo_wiki_style_defaults_and_tolerates_bad_input(tmp_path):
     )
 
 
-def test_server_generation_config_reads_repo_output_limit(tmp_path):
+def test_server_generation_config_reads_repo_sampling_and_output_settings(tmp_path):
     config_dir = tmp_path / ".repowise"
     config_dir.mkdir()
-    (config_dir / "config.yaml").write_text("max_tokens: 2468\n", encoding="utf-8")
+    (config_dir / "config.yaml").write_text(
+        "max_tokens: 2468\ntemperature: 0.15\n",
+        encoding="utf-8",
+    )
 
     config = _build_generation_config(tmp_path, {}, "comprehensive")
 
     assert config.max_tokens == 2468
+    assert config.temperature == 0.15
 
 
 @pytest.mark.asyncio
@@ -696,4 +700,3 @@ async def test_execute_job_dispatches_generate_mode(session_factory, tmp_path):
         await execute_job(job_id, app_state)
 
     run_generate_mock.assert_awaited_once()
-

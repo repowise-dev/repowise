@@ -48,6 +48,7 @@ model: claude-sonnet-4-6             # Model identifier
 embedder: gemini                     # Embedding provider
 reasoning: auto                      # auto | off/none | minimal | low | medium | high | xhigh | max
 max_tokens: 16384                    # Max output tokens per generated documentation page
+temperature: 0.3                     # Sampling temperature for generated documentation
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -80,6 +81,10 @@ persistent repository setting used by `init`, `update`, `generate`, `restyle`,
 workspace generation, and server-triggered generation. If generation reaches a
 token limit before the page is complete, repowise rejects the partial page
 instead of saving it.
+
+`temperature` controls sampling for the same model-written documentation
+calls. It must be finite and non-negative. Providers may enforce a narrower
+range or normalize the requested value for particular model families.
 
 ---
 
