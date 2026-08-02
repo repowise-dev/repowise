@@ -105,5 +105,29 @@ Part of the **{{ ctx.community_label }}** module cluster.
 - {{ q }}
 {%- endfor %}
 {%- endif %}
+{#- The words the file itself uses.
+
+    Everything above is a description of the file. This is the file's own
+    vocabulary: field names, string literals, help text, comment prose. The
+    page could describe a file accurately and still be unfindable by any
+    question about what it does, because a question is asked in the words of
+    the source and none of those words were on the page.
+
+    Per-file, and that is the whole point. Repo-level vocabulary rendered here
+    would be byte-identical across every file page in the corpus, which is the
+    failure this template's own header warns about: it would match every query
+    and distinguish none of them.
+
+    Last on the page, below the questions block, for the same reason that
+    block is low: ``_extract_summary`` reads back from the top, and a bag of
+    words is not a summary. Conditional, like every section below the
+    Overview, so a file that yields no vocabulary renders no heading.
+-#}
+{%- if ctx.code_vocabulary %}
+
+## In the code
+
+{{ ctx.code_vocabulary }}
+{%- endif %}
 
 {% include "_footer.j2" %}

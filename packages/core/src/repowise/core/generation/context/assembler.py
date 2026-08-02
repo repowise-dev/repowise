@@ -13,6 +13,7 @@ from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
 from ..models import GenerationConfig
+from .code_vocabulary import code_vocabulary
 from .contexts import (
     ApiContractContext,
     ArchitectureDiagramContext,
@@ -326,6 +327,13 @@ class ContextAssembler:
             kg_tour_step=kg_context.tour_step if kg_context else None,
             kg_tags=kg_context.tags if kg_context else [],
             kg_node_summary=kg_context.node_summary if kg_context else "",
+            # Computed from the whole decoded source, not from ``snippet``.
+            # The snippet is budget-trimmed and on a large file is replaced by
+            # a structural summary, so reading it would make the vocabulary of
+            # the biggest files the thinnest, which is backwards. This section
+            # carries its own cap and is not charged against the prompt budget
+            # because it is page content rather than model input.
+            code_vocabulary=code_vocabulary(source_text),
         )
 
     # ------------------------------------------------------------------
