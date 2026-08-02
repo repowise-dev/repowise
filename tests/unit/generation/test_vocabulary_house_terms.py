@@ -480,3 +480,145 @@ def test_documents_read_but_nothing_survived_is_a_different_report(
     with caplog.at_level(logging.WARNING, logger=_LOGGER):
         assert extract_house_terms(tmp_path) == []
     assert "none survived" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# reStructuredText
+# ---------------------------------------------------------------------------
+#
+# Read as markdown, a reStructuredText document yields no headings at all —
+# not an error, just silence. Of the repositories checked by hand, flask,
+# requests and django were all in this position.
+
+_RST_README = """\
+=======
+Ledger
+=======
+
+A ledger for small shops.
+
+Blast radius
+============
+
+Blast radius is the set of files a change can reach through the import graph.
+
+Change risk
+-----------
+
+.. note::
+
+   Change risk scores a diff against the history of the files it touches.
+
+Empty section
+-------------
+
+Bug magnet
+----------
+
+See :doc:`hotspots` and the `guide <https://example.com>`_ for ``details``.
+
+**Dead code** -- code no import path reaches.
+
+Not a heading
+some prose that happens to sit above a short rule
+---
+"""
+
+_RST_GUIDE = """\
+Co-change
+~~~~~~~~~
+
+Co-change counts how often two files land in the same commit.
+"""
+
+
+@pytest.fixture
+def rst_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "ledger"
+    root.mkdir()
+    (root / "README.rst").write_text(_RST_README, encoding="utf-8")
+    docs = root / "docs"
+    docs.mkdir()
+    (docs / "guide.rst").write_text(_RST_GUIDE, encoding="utf-8")
+
+    src = root / "src"
+    src.mkdir()
+    (src / "analysis.py").write_text(_SRC_ANALYSIS, encoding="utf-8")
+    (src / "history.py").write_text(_SRC_HISTORY, encoding="utf-8")
+    (src / "magnet.py").write_text('"""Bug magnet scoring."""\n', encoding="utf-8")
+    (src / "dead.py").write_text('"""Dead code sweep."""\n', encoding="utf-8")
+    return root
+
+
+def test_restructuredtext_headings_are_read(rst_repo: Path) -> None:
+    found = {t.term for t in extract_house_terms(rst_repo)}
+    assert {"Blast radius", "Change risk", "Bug magnet", "Co-change"} <= found
+
+
+def test_a_docs_directory_of_rst_is_mined(rst_repo: Path) -> None:
+    """docs/guide.rst is the only place "Co-change" is named."""
+    co = {t.term: t for t in extract_house_terms(rst_repo)}["Co-change"]
+    assert co.source_paths[0] == "docs/guide.rst"
+
+
+def test_an_rst_section_yields_its_following_sentence(rst_repo: Path) -> None:
+    blast = {t.term: t for t in extract_house_terms(rst_repo)}["Blast radius"]
+    assert blast.definition == (
+        "Blast radius is the set of files a change can reach through the import graph."
+    )
+    assert blast.definition_source == "README.rst"
+
+
+def test_a_directive_is_markup_not_prose(rst_repo: Path) -> None:
+    """A directive and everything indented under it is markup.
+
+    ``.. note::`` happens to hold a sentence, so taking it would look right
+    here. ``.. code-block::`` holds code and ``.. toctree::`` holds
+    filenames, and the scan cannot tell them apart from the outside — so it
+    takes none of them.
+    """
+    by_name = {t.term: t for t in extract_house_terms(rst_repo)}
+    assert "Note" not in by_name
+    # The only sentence about "Change risk" in the document sits inside the
+    # note, and is not taken. The definition it ends up with comes from the
+    # code, which is the documented fallback.
+    risk = by_name["Change risk"]
+    assert risk.definition_source == "src/analysis.py"
+
+
+def test_the_rst_definition_scan_stops_at_the_next_section(rst_repo: Path) -> None:
+    """ "Empty section" has no prose of its own; the sentence below it belongs
+    to "Bug magnet"."""
+    magnet = {t.term: t for t in extract_house_terms(rst_repo)}["Bug magnet"]
+    assert magnet.definition is not None
+    assert "Bug magnet" not in (magnet.definition or "")
+
+
+def test_rst_roles_and_links_are_reduced_to_their_text(rst_repo: Path) -> None:
+    """A definition is prose for a reader, not markup."""
+    magnet = {t.term: t for t in extract_house_terms(rst_repo)}["Bug magnet"]
+    assert ":doc:" not in (magnet.definition or "")
+    assert "``" not in (magnet.definition or "")
+    assert "<https://example.com>" not in (magnet.definition or "")
+
+
+def test_a_short_rule_does_not_make_the_line_above_a_title(rst_repo: Path) -> None:
+    """reStructuredText requires the underline to be at least as long as its
+    title. Without that check every table rule and thematic break in the
+    document becomes a heading."""
+    assert "Not a heading" not in {t.term for t in extract_house_terms(rst_repo)}
+
+
+def test_an_overlined_title_is_read_once(rst_repo: Path) -> None:
+    """The overline form is punctuation above *and* below. It must not yield
+    a term made of punctuation, and must not double-count the title."""
+    terms = [t.term for t in extract_house_terms(rst_repo)]
+    assert all(t.strip("=-~ ") for t in terms)
+
+
+def test_extract_terms_ignores_rst_headings(rst_repo: Path) -> None:
+    """The planner's input does not move. README.rst is already read today and
+    its bolded lead-ins already count; its section titles do not, and this
+    change must not alter that.
+    """
+    assert extract_terms(rst_repo) == ["Dead code"]

@@ -235,7 +235,7 @@ class HouseTerm:
     is_indexed_symbol: bool
 
 
-def _doc_paths(repo_root: Path) -> list[Path]:
+def _doc_paths(repo_root: Path, *, patterns: tuple[str, ...] = ("*.md",)) -> list[Path]:
     """The documents worth mining, in a fixed order. Never raises."""
     files: list[Path] = []
     try:
@@ -247,7 +247,10 @@ def _doc_paths(repo_root: Path) -> list[Path]:
             directory = repo_root / rel_dir
             if not directory.is_dir():
                 continue
-            for candidate in sorted(directory.glob("*.md")):
+            found: list[Path] = []
+            for pattern in patterns:
+                found.extend(directory.glob(pattern))
+            for candidate in sorted(found):
                 if candidate.is_file() and candidate not in files:
                     files.append(candidate)
                 if len(files) >= _MAX_DOCS:
@@ -261,6 +264,103 @@ def _doc_paths(repo_root: Path) -> list[Path]:
         )
         return []
     return files
+
+
+# ---------------------------------------------------------------------------
+# reStructuredText
+# ---------------------------------------------------------------------------
+#
+# A large share of Python projects document in reStructuredText, and every
+# pattern above is markdown-only. Read as markdown, a reST document yields no
+# headings at all — not an error, just silence, which is the worst shape a
+# failure can take here. Of seven repositories checked, five were in this
+# position: flask, requests, django, sphinx and reflex.
+
+#: The punctuation reST uses to underline a title. Any of these, repeated.
+_RST_UNDERLINE = re.compile(r"^([=\-`:.'\"~^_*+#<>])\1{2,}\s*$")
+#: ``.. note::``, ``.. _label:``, ``.. image::`` — markup, never a title.
+_RST_DIRECTIVE = re.compile(r"^\s*\.\.\s")
+
+
+def _is_rst_underline(line: str, title: str) -> bool:
+    """Whether ``line`` underlines ``title``.
+
+    reStructuredText requires the underline to be at least as long as the
+    title it carries. Checking that is what separates a real section title
+    from a line of prose that happens to sit above a horizontal rule or a
+    row of dashes in a table.
+    """
+    if not _RST_UNDERLINE.match(line):
+        return False
+    return len(line.rstrip()) >= len(title.rstrip())
+
+
+def _rst_sections(lines: list[str]) -> list[tuple[str, int]]:
+    """``(title, index of its underline)`` for each section title.
+
+    The overline form — punctuation above *and* below the title — falls out
+    for free: the overline is not a title (the line under it is not an
+    underline of it), and the title/underline pair below matches normally.
+    """
+    out: list[tuple[str, int]] = []
+    for i in range(len(lines) - 1):
+        title = lines[i].strip()
+        if not title or _RST_DIRECTIVE.match(lines[i]) or _RST_UNDERLINE.match(title):
+            continue
+        if _is_rst_underline(lines[i + 1], title):
+            out.append((title, i + 1))
+    return out
+
+
+def _definition_after_rst_section(lines: list[str], underline: int) -> str | None:
+    """The first prose sentence of a reST section.
+
+    Stops at the next title for the same reason the markdown scan does: a
+    sentence lifted from the following section is a confident wrong
+    definition, which is worse than none.
+    """
+    directive_indent: int | None = None
+    stop = min(underline + 1 + _DEFINITION_SCAN_LINES, len(lines))
+    for offset in range(underline + 1, stop):
+        line = lines[offset]
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if directive_indent is not None:
+            # Still inside the directive: its body is indented under it.
+            if indent > directive_indent:
+                continue
+            directive_indent = None
+        if _RST_DIRECTIVE.match(line):
+            # A directive and everything it contains is markup, not prose.
+            # ``.. note::`` happens to hold a sentence; ``.. code-block::``
+            # holds code and ``.. toctree::`` holds filenames, and a
+            # definition scan cannot tell them apart from the outside.
+            directive_indent = indent
+            continue
+        if _RST_UNDERLINE.match(stripped):
+            continue
+        # A line that is itself underlined is the next section's title.
+        if offset + 1 < len(lines) and _is_rst_underline(lines[offset + 1], stripped):
+            return None
+        sentence = _first_sentence(_strip_rst_roles(stripped))
+        if _MIN_DEFINITION_CHARS <= len(sentence) <= _MAX_DEFINITION_CHARS:
+            return sentence
+        return None
+    return None
+
+
+#: ``:doc:`quickstart``` and ``:class:`Flask``` are cross-references. The text
+#: inside is what a reader sees, so that is what a definition should carry.
+_RST_ROLE = re.compile(r":[a-zA-Z:+-]+:`([^`]*)`")
+_RST_LINK = re.compile(r"`([^`<]*?)\s*(?:<[^>]*>)?`_+")
+
+
+def _strip_rst_roles(text: str) -> str:
+    text = _RST_ROLE.sub(r"\1", text)
+    text = _RST_LINK.sub(r"\1", text)
+    return re.sub(r"``([^`]*)``", r"\1", text)
 
 
 # A line that opens a new section. The definition scan stops here: running on
@@ -421,6 +521,7 @@ def _harvest(
     expand: Callable[[str], list[str]] | None = None,
     accept: Callable[[str], bool] | None = None,
     skip_release_notes: bool = False,
+    read_rst: bool = False,
 ) -> list[_Candidate]:
     """Every candidate term in document order, deduplicated, first spelling wins.
 
@@ -434,13 +535,16 @@ def _harvest(
     ``expand`` turns one raw heading into several candidate spellings.
     ``accept`` is an extra test applied after :func:`_is_useful`.
     ``skip_release_notes`` drops documents whose headings are version numbers.
+    ``read_rst`` reads reStructuredText documents as reStructuredText rather
+    than looking for markdown headings in them and finding none.
     """
     candidates: dict[str, _Candidate] = {}
     order: list[str] = []
     unreadable = 0
     skipped: list[str] = []
 
-    for path in _doc_paths(repo_root):
+    patterns = ("*.md", "*.rst") if read_rst else ("*.md",)
+    for path in _doc_paths(repo_root, patterns=patterns):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_DOC_BYTES]
         except OSError:
@@ -463,17 +567,30 @@ def _harvest(
         }
 
         # Headings first, then bolded lead-ins — the order the planner's
-        # binding was measured against. Which of the two a term came from
-        # decides where its definition may be looked for: the sentence under a
-        # heading belongs to that heading, but the lines under a bolded term
+        # binding was measured against. Each entry carries the definition
+        # already resolved, because where a definition may be looked for
+        # depends on where the term came from: the sentence under a heading
+        # belongs to that heading, but the lines under a bolded term
         # mid-paragraph belong to the paragraph, not to the term.
-        matches = [(True, m) for m in _HEADING.finditer(text)]
-        matches += [(False, m) for m in _BOLD_TERM.finditer(text)]
-        for is_heading, match in matches:
+        entries: list[tuple[str, str | None]] = []
+        if read_rst and path.suffix.lower() == ".rst":
+            lines = text.split("\n")
+            entries = [
+                (title, _definition_after_rst_section(lines, underline))
+                for title, underline in _rst_sections(lines)
+            ]
+        else:
+            entries = [
+                (m.group(1), _definition_after_heading(text, m.end()))
+                for m in _HEADING.finditer(text)
+            ]
+        # Bolded lead-ins read the same in both markup languages.
+        entries += [(m.group(1), None) for m in _BOLD_TERM.finditer(text)]
+
+        for raw, heading_definition in entries:
             # Expansion runs on the raw heading, before normalisation:
             # normalising strips the punctuation — the colon, the bullet —
             # that says where the name ends and the gloss begins.
-            raw = match.group(1)
             spellings = expand(raw) if expand is not None else [raw]
             for spelling in spellings:
                 term = _normalise(spelling)
@@ -493,9 +610,7 @@ def _harvest(
                 if rel not in candidate.source_paths:
                     candidate.source_paths.append(rel)
                 if candidate.definition is None:
-                    definition = definitions.get(key)
-                    if not definition and is_heading:
-                        definition = _definition_after_heading(text, match.end())
+                    definition = definitions.get(key) or heading_definition
                     if definition:
                         candidate.definition = definition
                         candidate.definition_source = rel
@@ -737,6 +852,7 @@ def extract_house_terms(
         expand=_expand_heading,
         accept=lambda t: _is_name_like(t, excluded=excluded),
         skip_release_notes=True,
+        read_rst=True,
     )
     if not candidates:
         _warn_empty(repo_root)
