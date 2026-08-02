@@ -213,21 +213,56 @@ def select_source_evidence(
     return EvidenceSelection(rendered, tuple(included), tuple(skipped))
 
 
-def _select_reference_evidence(
+_ExactExcerpt = tuple[str, str, int, int, str]  # path, reference, start_line, end_line, framed body
+
+
+def _resolve_reference_excerpt(
+    reference: str,
     source_map: Mapping[str, bytes],
+    parsed_by_path: Mapping[str, object],
+) -> tuple[_ExactExcerpt | None, str | None]:
+    """Resolve a ``path::symbol`` reference to a framed excerpt, or return a skip reason."""
+    if "::" not in reference:
+        return None, "not_symbol_reference"
+    path = reference.split("::", 1)[0]
+    raw = source_map.get(path)
+    if raw is None:
+        return None, "source_not_indexed"
+    parsed = parsed_by_path.get(path)
+    if parsed is None:
+        return None, "parsed_file_not_found"
+    symbol = next(
+        (candidate for candidate in getattr(parsed, "symbols", ()) if candidate.id == reference),
+        None,
+    )
+    if symbol is None:
+        return None, "symbol_not_found"
+    start_line = int(getattr(symbol, "start_line", 0))
+    end_line = int(getattr(symbol, "end_line", 0))
+    if start_line <= 0 or end_line < start_line:
+        return None, "invalid_line_range"
+    text = _decode_text(raw)
+    if text is None:
+        return None, "binary_or_non_utf8"
+    lines = text.splitlines(keepends=True)
+    end_line = min(end_line, len(lines))
+    if end_line < start_line:
+        return None, "invalid_line_range"
+    body = "".join(lines[start_line - 1 : end_line])
+    if not body.strip():
+        return None, "empty_excerpt"
+    body = _EVIDENCE_FRAME_TAG.sub(lambda match: escape(match.group(), quote=False), body)
+    return (path, reference, start_line, end_line, body), None
+
+
+def _eligible_reference_excerpts(
     references: Sequence[str],
-    parsed_files: Sequence[object],
-    *,
-    token_budget: int,
-) -> EvidenceSelection:
-    """Select bounded exact bodies for symbol references, with skip provenance."""
-    parsed_by_path = {
-        parsed.file_info.path: parsed
-        for parsed in parsed_files
-        if getattr(getattr(parsed, "file_info", None), "path", None)
-    }
+    source_map: Mapping[str, bytes],
+    parsed_by_path: Mapping[str, object],
+) -> tuple[list[_ExactExcerpt], list[EvidenceSkip]]:
+    """Resolve every reference in order, partitioning into eligible excerpts and skips."""
+    eligible: list[_ExactExcerpt] = []
     skipped: list[EvidenceSkip] = []
-    eligible: list[tuple[str, str, int, int, str]] = []
     seen: set[str] = set()
     for raw_reference in references:
         reference = str(raw_reference).removeprefix("file:")
@@ -235,58 +270,21 @@ def _select_reference_evidence(
             skipped.append(EvidenceSkip(reference, "duplicate_reference"))
             continue
         seen.add(reference)
-        if "::" not in reference:
-            skipped.append(EvidenceSkip(reference, "not_symbol_reference"))
-            continue
-        path = reference.split("::", 1)[0]
-        raw = source_map.get(path)
-        if raw is None:
-            skipped.append(EvidenceSkip(reference, "source_not_indexed"))
-            continue
-        parsed = parsed_by_path.get(path)
-        if parsed is None:
-            skipped.append(EvidenceSkip(reference, "parsed_file_not_found"))
-            continue
-        symbol = next(
-            (
-                candidate
-                for candidate in getattr(parsed, "symbols", ())
-                if candidate.id == reference
-            ),
-            None,
-        )
-        if symbol is None:
-            skipped.append(EvidenceSkip(reference, "symbol_not_found"))
-            continue
-        start_line = int(getattr(symbol, "start_line", 0))
-        end_line = int(getattr(symbol, "end_line", 0))
-        if start_line <= 0 or end_line < start_line:
-            skipped.append(EvidenceSkip(reference, "invalid_line_range"))
-            continue
-        text = _decode_text(raw)
-        if text is None:
-            skipped.append(EvidenceSkip(reference, "binary_or_non_utf8"))
-            continue
-        lines = text.splitlines(keepends=True)
-        end_line = min(end_line, len(lines))
-        if end_line < start_line:
-            skipped.append(EvidenceSkip(reference, "invalid_line_range"))
-            continue
-        body = "".join(lines[start_line - 1 : end_line])
-        if not body.strip():
-            skipped.append(EvidenceSkip(reference, "empty_excerpt"))
-            continue
-        body = _EVIDENCE_FRAME_TAG.sub(lambda match: escape(match.group(), quote=False), body)
-        eligible.append((path, reference, start_line, end_line, body))
+        excerpt, reason = _resolve_reference_excerpt(reference, source_map, parsed_by_path)
+        if reason is not None:
+            skipped.append(EvidenceSkip(reference, reason))
+        else:
+            eligible.append(excerpt)  # type: ignore[arg-type]
+    return eligible, skipped
 
-    if not eligible:
-        return EvidenceSelection(skipped=tuple(skipped))
-    if token_budget <= 0:
-        skipped.extend(EvidenceSkip(reference, "budget_disabled") for _, reference, *_ in eligible)
-        return EvidenceSelection(skipped=tuple(skipped))
 
-    hard_char_limit = token_budget * 4 + 3
+def _drop_references_over_budget(
+    eligible: list[_ExactExcerpt],
+    hard_char_limit: int,
+) -> tuple[list[_ExactExcerpt], list[EvidenceSkip]]:
+    """Drop the lowest-priority references until the minimal framed set fits the char budget."""
     selected = list(eligible)
+    skipped: list[EvidenceSkip] = []
     while selected and (
         len(_EXACT_HEADER)
         + sum(
@@ -298,24 +296,17 @@ def _select_reference_evidence(
     ):
         _, reference, *_ = selected.pop()
         skipped.append(EvidenceSkip(reference, "budget_too_small"))
-    if not selected:
-        return EvidenceSelection(skipped=tuple(skipped))
+    return selected, skipped
 
-    available_chars = (
-        hard_char_limit
-        - len(_EXACT_HEADER)
-        - sum(
-            len(_source_wrapper(path, reference, start, end, truncated=True))
-            for path, reference, start, end, _ in selected
-        )
-    )
-    remaining_chars = (
-        available_chars
-        if len(selected) == len(eligible)
-        else _MIN_TRUNCATED_CONTENT * len(selected)
-    )
+
+def _render_exact_excerpts(
+    selected: list[_ExactExcerpt],
+    remaining_chars: int,
+) -> tuple[list[EvidenceItem], list[str], list[EvidenceSkip]]:
+    """Truncate and frame each selected excerpt within its equal share of the char budget."""
     included: list[EvidenceItem] = []
     blocks: list[str] = []
+    skipped: list[EvidenceSkip] = []
     for index, (path, reference, start_line, end_line, body) in enumerate(selected):
         allowance = remaining_chars // (len(selected) - index)
         excerpt, truncated = _truncate_chars(body, allowance)
@@ -330,16 +321,51 @@ def _select_reference_evidence(
         actual_end = min(end_line, start_line + max(0, retained_breaks))
         included.append(EvidenceItem(path, excerpt, truncated, reference, start_line, actual_end))
         blocks.append(
-            _source_wrapper(
-                path,
-                reference,
-                start_line,
-                actual_end,
-                excerpt,
-                truncated=truncated,
-            )
+            _source_wrapper(path, reference, start_line, actual_end, excerpt, truncated=truncated)
         )
         remaining_chars -= len(excerpt)
+    return included, blocks, skipped
+
+
+def _select_reference_evidence(
+    source_map: Mapping[str, bytes],
+    references: Sequence[str],
+    parsed_files: Sequence[object],
+    *,
+    token_budget: int,
+) -> EvidenceSelection:
+    """Select bounded exact bodies for symbol references, with skip provenance."""
+    parsed_by_path = {
+        parsed.file_info.path: parsed
+        for parsed in parsed_files
+        if getattr(getattr(parsed, "file_info", None), "path", None)
+    }
+    eligible, skipped = _eligible_reference_excerpts(references, source_map, parsed_by_path)
+
+    if not eligible:
+        return EvidenceSelection(skipped=tuple(skipped))
+    if token_budget <= 0:
+        skipped.extend(EvidenceSkip(reference, "budget_disabled") for _, reference, *_ in eligible)
+        return EvidenceSelection(skipped=tuple(skipped))
+
+    hard_char_limit = token_budget * 4 + 3
+    selected, budget_skips = _drop_references_over_budget(eligible, hard_char_limit)
+    skipped.extend(budget_skips)
+    if not selected:
+        return EvidenceSelection(skipped=tuple(skipped))
+
+    fixed_frames = sum(
+        len(_source_wrapper(path, reference, start, end, truncated=True))
+        for path, reference, start, end, _ in selected
+    )
+    available_chars = hard_char_limit - len(_EXACT_HEADER) - fixed_frames
+    remaining_chars = (
+        available_chars
+        if len(selected) == len(eligible)
+        else _MIN_TRUNCATED_CONTENT * len(selected)
+    )
+    included, blocks, render_skips = _render_exact_excerpts(selected, remaining_chars)
+    skipped.extend(render_skips)
 
     if not included:
         return EvidenceSelection(skipped=tuple(skipped))
