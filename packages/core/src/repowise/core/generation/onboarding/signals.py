@@ -15,6 +15,8 @@ from typing import Any
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
+from ..concept_tree.vocabulary import HouseTerm
+
 
 @dataclass(frozen=True)
 class OnboardingSignals:
@@ -47,3 +49,9 @@ class OnboardingSignals:
     tour_stops: tuple[dict, ...] = ()
     # Layers ordered top→bottom by dependency direction (the grouping spine).
     layer_order: tuple[str, ...] = ()
+    # The repository's own words for its own subsystems, ranked by how many of
+    # its documents name them and gated on the code using them. Empty when the
+    # run had no repository path to read, when the repository documents
+    # nothing, or when nothing it documents was built — all three are logged
+    # where the mining happens, because an empty tuple here cannot say which.
+    house_terms: tuple[HouseTerm, ...] = ()

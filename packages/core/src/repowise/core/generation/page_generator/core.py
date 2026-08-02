@@ -34,6 +34,7 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from ..report import reset_house_terms
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
@@ -250,6 +251,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # generates more than once.  Reset so the report's denominator counts
         # this run's responses rather than every response since start-up.
         reset_artifact_check_counts()
+        # Same reason, and it matters more here: a run that never reaches the
+        # onboarding level would otherwise report the previous run's
+        # vocabulary as its own.
+        reset_house_terms()
 
         return await run_generate_all(
             self,

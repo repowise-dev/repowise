@@ -9,6 +9,7 @@ object. Behaviour mirrors the original inline ``generate_all`` exactly.
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -21,6 +22,7 @@ from ..models import compute_page_id
 from .helpers import _is_infra_file
 
 if TYPE_CHECKING:
+    from ..concept_tree.vocabulary import HouseTerm
     from .orchestrate import _GenerationRun
 
 log = structlog.get_logger(__name__)
@@ -333,6 +335,53 @@ def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     ]
 
 
+def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
+    """The repository's own vocabulary, read once for the whole onboarding level.
+
+    Mined here rather than inside a subkind because reading it walks the
+    repository: once per run is a cost, once per slot is the same cost eight
+    times over for the same answer.
+
+    ``repo_path`` is optional on every generation entry point, and a run
+    without one has nothing to read. That is reported rather than absorbed —
+    an empty vocabulary from a repository that was never opened looks exactly
+    like an empty vocabulary from a repository that writes about nothing, and
+    the two want opposite responses.
+    """
+    from ..concept_tree.vocabulary import extract_house_terms
+    from ..report import record_house_terms
+
+    if not run.repo_path:
+        log.warning(
+            "onboarding.house_terms_skipped",
+            repo_name=run.repo_name,
+            reason="no_repo_path",
+        )
+        record_house_terms(None)
+        return ()
+
+    # The names the codebase defines. A term matching one may be rendered in
+    # backticks; a coined term may not, because the grounding pass strips
+    # backticks off any token it cannot resolve to a symbol.
+    known_symbols = {sym.name for pf in run.parsed_files for sym in pf.symbols if sym.name}
+    terms = tuple(extract_house_terms(Path(run.repo_path), known_symbols=known_symbols))
+    record_house_terms(terms)
+    if not terms:
+        log.warning(
+            "onboarding.house_terms_empty",
+            repo_name=run.repo_name,
+            known_symbols=len(known_symbols),
+        )
+    else:
+        log.info(
+            "onboarding.house_terms_mined",
+            repo_name=run.repo_name,
+            terms=len(terms),
+            top=[t.term for t in terms[:8]],
+        )
+    return terms
+
+
 def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 8 (curated onboarding collection)."""
     gen = run.gen
@@ -348,6 +397,20 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if run.on_subphase is not None:
         with contextlib.suppress(Exception):
             run.on_subphase("onboarding", len(specs))
+    # Which pages this run will actually write, decided before anything is
+    # assembled for them. ``_emit`` carries a side effect (a resumed run
+    # records the ids it is protecting from the stale sweep), so it is called
+    # exactly once per spec here and not again below. Assembling the signals
+    # costs a walk of the repository, and a scoped run that asked for one file
+    # page should not pay it to emit nothing.
+    emitted: list[tuple[str, Any]] = []
+    for spec in specs:
+        page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))
+        if run._emit(page_id):
+            emitted.append((page_id, spec))
+    if not emitted:
+        return coros
+
     kg_layers: tuple[dict, ...] = ()
     kg_tour_steps: tuple[dict, ...] = ()
     if run.kg_ctx and run.kg_ctx.available:
@@ -373,10 +436,8 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         kg_tour_steps=kg_tour_steps,
         tour_stops=tuple(run.tour_stops),
         layer_order=tuple(run.layer_order),
+        house_terms=_mine_house_terms(run),
     )
-    for spec in specs:
-        page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))
-        if not run._emit(page_id):
-            continue
+    for page_id, spec in emitted:
         coros.append((page_id, gen.generate_onboarding_page(spec, signals)))
     return coros

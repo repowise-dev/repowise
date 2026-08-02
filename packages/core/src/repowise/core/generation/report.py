@@ -7,9 +7,14 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .models import GeneratedPage
+
+if TYPE_CHECKING:
+    from .concept_tree.vocabulary import HouseTerm
 from .page_overlap import OverlapReport, measure_orientation_overlap
 from .page_tree import LayerGroupingReport, measure_layer_grouping
 from .prose import prose_word_count
@@ -159,6 +164,68 @@ def _count_question_blocks(pages: list[GeneratedPage]) -> dict[str, int]:
     }
 
 
+# How many of a run's terms the report names. Enough to tell at a glance
+# whether the miner read the repository or read its marketing copy; not so many
+# that the checks table stops fitting on a screen.
+_HOUSE_TERMS_SHOWN = 8
+
+
+@dataclass(frozen=True)
+class HouseTermReport:
+    """The repository's own vocabulary, as mined for this run's orientation.
+
+    ``mined`` is the denominator and has to be read first. A run given no
+    repository path has nothing to read, and its zero says nothing about the
+    repository — which is the whole distinction the miner exists to keep:
+    "we found nothing to read" must never render as "this repository has no
+    vocabulary".
+    """
+
+    mined: bool = False
+    count: int = 0
+    #: The highest-ranked terms, in the miner's order.
+    top: tuple[str, ...] = ()
+
+    def summary_line(self) -> str:
+        if not self.mined:
+            return "not measured (no repository path)"
+        if not self.count:
+            return "0 terms — nothing the documents name is used by the code"
+        return f"{self.count} terms — {', '.join(self.top)}"
+
+
+_house_terms = HouseTermReport()
+
+
+def record_house_terms(terms: Sequence[HouseTerm] | None) -> None:
+    """Record what the vocabulary miner returned for this run.
+
+    ``None`` means the miner never ran — there was no repository path to read.
+    An empty sequence means it ran and found nothing, which is a different
+    fact and reads differently in the report.
+    """
+    global _house_terms
+    if terms is None:
+        _house_terms = HouseTermReport()
+        return
+    _house_terms = HouseTermReport(
+        mined=True,
+        count=len(terms),
+        top=tuple(t.term for t in terms[:_HOUSE_TERMS_SHOWN]),
+    )
+
+
+def house_terms_mined() -> HouseTermReport:
+    """Snapshot of the vocabulary this process last mined."""
+    return _house_terms
+
+
+def reset_house_terms() -> None:
+    """Clear the record.  Used between runs and between tests."""
+    global _house_terms
+    _house_terms = HouseTermReport()
+
+
 @dataclass
 class GenerationReport:
     """Summary produced after ``generate_all`` completes."""
@@ -212,6 +279,12 @@ class GenerationReport:
     # run wrote no module pages" and "the append stopped happening" stay
     # separate facts, and neither one raises on its own.
     concept_indexes: dict[str, int] = field(default_factory=dict)
+    # The repository's own words for its own subsystems, mined once per run and
+    # handed to the onboarding builders.  Reported rather than inferred from the
+    # pages: no page renders a term yet, so a miner that stopped returning any
+    # would otherwise be invisible from outside.  Read ``mined`` before the
+    # count.
+    house_terms: HouseTermReport = field(default_factory=HouseTermReport)
 
     @classmethod
     def from_pages(
@@ -249,6 +322,7 @@ class GenerationReport:
             question_blocks=_count_question_blocks(pages),
             opening_frames=measure_opening_frames(pages),
             concept_indexes=_count_concept_indexes(pages),
+            house_terms=house_terms_mined(),
             overview_prose_words=next(
                 (
                     prose_word_count(p.content or "")
@@ -423,6 +497,12 @@ def render_generation_checks(report: GenerationReport, console: object) -> None:
     if report.concept_indexes_missing:
         concept_text = f"[yellow]{concept_text}[/yellow]"
     table.add_row("Module concept index", concept_text)
+
+    vocabulary = report.house_terms
+    vocabulary_text = vocabulary.summary_line()
+    if not vocabulary.mined or not vocabulary.count:
+        vocabulary_text = f"[yellow]{vocabulary_text}[/yellow]"
+    table.add_row("House vocabulary", vocabulary_text)
 
     console.print(table)  # type: ignore[union-attr]
 
