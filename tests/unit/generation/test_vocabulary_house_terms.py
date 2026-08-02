@@ -11,6 +11,7 @@ that defines each one and where it was read from. Nothing consumes it yet.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,11 @@ from repowise.core.generation.concept_tree.vocabulary import (
     extract_house_terms,
     extract_terms,
 )
+
+#: Named rather than left to the root logger: a suite-wide run may have raised
+#: the level on an ancestor, and the assertion is about this module reporting
+#: its own failures, not about global logging configuration.
+_LOGGER = "repowise.core.generation.concept_tree.vocabulary"
 
 # ---------------------------------------------------------------------------
 # The fixture repository
@@ -239,6 +245,6 @@ def test_house_terms_on_a_repository_with_no_docs(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Finding nothing is reported, not returned as if it were a finding."""
-    with caplog.at_level("WARNING"):
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
         assert extract_house_terms(tmp_path) == []
-    assert any("no house terms found" in r.message for r in caplog.records)
+    assert "no house terms found" in caplog.text
