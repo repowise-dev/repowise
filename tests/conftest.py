@@ -34,6 +34,33 @@ def _no_telemetry_network():
     mp.undo()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_structlog_config():
+    """Restore structlog's global configuration after every test.
+
+    ``configure_cli_logging`` / ``silence_logs_for_machine_output`` install a
+    filtering bound logger at ERROR process-wide and never undo it, so the
+    first test to exercise a CLI command silences every ``info`` and
+    ``warning`` for the rest of the session.
+
+    That is invisible until a test asserts on a log record.
+    ``structlog.testing.capture_logs`` swaps the *processor chain*, not the
+    *wrapper class*, so a filtering logger drops the event before ``LogCapture``
+    ever runs and the test reads an empty list. Tests collected after
+    ``tests/unit/cli`` therefore pass alone and fail in a full run.
+
+    Snapshot and restore rather than reset to defaults: a test that configures
+    structlog on purpose keeps working, and the next test still starts clean.
+    """
+    import structlog
+
+    saved = structlog.get_config()
+    try:
+        yield
+    finally:
+        structlog.configure(**saved)
+
+
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
     """Absolute path to the repository root."""
