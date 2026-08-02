@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import re
 from collections import OrderedDict
@@ -123,6 +124,58 @@ _GRAPH_EXPAND_DAMPING = 0.7
 # that it happens on its own.
 _EMBED_TIMEOUT_S = 8.0
 
+# Which retrieval legs actually ran for the current question (finding A18).
+#
+# Every leg here is best-effort by design: a slow vector store must not be able
+# to block an answer. The defect was that the fallback was *silent*. An embed
+# that times out returns no vector, retrieval quietly continues lexical-only,
+# and every health signal still reports green — ``embedder_live`` included,
+# because a configured embedder is live whether or not this particular call
+# beat the clock. Five queries in one bake-off run were answered without their
+# vector leg and nothing in the response, the logs' structured fields, or the
+# per-cell record said so.
+#
+# So the leg outcome travels with the answer. ``embedder_live`` says the
+# embedder exists; this says whether it was used. Those are different claims
+# and only one of them is about the answer the caller is holding.
+_LEG_RECORD: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "repowise_retrieval_legs", default=None
+)
+
+
+def _record_leg(leg: str, outcome: str) -> None:
+    """Note how one retrieval leg ended, if anyone is collecting."""
+    record = _LEG_RECORD.get()
+    if record is not None:
+        record[leg] = outcome
+
+
+def begin_leg_record() -> dict[str, str]:
+    """Start collecting leg outcomes for one question. Returns the record.
+
+    The legs run under ``asyncio.gather``, which copies the context into each
+    task. Copying rebinds names, not objects, so the tasks all mutate this one
+    dict and the caller sees what they wrote.
+    """
+    record: dict[str, str] = {}
+    _LEG_RECORD.set(record)
+    return record
+
+
+def retrieval_legs() -> dict[str, str]:
+    """How each retrieval leg ended for the question just answered.
+
+    ``{"fts": "ok", "vector": "timeout", "symbol": "ok"}`` and so on, plus an
+    ``embed`` key when embedding the question is what failed. Empty before any
+    retrieval has run.
+    """
+    return dict(_LEG_RECORD.get() or {})
+
+
+def degraded_legs(legs: dict[str, str]) -> list[str]:
+    """The legs that did not run, named. Empty when retrieval was whole."""
+    return sorted(leg for leg, outcome in legs.items() if outcome != "ok")
+
 # Third retrieval leg: the structural symbol index. FTS and the vector store
 # both read the generated wiki page, which by construction carries an overview
 # sentence, the *public* symbol table and dependency paths, with no function
@@ -188,7 +241,20 @@ async def question_vector(ctx: Any, question: str) -> list[float] | None:
 
     try:
         vectors = await asyncio.wait_for(store.embed_texts([question]), timeout=_EMBED_TIMEOUT_S)
+    except TimeoutError:
+        # The A18 case, and the one worth naming separately: the embedder is
+        # configured, reachable and healthy, and simply did not answer inside
+        # the budget. Nothing downstream fails, so without this the answer is
+        # lexical-only and indistinguishable from one that was not.
+        _record_leg("embed", "timeout")
+        _log.warning(
+            "get_answer could not embed the question within %.1fs; retrieval "
+            "continues without a question vector",
+            _EMBED_TIMEOUT_S,
+        )
+        return None
     except Exception:
+        _record_leg("embed", "error")
         _log.warning(
             "get_answer could not embed the question up front; each retrieval "
             "stage will embed it again",
@@ -242,6 +308,9 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
     block the call. An empty result from one mode just means the other mode
     fully drives ranking, which matches the pre-hybrid behaviour.
     """
+    # Reset before the legs run so the record describes this question and not
+    # a previous one that happened to share the task context.
+    begin_leg_record()
     fts_task = _safe_fts_search(ctx, question)
     vec_task = _safe_vector_search(ctx, question)
     sym_task = _safe_symbol_search(ctx, question)
@@ -286,13 +355,20 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
 async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
     """FTS search wrapped in timeout + suppression. Returns [] on any failure."""
     if ctx.fts is None:
+        _record_leg("fts", "absent")
         return []
     try:
-        return await asyncio.wait_for(
+        results = await asyncio.wait_for(
             ctx.fts.search(question, limit=_RETRIEVAL_FETCH_LIMIT), timeout=5.0
         )
-    except Exception:
+    except TimeoutError:
+        _record_leg("fts", "timeout")
         return []
+    except Exception:
+        _record_leg("fts", "error")
+        return []
+    _record_leg("fts", "ok")
+    return results
 
 
 def _pages_only(results: list[Any], limit: int) -> list[Any]:
@@ -339,6 +415,7 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     skipping the wait would race a background-loading store on cold start.
     """
     if ctx.vector_store is None:
+        _record_leg("vector", "absent")
         return []
     ready = getattr(ctx, "vector_store_ready", None)
     if ready is not None:
@@ -357,8 +434,13 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
             ),
             timeout=8.0,
         )
-    except Exception:
+    except TimeoutError:
+        _record_leg("vector", "timeout")
         return []
+    except Exception:
+        _record_leg("vector", "error")
+        return []
+    _record_leg("vector", "ok")
     return _pages_only(results, _RETRIEVAL_FETCH_LIMIT)
 
 
@@ -402,9 +484,15 @@ async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]
             ),
             timeout=5.0,
         )
+    except TimeoutError:
+        _record_leg("symbol", "timeout")
+        _log.debug("get_answer symbol leg timed out; page retrieval stands")
+        return []
     except Exception:
+        _record_leg("symbol", "error")
         _log.debug("get_answer symbol leg failed; page retrieval stands", exc_info=True)
         return []
+    _record_leg("symbol", "ok")
     return [
         _SymbolLegResult(p["page_id"], p["title"], (p.get("summary") or "")[:200], p["page_type"])
         for p in pages

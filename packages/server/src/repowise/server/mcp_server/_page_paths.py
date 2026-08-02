@@ -60,11 +60,18 @@ def hit_file_path(hit: dict) -> str | None:
     The page-type branch is checked first and is authoritative: a page hit that
     resolves to no file must not fall through to a looser key and smuggle a
     page id out as a path.
+
+    A hit with **no** page type is a different case from a hit with an
+    unrecognised one, and they are deliberately not treated alike. An absent
+    type means the hit was never hydrated against the Page table, and dropping
+    it would silently lose a real file over a bookkeeping gap; so those fall
+    back to whatever path they carry. An unrecognised type means the page was
+    hydrated and classified as naming no file, which is an answer, not a gap.
     """
     if hit.get("page_type"):
         return file_path_of(hit.get("page_type"), hit.get("target_path"))
-    direct = (hit.get("file") or "").split("::", 1)[0].strip()
-    return direct or None
+    raw = hit.get("file") or hit.get("target_path") or ""
+    return raw.split("::", 1)[0].strip() or None
 
 
 def file_candidates(hits: list[dict], *, limit: int) -> list[dict]:

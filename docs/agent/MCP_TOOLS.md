@@ -294,6 +294,21 @@ the **wiki**, instead of forcing a fallback to Grep for identifiers.
 - *File hits*: `{type: "file", page_id, file, title, next: "get_context"}`.
 - *Concept hits*: ranked wiki pages with `relevance_score`, `snippet`, `target_path`, and a `search_method` (`embedding` vs `bm25` fallback). A `symbol_spotlight` page's `target_path` is a page identifier of the form `file.py::Symbol`; those hits also carry `file` with the openable path. **Read `file` when present.** `target_path` is for piping into `get_symbol`, not for opening.
 
+Alongside `results`, the response carries **`candidates`**: up to `limit`
+distinct files worth opening next, one `{path}` entry each, best first.
+
+Every entry is a real file path, and that is the difference between the two
+blocks. `results` ranks *pages*, and a page is not always a file: a
+`module_page` is named by a structural group key that reads exactly like a
+directory, an `scc_page` by `scc-<hash>`, an `onboarding` page by a slot name.
+Ranking those is correct; opening them is not. `candidates` resolves symbol
+pages to their file, collapses several symbols of one file to a single entry,
+skips every page that names no file, and backfills from below the result
+window so a slot spent on a module page does not also cost you a file.
+
+**If your next move is a Read, read `candidates`.** If you are enumerating
+matches or resolving a `symbol_id`, read `results`.
+
 Tombstoned and `exclude_patterns`-excluded results are filtered. In workspace
 mode, structural and concept searches both federate across repos and merge
 (this is the one tool where `repo="all"` is fully supported).

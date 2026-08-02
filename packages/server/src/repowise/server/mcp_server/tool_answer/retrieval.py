@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import Page
+from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
@@ -53,15 +54,22 @@ def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> 
     only where a hit already carries hydrated symbols; nothing is fetched to
     build this.
 
-    ``path`` is always a **file** path. A ``symbol_spotlight`` hit's
-    ``target_path`` is ``file.py::Symbol``, which is a page identifier, not
-    something a consumer can open; two distinct symbols in one file are also
-    one file to read, so they collapse to one entry here.
+    ``path`` is always a **file** path, resolved through ``hit_file_path``. A
+    ``symbol_spotlight`` hit's ``target_path`` is ``file.py::Symbol``, which is
+    a page identifier, not something a consumer can open; two distinct symbols
+    in one file are also one file to read, so they collapse to one entry here.
+
+    Pages naming no file at all are skipped rather than emitted (finding A15).
+    A module page's target_path is a structural group key that reads like a
+    directory and an onboarding page's is a slot name, so every "does this look
+    like a path" heuristic says yes and the agent that opens it gets an error.
+    Scoring impact is about zero, measured; it is wrong on the same argument
+    A14 was, which is that this field has one meaning and it is not "page id".
     """
     out: list[dict] = []
     seen: set[str] = set()
     for h in hits:
-        path = (h.get("target_path") or "").split("::", 1)[0]
+        path = hit_file_path(h)
         if not path or path in seen:
             continue
         seen.add(path)

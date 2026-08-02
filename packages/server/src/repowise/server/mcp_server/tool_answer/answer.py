@@ -75,6 +75,9 @@ from repowise.server.mcp_server._answer_pipeline import (
     apply_pagerank_bias as _apply_pagerank_bias,
 )
 from repowise.server.mcp_server._answer_pipeline import (
+    degraded_legs as _degraded_legs,
+)
+from repowise.server.mcp_server._answer_pipeline import (
     demote_noise_hits as _demote_noise_hits,
 )
 from repowise.server.mcp_server._answer_pipeline import (
@@ -87,6 +90,9 @@ from repowise.server.mcp_server._answer_pipeline import (
     hybrid_retrieve as _hybrid_retrieve,
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
+from repowise.server.mcp_server._answer_pipeline import (
+    retrieval_legs as _retrieval_legs,
+)
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._flow_path import expand_via_flow_path as _expand_via_flow_path
 from repowise.server.mcp_server._helpers import (
@@ -1719,5 +1725,14 @@ async def get_answer(
         repository=repository,
         targets=[*citations, *fallback_targets],
     )
+    # Finding A18. Each retrieval leg is best-effort so one slow backend cannot
+    # block an answer, which is right, but it made a lexical-only answer
+    # indistinguishable from a whole one: nothing failed, nothing was logged
+    # where a caller could see it, and ``embedder_live`` stayed true because a
+    # configured embedder is live whether or not this call beat its 8s budget.
+    # Named only when a leg actually fell over, so a healthy response pays
+    # nothing for it.
+    if degraded := _degraded_legs(_retrieval_legs()):
+        payload["_meta"]["retrieval_degraded"] = degraded
     _apply_lean_high(payload, question)
     return payload

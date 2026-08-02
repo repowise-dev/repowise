@@ -66,3 +66,29 @@ def test_a_symbol_page_contributes_its_file_not_its_page_id():
 def test_two_symbols_in_one_file_are_one_candidate():
     out = serialize_candidates([_hit("a.py::One"), _hit("a.py::Two"), _hit("a.py")])
     assert [e["path"] for e in out] == ["a.py"]
+
+
+def test_a_page_that_names_no_file_is_not_offered_as_one():
+    """Finding A15, on the answer arm.
+
+    A module page's target_path is a structural group key and reads exactly
+    like a directory, so an agent told to open it fails and nothing in the
+    response says the string was never a path.
+    """
+    hits = [
+        {"page_type": "module_page", "target_path": "pkg/cmd/release"},
+        {"page_type": "onboarding", "target_path": "onboarding/guided_tour"},
+        {"page_type": "scc_page", "target_path": "scc-8f21ab"},
+        {"page_type": "file_page", "target_path": "pkg/cmd/release/list.go"},
+    ]
+    assert serialize_candidates(hits) == [{"path": "pkg/cmd/release/list.go"}]
+
+
+def test_an_unhydrated_hit_is_kept_rather_than_dropped():
+    """A missing page type is a bookkeeping gap, not a verdict.
+
+    ``hydrate_hits`` fills page_type from the Page table; a hit whose row is
+    missing gets an empty one. Treating that like a classified non-file page
+    would lose a real file over a join that did not land.
+    """
+    assert serialize_candidates([_hit("a.py")]) == [{"path": "a.py"}]
