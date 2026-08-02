@@ -294,6 +294,29 @@ def test_prompt_evidence_keeps_configured_and_exact_halves_stable() -> None:
     assert estimate_tokens(selection.rendered) <= 600
 
 
+def test_unusable_references_do_not_shrink_configured_evidence() -> None:
+    source_map = {"README.md": b"R" * 400, "ARCHITECTURE.md": b"A" * 400}
+    configured = ("README.md", "ARCHITECTURE.md")
+    budget = 200
+
+    with_unusable = select_prompt_evidence(
+        source_map,
+        configured,
+        token_budget=budget,
+        parsed_files=(),
+        references=("missing/mod.py::Ghost", "also-missing"),
+    )
+    baseline = select_source_evidence(source_map, configured, token_budget=budget)
+
+    # No reference is producible → configured keeps the whole budget, not half.
+    assert with_unusable.rendered == baseline.rendered
+    assert [i.path for i in with_unusable.included] == [i.path for i in baseline.included]
+    assert {s.reason for s in with_unusable.skipped} == {
+        "source_not_indexed",
+        "not_symbol_reference",
+    }
+
+
 def test_combined_evidence_does_not_shrink_configured_content() -> None:
     source_map = {
         "docs/ARCHITECTURE.md": (b"configured architecture evidence\n" * 500),

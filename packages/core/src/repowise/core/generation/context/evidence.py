@@ -19,6 +19,8 @@ _HEADER = (
 )
 _TRUNCATED = "...[truncated]"
 _MIN_TRUNCATED_CONTENT = len(_TRUNCATED) + 1
+# Skip reasons a larger budget could resolve (vs. structurally unusable).
+_BUDGET_SKIP_REASONS = frozenset({"budget_disabled", "budget_too_small"})
 _EVIDENCE_FRAME_TAG = re.compile(
     r"<\s*/?\s*(?:repository-file|source-excerpt)\b[^>]*>",
     re.IGNORECASE,
@@ -371,6 +373,18 @@ def select_prompt_evidence(
         parsed_files,
         token_budget=exact_budget,
     )
+    # Skip the half-reservation when no reference is producible, else configured
+    # shrinks for nothing. Producibility is budget-invariant, so this stays monotonic.
+    exact_producible = bool(exact.included) or any(
+        skip.reason in _BUDGET_SKIP_REASONS for skip in exact.skipped
+    )
+    if not exact_producible:
+        configured_only = select_source_evidence(source_map, configured, token_budget=token_budget)
+        return EvidenceSelection(
+            configured_only.rendered,
+            configured_only.included,
+            configured_only.skipped + exact.skipped,
+        )
     configured_selection = select_source_evidence(
         source_map,
         configured,
