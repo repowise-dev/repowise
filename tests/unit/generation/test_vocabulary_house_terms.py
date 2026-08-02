@@ -622,3 +622,82 @@ def test_extract_terms_ignores_rst_headings(rst_repo: Path) -> None:
     change must not alter that.
     """
     assert extract_terms(rst_repo) == ["Dead code"]
+
+
+# ---------------------------------------------------------------------------
+# reStructuredText written under .txt
+# ---------------------------------------------------------------------------
+#
+# Sphinx's ``source_suffix`` is a project setting, and a project is as free to
+# set it to ``.txt`` as to leave it at ``.rst``. django writes its whole
+# ``docs/`` tree that way. A glob that reads only ``.rst`` skips every one of
+# those documents and reports the repository as having nothing to say.
+
+
+@pytest.fixture
+def txt_docs_repo(tmp_path: Path) -> Path:
+    """A repository whose only document is reStructuredText named ``.txt``."""
+    root = tmp_path / "ledger"
+    root.mkdir()
+    docs = root / "docs"
+    docs.mkdir()
+    (docs / "guide.txt").write_text(_RST_GUIDE, encoding="utf-8")
+
+    src = root / "src"
+    src.mkdir()
+    (src / "history.py").write_text(_SRC_HISTORY, encoding="utf-8")
+    return root
+
+
+def test_a_docs_directory_of_txt_is_read_as_restructuredtext(
+    txt_docs_repo: Path,
+) -> None:
+    """The extension is the only thing that differs from ``guide.rst``."""
+    co = {t.term: t for t in extract_house_terms(txt_docs_repo)}["Co-change"]
+    assert co.source_paths[0] == "docs/guide.txt"
+    assert co.definition == "Co-change counts how often two files land in the same commit."
+
+
+def test_a_txt_document_that_is_not_restructuredtext_yields_no_sections(
+    tmp_path: Path,
+) -> None:
+    """Guessing wrong is bounded.
+
+    A ``.txt`` with no title underlines has no sections, so the reST scan
+    returns nothing rather than reading its prose lines as names.
+    """
+    root = tmp_path / "ledger"
+    root.mkdir()
+    docs = root / "docs"
+    docs.mkdir()
+    (docs / "requirements.txt").write_text(
+        "Sphinx==7.2.6\nfuro==2024.1.29\nCo-change==1.0\n", encoding="utf-8"
+    )
+    src = root / "src"
+    src.mkdir()
+    (src / "history.py").write_text(_SRC_HISTORY, encoding="utf-8")
+
+    assert extract_house_terms(root) == []
+
+
+def test_release_notes_named_txt_are_skipped(tmp_path: Path) -> None:
+    """A changelog is the largest and least useful document in a repository
+    whatever extension it carries."""
+    root = tmp_path / "ledger"
+    root.mkdir()
+    docs = root / "docs"
+    docs.mkdir()
+    (docs / "changelog.txt").write_text(
+        "Co-change\n~~~~~~~~~\n\nCo-change counts commits.\n", encoding="utf-8"
+    )
+    src = root / "src"
+    src.mkdir()
+    (src / "history.py").write_text(_SRC_HISTORY, encoding="utf-8")
+
+    assert extract_house_terms(root) == []
+
+
+def test_extract_terms_does_not_read_txt_documents(txt_docs_repo: Path) -> None:
+    """The planner's input does not move. It mines markdown only, and the
+    binding it performs is measured against exactly that corpus."""
+    assert extract_terms(txt_docs_repo) == []

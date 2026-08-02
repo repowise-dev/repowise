@@ -281,6 +281,17 @@ _RST_UNDERLINE = re.compile(r"^([=\-`:.'\"~^_*+#<>])\1{2,}\s*$")
 #: ``.. note::``, ``.. _label:``, ``.. image::`` — markup, never a title.
 _RST_DIRECTIVE = re.compile(r"^\s*\.\.\s")
 
+#: Extensions a reStructuredText document is written under. ``.txt`` is here
+#: because Sphinx's ``source_suffix`` is a project setting and a large project
+#: is as likely to have set it to ``.txt`` as to have left it at ``.rst`` —
+#: django writes its entire ``docs/`` tree that way. Read as markdown a
+#: ``.txt`` document yields nothing at all, which is indistinguishable from a
+#: repository that documents nothing.
+#:
+#: The cost of guessing wrong is bounded: a ``.txt`` that is not reST has no
+#: title underlines, so the reST scan returns no sections rather than bad ones.
+_RST_SUFFIXES = frozenset({".rst", ".txt"})
+
 
 def _is_rst_underline(line: str, title: str) -> bool:
     """Whether ``line`` underlines ``title``.
@@ -417,7 +428,7 @@ def _definition_after_heading(text: str, offset: int) -> str | None:
 #: than subsystem names. A changelog is usually the largest document in a
 #: repository and the least useful one to mine: on this repository it consumed
 #: 142 of the first 200 term slots before the tool guide was ever opened.
-_RELEASE_NOTE_NAMES = re.compile(r"(change ?log|releases?|news|history)\.(md|rst)$", re.I)
+_RELEASE_NOTE_NAMES = re.compile(r"(change ?log|releases?|news|history)\.(md|rst|txt)$", re.I)
 _VERSION_HEADING = re.compile(r"^v?\d+\.\d+")
 #: A document has to be overwhelmingly version headings before it is dropped. A
 #: guide that cites a few release numbers is not release notes, and dropping a
@@ -542,8 +553,9 @@ def _harvest(
     order: list[str] = []
     unreadable = 0
     skipped: list[str] = []
+    sectionless: list[str] = []
 
-    patterns = ("*.md", "*.rst") if read_rst else ("*.md",)
+    patterns = ("*.md", "*.rst", "*.txt") if read_rst else ("*.md",)
     for path in _doc_paths(repo_root, patterns=patterns):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_DOC_BYTES]
@@ -573,11 +585,18 @@ def _harvest(
         # belongs to that heading, but the lines under a bolded term
         # mid-paragraph belong to the paragraph, not to the term.
         entries: list[tuple[str, str | None]] = []
-        if read_rst and path.suffix.lower() == ".rst":
+        if read_rst and path.suffix.lower() in _RST_SUFFIXES:
             lines = text.split("\n")
+            sections = _rst_sections(lines)
+            if not sections:
+                # A document read under a markup guess that turned out wrong
+                # is indistinguishable downstream from a document with nothing
+                # in it. Counted, so "we found no vocabulary" can be told
+                # apart from "we read the wrong thing".
+                sectionless.append(rel)
             entries = [
                 (title, _definition_after_rst_section(lines, underline))
-                for title, underline in _rst_sections(lines)
+                for title, underline in sections
             ]
         else:
             entries = [
@@ -625,6 +644,13 @@ def _harvest(
             "vocabulary: skipped %d release-note document(s): %s",
             len(skipped),
             ", ".join(sorted(skipped)),
+        )
+    if sectionless:
+        logger.info(
+            "vocabulary: %d document(s) read as reStructuredText carried no section "
+            "titles and contributed no terms: %s",
+            len(sectionless),
+            ", ".join(sorted(sectionless)[:10]),
         )
     return [candidates[k] for k in order]
 
