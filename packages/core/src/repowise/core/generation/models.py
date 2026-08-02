@@ -14,6 +14,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Literal
 
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -68,28 +69,33 @@ def _source_evidence_page_keys() -> set[str]:
 
 
 class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
-    """Small immutable mapping that preserves the frozen config contract."""
+    """Small immutable mapping that preserves the frozen config contract.
 
-    __slots__ = ("_items",)
+    The config is ``frozen=True`` and hash-tested, so the stored value must be
+    hashable and read-only. Backed by a ``MappingProxyType`` over a plain dict:
+    O(1) lookup and no in-place mutation, still hashable because ``__hash__``
+    runs over ``frozenset(items())`` rather than the proxy. The ``__setattr__``
+    guard blocks rebinding ``_items``. ``__reduce__`` stays because a
+    ``mappingproxy`` is not picklable on its own; it rebuilds from a plain dict,
+    which also serves ``copy``/``deepcopy``. ``__slots__`` and the explicit
+    ``__copy__``/``__deepcopy__`` are gone — ``__reduce__`` covers all three.
+    """
 
     def __init__(self, values: Mapping[str, tuple[str, ...]] | None = None) -> None:
         object.__setattr__(
             self,
             "_items",
-            tuple((key, tuple(paths)) for key, paths in (values or {}).items()),
+            MappingProxyType({key: tuple(paths) for key, paths in (values or {}).items()}),
         )
 
     def __setattr__(self, name: str, value: object) -> None:
         raise TypeError("source_evidence_files is immutable")
 
     def __getitem__(self, key: str) -> tuple[str, ...]:
-        for candidate, paths in self._items:
-            if candidate == key:
-                return paths
-        raise KeyError(key)
+        return self._items[key]
 
     def __iter__(self) -> Iterator[str]:
-        return (key for key, _ in self._items)
+        return iter(self._items)
 
     def __len__(self) -> int:
         return len(self._items)
@@ -101,13 +107,6 @@ class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
 
     def __hash__(self) -> int:
         return hash(frozenset(self.items()))
-
-    def __copy__(self) -> _FrozenEvidenceFiles:
-        return self
-
-    def __deepcopy__(self, memo: dict[int, object]) -> _FrozenEvidenceFiles:
-        memo[id(self)] = self
-        return self
 
     def __reduce__(self) -> tuple[type[_FrozenEvidenceFiles], tuple[dict[str, tuple[str, ...]]]]:
         return type(self), (dict(self),)

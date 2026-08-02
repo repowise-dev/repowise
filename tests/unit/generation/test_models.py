@@ -184,6 +184,10 @@ def test_generation_config_remains_hashable_and_evidence_mapping_is_immutable():
         dict.__setitem__(config.source_evidence_files, "repo_overview", ("other.md",))  # type: ignore[arg-type]
     with pytest.raises((AttributeError, TypeError)):
         config.source_evidence_files._items = ()  # type: ignore[attr-defined]
+    # The backing store itself is read-only, so a reachable private handle
+    # cannot mutate it in place and corrupt the cached hash.
+    with pytest.raises(TypeError):
+        config.source_evidence_files._items["repo_overview"] = ("other.md",)  # type: ignore[index]
 
     reordered = GenerationConfig(
         source_evidence_files={
