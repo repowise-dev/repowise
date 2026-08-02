@@ -151,6 +151,10 @@ class _GenerationRun:
         # ---- Run bookkeeping ----
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}
+        # ``(title, summary)`` for every module page written this run, in the
+        # order they finished. The overview reads it at level 6 to corroborate
+        # mined vocabulary; module pages are level 4, so it is populated by then.
+        self.completed_module_pages: list[tuple[str, str]] = []
         self.completed_ids: set[str] = set()
         self.job_id: str | None = None
         self.file_page_contexts: dict[str, FilePageContext] = {}
@@ -580,9 +584,17 @@ class _GenerationRun:
                         self.job_system.fail_page(self.job_id, page_id, stub_error)
                     # Summary capture is cheap (string ops) — keep inline so
                     # the next page's context assembly sees it immediately.
-                    self.completed_page_summaries[result.target_path] = overview_summary(
-                        result.content
-                    )
+                    summary = overview_summary(result.content)
+                    self.completed_page_summaries[result.target_path] = summary
+                    if result.page_type == "module_page":
+                        # Kept apart from the summaries map, which is keyed by
+                        # path and carries every page type. The overview needs
+                        # module pages specifically, and it needs their titles:
+                        # a module page is grouped from the dependency graph
+                        # and named from the code, so it is an independent
+                        # second opinion on what the repository's own words
+                        # actually refer to.
+                        self.completed_module_pages.append((result.title, summary))
                     # Progress tick fires the moment the page is ready.
                     if self.on_page_done is not None:
                         self.on_page_done(result.page_type)

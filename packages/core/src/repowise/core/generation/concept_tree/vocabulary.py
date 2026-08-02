@@ -720,17 +720,17 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
 _WORD_GAP = re.compile(r"[\s_\-]+")
 
 
-def _term_words(term: str) -> list[str]:
+def term_words(term: str) -> list[str]:
     return [w for w in _WORD_GAP.split(term) if w]
 
 
-def _phrase_pattern(term: str) -> re.Pattern[str]:
+def phrase_pattern(term: str) -> re.Pattern[str]:
     """Match a term however the code spells the gaps between its words.
 
     ``bug magnet`` has to find ``bug magnet``, ``bug-magnet`` and
     ``bug_magnet``, because the docs write it one way and the code the other.
     """
-    words = [re.escape(w) for w in _term_words(term)]
+    words = [re.escape(w) for w in term_words(term)]
     return re.compile(r"\b" + r"[\s_\-]+".join(words) + r"\b", re.I)
 
 
@@ -793,7 +793,7 @@ def _survives_single_word_test(term: str, dir_names: frozenset[str]) -> bool:
     everything and stops nothing. "dead_code" must not be what lets "Code"
     through.
     """
-    words = _term_words(term)
+    words = term_words(term)
     if len(words) != 1:
         return True
     word = words[0]
@@ -858,7 +858,7 @@ def extract_house_terms(
         _warn_empty(repo_root)
         return []
 
-    patterns = {c.term.lower(): _phrase_pattern(c.term) for c in candidates}
+    patterns = {c.term.lower(): phrase_pattern(c.term) for c in candidates}
     # Every match of a term's pattern contains that term's first word, so a
     # substring test on the lowercased prose rejects most (file, term) pairs
     # before the regex engine is started. It is a necessary condition and
@@ -867,7 +867,7 @@ def extract_house_terms(
     # pairs. It is worth the two lines: the corpus is every source file in the
     # repository and the pattern set is up to two hundred, so the product is
     # where the whole cost of mining sits.
-    first_words = {c.term.lower(): _term_words(c.term)[0].lower() for c in candidates}
+    first_words = {c.term.lower(): term_words(c.term)[0].lower() for c in candidates}
     code_files: dict[str, list[str]] = {c.term.lower(): [] for c in candidates}
     code_definitions: dict[str, tuple[str, str]] = {}
     prose_corpus, dir_names = _scan_tree(repo_root)
@@ -926,7 +926,7 @@ def extract_house_terms(
     terms.sort(
         key=lambda t: (
             -t.doc_frequency,
-            len(_term_words(t.term)) == 1,
+            len(term_words(t.term)) == 1,
             -t.code_frequency,
             t.term.lower(),
         )

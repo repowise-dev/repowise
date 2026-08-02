@@ -285,6 +285,7 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     uniquely had, so it moved here and the page retired; its id redirects.
     """
     from ..architecture_mermaid import build_overview_mermaid
+    from ..overview_tables import select_capabilities
 
     gen = run.gen
     overview_mermaid = build_overview_mermaid(run.kg_ctx)
@@ -298,6 +299,21 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         )
     coros: list[tuple[str, Any]] = []
     if run._emit(compute_page_id("repo_overview", run.repo_name)):
+        # What the repository calls its own capabilities, in its own words.
+        # Mined once per run and shared with level 8. A term reaches the page
+        # only when a module page — grouped from the graph, written from the
+        # code — names it too, so the front page never carries a word the
+        # documents used and the structure never confirmed.
+        capabilities = select_capabilities(_mine_house_terms(run), run.completed_module_pages)
+        if not capabilities:
+            # No table beats an empty one, but a front-page section that
+            # quietly stops appearing is the failure shape this repository has
+            # shipped before. Said out loud with the two counts that explain it.
+            log.info(
+                "generation.overview_capability_table_absent",
+                repo_name=run.repo_name,
+                module_pages=len(run.completed_module_pages),
+            )
         coros.append(
             (
                 compute_page_id("repo_overview", run.repo_name),
@@ -318,6 +334,7 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     # directory the walker skipped reads as zero rather than
                     # going unmentioned.
                     parsed_files=run.parsed_files,
+                    capabilities=capabilities,
                 ),
             )
         )
@@ -341,11 +358,14 @@ def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
 
 def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
-    """The repository's own vocabulary, read once for the whole onboarding level.
+    """The repository's own vocabulary, read once per run.
 
     Mined here rather than inside a subkind because reading it walks the
     repository: once per run is a cost, once per slot is the same cost eight
-    times over for the same answer.
+    times over for the same answer. Two levels want it now — the overview at
+    6 and onboarding at 8 — so the result is memoised on the run rather than
+    the walk being paid twice. A run that emits neither still pays nothing,
+    because neither caller reaches this.
 
     ``repo_path`` is optional on every generation entry point, and a run
     without one has nothing to read. That is reported rather than absorbed —
@@ -356,6 +376,10 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
     from ..concept_tree.vocabulary import extract_house_terms
     from ..report import record_house_terms
 
+    cached = getattr(run, "_house_terms", None)
+    if cached is not None:
+        return cached
+
     if not run.repo_path:
         log.warning(
             "onboarding.house_terms_skipped",
@@ -363,6 +387,7 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
             reason="no_repo_path",
         )
         record_house_terms(None)
+        run._house_terms = ()
         return ()
 
     # The names the codebase defines. A term matching one may be rendered in
@@ -384,6 +409,7 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
             terms=len(terms),
             top=[t.term for t in terms[:8]],
         )
+    run._house_terms = terms
     return terms
 
 

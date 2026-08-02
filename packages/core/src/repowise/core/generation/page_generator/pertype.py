@@ -9,6 +9,7 @@ each module under the project's 400-line ceiling.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -26,7 +27,13 @@ from ..models import (
     GeneratedPage,
     compute_source_hash,
 )
-from ..overview_tables import build_package_table, embed_package_table
+from ..overview_tables import (
+    Capability,
+    build_capability_table,
+    build_package_table,
+    embed_capability_table,
+    embed_package_table,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -86,6 +93,24 @@ def _with_package_table(page: GeneratedPage, package_stats: list[dict]) -> Gener
     if not package_stats:
         return page
     page.content = embed_package_table(page.content, build_package_table(package_stats))
+    return page
+
+
+def _with_capability_table(
+    page: GeneratedPage, capabilities: Sequence[Capability]
+) -> GeneratedPage:
+    """Embed the capability table into an already-built page.
+
+    Same three paths and the same reasoning as the package table. What the
+    repository calls its own capabilities is read from its documents and
+    corroborated against its module pages, both of which the run already
+    holds — so the model page, the ``--no-prose`` page and the outage fallback
+    carry identical bytes, and a reader diffing two updates sees a code change
+    rather than a re-roll.
+    """
+    if not capabilities:
+        return page
+    page.content = embed_capability_table(page.content, build_capability_table(capabilities))
     return page
 
 
@@ -323,6 +348,7 @@ class PerTypeGenerationMixin:
         overview_mermaid: str | None = None,
         source_map: dict[str, bytes] | None = None,
         parsed_files: list[ParsedFile] | None = None,
+        capabilities: Sequence[Capability] = (),
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -358,7 +384,8 @@ class PerTypeGenerationMixin:
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
             page = _with_architecture_map(
-                _with_package_table(stub, ctx.package_stats), overview_mermaid
+                _with_capability_table(_with_package_table(stub, ctx.package_stats), capabilities),
+                overview_mermaid,
             )
             selection = self._disabled_source_evidence("repo_overview", "deterministic_generation")
             return self._attach_source_evidence(page, "repo_overview", selection)
@@ -375,8 +402,11 @@ class PerTypeGenerationMixin:
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
             page = _with_architecture_map(
-                _with_package_table(
-                    _stub_fallback(stub, "repo_overview", exc), ctx.package_stats
+                _with_capability_table(
+                    _with_package_table(
+                        _stub_fallback(stub, "repo_overview", exc), ctx.package_stats
+                    ),
+                    capabilities,
                 ),
                 overview_mermaid,
             )
@@ -390,6 +420,13 @@ class PerTypeGenerationMixin:
                 response,
                 content=embed_package_table(
                     response.content, build_package_table(ctx.package_stats)
+                ),
+            )
+        if capabilities:
+            response = replace(
+                response,
+                content=embed_capability_table(
+                    response.content, build_capability_table(capabilities)
                 ),
             )
         if overview_mermaid:
