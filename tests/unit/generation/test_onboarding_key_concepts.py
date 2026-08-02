@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import networkx as nx
 
 from repowise.core.generation import onboarding
+from repowise.core.generation.concept_tree.vocabulary import HouseTerm
 from repowise.core.generation.models import compute_source_hash
 from repowise.core.generation.onboarding.grounding import check_grounding, collect_known
 from repowise.core.generation.onboarding.signals import OnboardingSignals
@@ -24,6 +25,7 @@ from repowise.core.generation.onboarding.slots import (
 from repowise.core.generation.onboarding.subkinds.key_concepts import (
     ConceptSymbol,
     KeyConceptsContext,
+    _prose_hits,
 )
 from repowise.core.ingestion.models import FileInfo, ParsedFile, RepoStructure, Symbol
 
@@ -117,8 +119,21 @@ def _graph_builder(files: list[ParsedFile], edges: list[tuple[str, str, str]]):
     )
 
 
+def _term(term: str, *, docs: int = 1) -> HouseTerm:
+    """One mined term, with the fields ranking reads set truthfully."""
+    return HouseTerm(
+        term=term,
+        definition=None,
+        definition_source=None,
+        source_paths=tuple(f"docs/{i}.md" for i in range(docs)),
+        doc_frequency=docs,
+        code_frequency=1,
+        is_indexed_symbol=True,
+    )
+
+
 def _signals(
-    files, graph_builder, *, kg_layers=(), layer_order=(), community=None
+    files, graph_builder, *, kg_layers=(), layer_order=(), community=None, house_terms=()
 ) -> OnboardingSignals:
     paths = [f.file_info.path for f in files]
     return OnboardingSignals(
@@ -140,6 +155,7 @@ def _signals(
         sccs=(),
         kg_layers=kg_layers,
         layer_order=layer_order,
+        house_terms=tuple(house_terms),
     )
 
 
@@ -313,6 +329,157 @@ def test_key_concepts_uses_full_graph_when_parsed_files_empty() -> None:
 # ---------------------------------------------------------------------------
 # Item 1 self-heal: a changed concept set changes the rendered prompt hash
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Ranking on what the repository says, not only on what its graph does
+# ---------------------------------------------------------------------------
+
+
+def _repo_for_ranking(*, scaffold_doc: str = "The vector store.") -> list[ParsedFile]:
+    """Five concepts, one per directory so no spread cap can reorder them.
+
+    ``VectorStore`` is the graph's favourite: every caller reaches it. Nothing
+    written down mentions it. ``BlastRadius`` has one caller and is what the
+    documents are about.
+    """
+    files = [
+        _file(
+            "store/db.py",
+            [_sym("store/db.py", "VectorStore", "class", exported=True, doc=scaffold_doc)],
+        ),
+        _file(
+            "analysis/blast.py",
+            [
+                _sym(
+                    "analysis/blast.py",
+                    "BlastRadius",
+                    "class",
+                    exported=True,
+                    doc="What a change can reach.",
+                )
+            ],
+        ),
+        _file(
+            "analysis/risk.py",
+            [_sym("analysis/risk.py", "ChangeRisk", "class", exported=True, doc="Scores a diff.")],
+        ),
+        _file("io/reader.py", [_sym("io/reader.py", "Reader", "class", exported=True)]),
+        _file("io/writer.py", [_sym("io/writer.py", "Writer", "class", exported=True)]),
+    ]
+    edges: list[tuple[str, str, str]] = []
+    for i in range(9):
+        caller = f"caller/c{i}.py"
+        files.append(_file(caller, [_sym(caller, f"use{i}", "function")]))
+        edges.append((f"{caller}::use{i}", "store/db.py::VectorStore", "calls"))
+        if i < 5:
+            edges.append((f"{caller}::use{i}", "io/reader.py::Reader", "calls"))
+        if i < 4:
+            edges.append((f"{caller}::use{i}", "io/writer.py::Writer", "calls"))
+        if i < 2:
+            edges.append((f"{caller}::use{i}", "analysis/risk.py::ChangeRisk", "calls"))
+        if i < 1:
+            edges.append((f"{caller}::use{i}", "analysis/blast.py::BlastRadius", "calls"))
+    return files, edges
+
+
+def _rank(*, house_terms=(), scaffold_doc: str = "The vector store.") -> list[str]:
+    files, edges = _repo_for_ranking(scaffold_doc=scaffold_doc)
+    signals = _signals(files, _graph_builder(files, edges), house_terms=house_terms)
+    ctx = onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(signals)
+    assert ctx is not None
+    return [c.name for c in ctx.concept_symbols]
+
+
+def test_a_symbol_the_documents_name_outranks_one_the_graph_merely_calls() -> None:
+    """A class the team writes about beats a class with nine callers.
+
+    The four original keys all measure how much code leans on a symbol. None
+    of them can see whether a human thought it worth explaining.
+    """
+    graph_only = _rank()
+    assert graph_only.index("VectorStore") < graph_only.index("BlastRadius")
+
+    with_prose = _rank(house_terms=[_term("Blast radius", docs=3), _term("Change risk", docs=2)])
+    assert with_prose.index("BlastRadius") < with_prose.index("VectorStore")
+    # Two documents beat one, so the ranking reads the count and not just the
+    # fact of a match.
+    assert with_prose.index("BlastRadius") < with_prose.index("ChangeRisk")
+
+
+def test_a_mined_term_matches_however_the_code_spells_it() -> None:
+    """The documents write "blast radius"; the code writes ``BlastRadius``."""
+    assert _rank(house_terms=[_term("blast radius")]).index("BlastRadius") == 0
+    assert _rank(house_terms=[_term("Blast Radius")]).index("BlastRadius") == 0
+
+
+def test_a_term_matches_the_type_named_after_it() -> None:
+    """A term is rarely a class name; it is the idea the class is named after.
+
+    Matching "blast radius" exactly finds nothing in a codebase whose class
+    is ``BlastRadiusReport``, which is how codebases are usually named.
+    """
+    assert _prose_hits("BlastRadiusReport", {("blast", "radius"): 2}) == 2
+    assert _prose_hits("CrossRepoBlastRadius", {("blast", "radius"): 2}) == 2
+    assert _prose_hits("blast_radius_of", {("blast", "radius"): 2}) == 2
+    assert _prose_hits("RadiusBlast", {("blast", "radius"): 2}) == 0
+
+
+def test_a_single_word_term_has_to_lead_the_name() -> None:
+    """Otherwise the short terms claim every name that contains the word.
+
+    "risk" would take ``OwnershipRiskDetector`` and "stats" would take
+    ``CFGPassStats`` — names that contain the word while being about
+    something else, and there are far more of those than real matches.
+    """
+    assert _prose_hits("Risk", {("risk",): 3}) == 3
+    assert _prose_hits("RiskDirective", {("risk",): 3}) == 3
+    assert _prose_hits("OwnershipRiskDetector", {("risk",): 3}) == 0
+
+
+def test_ranking_is_unchanged_when_no_vocabulary_was_mined() -> None:
+    """Most repositories will mine nothing. They must rank as they always did."""
+    assert _rank(house_terms=()) == _rank(house_terms=[_term("Nothing In This Repository")])
+
+
+def test_a_symbol_that_says_it_is_for_tests_is_demoted() -> None:
+    """Demoted, not excluded — the page can still fall back to it."""
+    ordinary = _rank()
+    assert ordinary[0] == "VectorStore"
+
+    demoted = _rank(scaffold_doc="An in-memory store, primarily tailored for unit tests.")
+    assert demoted[-1] == "VectorStore"
+    assert "VectorStore" in demoted
+
+
+def test_scaffolding_outranks_nothing_even_when_the_documents_name_it() -> None:
+    """The demotion leads, so a written-about test double still sinks."""
+    demoted = _rank(
+        house_terms=[_term("Vector store", docs=5)],
+        scaffold_doc="A store used in tests and small-scale development.",
+    )
+    assert demoted[-1] == "VectorStore"
+
+
+def test_every_concept_still_carries_its_path_for_the_page_to_cite() -> None:
+    """The path citations are what ``get_answer`` quotes off this page.
+
+    Asserted as a count against the concepts, not as a presence check: a
+    prompt that lost the path on one concept of six still contains the word.
+    """
+    files, edges = _repo_for_ranking()
+    signals = _signals(
+        files, _graph_builder(files, edges), house_terms=[_term("Blast radius", docs=3)]
+    )
+    ctx = onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(signals)
+    assert ctx is not None
+
+    rendered = _render_key_concepts(ctx)
+    assert len(ctx.concept_symbols) >= 4
+    for concept in ctx.concept_symbols:
+        assert f"`{concept.file_path}`" in rendered
+    assert rendered.count("`") >= 2 * len(ctx.concept_symbols)
+    assert "**Where it lives:**" in rendered
 
 
 def _render_key_concepts(ctx) -> str:
