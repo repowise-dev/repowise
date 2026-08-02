@@ -301,18 +301,26 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if run._emit(compute_page_id("repo_overview", run.repo_name)):
         # What the repository calls its own capabilities, in its own words.
         # Mined once per run and shared with level 8. A term reaches the page
-        # only when a module page — grouped from the graph, written from the
-        # code — names it too, so the front page never carries a word the
-        # documents used and the structure never confirmed.
-        capabilities = select_capabilities(_mine_house_terms(run), run.completed_module_pages)
+        # only when the structural side names it too, so the front page never
+        # carries a word the documents used and the graph never confirmed.
+        #
+        # Module *groups*, not written module pages: a group is cut and named
+        # on every run, so a scoped run that regenerates the overview alone
+        # selects the same rows as a full one.
+        module_names = [
+            name
+            for mg in run.sel_module_groups
+            for name in (mg.display, getattr(mg, "label", "") or "", mg.key)
+        ]
+        capabilities = select_capabilities(_mine_house_terms(run), module_names)
         if not capabilities:
             # No table beats an empty one, but a front-page section that
             # quietly stops appearing is the failure shape this repository has
-            # shipped before. Said out loud with the two counts that explain it.
+            # shipped before. Said out loud with the counts that explain it.
             log.info(
                 "generation.overview_capability_table_absent",
                 repo_name=run.repo_name,
-                module_pages=len(run.completed_module_pages),
+                module_groups=len(run.sel_module_groups),
             )
         coros.append(
             (

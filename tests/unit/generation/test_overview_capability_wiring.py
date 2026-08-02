@@ -5,9 +5,9 @@ once with the package table -- so this goes through ``build_level6_coros`` and
 asserts what the generator was actually handed.
 
 The two things worth pinning are the corroboration source and the cost. Module
-pages are level 4 and the overview is level 6, so the run has them by the time
-this reads them; and the miner walks the whole repository, so levels 6 and 8
-must share one pass rather than paying for two.
+groups are cut before any level runs, so a scoped run corroborates against the
+same names a full one does; and the miner walks the whole repository, so
+levels 6 and 8 must share one pass rather than paying for two.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class BlastRadius:
 
 #: What the structural side independently arrived at. "Blast radius" is named
 #: by both; "Change risk" is in the documents only.
-MODULE_PAGES = [("Blast Radius Evaluation", "Walks the import graph from a change.")]
+MODULE_GROUPS = [SimpleNamespace(display="Blast Radius Evaluation", label="", key="src")]
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -119,7 +119,7 @@ class _Gen:
         return object()
 
 
-def _run(tmp_path: Path, *, module_pages: list[tuple[str, str]] | None = None) -> SimpleNamespace:
+def _run(tmp_path: Path, *, module_groups: list[Any] | None = None) -> SimpleNamespace:
     reset_house_terms()
     return SimpleNamespace(
         gen=_Gen(),
@@ -149,7 +149,7 @@ def _run(tmp_path: Path, *, module_pages: list[tuple[str, str]] | None = None) -
         decisions_all=(),
         external_systems=(),
         completed_page_summaries={},
-        completed_module_pages=MODULE_PAGES if module_pages is None else module_pages,
+        sel_module_groups=MODULE_GROUPS if module_groups is None else module_groups,
         tour_stops=(),
         layer_order=(),
         kg_ctx=None,
@@ -176,10 +176,10 @@ def test_a_term_no_module_page_names_does_not_reach_the_overview(tmp_path):
     assert "Change risk" not in picked
 
 
-def test_no_module_pages_yet_means_no_table_and_a_log(tmp_path):
-    """A scoped run that regenerates only the overview has no module pages in
-    hand. The section going missing is correct and must not be silent."""
-    run = _run(tmp_path, module_pages=[])
+def test_no_module_groups_means_no_table_and_a_log(tmp_path):
+    """A repository the grouper produced nothing for has nothing to
+    corroborate against. The section going missing is correct, not silent."""
+    run = _run(tmp_path, module_groups=[])
     with capture_logs() as logs:
         build_level6_coros(run)
 

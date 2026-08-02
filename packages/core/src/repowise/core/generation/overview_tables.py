@@ -122,22 +122,32 @@ class Capability:
     corroborating_pages: int
 
 
-def _corroboration_corpus(module_pages: Iterable[tuple[str, str]]) -> list[str]:
-    return [f"{title}\n{summary}" for title, summary in module_pages]
-
-
 def select_capabilities(
     house_terms: Sequence[HouseTerm],
-    module_pages: Iterable[tuple[str, str]],
+    module_names: Iterable[str],
     *,
     limit: int = _MAX_CAPABILITY_ROWS,
 ) -> list[Capability]:
     """The terms worth putting on the front page, in the order they go there.
 
-    ``module_pages`` are ``(title, summary)`` pairs. They are the corroborating
-    artifact: a module page is grouped from the dependency graph and written
-    from the code, so a term appearing in one was arrived at twice, from the
-    documents and from the structure, independently.
+    ``module_names`` are what the structural side calls the parts of the
+    system — the module groups' titles, their community labels and their
+    paths. They are the corroborating artifact: a module group is cut from the
+    dependency graph and named from the code, so a term appearing in one was
+    arrived at twice, from the documents and from the structure, independently.
+
+    Groups rather than written module *pages*, deliberately. A group exists on
+    every run, so a scoped run that regenerates the overview alone selects the
+    same rows as a full one — a front-page section that shrinks depending on
+    how generation was invoked is the instability these deterministic tables
+    exist to remove. It is also the stronger claim of independence: a group's
+    name is computed, while a page's summary is model-written and resampled.
+
+    The cost is reach. Measured on django, matching titles and summaries of
+    written pages corroborates 5 terms where names alone corroborate 2. The
+    upgrade path is to read module summaries out of the store rather than out
+    of this run, which would be both stable and rich; it needs level 6 to
+    become async and the vector store to be present, so it is not done here.
 
     **Multi-word terms come first.** Not as a filter — a single word still
     reaches the table when there is room — but ahead of single words, because
@@ -151,7 +161,7 @@ def select_capabilities(
     Ordering is total and derived only from the inputs, so two runs over an
     unchanged repository select the same rows in the same order.
     """
-    corpus = _corroboration_corpus(module_pages)
+    corpus = [name for name in module_names if name]
     selected: list[Capability] = []
     for term in house_terms:
         pattern = phrase_pattern(term.term)
@@ -182,13 +192,15 @@ def select_capabilities(
         terms=[c.term for c in kept],
     )
     if house_terms and not selected:
-        # Terms were mined and none reached a module page. Usually the module
-        # pages have not been written yet on this run, which would make the
-        # section vanish from an update that changed nothing.
+        # The documents name things the structure does not. That is a real
+        # answer about a repository — marketing vocabulary with no cluster
+        # behind it — but it is also what a corroboration corpus arriving
+        # empty looks like, so the two counts that separate them are logged
+        # rather than the section just not appearing.
         log.warning(
             "overview_capabilities_uncorroborated",
             mined=len(house_terms),
-            module_pages=len(corpus),
+            module_names=len(corpus),
         )
     return kept
 

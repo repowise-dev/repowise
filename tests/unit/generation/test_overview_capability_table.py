@@ -53,10 +53,14 @@ def _term(
     )
 
 
+#: What the structural side calls the parts of the system: module group
+#: titles, their community labels, and their paths. Cut from the dependency
+#: graph and named from the code, with no knowledge of the documents.
 MODULES = [
-    ("Dead Code and Reachability Analysis", "Finds unreachable files and unused exports."),
-    ("Blast Radius UI", "Renders the blast radius of a change."),
-    ("Ledger Postings", "Posts entries. Dead code is swept from here nightly."),
+    "Dead Code and Reachability Analysis",
+    "Blast Radius UI",
+    "Ledger Postings",
+    "src/analysis/dead_code",
 ]
 
 
@@ -72,12 +76,12 @@ def test_a_term_no_module_page_names_does_not_reach_the_page():
     assert [c.term for c in picked] == ["Dead code"]
 
 
-def test_corroboration_may_come_from_a_title_or_from_a_summary():
-    """Both halves of a module page are the structural side's opinion."""
+def test_corroboration_may_come_from_a_title_or_from_a_path():
+    """Both are what the structure calls a part of the system."""
     by_title = select_capabilities([_term("Blast radius")], MODULES)
-    by_summary = select_capabilities([_term("Postings")], MODULES)
+    by_path = select_capabilities([_term("Dead code")], ["src/analysis/dead_code"])
     assert [c.term for c in by_title] == ["Blast radius"]
-    assert [c.term for c in by_summary] == ["Postings"]
+    assert [c.term for c in by_path] == ["Dead code"]
 
 
 def test_multi_word_terms_come_before_single_word_ones():
@@ -97,13 +101,12 @@ def test_a_single_word_still_reaches_the_table_when_there_is_room():
 
 def test_the_table_is_capped():
     terms = [_term(f"Term number {n}") for n in range(20)]
-    modules = [("Everything", " ".join(t.term for t in terms))]
+    modules = [" ".join(t.term for t in terms)]
     assert len(select_capabilities(terms, modules)) == 6
 
 
-def test_selection_does_not_depend_on_the_order_module_pages_finished_in():
-    """Pages complete concurrently, so the corroboration corpus arrives in an
-    order that varies run to run. The selection must not."""
+def test_selection_does_not_depend_on_the_order_of_the_corroboration_corpus():
+    """The selection is a function of the inputs, not of how they arrived."""
     terms = [_term("Dead code"), _term("Blast radius"), _term("Postings")]
     forwards = select_capabilities(terms, MODULES)
     backwards = select_capabilities(terms, list(reversed(MODULES)))
@@ -126,9 +129,9 @@ def test_selection_is_logged_with_what_it_kept_and_what_it_dropped():
 
 
 def test_mining_terms_that_no_module_page_corroborates_is_a_warning():
-    """Distinct from mining nothing. Usually it means the module pages have
-    not been written yet, which would make the section vanish from an update
-    that changed no code."""
+    """Distinct from mining nothing: the documents name things the structure
+    does not. A real answer about a repository, and also what an empty
+    corroboration corpus looks like, so the counts that separate them go out."""
     with capture_logs() as logs:
         select_capabilities([_term("DONE")], MODULES)
     assert any(e["event"] == "overview_capabilities_uncorroborated" for e in logs)
