@@ -929,15 +929,11 @@ async def search_codebase(
     the indexed symbols (returns symbol_id/file/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
     and conceptual queries run wiki-semantic search. Mixed queries run hybrid,
-    symbol hits first. Concept hits carry a sources list (fts, vector, or
-    both); decision records rank below file pages unless the query is
-    why-shaped. See docs/agent/MCP_TOOLS.md for detail.
+    symbol hits first. Decision records rank below file pages unless the query
+    is why-shaped.
 
-    Alongside results, a `candidates` block names up to `limit` distinct files
-    worth opening next, one {path} each. Every entry is a real file path:
-    results may legitimately rank pages that are not files (a module page, the
-    repository overview), and candidates is where the caller reads which files
-    the search actually reached.
+    `candidates` lists up to `limit` distinct openable file paths, best first.
+    Some results are pages, not files; this is what to Read.
 
     Args:
         query: identifier, path, or natural-language query.
