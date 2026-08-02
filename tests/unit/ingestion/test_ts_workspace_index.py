@@ -61,6 +61,18 @@ class TestExportsWildcardEntries:
         for p in paths:
             assert p in index.exports_entry_paths, p
 
+    def test_wildcard_export_crosses_directory_boundaries(self, tmp_path: Path) -> None:
+        _write(tmp_path, "package.json", '{"workspaces":["packages/*"]}')
+        _write(
+            tmp_path,
+            "packages/zod/package.json",
+            '{"name":"@org/zod","exports":{"./*":"./src/*"}}',
+        )
+        _write(tmp_path, "packages/zod/src/a/b/c.ts", "export {};\n")
+        ctx = _ctx(tmp_path, ["packages/zod/src/a/b/c.ts"])
+        index = build_ts_workspace_index(ctx)
+        assert "packages/zod/src/a/b/c.ts" in index.exports_entry_paths
+
     def test_main_field_marked_as_entry(self, tmp_path: Path) -> None:
         _write(tmp_path, "package.json", '{"workspaces":["packages/*"]}')
         _write(
