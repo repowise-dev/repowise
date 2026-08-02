@@ -25,6 +25,10 @@
 {%- if ctx.external_systems %} It builds on {{ ctx.external_systems | length }} external {{ "dependency" if ctx.external_systems | length == 1 else "dependencies" }}, including {% for s in ctx.external_systems[:5] %}`{{ s.name }}`{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
 
 {% if ctx.packages %}
+{# Replaced wholesale by the Package | Path | Files | Languages table, which is
+   embedded after this renders. The list stays as what a reader gets when there
+   are no per-package counts to tabulate — the heading has to exist here or the
+   table would be appended after the footer. #}
 ## Packages
 {% for pkg in ctx.packages %}
 - **{{ pkg.name }}** (`{{ pkg.path }}`, {{ pkg.language }})
@@ -67,18 +71,10 @@ Ranked by PageRank over the import graph: the files most of the codebase ultimat
 {% endfor %}
 {% endif %}
 
-{% if ctx.language_distribution %}
-{# Same ordering and cap as the summary sentence above, or the two disagree. #}
-{% set langs = ctx.language_distribution.items() | sort(attribute='1', reverse=true) %}
-## Languages
-{% for lang, pct in langs[:8] %}
-- {{ lang }}: {{ "%.1f"|format(pct * 100) }}%
-{% endfor %}
-{%- if langs | length > 8 %}
-- ...and {{ langs | length - 8 }} more.
-{% endif %}
-{% endif %}
-
+{# A repository-wide percentage breakdown of languages told the reader nothing
+   they could act on — "python 57.2%" is not a fact anyone navigates by. The
+   package table names the languages per package, which is, and the summary
+   sentence above still names the dominant one. #}
 {% if ctx.external_systems %}
 ## External Systems
 {% for sys in ctx.external_systems[:25] %}

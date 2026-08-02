@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -67,6 +68,72 @@ _MAX_CONCEPT_ROWS = 40
 # ``HTTPAdapter`` is two words, not nine — which matters because the acronym is
 # usually the word a reader would actually say.
 _IDENTIFIER_SPLIT = re.compile(r"_+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+# A language has to reach this share of a package's files to be named as one of
+# its languages. Below it the mention is noise: nearly every TypeScript package
+# holds a JSON fixture and a shell script, and listing them makes the column
+# longer without making it more true.
+_PACKAGE_LANGUAGE_FLOOR = 0.10
+
+
+def _package_stats(repo_structure: RepoStructure, parsed_files: list[ParsedFile]) -> list[dict]:
+    """Count files and observe languages per package, largest package first.
+
+    ``PackageInfo.language`` is a single tag chosen when the package was
+    detected, so it calls a package with a hundred TypeScript files and one
+    build script "typescript" and says nothing about the mix. These counts come
+    from the files the run actually parsed.
+
+    A package with no parsed files still gets a row: the walker skipping a
+    directory is a fact about the run, and dropping the row would shorten the
+    table with no way to tell that from the package not existing.
+    """
+    packages = getattr(repo_structure, "packages", None) or []
+    if not packages:
+        return []
+
+    # Longest path first so a nested package claims its files before its parent
+    # does — ``packages/ui/src/foo`` is not one of ``packages/ui``'s files if a
+    # package sits in between.
+    by_path = sorted(packages, key=lambda p: len(p.path), reverse=True)
+    counts: dict[str, int] = {p.path: 0 for p in packages}
+    langs: dict[str, Counter[str]] = {p.path: Counter() for p in packages}
+
+    for parsed in parsed_files:
+        path = getattr(getattr(parsed, "file_info", None), "path", "")
+        if not path:
+            continue
+        for pkg in by_path:
+            if path.startswith(f"{pkg.path}/"):
+                counts[pkg.path] += 1
+                language = getattr(parsed.file_info, "language", "") or ""
+                if language:
+                    langs[pkg.path][language] += 1
+                break
+
+    stats: list[dict] = []
+    for pkg in packages:
+        total = counts[pkg.path]
+        observed = [
+            lang
+            for lang, n in langs[pkg.path].most_common()
+            if total and n / total >= _PACKAGE_LANGUAGE_FLOOR
+        ]
+        stats.append(
+            {
+                "name": pkg.name,
+                "path": pkg.path,
+                "files": total,
+                # Falls back to the detected tag when nothing was parsed, so a
+                # skipped package still names a language rather than a dash.
+                "languages": observed or ([pkg.language] if not total and pkg.language else []),
+            }
+        )
+    # Biggest first: the table doubles as a reading order. Name breaks ties so
+    # a repository whose packages are all the same size does not reorder its
+    # own overview between runs.
+    stats.sort(key=lambda s: (-s["files"], s["name"]))
+    return stats
 
 
 def concept_wording(identifier: str) -> str:
@@ -647,6 +714,7 @@ class ContextAssembler:
         repo_name: str | None = None,
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
+        parsed_files: list[ParsedFile] | None = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending, path breaking ties. Leaf
@@ -660,6 +728,8 @@ class ContextAssembler:
 
         # SCCs with len > 1 are true circular deps
         circular_count = sum(1 for scc in sccs if len(scc) > 1)
+
+        package_stats = _package_stats(repo_structure, parsed_files or [])
 
         # Community metadata from graph builder
         communities_list: list[dict] = []
@@ -736,6 +806,7 @@ class ContextAssembler:
             execution_flows=execution_flows_list,
             external_systems=external_systems or [],
             decision_records=decision_records or [],
+            package_stats=package_stats,
         )
 
     # ------------------------------------------------------------------

@@ -26,6 +26,7 @@ from ..models import (
     GeneratedPage,
     compute_source_hash,
 )
+from ..overview_tables import build_package_table, embed_package_table
 
 log = structlog.get_logger(__name__)
 
@@ -66,6 +67,25 @@ def _with_architecture_map(page: GeneratedPage, overview_mermaid: str | None) ->
     if not overview_mermaid:
         return page
     page.content = embed_mermaid(page.content, overview_mermaid, heading="## Architecture map")
+    return page
+
+
+def _with_package_table(page: GeneratedPage, package_stats: list[dict]) -> GeneratedPage:
+    """Embed the package table into an already-built page.
+
+    Same reasoning as the architecture map, and the same three paths: the model
+    page, the deterministic page and the provider-outage fallback all carry it,
+    because which packages exist is a fact the run already holds. Writing it
+    through the model instead meant it was resampled on every render — two
+    calls with the same prompt disagreed on the row count.
+
+    Embedding is idempotent and replaces the model's own ``## Packages``
+    section, so a reused or cached page picks up the current counts rather than
+    accumulating a second list.
+    """
+    if not package_stats:
+        return page
+    page.content = embed_package_table(page.content, build_package_table(package_stats))
     return page
 
 
@@ -302,6 +322,7 @@ class PerTypeGenerationMixin:
         decision_records: list[dict] | None = None,
         overview_mermaid: str | None = None,
         source_map: dict[str, bytes] | None = None,
+        parsed_files: list[ParsedFile] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -312,6 +333,7 @@ class PerTypeGenerationMixin:
             repo_name=repo_name,
             external_systems=external_systems,
             decision_records=decision_records,
+            parsed_files=parsed_files,
         )
         repo_git_summary = None
         if git_meta_map:
@@ -335,7 +357,9 @@ class PerTypeGenerationMixin:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
-            page = _with_architecture_map(stub, overview_mermaid)
+            page = _with_architecture_map(
+                _with_package_table(stub, ctx.package_stats), overview_mermaid
+            )
             selection = self._disabled_source_evidence("repo_overview", "deterministic_generation")
             return self._attach_source_evidence(page, "repo_overview", selection)
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
@@ -351,12 +375,23 @@ class PerTypeGenerationMixin:
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
             page = _with_architecture_map(
-                _stub_fallback(stub, "repo_overview", exc), overview_mermaid
+                _with_package_table(
+                    _stub_fallback(stub, "repo_overview", exc), ctx.package_stats
+                ),
+                overview_mermaid,
             )
             return self._attach_source_evidence(page, "repo_overview", evidence)
-        # The overview carries the architecture map itself. It is the
-        # deterministic KG-derived diagram, not one the model drew, and
-        # embedding is idempotent so a reused page picks it up too.
+        # The overview carries its own enumerable facts: the package table and
+        # the KG-derived architecture map are built from the run, not drawn by
+        # the model, and both embeds are idempotent so a reused page picks them
+        # up too. The table goes in first so it lands above the diagram.
+        if ctx.package_stats:
+            response = replace(
+                response,
+                content=embed_package_table(
+                    response.content, build_package_table(ctx.package_stats)
+                ),
+            )
         if overview_mermaid:
             response = replace(
                 response,

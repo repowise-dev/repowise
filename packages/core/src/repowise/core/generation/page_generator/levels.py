@@ -313,6 +313,11 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     decision_records=run.decisions_all[:10],
                     overview_mermaid=overview_mermaid,
                     source_map=run.source_map,
+                    # Per-package file counts come from the files this run
+                    # actually parsed, not from the package manifests, so a
+                    # directory the walker skipped reads as zero rather than
+                    # going unmentioned.
+                    parsed_files=run.parsed_files,
                 ),
             )
         )

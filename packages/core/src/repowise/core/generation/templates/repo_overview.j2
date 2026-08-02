@@ -11,14 +11,24 @@ inputs the repo consumes, the transformation stages, and the artifacts produced.
 Do NOT open with stats or package counts; those belong further down.
 
 ## Packages
+{% for pkg in ctx.package_stats %}
+- **{{ pkg.name }}** (`{{ pkg.path }}`, {{ pkg.files }} files{% if pkg.languages %}, {{ pkg.languages | join(", ") }}{% endif %})
+{% else %}
 {% for pkg in ctx.packages %}
 - **{{ pkg.name }}** (`{{ pkg.path }}`, {{ pkg.language }})
 {% endfor %}
-
-## Language Distribution
-{% for lang, pct in ctx.language_distribution.items() %}
-- {{ lang }}: {{ "%.1f"|format(pct * 100) }}%
 {% endfor %}
+{% if ctx.package_stats %}
+A `Package | Path | Files | Languages` table carrying exactly the rows above is
+**already** on the page — it is inserted after you write, from these counts. Do
+not repeat it and do not write a package list of your own.
+
+What that table cannot state is what each package is *for*, which is a
+judgement about the code rather than a count. Give each package one clause of
+role inside the Architecture section, in the vocabulary this repository uses:
+what it owns and who calls it. "The engine." "The bridge to the editor." Not
+"holds TypeScript files."
+{% endif %}
 
 ## Entry Points
 {% for ep in ctx.entry_points %}
