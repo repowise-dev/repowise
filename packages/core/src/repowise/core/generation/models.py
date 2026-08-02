@@ -67,6 +67,40 @@ def _source_evidence_page_keys() -> set[str]:
     }
 
 
+def _normalize_evidence_files(
+    raw_files: Mapping[str, Any], *, label: str
+) -> dict[str, tuple[str, ...]]:
+    """Validate a page-key -> paths mapping, framing errors with *label*.
+
+    Shared by ``from_repo_config`` (label ``generation_context.files``, the key
+    the user wrote) and ``__post_init__`` (label ``source_evidence_files``, the
+    internal field for direct construction). The two labels are the whole point
+    of the parameter: the same rules, reported against the surface the caller
+    touched.
+
+    Sharing one validator also unifies key normalization: both paths now
+    ``str(...).strip()`` a key before the membership check. ``from_repo_config``
+    always did; direct construction did not, so a padded key like
+    ``" repo_overview "`` is now trimmed and accepted where it used to raise.
+    """
+    valid_page_keys = _source_evidence_page_keys()
+    result: dict[str, tuple[str, ...]] = {}
+    for raw_page_key, raw_paths in raw_files.items():
+        page_key = str(raw_page_key).strip()
+        if page_key not in valid_page_keys:
+            raise ValueError(
+                f"{label} keys must name repo_overview or a "
+                "model-written onboarding slot; project_overview is configured "
+                "as repo_overview"
+            )
+        if not isinstance(raw_paths, (list, tuple)) or not all(
+            isinstance(path, str) and path.strip() for path in raw_paths
+        ):
+            raise ValueError(f"{label}.{page_key} must be a list of file paths")
+        result[page_key] = tuple(path.strip() for path in raw_paths)
+    return result
+
+
 class _FrozenEvidenceFiles(Mapping[str, tuple[str, ...]]):
     """Small immutable mapping that preserves the frozen config contract."""
 
@@ -323,24 +357,9 @@ class GenerationConfig:
             raw_files = raw_evidence.get("files", {})
             if not isinstance(raw_files, Mapping):
                 raise ValueError("generation_context.files must be a mapping")
-            valid_page_keys = _source_evidence_page_keys()
-            evidence_files: dict[str, tuple[str, ...]] = {}
-            for raw_page_key, raw_paths in raw_files.items():
-                page_key = str(raw_page_key).strip()
-                if page_key not in valid_page_keys:
-                    raise ValueError(
-                        "generation_context.files keys must name repo_overview or a "
-                        "model-written onboarding slot; project_overview is configured "
-                        "as repo_overview"
-                    )
-                if not isinstance(raw_paths, (list, tuple)) or not all(
-                    isinstance(path, str) and path.strip() for path in raw_paths
-                ):
-                    raise ValueError(
-                        f"generation_context.files.{page_key} must be a list of file paths"
-                    )
-                evidence_files[page_key] = tuple(path.strip() for path in raw_paths)
-            values["source_evidence_files"] = evidence_files
+            values["source_evidence_files"] = _normalize_evidence_files(
+                raw_files, label="generation_context.files"
+            )
 
         values.update(overrides)
         return cls(**values)
@@ -362,20 +381,9 @@ class GenerationConfig:
             raise ValueError("source_evidence_token_budget must be a non-negative integer")
         if not isinstance(self.source_evidence_files, Mapping):
             raise ValueError("source_evidence_files must be a mapping")
-        valid_page_keys = _source_evidence_page_keys()
-        evidence_files: dict[str, tuple[str, ...]] = {}
-        for page_key, paths in self.source_evidence_files.items():
-            if page_key not in valid_page_keys:
-                raise ValueError(
-                    "source_evidence_files keys must name repo_overview or a "
-                    "model-written onboarding slot; project_overview is configured "
-                    "as repo_overview"
-                )
-            if not isinstance(paths, (list, tuple)) or not all(
-                isinstance(path, str) and path.strip() for path in paths
-            ):
-                raise ValueError(f"source_evidence_files.{page_key} must be a list of file paths")
-            evidence_files[page_key] = tuple(path.strip() for path in paths)
+        evidence_files = _normalize_evidence_files(
+            self.source_evidence_files, label="source_evidence_files"
+        )
         object.__setattr__(
             self,
             "source_evidence_files",

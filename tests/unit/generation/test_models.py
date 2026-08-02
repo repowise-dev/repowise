@@ -275,6 +275,24 @@ def test_direct_generation_config_rejects_an_unconsumed_evidence_key() -> None:
         )
 
 
+def test_direct_generation_config_frames_evidence_errors_with_the_field_name() -> None:
+    # Direct construction reports against the internal field, not the config
+    # key from_repo_config uses -- the two framings are deliberate, so pin both.
+    with pytest.raises(ValueError, match=r"^source_evidence_files keys must name"):
+        GenerationConfig(source_evidence_files={"module_page": ("README.md",)})
+    with pytest.raises(ValueError, match=r"^source_evidence_files\.repo_overview must be a list"):
+        GenerationConfig(source_evidence_files={"repo_overview": "README.md"})
+
+
+def test_direct_generation_config_normalizes_evidence_keys_like_the_config_loader() -> None:
+    # Sharing one validator also aligns key normalization: direct construction
+    # now strips keys before the membership check, as from_repo_config always
+    # did. A padded key is accepted and stored trimmed, not rejected.
+    config = GenerationConfig(source_evidence_files={" repo_overview ": ("README.md",)})
+
+    assert config.source_evidence_files == {"repo_overview": ("README.md",)}
+
+
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "not-a-number"])
 def test_generation_config_rejects_invalid_repo_max_tokens(value):
     with pytest.raises(ValueError, match="positive integer"):
