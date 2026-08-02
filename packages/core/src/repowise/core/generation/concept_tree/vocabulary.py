@@ -859,11 +859,23 @@ def extract_house_terms(
         return []
 
     patterns = {c.term.lower(): _phrase_pattern(c.term) for c in candidates}
+    # Every match of a term's pattern contains that term's first word, so a
+    # substring test on the lowercased prose rejects most (file, term) pairs
+    # before the regex engine is started. It is a necessary condition and
+    # nothing else, so the terms that survive are exactly the ones that
+    # survived before — this is the same scan, done on a fraction of the
+    # pairs. It is worth the two lines: the corpus is every source file in the
+    # repository and the pattern set is up to two hundred, so the product is
+    # where the whole cost of mining sits.
+    first_words = {c.term.lower(): _term_words(c.term)[0].lower() for c in candidates}
     code_files: dict[str, list[str]] = {c.term.lower(): [] for c in candidates}
     code_definitions: dict[str, tuple[str, str]] = {}
     prose_corpus, dir_names = _scan_tree(repo_root)
     for rel, prose in prose_corpus:
+        folded = prose.lower()
         for key, pattern in patterns.items():
+            if first_words[key] not in folded:
+                continue
             if not pattern.search(prose):
                 continue
             code_files[key].append(rel)
