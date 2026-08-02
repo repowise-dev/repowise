@@ -307,11 +307,13 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         # Module *groups*, not written module pages: a group is cut and named
         # on every run, so a scoped run that regenerates the overview alone
         # selects the same rows as a full one.
-        module_names = [
-            name
-            for mg in run.sel_module_groups
-            for name in (mg.display, getattr(mg, "label", "") or "", mg.key)
-        ]
+        # Group *titles* only. Community labels and directory keys were tried
+        # and measured worse: a label like "Ingestion and Analysis Engine" or
+        # "Refactoring CLI Tools" is broad enough to corroborate almost any
+        # single common word, which put "Architecture" and "Workspace" back on
+        # the front page. A title names one part of the system, which is the
+        # claim the corroboration is supposed to be making.
+        module_names = [mg.display for mg in run.sel_module_groups]
         capabilities = select_capabilities(_mine_house_terms(run), module_names)
         if not capabilities:
             # No table beats an empty one, but a front-page section that

@@ -176,6 +176,30 @@ def test_a_term_no_module_page_names_does_not_reach_the_overview(tmp_path):
     assert "Change risk" not in picked
 
 
+def test_a_community_label_does_not_corroborate(tmp_path):
+    """Titles only, and this is why.
+
+    A community label is a broad phrase covering a whole layer, so it
+    corroborates almost any common word that appears in it. Including labels
+    put "Architecture" and "Workspace" on the front page of a real render. A
+    group *title* names one part of the system, which is the claim the
+    corroboration is supposed to be making.
+    """
+    run = _run(
+        tmp_path,
+        module_groups=[
+            SimpleNamespace(
+                display="Ledger Postings",
+                label="Change Risk and Ingestion Engine",
+                key="src/change_risk",
+            )
+        ],
+    )
+    build_level6_coros(run)
+
+    assert [c.term for c in run.gen.overview_kwargs["capabilities"]] == []
+
+
 def test_no_module_groups_means_no_table_and_a_log(tmp_path):
     """A repository the grouper produced nothing for has nothing to
     corroborate against. The section going missing is correct, not silent."""

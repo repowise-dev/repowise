@@ -131,10 +131,15 @@ def select_capabilities(
     """The terms worth putting on the front page, in the order they go there.
 
     ``module_names`` are what the structural side calls the parts of the
-    system — the module groups' titles, their community labels and their
-    paths. They are the corroborating artifact: a module group is cut from the
-    dependency graph and named from the code, so a term appearing in one was
-    arrived at twice, from the documents and from the structure, independently.
+    system: the module groups' titles. They are the corroborating artifact — a
+    module group is cut from the dependency graph and named from the code, so
+    a term appearing in one was arrived at twice, from the documents and from
+    the structure, independently.
+
+    Titles only. Community labels and directory keys were tried and measured
+    worse: a label like "Ingestion and Analysis Engine" is broad enough to
+    corroborate almost any single common word, which put "Architecture" and
+    "Workspace" on the front page of a real render.
 
     Groups rather than written module *pages*, deliberately. A group exists on
     every run, so a scoped run that regenerates the overview alone selects the
