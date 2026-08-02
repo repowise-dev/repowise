@@ -19,9 +19,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+import structlog
+
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_HOW_IT_WORKS, SLOT_TITLES
+
+log = structlog.get_logger(__name__)
 
 Archetype = Literal["service", "cli", "library", "pipeline", "module"]
 
@@ -119,21 +123,30 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     """Pull execution flows from the graph builder (best-effort)."""
     try:
         report = signals.graph_builder.execution_flows()
-    except Exception:
+    except Exception as exc:
+        log.warning(
+            "how_it_works_execution_flows_unavailable",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
         return []
     if not report or not hasattr(report, "flows"):
         return []
 
     flows: list[FlowTrace] = []
+    # ``ExecutionFlow`` names these ``entry_point_id`` and
+    # ``entry_point_score``. Read as ``entry_point`` / ``score`` the getattr
+    # defaults applied instead of raising, so every page ever generated
+    # carried an empty entry point and a zero score on every flow.
     for flow in getattr(report, "flows", [])[:_TOP_FLOWS]:
         trace = list(getattr(flow, "trace", []) or [])
         if len(trace) < _MIN_TRACE_HOPS:
             continue
         flows.append(
             FlowTrace(
-                entry_point=str(getattr(flow, "entry_point", "")),
+                entry_point=str(getattr(flow, "entry_point_id", "")),
                 hops=trace[:_TRACE_DISPLAY_HOPS],
-                score=float(getattr(flow, "score", 0.0) or 0.0),
+                score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
             )
         )
     return flows

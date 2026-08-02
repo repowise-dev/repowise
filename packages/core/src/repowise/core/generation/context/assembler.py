@@ -679,22 +679,46 @@ class ContextAssembler:
                 # label, so the label is not a total order.
                 communities_list.sort(key=lambda c: (-c["size"], c["id"]))
                 communities_list = communities_list[:10]
-            except Exception:
-                pass
+            except Exception as exc:
+                # Same silent shape as the flow block below, which is how that
+                # one went a year unnoticed. Say something.
+                log.warning(
+                    "overview_communities_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
             try:
                 flow_report = graph_builder.execution_flows()
                 if flow_report and hasattr(flow_report, "flows"):
-                    for flow in flow_report.flows[:5]:
+                    # Highest-scoring first: the templates render the first
+                    # five, so the order here is the selection.
+                    ranked = sorted(
+                        flow_report.flows,
+                        key=lambda f: (-f.entry_point_score, f.entry_point_id),
+                    )
+                    for flow in ranked[:5]:
                         execution_flows_list.append(
                             {
-                                "entry_point": flow.entry_point,
-                                "score": round(flow.score, 3),
+                                "entry_point": flow.entry_point_id,
+                                "entry_point_name": flow.entry_point_name,
+                                "score": round(flow.entry_point_score, 3),
                                 "trace_length": len(flow.trace) if hasattr(flow, "trace") else 0,
                             }
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                # This was a bare ``except: pass`` reading ``flow.entry_point``
+                # and ``flow.score`` off a dataclass whose fields are
+                # ``entry_point_id`` and ``entry_point_score``. The
+                # AttributeError was swallowed, the list stayed empty, and the
+                # template's ``{% if %}`` guard dropped the section — so no
+                # overview has ever carried an execution flow. An empty
+                # section is a fine outcome; a silent one is not.
+                log.warning(
+                    "overview_execution_flows_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
         return RepoOverviewContext(
             # RepoStructure carries no name, so the old getattr fallback made
