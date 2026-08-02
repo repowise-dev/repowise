@@ -172,6 +172,13 @@ async def test_head_is_never_reordered(session, repo_id):
 
 
 async def test_non_flow_question_is_noop(session, repo_id):
+    """The gate stays until injection respects page type (see module note).
+
+    Removing it was measured on 2026-08-02 and cost 6.4 points of recall@5:
+    fabricated **file** neighbours evict the **module** page that is the answer
+    to a subsystem-shaped question, because the stage re-ranks every slot below
+    the protected head.
+    """
     hits = _hits([(p, 5.0 - i) for i, p in enumerate(_SEEDS)])
     ctx = _Ctx([_FAR, *_SEEDS])
     out = await expand_via_neighbor_rerank(session, repo_id, hits, "where is s0 defined", ctx)
