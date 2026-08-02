@@ -159,6 +159,65 @@ def test_the_table_carries_the_term_its_sentence_and_its_source():
     assert "`src/analysis/dead_code.py`" in table
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Both real, both from this repository's own front page.
+        "repowise init [PATH]      # index a codebase (one-time; asks, or --no-prose -y needs no LLM)",
+        "`repowise distill <cmd>` compresses command output *before* the agent reads it:",
+        "$ repowise update --all",
+        "Run it with --no-prose to skip the model",
+        "cat wiki.db | sqlite3 .dump",
+        "Two parts,",
+        "See below",
+    ],
+)
+def test_prose_that_is_not_a_statement_is_not_offered_as_a_definition(text):
+    """A mined definition is whatever prose sat nearest the term, and near a
+    term in a README that is often a command line or a lead-in. An em dash is
+    a better answer: the reader learns the capability exists and is not
+    misinformed about what it does."""
+    picked = select_capabilities([_term("Dead code", definition=text)], MODULES)
+    assert picked[0].definition is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Dead code is code no import path reaches.",
+        "Blast radius is the set of files a change can reach through the import graph.",
+        "Middleware for utilizing Web-server-provided authentication.",
+    ],
+)
+def test_a_real_sentence_survives(text):
+    picked = select_capabilities([_term("Dead code", definition=text)], MODULES)
+    assert picked[0].definition == text
+
+
+def test_a_rejected_definition_does_not_leave_its_source_behind():
+    """Citing where prose the table declined to quote lives would point the
+    reader at a line that is not on the page."""
+    picked = select_capabilities(
+        [
+            _term(
+                "Dead code",
+                definition="$ repowise dead-code --json",
+                definition_source="README.md#usage",
+                source_paths=("docs/guide.md",),
+            )
+        ],
+        MODULES,
+    )
+    assert picked[0].definition is None
+    assert picked[0].source_path == "docs/guide.md"
+
+
+def test_a_rejected_definition_is_logged():
+    with capture_logs() as logs:
+        select_capabilities([_term("Dead code", definition="$ repowise dead-code")], MODULES)
+    assert any(e["event"] == "overview_capability_definition_rejected" for e in logs)
+
+
 def test_a_term_the_repository_never_defined_still_gets_a_row():
     """Naming a capability and never writing a sentence about it is common,
     and inventing the sentence is the one thing the miner refuses to do."""

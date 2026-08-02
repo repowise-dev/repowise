@@ -4,9 +4,11 @@ The helpers can be right while the page has no table -- that already happened
 once with the package table -- so this goes through ``build_level6_coros`` and
 asserts what the generator was actually handed.
 
-The two things worth pinning are the corroboration source and the cost. Module
-groups are cut before any level runs, so a scoped run corroborates against the
-same names a full one does; and the miner walks the whole repository, so
+The two things worth pinning are the corroboration corpus and the cost. Each
+module group contributes its title and its summary -- from this run when
+level 4 wrote the page, from the store when it did not, so a scoped run
+corroborates against as much as a full one and the front-page section does not
+vanish from a `repowise update`. And the miner walks the whole repository, so
 levels 6 and 8 must share one pass rather than paying for two.
 """
 
@@ -52,6 +54,21 @@ class BlastRadius:
 #: What the structural side independently arrived at. "Blast radius" is named
 #: by both; "Change risk" is in the documents only.
 MODULE_GROUPS = [SimpleNamespace(display="Blast Radius Evaluation", label="", key="src")]
+
+
+class _Store:
+    """A vector store holding one module summary from a previous run."""
+
+    def __init__(self, summaries: dict[str, str] | None = None, fail: bool = False) -> None:
+        self.summaries = summaries or {}
+        self.fail = fail
+        self.asked: list[str] = []
+
+    async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
+        self.asked.extend(paths)
+        if self.fail:
+            raise RuntimeError("store unavailable")
+        return {p: {"summary": s} for p, s in self.summaries.items() if p in paths}
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -119,7 +136,13 @@ class _Gen:
         return object()
 
 
-def _run(tmp_path: Path, *, module_groups: list[Any] | None = None) -> SimpleNamespace:
+def _run(
+    tmp_path: Path,
+    *,
+    module_groups: list[Any] | None = None,
+    written: dict[str, str] | None = None,
+    store: Any = None,
+) -> SimpleNamespace:
     reset_house_terms()
     return SimpleNamespace(
         gen=_Gen(),
@@ -148,8 +171,9 @@ def _run(tmp_path: Path, *, module_groups: list[Any] | None = None) -> SimpleNam
         dead_code_by_file={},
         decisions_all=(),
         external_systems=(),
-        completed_page_summaries={},
+        completed_page_summaries=dict(written or {}),
         sel_module_groups=MODULE_GROUPS if module_groups is None else module_groups,
+        vector_store=store,
         tour_stops=(),
         layer_order=(),
         kg_ctx=None,
@@ -158,32 +182,32 @@ def _run(tmp_path: Path, *, module_groups: list[Any] | None = None) -> SimpleNam
     )
 
 
-def test_the_overview_is_handed_the_corroborated_terms(tmp_path):
+async def test_the_overview_is_handed_the_corroborated_terms(tmp_path):
     run = _run(tmp_path)
-    assert build_level6_coros(run), "level 6 produced no overview"
+    assert await build_level6_coros(run), "level 6 produced no overview"
 
     picked = [c.term for c in run.gen.overview_kwargs["capabilities"]]
     assert picked == ["Blast radius"]
 
 
-def test_a_term_no_module_page_names_does_not_reach_the_overview(tmp_path):
+async def test_a_term_no_module_page_names_does_not_reach_the_overview(tmp_path):
     """ "Change risk" is in the README and in a docstring, so it is a mined
     term. No module page mentions it, so the front page does not claim it."""
     run = _run(tmp_path)
-    build_level6_coros(run)
+    await build_level6_coros(run)
 
     picked = [c.term for c in run.gen.overview_kwargs["capabilities"]]
     assert "Change risk" not in picked
 
 
-def test_a_community_label_does_not_corroborate(tmp_path):
-    """Titles only, and this is why.
+async def test_a_community_label_does_not_corroborate(tmp_path):
+    """The corpus is a group's title and summary. Its label is not in it.
 
     A community label is a broad phrase covering a whole layer, so it
     corroborates almost any common word that appears in it. Including labels
     put "Architecture" and "Workspace" on the front page of a real render. A
-    group *title* names one part of the system, which is the claim the
-    corroboration is supposed to be making.
+    title and a summary describe one part of the system, which is the claim
+    the corroboration is supposed to be making.
     """
     run = _run(
         tmp_path,
@@ -195,26 +219,79 @@ def test_a_community_label_does_not_corroborate(tmp_path):
             )
         ],
     )
-    build_level6_coros(run)
+    await build_level6_coros(run)
 
     assert [c.term for c in run.gen.overview_kwargs["capabilities"]] == []
 
 
-def test_no_module_groups_means_no_table_and_a_log(tmp_path):
+async def test_a_summary_written_this_run_corroborates(tmp_path):
+    """Titles are ~90 short strings and too thin a net on their own. The
+    summaries are what make the corroboration mean something."""
+    run = _run(
+        tmp_path, written={"src": "Scores a diff by the change risk of the files it touches."}
+    )
+    await build_level6_coros(run)
+
+    assert "Change risk" in [c.term for c in run.gen.overview_kwargs["capabilities"]]
+
+
+async def test_a_summary_from_the_store_corroborates_when_this_run_wrote_none(tmp_path):
+    """The case that made the first version wrong.
+
+    A scoped run -- every `repowise update` -- writes no module pages, so the
+    corpus was empty and the front-page section disappeared. The summaries
+    are still in the store from the last full run.
+    """
+    store = _Store({"src": "Scores a diff by the change risk of the files it touches."})
+    run = _run(tmp_path, store=store)
+    await build_level6_coros(run)
+
+    assert store.asked == ["src"]
+    assert "Change risk" in [c.term for c in run.gen.overview_kwargs["capabilities"]]
+
+
+async def test_this_run_wins_over_the_store(tmp_path):
+    """A page written a moment ago is fresher than the one in the store, and
+    asking for it again would be a round-trip for a worse answer."""
+    store = _Store({"src": "stale text naming nothing"})
+    run = _run(
+        tmp_path,
+        written={"src": "Scores a diff by the change risk of the files it touches."},
+        store=store,
+    )
+    await build_level6_coros(run)
+
+    assert store.asked == []
+    assert "Change risk" in [c.term for c in run.gen.overview_kwargs["capabilities"]]
+
+
+async def test_a_store_that_cannot_answer_costs_reach_not_the_page(tmp_path):
+    """Corroboration is best-effort. A store failure must not lose the
+    overview, and must not pass silently either."""
+    run = _run(tmp_path, store=_Store(fail=True))
+    with capture_logs() as logs:
+        assert await build_level6_coros(run), "the overview was lost to a store error"
+
+    assert any(e["event"] == "generation.overview_corroboration_store_read_failed" for e in logs)
+    # The titles still corroborate on their own.
+    assert [c.term for c in run.gen.overview_kwargs["capabilities"]] == ["Blast radius"]
+
+
+async def test_no_module_groups_means_no_table_and_a_log(tmp_path):
     """A repository the grouper produced nothing for has nothing to
     corroborate against. The section going missing is correct, not silent."""
     run = _run(tmp_path, module_groups=[])
     with capture_logs() as logs:
-        build_level6_coros(run)
+        await build_level6_coros(run)
 
     assert run.gen.overview_kwargs["capabilities"] == []
     assert any(e["event"] == "generation.overview_capability_table_absent" for e in logs)
 
 
-def test_the_repository_is_mined_once_for_both_levels(tmp_path):
+async def test_the_repository_is_mined_once_for_both_levels(tmp_path):
     """Mining walks the whole repository. Two consumers, one walk."""
     run = _run(tmp_path)
-    build_level6_coros(run)
+    await build_level6_coros(run)
     build_level8_coros(run)
 
     from_overview = tuple(c.term for c in run.gen.overview_kwargs["capabilities"])
@@ -229,11 +306,11 @@ def test_the_repository_is_mined_once_for_both_levels(tmp_path):
     )
 
 
-def test_onboarding_still_gets_its_terms_when_the_overview_mined_first(tmp_path):
+async def test_onboarding_still_gets_its_terms_when_the_overview_mined_first(tmp_path):
     """Order independence: level 6 now runs the miner, and level 8 read it
     from a warm cache rather than from a fresh walk."""
     run = _run(tmp_path)
-    build_level6_coros(run)
+    await build_level6_coros(run)
     build_level8_coros(run)
 
     assert [t.term for t in run.gen.onboarding_signals[0].house_terms] == [

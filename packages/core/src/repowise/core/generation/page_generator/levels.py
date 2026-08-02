@@ -275,7 +275,67 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     return coros
 
 
-def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+async def _module_corroboration(run: _GenerationRun) -> list[str]:
+    """What the structural side calls the parts of the system.
+
+    One string per module group: its title, plus its summary. A module group
+    is cut from the dependency graph and named from the code, so a mined term
+    appearing in one was arrived at twice — from the documents and from the
+    structure — independently.
+
+    Titles alone are about ninety short strings, which is too thin a net: it
+    misses "Knowledge Graph" and "Code Health" while letting "Architecture"
+    and "Workspace" through on an incidental word. The summaries are what make
+    the corroboration mean something.
+
+    Summaries come from this run when level 4 wrote the page, and from the
+    store when it did not. Both together, because either alone is wrong: the
+    run alone empties the corpus on every scoped update and the section
+    vanishes from the front page, and the store alone is one generation stale
+    on a full run. Never raises — a store that cannot answer costs reach, not
+    a page.
+    """
+    groups = run.sel_module_groups
+    if not groups:
+        return []
+
+    summaries: dict[str, str] = {}
+    missing: list[str] = []
+    for mg in groups:
+        written = run.completed_page_summaries.get(mg.key)
+        if written:
+            summaries[mg.key] = written
+        else:
+            missing.append(mg.key)
+
+    if missing and run.vector_store is not None:
+        try:
+            batch = await run.vector_store.get_page_summaries_by_paths(missing)
+        except Exception as exc:
+            # Reach, not correctness. Said out loud because a quietly thinner
+            # corpus reads downstream as "the structure does not name this".
+            log.warning(
+                "generation.overview_corroboration_store_read_failed",
+                repo_name=run.repo_name,
+                wanted=len(missing),
+                error=str(exc),
+            )
+        else:
+            for path, payload in batch.items():
+                summary = (payload or {}).get("summary")
+                if summary:
+                    summaries[path] = summary
+
+    log.info(
+        "generation.overview_corroboration_corpus",
+        groups=len(groups),
+        from_this_run=sum(1 for mg in groups if run.completed_page_summaries.get(mg.key)),
+        with_summary=len(summaries),
+    )
+    return [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in groups]
+
+
+async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 6 (repo_overview).
 
     The overview carries the architecture map. That map used to sit on a page
@@ -307,14 +367,7 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         # Module *groups*, not written module pages: a group is cut and named
         # on every run, so a scoped run that regenerates the overview alone
         # selects the same rows as a full one.
-        # Group *titles* only. Community labels and directory keys were tried
-        # and measured worse: a label like "Ingestion and Analysis Engine" or
-        # "Refactoring CLI Tools" is broad enough to corroborate almost any
-        # single common word, which put "Architecture" and "Workspace" back on
-        # the front page. A title names one part of the system, which is the
-        # claim the corroboration is supposed to be making.
-        module_names = [mg.display for mg in run.sel_module_groups]
-        capabilities = select_capabilities(_mine_house_terms(run), module_names)
+        capabilities = select_capabilities(_mine_house_terms(run), await _module_corroboration(run))
         if not capabilities:
             # No table beats an empty one, but a front-page section that
             # quietly stops appearing is the failure shape this repository has

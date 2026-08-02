@@ -714,7 +714,7 @@ class _GenerationRun:
         # Levels 6 (repo_overview), 7 (infra_page), and 8 (onboarding) share
         # no data dependencies — run merged.
         final = (
-            _levels.build_level6_coros(self)
+            await _levels.build_level6_coros(self)
             + _levels.build_level7_coros(self)
             + _levels.build_level8_coros(self)
         )

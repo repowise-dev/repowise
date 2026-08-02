@@ -173,7 +173,24 @@ def select_capabilities(
         hits = sum(1 for page in corpus if pattern.search(page))
         if not hits:
             continue
-        source = term.definition_source or (term.source_paths[0] if term.source_paths else None)
+        definition = term.definition
+        if definition and not _is_a_sentence(definition):
+            # Keep the row, drop the claim. The capability is real — the
+            # structure corroborated it — but the prose nearest the term is
+            # not a statement about it, and an em dash misinforms nobody.
+            log.info(
+                "overview_capability_definition_rejected",
+                term=term.term,
+                text=" ".join(definition.split())[:120],
+            )
+            definition = None
+        # Cite where the sentence came from, or -- when there is no sentence,
+        # including one just rejected -- the document that named the term.
+        # Citing the home of prose the table declined to quote would point a
+        # reader at a line that is not there.
+        source = (term.definition_source if definition else None) or (
+            term.source_paths[0] if term.source_paths else None
+        )
         if source is None:
             # A term with no path at all cannot be cited, and an uncitable row
             # on the front page is the shape of claim this wiki does not make.
@@ -181,7 +198,7 @@ def select_capabilities(
         selected.append(
             Capability(
                 term=term.term,
-                definition=term.definition,
+                definition=definition,
                 source_path=source,
                 corroborating_pages=hits,
             )
@@ -208,6 +225,47 @@ def select_capabilities(
             module_names=len(corpus),
         )
     return kept
+
+
+# A mined "definition" is whatever prose sat nearest the term, and near a term
+# in a README that is often not a sentence about it. Two real examples from
+# this repository's own front page:
+#
+#     CLI      -> "repowise init [PATH]      # index a codebase (one-time; ...)"
+#     Distill  -> "`repowise distill <cmd>` compresses command output *before*
+#                  the agent reads it:"
+#
+# The first is a line of shell with an inline comment. The second is a lead-in
+# that ends on a colon because the explanation is the code block underneath.
+# Neither says what the thing is, and an em dash is a better answer than
+# either: the reader learns the capability exists and is not misinformed about
+# what it does.
+
+#: A command line rather than a sentence: a shell comment, a prompt, an option
+#: flag, a redirect or a pipeline.
+_LOOKS_LIKE_COMMAND = re.compile(r"(^\s*[$>]|\s#\s|\s--?[a-zA-Z]|[|<>]\s*\S)")
+#: Ends where the real explanation begins — a colon, or an unclosed opener.
+_TRAILS_OFF = (":", ",", ";", "-", "—", "–", "(", "[")
+
+
+def _is_a_sentence(text: str) -> bool:
+    """Whether mined prose reads as a statement about the term.
+
+    Deliberately shallow. This is not grammar checking — it is the difference
+    between a sentence and a fragment of shell, and getting it wrong in the
+    strict direction costs a definition, which the table already renders as an
+    em dash. Getting it wrong the other way puts a command line on the front
+    page as though it explained something.
+    """
+    text = " ".join(text.split())
+    if len(text.split()) < 4:
+        return False
+    if text.rstrip().endswith(_TRAILS_OFF):
+        return False
+    if _LOOKS_LIKE_COMMAND.search(text):
+        return False
+    # A statement starts with a word, not with punctuation or a code fence.
+    return text[:1].isalpha()
 
 
 def _cell(text: str) -> str:
