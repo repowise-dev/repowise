@@ -567,6 +567,12 @@ def run_mcp(
         mcp.settings.port = port
         mcp.run(transport="streamable-http")
     else:
+        # stdout is the JSON-RPC channel on stdio, so every log line written
+        # there arrives at the client as a malformed protocol frame. Move the
+        # log sinks to stderr before anything can log.
+        from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+
+        route_logging_to_stderr()
         # stdio servers are spawned per-session by the MCP client; when the
         # client dies abnormally the stdio loop doesn't exit (and Windows
         # never kills children), leaking servers that hold wiki.db handles.
