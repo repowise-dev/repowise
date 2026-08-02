@@ -8,13 +8,18 @@ vice versa.
 
 Pipeline (each stage is a pure function over hit dicts):
 
-    1. ``hybrid_retrieve``      — FTS + vector store in parallel, merged via
-                                  Reciprocal Rank Fusion. Single retrieval
-                                  modes systematically miss either token
-                                  matches (vectors drift) or conceptual
-                                  matches (FTS is literal). Two modes catch
-                                  both classes of failure for the cost of one
-                                  extra coroutine.
+    1. ``hybrid_retrieve``      : FTS, vector store and the structural symbol
+                                  index in parallel, merged via Reciprocal
+                                  Rank Fusion. Single retrieval modes
+                                  systematically miss either token matches
+                                  (vectors drift) or conceptual matches (FTS
+                                  is literal), and both page-shaped modes miss
+                                  anything a generated file page does not
+                                  spell out: its public-symbol table is all
+                                  they can index, so a private helper or a
+                                  local name is invisible to them. The symbol
+                                  leg covers that third class, for the cost of
+                                  one more coroutine.
     2. ``hydrate_hits``         — attach target_path, summary, page_type from
                                   the Page table to each hit.
     3. ``apply_pagerank_bias``  — multiply scores by a damped PageRank factor
@@ -42,12 +47,13 @@ import re
 from collections import OrderedDict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.test_paths import is_test_path
+from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 
 _log = logging.getLogger("repowise.mcp.answer")
 
@@ -90,6 +96,15 @@ _RRF_SCORE_SCALE = 180.0
 _GRAPH_EXPAND_TOP_N = 2
 _GRAPH_EXPAND_MAX_NEW = 3
 
+# Degree above which a neighbour is treated as a hub and dropped from the
+# expansion set. A file that half the repo imports is a near-neighbour of
+# everything, so it says nothing about *this* question; it is also exactly the
+# file PageRank ranks first, which is why the ordering below needs a guard
+# rather than trusting centrality on its own. Floor plus percentile, so a small
+# repo where every file has a handful of edges excludes nothing.
+_HUB_DEGREE_FLOOR = 50
+_HUB_DEGREE_PERCENTILE = 0.99
+
 # PageRank bias is multiplicative and capped. We don't want a marginally
 # more central file to outrank a strong text match — only to break ties.
 # Empirically PageRank values on this corpus span ~0 to ~0.01; we normalise
@@ -107,6 +122,30 @@ _GRAPH_EXPAND_DAMPING = 0.7
 # bounded at 8s including the embed, so the round-trip keeps that ceiling now
 # that it happens on its own.
 _EMBED_TIMEOUT_S = 8.0
+
+# Third retrieval leg: the structural symbol index. FTS and the vector store
+# both read the generated wiki page, which by construction carries an overview
+# sentence, the *public* symbol table and dependency paths, with no function
+# bodies, no private helpers, no local names. A question about something a page
+# does not spell out therefore has nothing to match on, however well it is
+# phrased. The symbol index does carry those names, and it is keyed on the
+# words a symbol is built from, so it recovers exactly that class of miss.
+#
+# How many symbols the leg ranks, and how many distinct files they may
+# contribute. Deliberately smaller than the other two legs' 15: this leg is
+# there to add pool members the page legs cannot see, not to outvote them.
+_SYMBOL_LEG_FETCH_LIMIT = 20
+_SYMBOL_LEG_MAX_PAGES = 8
+
+# The symbol leg's own RRF constant, larger than the page legs' so its
+# contribution is smaller at every rank. Fusing it at k=60 like the others gave
+# one lexical symbol match the same weight as a page two independent retrievers
+# ranked first, which is not what a name match is worth: measured on the
+# 99-question eval it pushed the correct ``distill/skeleton.py`` out of the
+# served five in favour of a same-named React component. At k=180 the leg can
+# lift a file the page retrievers already liked and can add one they never saw,
+# but it cannot outvote them.
+_SYMBOL_LEG_RRF_K = 180
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +230,7 @@ async def vector_search(
 
 
 async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
-    """Run FTS and vector retrieval in parallel and merge via RRF.
+    """Run FTS, vector and symbol retrieval in parallel and merge via RRF.
 
     Returns a list of dicts shaped ``{page_id, title, score, snippet,
     page_type, _sources: set[str]}``. ``_sources`` names which retrievers
@@ -205,7 +244,8 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
     """
     fts_task = _safe_fts_search(ctx, question)
     vec_task = _safe_vector_search(ctx, question)
-    fts_results, vec_results = await asyncio.gather(fts_task, vec_task)
+    sym_task = _safe_symbol_search(ctx, question)
+    fts_results, vec_results, sym_results = await asyncio.gather(fts_task, vec_task, sym_task)
 
     # RRF merge. Each hit's contribution from a source is 1/(rank + k);
     # hits appearing in both sources sum their contributions naturally.
@@ -225,6 +265,11 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("vector")
         entry["_vec_rank"] = rank
+    for rank, h in enumerate(sym_results):
+        entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
+        entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _SYMBOL_LEG_RRF_K)
+        entry["_sources"].add("symbol")
+        entry["_sym_rank"] = rank
 
     # Scale to BM25-range so downstream confidence/dominance gates (tuned
     # against the prior single-mode BM25 retrieval) keep behaving sanely.
@@ -315,6 +360,55 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     except Exception:
         return []
     return _pages_only(results, _RETRIEVAL_FETCH_LIMIT)
+
+
+class _SymbolLegResult:
+    """A file page reached through the symbol index, in retriever result shape.
+
+    The RRF merge is keyed on page ids and reads four attributes off whatever
+    the retrievers hand it, so the symbol leg presents its file pages the same
+    way FTS and the vector store present theirs.
+    """
+
+    __slots__ = ("page_id", "page_type", "snippet", "title")
+
+    def __init__(self, page_id: str, title: str, snippet: str, page_type: str) -> None:
+        self.page_id = page_id
+        self.title = title
+        self.snippet = snippet
+        self.page_type = page_type
+
+
+async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]:
+    """File pages whose symbols the question's words name. [] on any failure.
+
+    Ungated: it runs on every question, not only on ones that happen to carry
+    an identifier-shaped token. Which indexes get read is not something the
+    grammar of the sentence should decide. "How does an incremental update
+    persist symbols" and ``_persist_symbols`` are after the same file, and
+    before this leg only the second one reached the symbol index.
+
+    Best-effort with a timeout, like the other two legs: a slow or missing
+    symbol index degrades ``get_answer`` to its previous behaviour rather than
+    failing the call.
+    """
+    try:
+        pages = await asyncio.wait_for(
+            symbol_backed_pages(
+                ctx,
+                question,
+                max_files=_SYMBOL_LEG_MAX_PAGES,
+                symbol_limit=_SYMBOL_LEG_FETCH_LIMIT,
+            ),
+            timeout=5.0,
+        )
+    except Exception:
+        _log.debug("get_answer symbol leg failed; page retrieval stands", exc_info=True)
+        return []
+    return [
+        _SymbolLegResult(p["page_id"], p["title"], (p.get("summary") or "")[:200], p["page_type"])
+        for p in pages
+    ]
 
 
 def _hit_dict_from_result(result: Any) -> dict:
@@ -497,6 +591,39 @@ async def apply_pagerank_bias(hits: list[dict], ctx: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
+    """Total graph degree (in + out) for each node in *nodes*.
+
+    One grouped count per direction over the same indexed edge table the
+    expansion already reads, scoped to the candidate set rather than the whole
+    graph.
+    """
+    if not nodes:
+        return {}
+    degree: dict[str, int] = {}
+    for column in (GraphEdge.source_node_id, GraphEdge.target_node_id):
+        res = await session.execute(
+            select(column, func.count()).where(column.in_(nodes)).group_by(column)
+        )
+        for node_id, count in res.all():
+            degree[node_id] = degree.get(node_id, 0) + int(count or 0)
+    return degree
+
+
+def _hub_degree_cutoff(degree: dict[str, int]) -> int:
+    """Degree at which a candidate counts as a hub, for this candidate set.
+
+    ``max(floor, p99)``. The floor keeps a small or sparsely-linked repo from
+    excluding ordinary files, and the percentile keeps a densely-linked one
+    from excluding nothing.
+    """
+    if not degree:
+        return 1 << 30
+    values = sorted(degree.values())
+    idx = min(len(values) - 1, int(len(values) * _HUB_DEGREE_PERCENTILE))
+    return max(_HUB_DEGREE_FLOOR, values[idx])
+
+
 async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
     """Add up to ``_GRAPH_EXPAND_MAX_NEW`` graph-neighbor files to ``hits``.
 
@@ -562,9 +689,19 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
             )
         )
         pr_by_path = {row[0]: float(row[1] or 0.0) for row in pr_res.all()}
+        degree = await _neighbor_degrees(session, neighbors)
 
     if not page_rows:
         return hits
+
+    # Drop hubs before ranking. Ranking by PageRank alone actively prefers
+    # them, which is the wrong instinct here: expansion is trying to name the
+    # specific file the question is about, and the most-imported file in the
+    # repo is the least specific candidate available.
+    cutoff = _hub_degree_cutoff(degree)
+    non_hub = [row for row in page_rows if degree.get(row[0], 0) <= cutoff]
+    if non_hub:
+        page_rows = non_hub
 
     # Damp parent score by _GRAPH_EXPAND_DAMPING for child candidates; pick
     # the strongest parent each child connects to (taking the max parent

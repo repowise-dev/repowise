@@ -8,6 +8,8 @@ with a coverage re-ranker, not of any particular codebase.
 
 from __future__ import annotations
 
+from repowise.server.mcp_server._query_terms import STOPWORDS
+
 # How many top retrieval hits to enrich with WikiSymbol context. Enriching
 # every hit produces large responses that bloat the cached prompt prefix on
 # multi-turn agent sessions without changing the answer — the agent typically
@@ -360,102 +362,10 @@ _RELATIONAL_CONNECTIVES = (
 # of their raw BM25 (vs 1.0 for a hit covering 3/3). Conjunctive coverage
 # becomes a tie-breaker rather than a hard filter.
 _COVERAGE_FLOOR = 0.5
-# English stopwords — minimal list, just enough to keep "what is the" from
-# dominating coverage. Not language-specific, not repo-specific.
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "of",
-        "to",
-        "in",
-        "on",
-        "at",
-        "by",
-        "for",
-        "with",
-        "from",
-        "as",
-        "that",
-        "this",
-        "these",
-        "those",
-        "it",
-        "its",
-        "and",
-        "or",
-        "but",
-        "not",
-        "no",
-        "do",
-        "does",
-        "did",
-        "done",
-        "have",
-        "has",
-        "had",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "whose",
-        "when",
-        "where",
-        "why",
-        "how",
-        "can",
-        "could",
-        "should",
-        "would",
-        "may",
-        "might",
-        "will",
-        "shall",
-        "i",
-        "you",
-        "he",
-        "she",
-        "we",
-        "they",
-        "me",
-        "him",
-        "her",
-        "us",
-        "them",
-        "my",
-        "your",
-        "his",
-        "their",
-        "our",
-        "if",
-        "then",
-        "than",
-        "so",
-        "such",
-        "there",
-        "here",
-        "about",
-        "into",
-        "through",
-        "between",
-        "across",
-        "over",
-        "under",
-        "up",
-        "down",
-        "out",
-        "off",
-        "via",
-    }
-)
+# English stopwords. Defined in ``_query_terms`` (stdlib-only, imported by
+# nothing in this package) so the coverage re-ranker here and the prose-keyed
+# symbol leg in ``_prose_symbols`` share one list instead of drifting apart.
+_STOPWORDS = STOPWORDS
 # Cap on bytes read from source per symbol when we recover a real signature
 # from disk (multi-line def with type annotations). Anything longer than this
 # gets truncated; the agent can call get_symbol for the full body.
