@@ -28,6 +28,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from repowise.core import fs_walk
+
 from .grouping import ConceptGroup
 
 logger = logging.getLogger(__name__)
@@ -516,35 +518,10 @@ def _harvest(
 # What the code says about itself
 # ---------------------------------------------------------------------------
 
-#: Directories that hold somebody else's code. Their prose is about their
-#: subsystems, not ours, and on a large repository they are most of the files.
-_SKIP_DIRS = frozenset(
-    {
-        ".git",
-        ".hg",
-        ".svn",
-        ".tox",
-        ".venv",
-        "venv",
-        "env",
-        "__pycache__",
-        "node_modules",
-        "site-packages",
-        "vendor",
-        "third_party",
-        "thirdparty",
-        "dist",
-        "build",
-        "target",
-        "out",
-        ".next",
-        ".cache",
-        "coverage",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "migrations",
-    }
+#: Directories that hold somebody else's code on top of what the shared
+#: walker already prunes. Their prose is about their subsystems, not ours.
+_EXTRA_PRUNED_DIRS = fs_walk.PRUNED_DIRS_DERIVED | frozenset(
+    {"vendor", "third_party", "thirdparty", "site-packages"}
 )
 
 #: Python docstrings, and the block comments JSDoc and TSDoc are written in.
@@ -566,50 +543,61 @@ _MAX_PROSE_BLOCKS = 8
 _JSDOC_GUTTER = re.compile(r"^\s*\*[ \t]?", re.M)
 
 
-def _source_prose(repo_root: Path) -> list[tuple[str, str]]:
-    """``(path, prose)`` for every source file that documents itself.
+def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
+    """One pruned pass over the repository, answering both tree questions.
 
-    Walks the tree once. Never raises — an unreadable file is one fewer
-    signal, not a failed generation.
+    Returns ``(prose, directory_names)`` — ``(path, prose)`` for every source
+    file that documents itself, and every name the repository has given a
+    directory. Both come from the same walk because both need the whole tree
+    and the walk is the expensive part.
+
+    Never raises: an unreadable file is one fewer signal, not a failed
+    generation.
     """
-    out: list[tuple[str, str]] = []
+    prose: list[tuple[str, str]] = []
+    dir_names: set[str] = set()
     unreadable = 0
-    try:
-        walk = sorted(repo_root.rglob("*"))
-    except OSError:
-        logger.warning("vocabulary: could not walk %s for source prose", repo_root)
-        return []
-    for path in walk:
-        if len(out) >= _MAX_SOURCE_FILES:
-            logger.info(
-                "vocabulary: stopped reading source prose at %d files",
-                _MAX_SOURCE_FILES,
-            )
-            break
-        pattern = _SOURCE_PROSE.get(path.suffix)
-        if pattern is None:
+    truncated = False
+
+    for dirpath, dirnames, filenames in fs_walk.walk_repo(repo_root, prune_dirs=_EXTRA_PRUNED_DIRS):
+        for name in dirnames:
+            dir_names.add(_singular(name.lower()))
+        if truncated:
             continue
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in path.parts):
-            continue
-        try:
-            if not path.is_file():
+        for name in sorted(filenames):
+            pattern = _SOURCE_PROSE.get(Path(name).suffix)
+            if pattern is None:
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_SOURCE_BYTES]
-        except OSError:
-            unreadable += 1
-            continue
-        blocks = pattern.findall(text)[:_MAX_PROSE_BLOCKS]
-        if not blocks:
-            continue
-        prose = "\n".join(_JSDOC_GUTTER.sub("", b) for b in blocks)
-        try:
-            rel = path.relative_to(repo_root).as_posix()
-        except ValueError:  # pragma: no cover — path came from repo_root
-            rel = path.name
-        out.append((rel, prose))
+            if len(prose) >= _MAX_SOURCE_FILES:
+                # A floor rather than a count. Said out loud, because a
+                # silently truncated corpus reads downstream as "the code
+                # does not use this term" — which is the gate's reject.
+                logger.info(
+                    "vocabulary: stopped reading source prose at %d files; "
+                    "term code frequencies are a floor, not a count",
+                    _MAX_SOURCE_FILES,
+                )
+                truncated = True
+                break
+            path = dirpath / name
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_SOURCE_BYTES]
+            except OSError:
+                unreadable += 1
+                continue
+            blocks = pattern.findall(text)[:_MAX_PROSE_BLOCKS]
+            if not blocks:
+                continue
+            joined = "\n".join(_JSDOC_GUTTER.sub("", b) for b in blocks)
+            try:
+                rel = path.relative_to(repo_root).as_posix()
+            except ValueError:  # pragma: no cover — path came from repo_root
+                rel = path.name
+            prose.append((rel, joined))
+
     if unreadable:
         logger.warning("vocabulary: %d source files could not be read for prose", unreadable)
-    return out
+    return prose, frozenset(dir_names)
 
 
 #: The gaps between a term's words. Prose writes "co-change", an identifier
@@ -709,26 +697,6 @@ def _singular(word: str) -> str:
     return word
 
 
-def _directory_names(repo_root: Path) -> frozenset[str]:
-    """Every directory the repository has named, as a whole name."""
-    names: set[str] = set()
-    try:
-        entries = sorted(repo_root.rglob("*"))
-    except OSError:
-        logger.warning("vocabulary: could not walk %s for directory names", repo_root)
-        return frozenset()
-    for path in entries:
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in path.parts):
-            continue
-        try:
-            if not path.is_dir():
-                continue
-        except OSError:
-            continue
-        names.add(_singular(path.name.lower()))
-    return frozenset(names)
-
-
 def extract_house_terms(
     repo_root: Path,
     *,
@@ -762,7 +730,6 @@ def extract_house_terms(
     """
     symbols = {s.lower() for s in known_symbols} if known_symbols else set()
     excluded = _repo_own_names(repo_root)
-    dir_names = _directory_names(repo_root)
 
     candidates = _harvest(
         repo_root,
@@ -778,7 +745,7 @@ def extract_house_terms(
     patterns = {c.term.lower(): _phrase_pattern(c.term) for c in candidates}
     code_files: dict[str, list[str]] = {c.term.lower(): [] for c in candidates}
     code_definitions: dict[str, tuple[str, str]] = {}
-    prose_corpus = _source_prose(repo_root)
+    prose_corpus, dir_names = _scan_tree(repo_root)
     for rel, prose in prose_corpus:
         for key, pattern in patterns.items():
             if not pattern.search(prose):
