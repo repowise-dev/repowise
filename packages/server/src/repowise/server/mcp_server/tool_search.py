@@ -25,6 +25,7 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 from repowise.server.mcp_server.tool_search_symbols import (
     _qual_norm,
@@ -460,6 +461,28 @@ def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
     ]
 
 
+def _attach_paths(output: list[dict], page_info: dict) -> None:
+    """Stamp ``target_path``, and ``file`` wherever the page id is not one.
+
+    A ``symbol_spotlight``'s target_path is ``file.py::Symbol``: a page id, and
+    not something a consumer can open. ``target_path`` is left exactly as it is
+    because callers pipe it into get_symbol, and ``file`` is added beside it so
+    nothing downstream has to know to split on ``::``.
+
+    This lives in one function because it did not used to. The concept branch
+    of ``search_codebase`` set ``file``; ``_search_single_repo``, which is what
+    the hybrid and federated branches call, did not. A query carrying a
+    CamelCase token routes to hybrid, so the tool's headline path kept serving
+    page ids in a field read as a path. Measured on the dev-fix1 predictions:
+    45.4% of the python served paths still carried ``::``, and resolving them
+    takes gold containment from 19 to 39 of 50 instances.
+    """
+    for item in output:
+        item["target_path"] = page_info.get(item["page_id"], "")
+        if "::" in item["target_path"]:
+            item["file"] = item["target_path"].split("::", 1)[0]
+
+
 async def _load_page_info(
     session, output: list[dict], *, with_git: bool = False
 ) -> tuple[dict, set, dict]:
@@ -643,8 +666,7 @@ async def _search_single_repo(
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, _ = await _load_page_info(session, output)
         output = [item for item in output if item["page_id"] not in tombstoned]
-        for item in output:
-            item["target_path"] = page_info.get(item["page_id"], "")
+        _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
     _downweight_test_pages(output, query)
@@ -676,20 +698,31 @@ async def _federated_search(
     # Derive confidence from RRF position
     _assign_confidence(output, "rrf_score", "confidence_score")
 
-    return {"results": output, "_meta": _build_meta()}
+    response: dict = {"results": output, "_meta": _build_meta()}
+    # Drawn from every repo's ranked list, not the merged cut: a workspace
+    # search that spends its window on module pages should still be able to
+    # name files.
+    if candidates := file_candidates(all_results, limit=limit):
+        response["candidates"] = candidates
+    return response
 
 
 def _result_paths(results: list[dict]) -> list[str]:
     """File paths a result set serves, for target-scoped freshness.
 
-    Symbol hits carry ``file``; concept/page hits carry ``target_path``.
+    Symbol hits carry ``file``; page hits are resolved through their page type,
+    so a module page's group key and an onboarding slot resolve to nothing
+    rather than being handed on as if they were files. Freshness is per-file
+    git metadata, and a directory has none, so a page id reaching here could
+    only ever fail to match.
+
     An empty result set returns ``[]`` (meaning "no file content served",
     which suppresses the repo-level stale warning by design).
     """
     paths: list[str] = []
     for item in results:
-        p = item.get("file") or item.get("target_path")
-        if isinstance(p, str) and p:
+        p = hit_file_path(item)
+        if p:
             paths.append(p)
     return paths
 
@@ -845,6 +878,12 @@ async def _structured_search(
         "mode": mode,
         "_meta": _build_meta(repository=repository, targets=_result_paths(results)),
     }
+    # Symbols first, then everything else the window holds: in symbol and
+    # hybrid modes the ranked pool leads with symbol hits, and those are the
+    # entries most likely to collapse onto one another (several symbols of one
+    # file). Deduping them is the point.
+    if candidates := file_candidates(results, limit=limit):
+        response["candidates"] = candidates
     # Exact-match honesty: an identifier-shaped query whose target names no
     # indexed symbol still returns fuzzy neighbours. Say so, or the agent
     # anchors on a wrong hit that looks authoritative (their Alamofire
@@ -893,6 +932,12 @@ async def search_codebase(
     symbol hits first. Concept hits carry a sources list (fts, vector, or
     both); decision records rank below file pages unless the query is
     why-shaped. See docs/agent/MCP_TOOLS.md for detail.
+
+    Alongside results, a `candidates` block names up to `limit` distinct files
+    worth opening next, one {path} each. Every entry is a real file path:
+    results may legitimately rank pages that are not files (a module page, the
+    repository overview), and candidates is where the caller reads which files
+    the search actually reached.
 
     Args:
         query: identifier, path, or natural-language query.
@@ -948,16 +993,9 @@ async def search_codebase(
         output = [item for item in output if item["page_id"] not in tombstoned]
 
         # Attach target_path to each item so the kind filter (path-prefix
-        # heuristic) and downstream get_context callers can act on it.
-        for item in output:
-            item["target_path"] = page_info.get(item["page_id"], "")
-            # A symbol_spotlight page's target_path is ``file.py::Symbol``. That
-            # is a page identifier, and every consumer that reads this field as
-            # a file path (anything that opens it, and anything that matches it
-            # against a file) gets a string that cannot resolve. Name the file
-            # as well rather than making each caller split on ``::``.
-            if "::" in item["target_path"]:
-                item["file"] = item["target_path"].split("::", 1)[0]
+        # heuristic) and downstream get_context callers can act on it, and
+        # ``file`` wherever the page id is symbol-qualified.
+        _attach_paths(output, page_info)
 
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
@@ -980,6 +1018,9 @@ async def search_codebase(
     # weakest tail slots. No-op when the symbol leg names nothing new.
     with contextlib.suppress(Exception):
         output = await _append_symbol_backed(ctx, query, output, limit, kind)
+    # The full ranked pool, kept before the caller's cut so ``candidates``
+    # below can reach past it. See its comment for why that matters.
+    ranked = list(output)
     output = output[:limit]
 
     # Derive confidence_score from relative position in the result set.
@@ -989,6 +1030,8 @@ async def search_codebase(
         "results": output,
         "_meta": _build_meta(repository=repository, targets=_result_paths(output)),
     }
+    if candidates := file_candidates(ranked, limit=limit):
+        response["candidates"] = candidates
     if grep_hint and not output:
         response["grep_hint"] = grep_hint
     return response
