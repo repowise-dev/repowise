@@ -136,6 +136,9 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _rerank_by_coverage,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
+    serialize_candidates as _serialize_candidates,
+)
+from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_hits as _serialize_hits,
 )
 from repowise.server.mcp_server.tool_answer.symbols import (
@@ -882,6 +885,12 @@ async def get_answer(
     # all anchoring/expansion (which inject file/symbol pages, never noise) so it
     # only reorders what those stages left in place.
     hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))
+    # Everything retrieval resolved, in rank order, before the cap. Synthesis
+    # keeps its 5-hit budget, which is a context-window decision and the
+    # right one, but the files below the cut are still the best answer to
+    # "where do I look next", and they used to be discarded. ``candidates``
+    # (built after synthesis) hands them over at one line each.
+    resolved_pool = list(hits)
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
@@ -1659,6 +1668,16 @@ async def get_answer(
     # the same call instead of reconstructing it hop by hop.
     if flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in flow_paths[:2]]
+
+    # Where to look next, always. ``retrieval`` shrinks as confidence rises
+    # (correctly: it is re-read evidence, and a trustworthy answer needs less
+    # of it), but that left the highest-confidence answers naming no file at
+    # all, which is the one thing an agent always has a use for. This block is
+    # navigation rather than evidence: the ranked shortlist, one path per line,
+    # ungated. It costs ~800 characters against a ~10k response.
+    candidates = _serialize_candidates(resolved_pool)
+    if candidates:
+        payload["candidates"] = candidates
 
     # Persist to cache (upsert). Best-effort: cache failures must never block
     # the response — but they must be LOGGED, not suppressed. A plain INSERT

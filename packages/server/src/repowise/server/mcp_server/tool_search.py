@@ -25,6 +25,7 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 from repowise.server.mcp_server.tool_search_symbols import (
     _qual_norm,
     search_paths_single,
@@ -316,6 +317,64 @@ async def _rescue_all_decision_window(
     seen = {item["page_id"] for item in output}
     output.extend(item for item in fallback if item["page_id"] not in seen)
     return output
+
+
+# Slots at the tail of a concept window reserved for files reached through the
+# symbol index rather than through their page. A generated file page renders
+# only public symbols, so a question about a private helper or a local name has
+# nothing to match in either the full-text index or the embedding. The symbol
+# index is where those names live. One slot in three, taken from the weakest
+# end of the window, is a cheap price for reaching a class of file the page
+# retrievers structurally cannot see. No-op when the symbol leg finds nothing.
+_SYMBOL_TAIL_DIVISOR = 3
+
+
+def _symbol_tail_reserve(limit: int) -> int:
+    """How many tail slots the symbol leg may take from a window of *limit*."""
+    return limit // _SYMBOL_TAIL_DIVISOR
+
+
+async def _append_symbol_backed(
+    ctx, query: str, output: list[dict], limit: int, kind: str | None
+) -> list[dict]:
+    """Give the weakest tail slots to files the symbol index reached.
+
+    Concept hits keep the head. Symbol-backed files not already in the window
+    take up to :func:`_symbol_tail_reserve` slots, and the concept hits they
+    displaced fall in behind them (nothing is dropped before the caller's
+    ``limit`` cut). Returns ``output`` unchanged when the symbol leg is empty
+    or every file it named is already present.
+    """
+    reserve = _symbol_tail_reserve(limit)
+    if reserve <= 0 or kind in ("config", "doc"):
+        # config/doc windows are asking for pages with no symbols in them.
+        return output
+    pages = await symbol_backed_pages(ctx, query, max_files=reserve * 2)
+    if not pages:
+        return output
+
+    present = {item.get("target_path") for item in output}
+    extra = [p for p in pages if p["target_path"] not in present][:reserve]
+    if not extra:
+        return output
+    # Score them just under the last concept hit so the ordering the caller
+    # sees stays monotone; they are additions to the window, not a re-ranking
+    # of it.
+    floor = min((item.get("relevance_score") or 0.0) for item in output) if output else 0.0
+    additions = [
+        {
+            "page_id": p["page_id"],
+            "title": p["title"],
+            "page_type": p["page_type"],
+            "target_path": p["target_path"],
+            "snippet": (p.get("summary") or "")[:200],
+            "relevance_score": round(max(floor - 0.001 * (i + 1), 0.0), 4),
+            "sources": ["symbol"],
+        }
+        for i, p in enumerate(extra)
+    ]
+    head = output[: max(0, limit - len(additions))]
+    return head + additions + output[len(head) :]
 
 
 def _fetch_limit_for(limit: int, kind: str | None) -> int:
@@ -892,6 +951,13 @@ async def search_codebase(
         # heuristic) and downstream get_context callers can act on it.
         for item in output:
             item["target_path"] = page_info.get(item["page_id"], "")
+            # A symbol_spotlight page's target_path is ``file.py::Symbol``. That
+            # is a page identifier, and every consumer that reads this field as
+            # a file path (anything that opens it, and anything that matches it
+            # against a file) gets a string that cannot resolve. Name the file
+            # as well rather than making each caller split on ``::``.
+            if "::" in item["target_path"]:
+                item["file"] = item["target_path"].split("::", 1)[0]
 
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
@@ -909,6 +975,11 @@ async def search_codebase(
         output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
+    # Files the page retrievers structurally cannot see (a private helper, a
+    # local name, anything a file page's public-symbol table omits) get the
+    # weakest tail slots. No-op when the symbol leg names nothing new.
+    with contextlib.suppress(Exception):
+        output = await _append_symbol_backed(ctx, query, output, limit, kind)
     output = output[:limit]
 
     # Derive confidence_score from relative position in the result set.

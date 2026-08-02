@@ -32,6 +32,51 @@ from repowise.server.mcp_server.tool_answer.config import (
 _log = logging.getLogger("repowise.mcp.answer")
 
 
+# How many files ``candidates`` names. Twenty path lines cost roughly 800
+# characters against the ~10k a get_answer response already spends, so the
+# block makes the tool *more* token-efficient per candidate offered, not less.
+_CANDIDATE_LIMIT = 20
+
+
+def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> list[dict]:
+    """The files retrieval ranked, one line each, ordered best first.
+
+    Separate from ``retrieval`` on purpose, and deliberately not
+    confidence-gated. ``retrieval`` is *evidence*: enriched hits an agent reads
+    to check the prose, so it is right for it to shrink as the prose gets more
+    trustworthy. This block is *navigation*: the shortlist of files worth
+    opening next. Under the old shape a confident answer named zero files and a
+    medium one named two, which is backwards. The more sure we are of a
+    subsystem, the better placed we are to say which files it lives in.
+
+    One entry per distinct path, ``{path, lines?}``. Line bounds are attached
+    only where a hit already carries hydrated symbols; nothing is fetched to
+    build this.
+
+    ``path`` is always a **file** path. A ``symbol_spotlight`` hit's
+    ``target_path`` is ``file.py::Symbol``, which is a page identifier, not
+    something a consumer can open; two distinct symbols in one file are also
+    one file to read, so they collapse to one entry here.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for h in hits:
+        path = (h.get("target_path") or "").split("::", 1)[0]
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        entry: dict[str, Any] = {"path": path}
+        symbols = h.get("symbols") or []
+        starts = [s["start_line"] for s in symbols if s.get("start_line")]
+        ends = [s["end_line"] for s in symbols if s.get("end_line")]
+        if starts and ends:
+            entry["lines"] = f"{min(starts)}-{max(ends)}"
+        out.append(entry)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def serialize_hits(
     hits: list[dict],
     *,
@@ -59,7 +104,14 @@ def serialize_hits(
     """
     out: list[dict] = []
     for h in hits[: limit if limit is not None else len(hits)]:
-        entry: dict[str, Any] = {"path": h.get("target_path")}
+        target = h.get("target_path")
+        entry: dict[str, Any] = {"path": target}
+        # A symbol_spotlight page's target_path is ``file.py::Symbol``: a page
+        # id, not a path a consumer can open. Keep it (callers pipe it into
+        # get_symbol) and name the file too, so ``path`` never has to be
+        # guessed at by anything downstream.
+        if target and "::" in target:
+            entry["file"] = target.split("::", 1)[0]
         if h.get("title"):
             entry["title"] = h["title"]
         summary = h.get("summary") or ""
