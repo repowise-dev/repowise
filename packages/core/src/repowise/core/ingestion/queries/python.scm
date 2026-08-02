@@ -66,7 +66,10 @@
 
 ; import x.y.z
 (import_statement
-  name: (_) @import.module
+  name: [
+    (dotted_name) @import.module
+    (aliased_import name: (_) @import.module)
+  ]
 ) @import.statement
 
 ; ---------------------------------------------------------------------------
