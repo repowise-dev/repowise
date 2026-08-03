@@ -126,6 +126,41 @@ def git_work_repo(tmp_path, sample_repo_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class TestProjectFileOptOut:
+    def test_init_leaves_only_repowise_state_when_project_files_are_disabled(
+        self, runner, git_work_repo, monkeypatch
+    ):
+        monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(git_work_repo),
+                "--no-prose",
+                "--no-workspace",
+                "--no-project-files",
+                "--no-editor-setup",
+                "--no-distill-hook",
+                "--yes",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+
+        import subprocess
+
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=git_work_repo,
+            text=True,
+        )
+        changed_paths = [line[3:] for line in status.splitlines()]
+        assert changed_paths
+        assert all(path.startswith(".repowise/") for path in changed_paths)
+
+
 class TestWorkspaceInitIndexOnly:
     def test_indexes_each_repo(self, runner, workspace_root):
         result = runner.invoke(

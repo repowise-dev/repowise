@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from click.testing import CliRunner
 from rich.console import Console
 
 from repowise.cli import mcp_config
@@ -321,6 +322,54 @@ def test_default_overrides_map_codex_flags_to_integration_ids() -> None:
     assert get_default_integration_overrides(codex_setup=True) == {"codex": True}
 
 
+def test_project_files_override_maps_every_external_editor_file() -> None:
+    assert get_default_project_file_overrides(project_files=False) == {
+        "root_mcp": False,
+        "claude_md": False,
+        "agents_md": False,
+        "vscode_mcp": False,
+    }
+    assert get_default_integration_overrides(project_files=False) == {"codex": False}
+
+
+def test_no_project_files_writes_only_internal_config_and_persists_for_refresh(
+    tmp_path: Path,
+) -> None:
+    from repowise.cli.helpers import load_config
+
+    options = resolve_editor_setup_options(
+        _silent_console(),
+        project_file_overrides=get_default_project_file_overrides(project_files=False),
+        integration_overrides=get_default_integration_overrides(project_files=False),
+    )
+
+    write_editor_project_files(_silent_console(), tmp_path, options=options)
+    refresh_editor_project_files(_silent_console(), tmp_path)
+
+    assert (tmp_path / ".repowise" / "mcp.json").exists()
+    for external_path in (
+        ".mcp.json",
+        ".claude",
+        "AGENTS.md",
+        ".vscode",
+        ".codex",
+    ):
+        assert not (tmp_path / external_path).exists()
+    assert load_config(tmp_path)["editor_files"] == {
+        "root_mcp": False,
+        "claude_md": False,
+        "agents_md": False,
+        "vscode_mcp": False,
+    }
+
+
+def test_init_help_exposes_project_files_switch() -> None:
+    result = CliRunner().invoke(init_cmd.init_command, ["--help"])
+
+    assert result.exit_code == 0
+    assert "--project-files / --no-project-files" in result.output
+
+
 def test_write_editor_project_files_saves_common_mcp_before_integrations(
     tmp_path: Path,
     monkeypatch: Any,
@@ -397,7 +446,7 @@ def test_write_editor_project_files_uses_pre_resolved_options(
     ]
 
 
-def test_claude_project_setup_writes_root_mcp_and_claude_md(
+def test_claude_project_setup_writes_root_mcp_when_enabled(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
@@ -431,6 +480,42 @@ def test_claude_project_setup_writes_root_mcp_and_claude_md(
     assert calls == [
         ("root-mcp", tmp_path, None),
         ("claude-md", tmp_path, True),
+    ]
+
+
+def test_claude_project_setup_gates_root_mcp_independently(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, object, object | None]] = []
+
+    def fake_save_root_mcp_config(repo_path: Path) -> Path:
+        calls.append(("root-mcp", repo_path, None))
+        return repo_path / ".mcp.json"
+
+    def fake_maybe_generate_claude_md(
+        console_obj: object,
+        repo_path: Path,
+        *,
+        no_claude_md: bool = False,
+    ) -> None:
+        calls.append(("claude-md", repo_path, no_claude_md))
+
+    monkeypatch.setattr(mcp_config, "save_root_mcp_config", fake_save_root_mcp_config)
+    monkeypatch.setattr(
+        claude_integration,
+        "maybe_generate_claude_md",
+        fake_maybe_generate_claude_md,
+    )
+
+    ClaudeCodeSetup().write_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(project_file_overrides={"root_mcp": False, "claude_md": True}),
+    )
+
+    assert calls == [
+        ("claude-md", tmp_path, False),
     ]
 
 

@@ -9,6 +9,8 @@ import click
 
 from repowise.cli.editor_setup import EditorSetupOptions
 
+_VSCODE_PROJECT_FILE_ID = "vscode_mcp"
+
 
 class VSCodeSetup:
     """Project-local VS Code setup integration.
@@ -19,7 +21,7 @@ class VSCodeSetup:
     """
 
     integration_id = "vscode"
-    project_file_id = "vscode_mcp"
+    project_file_id = _VSCODE_PROJECT_FILE_ID
 
     def configure_options(
         self,
@@ -29,6 +31,7 @@ class VSCodeSetup:
         if (
             not options.prompt_for_project_files
             or self.project_file_id in options.disabled_project_files
+            or self.project_file_id in options.project_file_overrides
         ):
             return options
         if _prompt_vscode_enabled(console_obj):
@@ -41,7 +44,7 @@ class VSCodeSetup:
         repo_path: Path,
         options: EditorSetupOptions,
     ) -> None:
-        if self.project_file_id in options.disabled_project_files:
+        if not _project_files_enabled(repo_path, options):
             return
         _write_vscode_files(console_obj, repo_path)
 
@@ -56,9 +59,21 @@ class VSCodeSetup:
         repo_path: Path,
         options: EditorSetupOptions,
     ) -> None:
-        if self.project_file_id in options.disabled_project_files:
+        if not _project_files_enabled(repo_path, options):
             return
         _write_vscode_files(console_obj, repo_path)
+
+
+def _project_files_enabled(repo_path: Path, options: EditorSetupOptions) -> bool:
+    if _VSCODE_PROJECT_FILE_ID in options.disabled_project_files:
+        return False
+    from repowise.cli.editor_files import should_generate_editor_file
+
+    return should_generate_editor_file(
+        repo_path,
+        _VSCODE_PROJECT_FILE_ID,
+        override=options.project_file_overrides.get(_VSCODE_PROJECT_FILE_ID),
+    )
 
 
 def _prompt_vscode_enabled(console_obj: Any) -> bool:
