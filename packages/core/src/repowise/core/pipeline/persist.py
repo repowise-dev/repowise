@@ -639,6 +639,72 @@ async def _prune_stale_file_rows(
 _SWEPT_GENERATED_PAGE_TYPES = STRUCTURALLY_KEYED_PAGE_TYPES
 
 
+async def sweep_retired_page_types(session: Any, repo_id: str) -> list[str]:
+    """Delete every row of a page type that no longer exists.
+
+    Distinct from the two sweeps below, and simpler than either: those ask what
+    *this* run produced, because a page of a live type may legitimately be
+    absent from a scoped run. A retired type has no legitimate rows at all —
+    nothing emits one and no failure mode can make anything emit one — so the
+    question never arises and this is safe on every path, full or scoped.
+
+    The retirement tables are the source of truth rather than a list repeated
+    here. A type is retired exactly when a reader following its id gets sent
+    somewhere else, and that is what those tables say; keeping a second list
+    would let a type be redirected without being swept, which is the state this
+    function was written to clear.
+
+    That state is the reason this exists. The architecture diagram merged into
+    the overview and layer pages became grouping rows in the tree, both with
+    redirects registered — but ``architecture_diagram`` is not structurally
+    keyed, so no sweep ever covered it, and ``layer_page`` was only swept by a
+    full run. An index that has only been updated incrementally since therefore
+    still serves both. On this repository the retired diagram was the
+    second-ranked retrieval hit for "how does the ingestion pipeline work",
+    competing with the overview it had been merged into.
+
+    Returns the swept page ids so the caller can drop them from FTS after the
+    session closes (the FTS store must not be touched in-session).
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.generation.page_redirects import (
+        SUPERSEDED_TO_REPO_WIDE,
+        SUPERSEDED_TYPES,
+    )
+    from repowise.core.persistence.models import Page, PageVersion
+
+    retired = sorted(set(SUPERSEDED_TYPES) | set(SUPERSEDED_TO_REPO_WIDE))
+    if not retired:
+        return []
+
+    stale = (
+        (
+            await session.execute(
+                select(Page.id).where(
+                    Page.repository_id == repo_id, Page.page_type.in_(retired)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for i in range(0, len(stale), _PRUNE_CHUNK):
+        batch = stale[i : i + _PRUNE_CHUNK]
+        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+        await session.execute(
+            delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
+        )
+    if stale:
+        logger.info(
+            "retired_page_types_swept",
+            repo_id=repo_id,
+            count=len(stale),
+            types=retired,
+        )
+    return list(stale)
+
+
 async def _sweep_stale_generated_pages(
     session: Any,
     repo_id: str,
@@ -1289,6 +1355,9 @@ async def persist_pipeline_result(
         getattr(result, "authoritative_page_types", None),
         getattr(result, "preserved_page_ids", None),
     )
+    # Rows of a page type that no longer exists at all. Independent of what
+    # this run produced, so it runs on every path rather than only here.
+    swept_page_ids += await sweep_retired_page_types(session, repo_id)
 
     # Placement depends on the whole page set, so it is computed here rather
     # than during generation, after the sweep has retired anything stale.
