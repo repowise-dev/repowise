@@ -224,6 +224,25 @@ def _target_path(members: Sequence[str], dirs: Sequence[str]) -> str:
     return "/".join(common)
 
 
+def _is_local_merge(left: Sequence[str], right: Sequence[str]) -> bool:
+    """Whether two runs may form one page without becoming a scattering.
+
+    Local means the union sits under a real shared directory, or both runs are
+    root-level files that legitimately co-locate at the repository root. Two runs
+    whose only common ancestor is the repository root but that live in different
+    top-level directories are the scattering this module's contract promises never
+    to emit, and must stay separate pages even when each is thin.
+
+    Deliberately loose: *any* shared directory qualifies, not the same immediate
+    parent. Tightening it to same-parent fragments the outline to prevent a
+    bleed no reader perceives; the break readers report is the cross-top-level
+    one.
+    """
+    if _target_path([*left, *right], []):
+        return True
+    return all("/" not in m for m in left) and all("/" not in m for m in right)
+
+
 class _Partitioner:
     def __init__(self, params: GroupingParams, layer_of_file: dict[str, str]):
         self.params = params
@@ -279,8 +298,10 @@ class _Partitioner:
             left = self.visit(child)
             if not left:
                 continue
-            if len(pending) + len(left) <= self.params.max_files and self._same_layer(
-                pending, left
+            if (
+                len(pending) + len(left) <= self.params.max_files
+                and self._same_layer(pending, left)
+                and _is_local_merge(pending, left)
             ):
                 pending.extend(left)
                 continue
@@ -296,8 +317,10 @@ class _Partitioner:
         # result still fits.
         if pending and len(pending) < self.params.min_files and self.groups:
             last = self.groups[-1]
-            if len(last.members) + len(pending) <= self.params.max_files and self._same_layer(
-                last.members, pending
+            if (
+                len(last.members) + len(pending) <= self.params.max_files
+                and self._same_layer(last.members, pending)
+                and _is_local_merge(last.members, pending)
             ):
                 merged = self.make(last.members + pending)
                 self.groups[-1] = merged
@@ -336,6 +359,8 @@ def _absorb_thin(groups: list[ConceptGroup], part: _Partitioner) -> list[Concept
                     continue
                 other = working[j]
                 if other.file_count + group.file_count > params.max_files:
+                    continue
+                if not _is_local_merge(other.members, group.members):
                     continue
                 # A same-layer neighbour is preferred, but a thin group takes
                 # a cross-layer neighbour over standing alone. The layer gate
@@ -397,6 +422,12 @@ def _assign_targets(groups: list[ConceptGroup]) -> None:
     for group in sorted(groups, key=lambda g: (-g.file_count, g.structural_key)):
         owned = _target_path(group.members, group.dirs)
         candidates = [owned] if owned in group.dirs else []
+        # A whole repository under the ceiling is one group spanning several
+        # top-level directories — the guard cannot refuse it, there is nothing
+        # to merge. Naming it after a member would put the repository under a
+        # name describing one corner of it, so it takes the root.
+        if not owned and "" not in candidates and len({m.split("/")[0] for m in group.members}) > 1:
+            candidates.append("")
         candidates.extend(d for d in group.dirs if d and d not in candidates)
         if owned and owned not in candidates:
             candidates.append(owned)
