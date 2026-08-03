@@ -302,12 +302,44 @@ class TestUpdateLock:
 
         ensure_repowise_dir(tmp_path)
         lock_path = tmp_path / ".repowise" / UPDATE_LOCK_FILENAME
-        # Stale: started 2 hours ago
+        # Old, and carrying no PID, so the wall clock is what decides. Written
+        # without a `pid` deliberately: since the lock rework, a lock whose
+        # owner is alive is not stale however old it is, so naming any live PID
+        # here would assert the opposite of the contract.
         lock_path.write_text(
-            json.dumps({"pid": 1, "target_commit": "x", "started_at": 0}),
+            json.dumps({"target_commit": "x", "started_at": 0}),
             encoding="utf-8",
         )
         assert read_update_lock(tmp_path) is None
+
+    def test_a_live_owner_outranks_the_clock(self, tmp_path):
+        """An ancient lock is NOT stale while the process holding it is alive.
+
+        The other half of the contract, and the half nothing asserted. Without
+        it, a test could name a PID that merely happens to be dead on the
+        machine running it and read as if it were testing age — which is
+        exactly what `pid: 1` did: absent on Windows, always alive on Linux, so
+        the same assertion meant opposite things on the two platforms.
+
+        Uses this process's own PID, which is alive everywhere by definition.
+        """
+        import json
+        import os
+
+        from repowise.cli.helpers import (
+            UPDATE_LOCK_FILENAME,
+            ensure_repowise_dir,
+            read_update_lock,
+        )
+
+        ensure_repowise_dir(tmp_path)
+        (tmp_path / ".repowise" / UPDATE_LOCK_FILENAME).write_text(
+            json.dumps({"pid": os.getpid(), "target_commit": "x", "started_at": 0}),
+            encoding="utf-8",
+        )
+        payload = read_update_lock(tmp_path)
+        assert payload is not None
+        assert payload["target_commit"] == "x"
 
     def test_read_handles_corrupt_payload(self, tmp_path):
         from repowise.cli.helpers import (

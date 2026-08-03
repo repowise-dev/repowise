@@ -175,9 +175,12 @@ class TestUpdateLockSuppression:
         _state(repo_path, last_sync_commit=head, docs_enabled=True)
         _commit(repo_path)
 
-        # Lock from 2 hours ago — beyond the 30-min stale window
+        # Lock from 2 hours ago, beyond the 30-min stale window, and carrying no
+        # PID so the wall clock is what decides. No `pid` deliberately: since the
+        # lock rework a live owner outranks the clock, so naming a PID that
+        # happens to exist would make this assert the opposite of the contract.
         (repo_path / ".repowise" / ".update.lock").write_text(
-            json.dumps({"pid": 1, "target_commit": "x", "started_at": 0}),
+            json.dumps({"target_commit": "x", "started_at": 0}),
             encoding="utf-8",
         )
 
