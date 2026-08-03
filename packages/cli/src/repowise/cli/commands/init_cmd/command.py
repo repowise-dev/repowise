@@ -523,8 +523,12 @@ def _run_generation_phase(
     help=(
         "Install the Claude Code command-rewrite hook that routes noisy "
         "commands (tests, builds, git, searches) through `repowise distill` "
-        "for compact output. Default: ask when interactive; skip otherwise. "
-        "In workspace mode the verdict applies to every selected repo."
+        "for compact output, and serve an unbounded Read of a large indexed "
+        "file as its skeleton (`hooks.read_skeleton`). Both are the same "
+        "consent — repowise's hooks may compact what your agent sees — and "
+        "this flag decides both, without a prompt. Default: ask when "
+        "interactive; skip otherwise. In workspace mode the verdict applies "
+        "to every selected repo."
     ),
 )
 @click.option(

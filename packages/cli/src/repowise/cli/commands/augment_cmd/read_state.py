@@ -228,7 +228,7 @@ def _handle_read_post(
     state["seq"] += 1
     state["reads"][rel] = state["seq"]
 
-    replacement = _skeleton_replacement(
+    replacement, forgone = _skeleton_replacement(
         repo_path, rel, tool_input, tool_output, state, edited_since_read=edited_since_read
     )
     if replacement is not None:
@@ -240,26 +240,46 @@ def _handle_read_post(
             fired.append(("skeleton_nudge", nudge))
 
     persisted = _save_session_state(repo_path, state)
-    if replacement is not None and not persisted:
+    if not persisted:
         # The "read it again and you get it whole" escape hatch is the
         # `skeletonized` list, and the list is that state file. If it did not
         # persist — read-only checkout, full disk — the promise in the header
         # would have no ceiling: every unbounded Read would return a skeleton
         # and none would return the file. No durable state, no replacement.
-        replacement = None
-        fired = [f for f in fired if f[0] != "skeleton_served"]
+        if replacement is not None:
+            replacement = None
+            fired = [f for f in fired if f[0] != "skeleton_served"]
+        # The counterfactual's gates are the same list, so they fail the same
+        # way: without a durable `forgone` the once-per-file gate and the
+        # per-session cap both reset on the next event, and the same file is
+        # counted again and again. That inflates the very number the
+        # measurement exists to state honestly, and removes the ceiling on
+        # what it costs. No durable state, no measurement either.
+        forgone = None
 
     for category, text in fired:
         _log_read_firing(repo_path, session_id, category, rel, text)
     return HookResult(
         context="\n".join(notices) if notices else None,
         replacement=replacement.payload if replacement is not None else None,
-        on_emitted=(
-            (lambda r=replacement: _record_skeleton_saving(repo_path, r))
-            if replacement is not None
-            else None
-        ),
+        on_emitted=_bookkeeping(repo_path, replacement, forgone),
     )
+
+
+def _bookkeeping(repo_path: Path, replacement, forgone):
+    """The ledger write this Read owes, to run after the response is emitted.
+
+    At most one of the two is ever set. Both are deferred for the same reason:
+    accounting must not sit between the agent and its tool result. The
+    counterfactual needs this more than the saving does, not less — it takes a
+    write lock on a database ``repowise distill`` also writes, and it does so
+    on a Read that is getting nothing back for the wait.
+    """
+    if replacement is not None:
+        return lambda: _record_skeleton_saving(repo_path, replacement)
+    if forgone is not None:
+        return lambda: _record_forgone_saving(repo_path, forgone)
+    return None
 
 
 def _skeleton_replacement(
@@ -271,11 +291,15 @@ def _skeleton_replacement(
     *,
     edited_since_read: bool,
 ):
-    """The skeleton to serve in place of this Read, or None. Never raises.
+    """``(replacement, forgone)`` for this Read — at most one set. Never raises.
 
     Ordered cheapest-gate-first so a Read that cannot qualify — which is
     almost all of them — costs a handful of dict lookups and no import. The
     gates themselves are documented in :mod:`read_skeleton`.
+
+    The two legs share every gate above the flag on purpose: a counterfactual
+    computed under looser conditions than the thing it stands in for would be
+    measuring a different feature.
     """
     try:
         from .read_skeleton import (
@@ -287,17 +311,21 @@ def _skeleton_replacement(
         )
 
         if not is_unbounded_read(tool_input):
-            return None
+            return None, None
         if _read_output_line_count(tool_output) < _READ_NUDGE_MIN_LINES:
-            return None
+            return None, None
         # A verification re-read after an edit needs fidelity, not structure.
-        if edited_since_read or rel in state["skeletonized"]:
-            return None
+        # `forgone` joins the once-per-file gate so that flipping the flag on
+        # mid-session cannot bill the same file to both ledgers — it would
+        # appear in the headline saving *and* be advertised as not saved, with
+        # identical token counts. Costs at most a deferred replacement: the
+        # file is served as a skeleton from the next session on.
+        if edited_since_read or rel in state["skeletonized"] or rel in state["forgone"]:
+            return None, None
         if not enabled(repo_path):
-            _measure_forgone(repo_path, rel, state)
-            return None
+            return None, _measure_forgone(repo_path, rel, state)
         if not supports_updated_output():
-            return None
+            return None, None
         replacement = skeleton_replacement(
             repo_path,
             rel,
@@ -311,16 +339,16 @@ def _skeleton_replacement(
             # file *while* the ledger recorded a saving. No payload, no row.
             payload = as_read_output(tool_output, replacement.text)
             if payload is None:
-                return None
+                return None, None
             replacement.payload = payload
     except Exception:
         # Everything is inside the try, gates included. A malformed config or
         # a stale index must cost this one enrichment, never the stale-read
         # notice and the ledger row that the rest of this handler owes.
-        return None
+        return None, None
     if replacement is not None:
         state["skeletonized"].append(rel)
-    return replacement
+    return replacement, None
 
 
 #: Files per session the counterfactual will measure before it stops. The real
@@ -332,38 +360,60 @@ def _skeleton_replacement(
 _MAX_FORGONE_PER_SESSION = 40
 
 
-def _measure_forgone(repo_path: Path, rel: str, state: dict) -> None:
-    """Record what serving this Read as a skeleton *would* have saved.
+def _measure_forgone(repo_path: Path, rel: str, state: dict) -> str | None:
+    """Claim a measurement slot for *rel*, or None. Computes nothing.
 
     Runs only when the feature is off, which is the point: a repo that
     declined can still see what declining costs, and item 5's own saving can
     be characterised on real work before it is switched on anywhere.
 
+    **Nothing here is on the critical path, and that is deliberate.** The real
+    replacement has to build its skeleton before the response, because the
+    skeleton *is* the response. This one hands the agent nothing at all, so
+    making it wait — for an index query, a file read, a skeleton build and a
+    write lock on a database ``repowise distill`` also writes — would be
+    charging every qualifying Read in an opted-out repo for a number it will
+    never see. All of it is deferred to :func:`_forgone_saving`; the only
+    thing that must happen now is claiming the slot, because the claim has to
+    be in the state file the caller is about to write.
+
+    Claiming before knowing whether the file qualifies means a file that turns
+    out not to qualify still spends a slot. That is the conservative
+    direction: the cap exists to bound what measuring *costs*, and an attempt
+    costs whether or not it produces a row.
+
     **This settles A1 and nothing else.** A1 asks whether the replacement is a
-    net win, and the numbers here are exact — the same skeleton, the same
-    token counts the real path would have billed. A2 asks how often the agent
-    has to come back for the whole file, and nothing was replaced here, so
-    nothing was recovered and there is no recovery rate to read. A large
-    forgone total is not a pass; see the caveat ``repowise saved`` prints.
-
-    Gated at least as hard as the path it stands in for: once per file, capped
-    per session, and every cheap gate the caller already applied still
-    applies. Any failure is silence.
+    net win, and the numbers are exact — the same skeleton, the same token
+    counts the real path would have billed. A2 asks how often the agent has to
+    come back for the whole file, and nothing was replaced here, so nothing
+    was recovered and there is no recovery rate to read. A large forgone total
+    is not a pass; see the caveat ``repowise saved`` prints.
     """
-    if rel in state["forgone"] or len(state["forgone"]) >= _MAX_FORGONE_PER_SESSION:
-        return
-    from .read_skeleton import record_forgone, skeleton_replacement
-
-    would_have = skeleton_replacement(
-        repo_path,
-        rel,
-        min_ratio_gain=_READ_NUDGE_MAX_RATIO,
-        min_saved_tokens=_READ_NUDGE_MIN_SAVINGS,
-    )
-    if would_have is None:
-        return
+    if len(state["forgone"]) >= _MAX_FORGONE_PER_SESSION:
+        return None
     state["forgone"].append(rel)
-    record_forgone(repo_path, would_have)
+    return rel
+
+
+def _record_forgone_saving(repo_path: Path, rel: str) -> None:
+    """Build the skeleton nobody will see and record what it would have saved.
+
+    The whole measurement, run after the response is on its way. Never raises:
+    a counterfactual that broke a Read would be the worst possible trade.
+    """
+    try:
+        from .read_skeleton import record_forgone, skeleton_replacement
+
+        would_have = skeleton_replacement(
+            repo_path,
+            rel,
+            min_ratio_gain=_READ_NUDGE_MAX_RATIO,
+            min_saved_tokens=_READ_NUDGE_MIN_SAVINGS,
+        )
+        if would_have is not None:
+            record_forgone(repo_path, would_have)
+    except Exception:
+        return
 
 
 def _log_skeleton_recovery(

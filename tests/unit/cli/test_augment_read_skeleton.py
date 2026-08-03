@@ -133,6 +133,19 @@ def _read(repo_path: Path, rel: str = "pkg/big.py", **tool_input):
     )
 
 
+def _read_and_settle(repo_path: Path, rel: str = "pkg/big.py", **tool_input):
+    """Fire the Read hook and run the bookkeeping the dispatcher defers.
+
+    Both ledger writes hang off ``on_emitted``, which the real dispatcher runs
+    only once the response is on its way to the agent, so a test that stops at
+    the return value sees no rows at all.
+    """
+    result = _read(repo_path, rel, **tool_input)
+    if result.on_emitted is not None:
+        result.on_emitted()
+    return result
+
+
 def _served(result) -> str | None:
     """The skeleton text out of a Read replacement, or None if nothing served."""
     replacement = result.replacement
@@ -191,19 +204,26 @@ def test_a_read_response_of_an_unexpected_shape_serves_nothing(repo: Path) -> No
 
     The failure mode being ruled out is billing a saving for a replacement the
     client then refuses, which is what made the string bug invisible.
+
+    The payload matters here. ``{"type": "text"}`` alone would be rejected by
+    the size gate (no ``numLines`` means a line count of 0) and never reach
+    the shape check at all — an assertion about the right thing on the wrong
+    code path, which is the same vacuum that let the original bug ship. This
+    one clears every gate above the shape check and fails only there. It is
+    also, deliberately, the exact fixture the old tests used.
     """
     from repowise.cli.commands.augment_cmd.command import _handle_post_tool_use
 
     result = _handle_post_tool_use(
         "Read",
         {"file_path": str(repo / "pkg/big.py")},
-        {"type": "text"},  # no `file` block
+        {"file": {"numLines": 400}},  # passes the size gate, has no `content`
         str(repo),
         session_id="shape-probe",
     )
 
     assert result.replacement is None
-    assert result.on_emitted is None
+    assert result.on_emitted is None, "a rejected replacement must not bill a saving"
 
 
 def test_every_elided_span_carries_its_line_range(repo: Path) -> None:
@@ -313,7 +333,7 @@ def test_a_verification_read_after_an_edit_is_left_alone(repo: Path) -> None:
     """
     from repowise.cli.commands.augment_cmd.read_state import _skeleton_replacement
 
-    state = {"skeletonized": []}
+    state = {"skeletonized": [], "forgone": []}
     args = (
         repo,
         "pkg/big.py",
@@ -321,9 +341,11 @@ def test_a_verification_read_after_an_edit_is_left_alone(repo: Path) -> None:
         _read_output(repo, "pkg/big.py"),
     )
 
-    assert _skeleton_replacement(*args, state, edited_since_read=False) is not None
+    served, _ = _skeleton_replacement(*args, state, edited_since_read=False)
+    assert served is not None
     state["skeletonized"].clear()
-    assert _skeleton_replacement(*args, state, edited_since_read=True) is None
+    served, _ = _skeleton_replacement(*args, state, edited_since_read=True)
+    assert served is None
 
 
 def test_an_edit_after_a_skeleton_is_warned_about_once(repo: Path) -> None:
@@ -405,8 +427,15 @@ def test_the_env_override_turns_it_on_without_a_config(repo: Path, monkeypatch) 
     (repo / ".repowise" / "config.yaml").unlink()
     assert _read(repo).replacement is None
 
+    # A different file on purpose. `pkg/big.py` was just measured by the
+    # counterfactual, and a measured file is not replaced again this session —
+    # see test_a_file_is_never_billed_to_both_ledgers.
+    source = (repo / "pkg" / "big.py").read_text(encoding="utf-8")
+    (repo / "pkg" / "second.py").write_text(source, encoding="utf-8")
+    _write_index(repo, "pkg/second.py", source)
+
     monkeypatch.setenv("REPOWISE_HOOK_READ_SKELETON", "1")
-    assert _read(repo, rel="pkg/big.py").replacement is not None
+    assert _read(repo, rel="pkg/second.py").replacement is not None
 
 
 def test_the_second_read_of_a_file_returns_it_whole(repo: Path) -> None:
@@ -588,7 +617,7 @@ def repo_off(repo: Path) -> Path:
 def test_a_repo_with_it_off_still_measures_what_it_would_have_saved(repo_off: Path) -> None:
     """Otherwise the gate can never run: off means no data, and no data means
     the flag stays off by inaction rather than by evidence."""
-    result = _read(repo_off)
+    result = _read_and_settle(repo_off)
 
     assert result.replacement is None, "measuring must not replace anything"
     rows = _forgone_rows(repo_off)
@@ -601,7 +630,7 @@ def test_a_repo_with_it_off_still_measures_what_it_would_have_saved(repo_off: Pa
 def test_a_forgone_saving_is_kept_out_of_the_savings_ledger(repo_off: Path) -> None:
     """`repowise saved` sums that table into a headline figure. Nothing here
     happened, so adding it would inflate a real number with a hypothetical."""
-    _read(repo_off)
+    _read_and_settle(repo_off)
 
     assert _forgone_rows(repo_off)
     assert not _savings_rows(repo_off)
@@ -609,7 +638,7 @@ def test_a_forgone_saving_is_kept_out_of_the_savings_ledger(repo_off: Path) -> N
 
 def test_the_counterfactual_measures_each_file_once(repo_off: Path) -> None:
     for _ in range(4):
-        _read(repo_off)
+        _read_and_settle(repo_off)
 
     assert len(_forgone_rows(repo_off)) == 1
 
@@ -624,9 +653,45 @@ def test_the_counterfactual_stops_at_the_per_session_cap(repo_off: Path) -> None
         rel = f"pkg/copy_{i}.py"
         (repo_off / rel).write_text(source, encoding="utf-8")
         _write_index(repo_off, rel, source)
-        _read(repo_off, rel)
+        _read_and_settle(repo_off, rel)
 
     assert len(_forgone_rows(repo_off)) == read_state._MAX_FORGONE_PER_SESSION
+
+
+def test_a_file_is_never_billed_to_both_ledgers(repo_off: Path) -> None:
+    """Flipping the flag on mid-session must not count the same file twice.
+
+    Without the `forgone` entry in the once-per-file gate the same read is
+    recorded as saved *and* advertised as not-saved, with identical token
+    counts, in one session.
+    """
+    _read_and_settle(repo_off)  # measured while off
+    (repo_off / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: true\n", encoding="utf-8"
+    )
+    _read_and_settle(repo_off)
+
+    assert len(_forgone_rows(repo_off)) == 1
+    assert not _savings_rows(repo_off), "the same file was billed to both ledgers"
+
+
+def test_nothing_is_measured_when_the_session_state_cannot_persist(
+    repo_off: Path, monkeypatch
+) -> None:
+    """The cap and the once-per-file gate both live in that state file.
+
+    If it does not persist they reset on every event, so the same file is
+    counted over and over — inflating the one number this feature exists to
+    state honestly, and removing the ceiling on what measuring costs.
+    """
+    from repowise.cli.commands.augment_cmd import read_state
+
+    monkeypatch.setattr(read_state, "_save_session_state", lambda *a, **k: False)
+
+    for _ in range(6):
+        _read_and_settle(repo_off)
+
+    assert not _forgone_rows(repo_off)
 
 
 def test_no_omission_store_means_no_forgone_row_either(repo: Path) -> None:
@@ -634,7 +699,7 @@ def test_no_omission_store_means_no_forgone_row_either(repo: Path) -> None:
     (repo / ".repowise" / "config.yaml").write_text(
         "hooks:\n  read_skeleton: false\n", encoding="utf-8"
     )
-    _read(repo)
+    _read_and_settle(repo)
 
     assert not (repo / ".repowise" / "omissions").exists()
 

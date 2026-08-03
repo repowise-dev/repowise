@@ -215,8 +215,11 @@ def _emit_response(event: str, result: HookResult | str) -> None:
     """
     result = as_result(result)
     replacement = result.replacement
-    dedup_mark = replacement if isinstance(replacement, str) else json.dumps(replacement, sort_keys=True)
-    if not _claim_emission(event, f"{result.context or ''}\x00{dedup_mark or ''}"):
+    if replacement is None or isinstance(replacement, str):
+        dedup_mark = replacement or ""
+    else:
+        dedup_mark = json.dumps(replacement, sort_keys=True)
+    if not _claim_emission(event, f"{result.context or ''}\x00{dedup_mark}"):
         return
     payload: dict[str, object] = {"hookEventName": event}
     if result.context:
