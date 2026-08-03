@@ -14,7 +14,6 @@ from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
 from ..models import GenerationConfig
-from .file_vocabulary import file_vocabulary
 from .contexts import (
     ApiContractContext,
     ArchitectureDiagramContext,
@@ -26,6 +25,7 @@ from .contexts import (
     SymbolSpotlightContext,
     _TopFile,
 )
+from .file_vocabulary import file_vocabulary
 from .graph_intelligence import (
     extract_call_graph,
     extract_community_meta,
