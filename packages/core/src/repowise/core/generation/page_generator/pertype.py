@@ -249,11 +249,13 @@ class PerTypeGenerationMixin:
         # group. Placement resolves file ownership from this list, so the
         # dropped files would be parented somewhere else entirely, and the two
         # records of what the page covers would disagree.
-        # A rollup page sits above its child concept pages and owns no files of
-        # its own: its members already belong to the leaves below it, so
-        # claiming them here would parent those files twice and scramble the
-        # tree. It keeps an empty member list, which is exactly what
-        # ``assign_page_tree`` reads as "owns nothing".
+        # A chapter with no group of its own owns no files: everything beneath
+        # it already belongs to the leaves below, so claiming them here would
+        # parent those files twice and scramble the tree. It keeps an empty
+        # member list, which is exactly what ``assign_page_tree`` reads as
+        # "owns nothing". A chapter that *is* also a leaf directory owns its own
+        # loose files and passes ``owns_files``, which is why this is keyed on
+        # ownership rather than on ``is_rollup``.
         if owns_files:
             covered = sorted(members) if members else sorted(fc.file_path for fc in file_contexts)
         else:
@@ -269,6 +271,16 @@ class PerTypeGenerationMixin:
             wiki renumbers it and mints no new pages.
             """
             page.metadata["file_paths"] = covered
+            if is_rollup:
+                # What makes this page a chapter rather than a leaf, recorded
+                # so the tree can nest its children under it. Derivable from
+                # the page set — a directory with two or more module pages
+                # immediately below it — but deriving it there would be a
+                # second place computing the rule that decided the page, and
+                # the two would have to agree forever. Absent on a page written
+                # before this shipped, which reads as "leaf" and leaves those
+                # wikis flat rather than guessing.
+                page.metadata["is_chapter"] = True
             if section:
                 page.metadata["concept_section"] = section
                 page.metadata["concept_order"] = order

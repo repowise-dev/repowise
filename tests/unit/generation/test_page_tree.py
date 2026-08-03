@@ -377,3 +377,123 @@ class TestRollupPlacement:
         by_id = _by_id(pages)
         assert by_id["file_page:src/ingest/a.py"].parent_page_id == "module_page:src/ingest"
         assert by_id["file_page:src/web/app.tsx"].parent_page_id == "module_page:src/web"
+
+    def test_an_unstamped_rollup_leaves_the_tree_flat(self):
+        """A page written before chapters shipped must not be guessed at.
+
+        ``src`` heads two module pages here and would qualify as a chapter by
+        shape, but it carries no ``is_chapter``. Deriving the rule a second
+        time in the tree is how the two records start disagreeing, so an
+        un-stamped wiki stays exactly as flat as it was.
+        """
+        pages = _wiki_with_rollup()
+        assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        assert by_id["module_page:src/ingest"].parent_page_id == "layer_page:layer:service"
+        assert by_id["module_page:src/web"].parent_page_id == "layer_page:layer:ui"
+
+
+def _wiki_with_chapters() -> list[GeneratedPage]:
+    """A nested chapter spine: core > analysis > health, plus a loose module.
+
+    ``core`` and ``analysis`` are chapters that also own loose files of their
+    own; ``health`` is a chapter with no files. ``tools`` sits under no chapter
+    at all, which is the majority case on a real repository.
+    """
+    return [
+        _page("repo_overview", "demo"),
+        _page("layer_page", "layer:service"),
+        _page("layer_page", "layer:ui"),
+        _page("module_page", "src/core", is_chapter=True, file_paths=["src/core/main.py"]),
+        _page(
+            "module_page",
+            "src/core/analysis",
+            is_chapter=True,
+            file_paths=["src/core/analysis/run.py"],
+        ),
+        _page("module_page", "src/core/analysis/health", is_chapter=True),
+        _page(
+            "module_page",
+            "src/core/analysis/health/biomarkers",
+            file_paths=["src/core/analysis/health/biomarkers/b.py"],
+        ),
+        _page(
+            "module_page",
+            "src/core/analysis/health/perf",
+            file_paths=["src/core/analysis/health/perf/p.py"],
+        ),
+        _page("module_page", "src/core/ingest", file_paths=["src/core/ingest/a.py"]),
+        _page("module_page", "tools", file_paths=["tools/t.tsx"]),
+        _page("file_page", "src/core/main.py", layer_id="layer:service"),
+        _page("file_page", "src/core/analysis/run.py", layer_id="layer:service"),
+        _page("file_page", "src/core/analysis/health/biomarkers/b.py", layer_id="layer:service"),
+        _page("file_page", "src/core/analysis/health/perf/p.py", layer_id="layer:service"),
+        _page("file_page", "src/core/ingest/a.py", layer_id="layer:service"),
+        _page("file_page", "tools/t.tsx", layer_id="layer:ui"),
+    ]
+
+
+class TestChapterNesting:
+    def test_a_module_hangs_off_its_chapter_not_its_layer(self):
+        pages = _wiki_with_chapters()
+        assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        assert (
+            by_id["module_page:src/core/ingest"].parent_page_id == "module_page:src/core"
+        )
+
+    def test_chapters_nest_nearest_first(self):
+        """The spine is a path, not a fan: each chapter sits under the next one up."""
+        pages = _wiki_with_chapters()
+        assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        assert (
+            by_id["module_page:src/core/analysis/health/biomarkers"].parent_page_id
+            == "module_page:src/core/analysis/health"
+        )
+        assert (
+            by_id["module_page:src/core/analysis/health"].parent_page_id
+            == "module_page:src/core/analysis"
+        )
+        assert (
+            by_id["module_page:src/core/analysis"].parent_page_id == "module_page:src/core"
+        )
+
+    def test_the_top_chapter_falls_back_to_its_layer(self):
+        """Nothing above it, so the old rule still has to work."""
+        pages = _wiki_with_chapters()
+        assign_page_tree(pages, LAYER_ORDER)
+        assert _by_id(pages)["module_page:src/core"].parent_page_id == "layer_page:layer:service"
+
+    def test_a_module_under_no_chapter_keeps_its_layer(self):
+        pages = _wiki_with_chapters()
+        assign_page_tree(pages, LAYER_ORDER)
+        assert _by_id(pages)["module_page:tools"].parent_page_id == "layer_page:layer:ui"
+
+    def test_a_chapter_that_owns_files_keeps_them(self):
+        """Nesting places pages; it must not move a single file's ownership."""
+        pages = _wiki_with_chapters()
+        assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        assert by_id["file_page:src/core/main.py"].parent_page_id == "module_page:src/core"
+        assert (
+            by_id["file_page:src/core/analysis/run.py"].parent_page_id
+            == "module_page:src/core/analysis"
+        )
+        assert (
+            by_id["file_page:src/core/ingest/a.py"].parent_page_id
+            == "module_page:src/core/ingest"
+        )
+
+    def test_no_page_is_its_own_ancestor(self):
+        """A cycle breaks every walk of the tree, so assert the spine terminates."""
+        pages = _wiki_with_chapters()
+        assign_page_tree(pages, LAYER_ORDER)
+        by_id = _by_id(pages)
+        for page in pages:
+            seen = {page.page_id}
+            cursor = page.parent_page_id
+            while cursor:
+                assert cursor not in seen, f"cycle through {page.page_id}"
+                seen.add(cursor)
+                cursor = by_id[cursor].parent_page_id if cursor in by_id else None

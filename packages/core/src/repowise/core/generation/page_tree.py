@@ -339,6 +339,33 @@ def assign_page_tree(
         if page.parent_page_id and page.parent_page_id.startswith("module_page:"):
             claimed.setdefault(page.parent_page_id, []).append(page.target_path)
 
+    # A chapter heads the module pages under its directory, so those pages hang
+    # off it instead of off their layer. Without this the chapter renders as a
+    # sibling of the pages it links down to, and the tree is a flat listing with
+    # one row that happens to say "Overview" — which is the reader dead-end the
+    # chapter exists to close.
+    chapter_at: dict[str, str] = {
+        page.target_path: page.page_id
+        for page in module_pages
+        if page.metadata.get("is_chapter") and page.target_path
+    }
+
+    def nearest_chapter(target_path: str) -> str | None:
+        """The closest ancestor directory with a chapter page, if any.
+
+        Strictly an ancestor, so a chapter never parents itself and the walk
+        cannot cycle. Nearest rather than topmost because chapters nest: a
+        module under ``core/analysis/health`` belongs to Health, which belongs
+        to Analysis, which belongs to Core.
+        """
+        cursor = target_path
+        while "/" in cursor:
+            cursor = cursor.rsplit("/", 1)[0]
+            found = chapter_at.get(cursor)
+            if found:
+                return found
+        return None
+
     for page in module_pages:
         members = page.metadata.get("file_paths") or page.metadata.get("files") or []
         members = [m for m in members if isinstance(m, str)]
@@ -362,8 +389,10 @@ def assign_page_tree(
                 borrowed.extend(m for m in child_members if isinstance(m, str))
             members = borrowed
         module_layer = _dominant_layer(members, layer_of_file)
+        # Stamped either way: the reader-facing tree groups by this, and a page
+        # that has found a chapter still belongs to a layer.
         stamp_layer(page, module_layer)
-        page.parent_page_id = layer_parent(module_layer)
+        page.parent_page_id = nearest_chapter(page.target_path) or layer_parent(module_layer)
 
     # A spotlight belongs to the file it documents: "path/to/file.py::Symbol".
     # The file's own page may not exist: selection can spotlight a symbol in a
