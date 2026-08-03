@@ -25,6 +25,9 @@ crashes or blocks your agent.
 | **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`; auto-allowed by default, set `permission: ask` to approve each one |
 | **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / UserPromptSubmit / edit / Bash | Reminds Codex to use the MCP tools and flags stale context after edits |
 
+Every agent hook records what it said and whether the agent acted on it — see
+[`repowise hook stats`](#is-any-of-this-actually-helping--repowise-hook-stats).
+
 ---
 
 ## Git hook: post-commit auto-sync
@@ -189,6 +192,32 @@ not touch your global `~/.codex/config.toml`):
   update`.
 
 Full Codex setup: [CODEX.md](CODEX.md).
+
+---
+
+## Hook efficacy: `repowise hook stats`
+
+The agent hooks keep a local ledger in `.repowise/sessions/sessions.db`: what
+each hook said, and whether the agent went on to do what it pointed at.
+
+```sh
+repowise hook stats                        # per-surface firing counts and action rates
+repowise hook backfill --all-projects      # seed it from your existing transcripts
+```
+
+The verdict comes from your own Claude Code transcripts — a firing is paired
+with the tool calls that followed it — so the numbers are yours, not a
+benchmark. `repowise update` classifies recent sessions; `hook backfill` covers
+history. Nothing leaves the machine.
+
+Notices that ask for nothing (the stale-read warning, the silent
+read-after-served measurement) report `n/a` rather than a rate. `hook stats`
+also reports hook invocation counts and wall time, including the calls that
+returned silence.
+
+> Upgrading from a release before firings were keyed by their text: run
+> `repowise hook backfill --reset` once, or older rows are counted separately
+> from the replayed ones. It never touches decisions.
 
 ---
 

@@ -955,6 +955,39 @@ repowise hook uninstall --workspace
 
 See [Auto-Sync](../scale/AUTO_SYNC.md) for all sync methods (hooks, file watcher, webhooks, polling).
 
+### `repowise hook stats`
+
+Show what the Claude Code agent hooks said and whether the agent acted on it,
+per surface, plus hook invocation counts and wall time. Reads the local ledger
+in `.repowise/sessions/sessions.db`.
+
+```bash
+repowise hook stats
+repowise hook stats --json      # raw per-surface rows
+```
+
+Notices that ask for nothing (stale-read, the silent read-after-served
+measurement) report `n/a` rather than a rate.
+
+### `repowise hook backfill`
+
+Replay Claude Code transcripts into the ledger, so `hook stats` starts with
+history instead of only what has fired since you upgraded. Local, single-pass,
+and safe to re-run: a firing is keyed by a hash of its own text, so a replay
+settles the row it already owns.
+
+```bash
+repowise hook backfill                   # this checkout's transcripts
+repowise hook backfill --all-projects    # include this repo's worktrees
+repowise hook backfill --days 30         # only recent transcripts
+repowise hook backfill --reset           # rebuild the hook surfaces from scratch
+```
+
+`repowise update` classifies recent sessions automatically, so a backfill is
+normally a one-time catch-up. Use `--reset` once when upgrading from a release
+that keyed rows by hook input rather than by emitted text; it clears only the
+hook surfaces, never decisions.
+
 ### `repowise hook rewrite install|uninstall|status`
 
 Manage the Distill command-rewrite hooks (Claude Code + Codex PreToolUse).
