@@ -282,6 +282,46 @@ corpus: Go 96.7%, TypeScript 100%, Python 96.2% hand-labeled precision; the
 `*sql.Rows.Scan` cursor FP were caught and fixed by that validation.
 `string_concat_in_loop` is validated at 100% (26/26) after a reset-per-iteration
 guard (an accumulator re-initialized each iteration is bounded, not O(n²)).
+Python's filesystem lexicon covers the round-trip verbs of `pathlib`
+(`read_text` / `read_bytes` / `write_text` / `write_bytes`, matched on the method
+name because only a `Path` spells them and the receiver is usually a plain
+local), plus `os` and `shutil` verbs gated on the literal module root. Metadata
+syscalls (`exists` / `is_file` / `stat` / `glob`) are deliberately excluded: a
+stat per iteration is cheap and usually correct, so flagging it would be the
+obvious FP class. The module-rooted half carries a ceiling worth knowing —
+the root name resolves to the *leftmost* identifier of the callee chain, so
+`os.path.join(a, b).verb()` also arrives as `root == "os"`; the verb set
+therefore admits no name a `str` / `list` / `dict` answers to (`replace` is
+omitted for exactly this reason, at no recall cost since `os.rename` covers it).
+
+Because `hot_path_sync_io` fires *outside* any loop, it reads a narrower set
+still (`hot_path_excluded_methods`): anything whose cost is bounded by one inode
+— a single file read/write, one unlink/mkdir/rename, one directory listing — is
+not a finding there, while an unbounded `os.walk`, `shutil.rmtree` or
+`copytree` remains one. Keeping those two sets distinct is deliberate: a
+per-language lexicon and a separately-calibrated marker should not widen
+together just because they share a boundary kind.
+
+Hand-labeled precision for the Python filesystem verbs is **87.6%** (163/186
+non-test findings, every one labeled rather than sampled: 86.7% on this repo,
+95% on Django). Where it loses precision is worth stating exactly, because it is
+not the lexicon — same-function findings are near-perfect, and every false
+positive came from a *cross-function* chain hitting one of three pre-existing
+limits: a **memoized callee** (`get_or_build_*` index builders, `lru_cache`, a
+`if path not in text_cache` guard) where the read runs once rather than per
+iteration; a **first-hop name collision** (`set.update`, `sqlalchemy.update`
+matched by name); and a **pre-read fast path** whose only caller always supplies
+the text, leaving the disk branch unreachable. Memoization is already on the
+documented static-blind list; what this change did was make far more of those
+chains reachable by making their terminal sink visible. Narrowing that is the
+top follow-up for this detector.
+
+**Actionability caveat, pillar-wide.** `io_in_loop` reports a per-iteration I/O
+round-trip; it does not claim the work is avoidable. Database and network
+findings are usually batchable, but filesystem ones often are not — deleting N
+files genuinely needs N unlinks. On Django, 16 of 19 true filesystem findings
+were irreducible per-item work and 3 were batchable. The finding is still
+correct and still tells you where the time goes; it is not, on its own, a defect.
 `nested_loop_quadratic` now fires only on a same-collection shape (two nested
 loops over the same collection = all-pairs O(n²)) instead of raw nesting depth;
 that makes it precision-safe-by-construction but rare, so it stays advisory-only,

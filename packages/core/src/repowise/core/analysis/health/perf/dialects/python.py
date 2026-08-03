@@ -42,6 +42,70 @@ PY_SUBPROC_METHODS: frozenset[str] = frozenset(
     {"run", "call", "check_call", "check_output", "Popen"}
 )
 
+# Filesystem round-trips, in two strata for the same reason the DB verbs are
+# stratified: how much evidence the name alone carries.
+#
+# ``PY_FS_METHODS`` are matched on the method name alone, because in this
+# ecosystem only a ``pathlib.Path`` spells them — the same reasoning the TS
+# dialect applies to ``readFileSync``. That matters because the dominant real
+# shape binds the path to a local first (``src_path.read_text()``), so the
+# receiver is an ordinary variable and ``io_names`` cannot classify it; keying
+# on the module would miss nearly every genuine site. The Kotlin dialect
+# deliberately excludes its ``readText`` / ``readBytes`` homonyms because
+# kotlinx-io and Ktor mirror those names on in-memory buffers; Python has no
+# such homonym (``io.StringIO`` and every stream type spell it ``.read()``),
+# which is what makes the bare-name match safe here and not there.
+#
+# Metadata syscalls (``exists`` / ``is_file`` / ``is_dir`` / ``stat`` /
+# ``glob``) are deliberately absent. A stat in a loop is cheap and usually
+# correct, so flagging it is the obvious false-positive class — the same call
+# the C++ dialect makes when it excludes buffered stdio.
+PY_FS_METHODS: frozenset[str] = frozenset(
+    {"read_text", "read_bytes", "write_text", "write_bytes"}
+)
+# ``os`` and ``shutil`` verbs, gated on the literal module root the way
+# ``subprocess`` is. ``os`` is far too broad to classify wholesale (``os.environ``
+# / ``os.getpid`` / ``os.path.join`` are not I/O), so it never goes through
+# ``io_names``; the root name plus an explicit verb set is the whole gate.
+#
+# CEILING: ``callee_root_name`` resolves the LEFTMOST identifier of the whole
+# callee chain, so ``os.path.join(a, b).verb()`` also arrives here as
+# ``root == "os"``. The verb set must therefore hold no name that a ``str`` /
+# ``list`` / ``dict`` also answers to. ``replace`` was the one that did, and it
+# was a live false positive on the canonical Windows path idiom
+# (``os.path.join(root, name).replace("\\", "/")`` — five instances across the
+# OSS corpus, each yielding a bogus ``io_in_loop`` AND a ``nested_loop_with_io``).
+# It is omitted at near-zero recall cost: ``os.replace`` is atomic ``os.rename``,
+# which is already listed. Upgrade path if this set ever needs a colliding verb:
+# thread the callee's dotted segment count into ``sink_kind`` and require
+# exactly two, which is the real invariant being approximated here.
+PY_OS_FS_METHODS: frozenset[str] = frozenset(
+    {
+        "walk",
+        "listdir",
+        "scandir",
+        "remove",
+        "unlink",
+        "rename",
+        "makedirs",
+        "mkdir",
+        "rmdir",
+        "removedirs",
+    }
+)
+PY_SHUTIL_FS_METHODS: frozenset[str] = frozenset(
+    {
+        "copy",
+        "copy2",
+        "copyfile",
+        "copytree",
+        "move",
+        "rmtree",
+        "make_archive",
+        "unpack_archive",
+    }
+)
+
 # Python string-literal node kinds (f-strings parse as ``string`` too).
 _PY_STRING_KINDS: frozenset[str] = frozenset({"string", "concatenated_string"})
 _PY_AUG_ASSIGN_KINDS: frozenset[str] = frozenset({"augmented_assignment"})
@@ -118,6 +182,19 @@ class PythonPerfDialect(BasePerfDialect):
 
     string_literal_kinds = _PY_STRING_KINDS
     aug_assign_kinds = _PY_AUG_ASSIGN_KINDS
+    # Everything whose cost is bounded by ONE inode: a single file read/write, a
+    # single unlink/mkdir/rename, one directory listing. Outside a loop that is
+    # ordinary work, not a latency risk, so it must not reach ``hot_path_sync_io``
+    # (see ``BasePerfDialect.hot_path_excluded_methods``). What survives is the
+    # unbounded set — a whole-tree walk, a recursive copy/delete, an archive
+    # round-trip — plus the bare ``open(...)`` builtin the marker was originally
+    # calibrated on. Keyed on the method name alone, so a same-named non-``os``
+    # receiver is excluded too: recall-only, never a false positive.
+    hot_path_excluded_methods = (
+        PY_FS_METHODS
+        | (PY_OS_FS_METHODS - {"walk"})
+        | (PY_SHUTIL_FS_METHODS - {"copytree", "rmtree", "make_archive", "unpack_archive"})
+    )
 
     def sink_kind(
         self,
@@ -158,6 +235,16 @@ class PythonPerfDialect(BasePerfDialect):
         if method == "Popen":
             return "subprocess"
         if root == "open" and method == "open":  # bare ``open(...)`` builtin
+            return "filesystem"
+        if is_attribute and method in PY_FS_METHODS:
+            # ``p.read_text()`` / ``Path(x).write_bytes(...)``. ``is_attribute``
+            # mirrors the DB branches: pathlib always spells these as a member
+            # call, so requiring it costs no recall and drops a bare local
+            # helper that happens to share the name.
+            return "filesystem"
+        if root == "os" and method in PY_OS_FS_METHODS:
+            return "filesystem"
+        if root == "shutil" and method in PY_SHUTIL_FS_METHODS:
             return "filesystem"
         if method == "urlopen":
             return "network"

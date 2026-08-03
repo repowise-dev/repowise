@@ -108,6 +108,19 @@ class BasePerfDialect:
     string_literal_kinds: frozenset[str] = frozenset()
     aug_assign_kinds: frozenset[str] = frozenset()
 
+    #: Sink methods that are genuine I/O boundaries but must NOT make a function
+    #: a ``hot_path_sync_io`` candidate.
+    #:
+    #: That marker fires OUTSIDE any loop, so it only earns its keep on work
+    #: whose cost is unbounded — spawning a subprocess, walking a whole tree.
+    #: It was gated at 11/11 back when a dialect's ``filesystem`` kind meant
+    #: essentially one call, so widening a per-language filesystem lexicon
+    #: silently widens this separately-calibrated marker too. Listing the
+    #: point-sized reads/writes here keeps the two decoupled: they stay real
+    #: sinks for every loop-based marker (where per-iteration cost is the whole
+    #: point) while a single bounded file touch in a hot function stays quiet.
+    hot_path_excluded_methods: frozenset[str] = frozenset()
+
     # -- callee extraction (the per-grammar seam) -----------------------------
 
     def callee_root_name(self, call_node: Node) -> str | None:

@@ -394,13 +394,17 @@ def _collect_perf_hits(
                         and not awaited
                         and misc[1] is None
                         and kind in _HOT_PATH_SINK_KINDS
+                        and method not in dialect.hot_path_excluded_methods
                     ):
                         # An inherently-blocking (non-awaited subprocess / fs /
                         # sync-network) sink outside any loop. Noisy everywhere,
                         # so record it as a fact; the engine emits
                         # ``hot_path_sync_io`` only for a hot, request-reachable
                         # function (centrality gate). ``db`` is excluded — see
-                        # ``_HOT_PATH_SINK_KINDS``.
+                        # ``_HOT_PATH_SINK_KINDS``; point-sized reads/writes are
+                        # excluded per-dialect — see ``hot_path_excluded_methods``
+                        # (outside a loop their cost is bounded, so they belong to
+                        # the loop markers only).
                         misc[1] = kind
                         misc[2] = line
                 if do_lock_io and lock_depth >= 1:

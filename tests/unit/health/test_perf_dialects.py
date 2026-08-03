@@ -502,6 +502,165 @@ def test_python_pandas_iterrows_in_loop():
     assert not any(k == "pandas_iterrows_in_loop" for k, _ in _hits("python", plain))
 
 
+def test_python_pathlib_round_trips_are_filesystem_sinks():
+    """``p.read_text()`` in a loop is per-iteration file I/O.
+
+    Python's filesystem lexicon recognised only the bare ``open(...)`` builtin,
+    so the idiom the whole ecosystem actually uses was invisible: a loop full of
+    ``Path.read_text()`` scored a perfect 10/10 on the performance dimension.
+    Matched on the method name alone because only a ``pathlib.Path`` spells
+    these — the receiver is usually a plain local (``src_path.read_text()``),
+    so there is no import to classify.
+    """
+    for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
+        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        assert ("io_in_loop", "filesystem") in _hits("python", src), method
+    # The constructor-receiver form resolves the same way.
+    ctor = "from pathlib import Path\ndef f(ps):\n    for p in ps:\n        Path(p).read_text()\n"
+    assert ("io_in_loop", "filesystem") in _hits("python", ctor)
+
+
+def test_python_metadata_syscalls_are_not_filesystem_sinks():
+    """``exists`` / ``stat`` / ``glob`` in a loop are cheap and usually correct.
+
+    The deliberate precision boundary: flagging a metadata probe per iteration
+    is the obvious false-positive class, so only round-trip verbs are sinks.
+    Mirrors the C++ dialect excluding buffered stdio.
+    """
+    for method in ("exists", "is_file", "is_dir", "stat", "glob"):
+        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        assert not any(k == "io_in_loop" for k, _ in _hits("python", src)), method
+
+
+def test_python_os_and_shutil_verbs_gated_on_the_module_root():
+    """``os``/``shutil`` verbs need the literal module root, never ``io_names``.
+
+    ``os`` is far too broad to classify wholesale, so the root name plus an
+    explicit verb set is the whole gate — the same shape ``subprocess`` uses.
+    """
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import os\ndef f(ps):\n    for p in ps:\n        os.listdir(p)\n"
+    )
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import shutil\ndef f(ps):\n    for p in ps:\n        shutil.rmtree(p)\n"
+    )
+    # Non-I/O members of the same module never fire.
+    assert not any(
+        k == "io_in_loop"
+        for k, _ in _hits("python", "import os\ndef f(ps):\n    for p in ps:\n        os.getpid()\n")
+    )
+    # ``remove`` / ``move`` / ``replace`` are ordinary collection verbs off the
+    # module root, so an unrelated receiver must stay silent.
+    for src in (
+        "def f(xs, q):\n    for x in xs:\n        q.remove(x)\n",
+        "def f(xs, q):\n    for x in xs:\n        q.replace(x, 1)\n",
+    ):
+        assert not any(k == "io_in_loop" for k, _ in _hits("python", src))
+
+
+def test_python_chained_os_call_is_not_a_filesystem_sink():
+    """``os.path.join(a, b).replace(...)`` is string work, not file I/O.
+
+    ``callee_root_name`` resolves the LEFTMOST identifier of the whole callee
+    chain, so a call on the *result* of an ``os.*`` expression also arrives at
+    ``sink_kind`` as ``root == "os"``. The canonical Windows path idiom below
+    therefore looked like a filesystem sink, and produced both a bogus
+    ``io_in_loop`` and a bogus (un-gated) ``nested_loop_with_io``. The verb set
+    must hold no name a ``str`` / ``list`` / ``dict`` also answers to.
+    """
+    src = (
+        "import os\n"
+        "def f(top):\n"
+        "    for root, dirs, files in os.walk(top):\n"
+        "        for name in files:\n"
+        "            rel = os.path.join(root, name).replace('\\\\', '/')\n"
+    )
+    hits = _hits("python", src)
+    assert not any(k == "io_in_loop" for k, _ in hits), hits
+    assert not any(k == "nested_loop_with_io" for k, _ in hits), hits
+    # Other chained-root shapes off the same ceiling.
+    for expr in ("os.environ.get(k).replace('a', 'b')", "os.path.relpath(p).replace('a', 'b')"):
+        assert not any(
+            k == "io_in_loop" for k, _ in _hits("python", f"import os\ndef f(xs):\n    for x in xs:\n        {expr}\n")
+        ), expr
+    # The genuine two-segment call is unaffected.
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import os\ndef f(ps):\n    for p in ps:\n        os.rename(p, p)\n"
+    )
+
+
+def test_python_point_reads_do_not_become_hot_path_candidates():
+    """Widening the fs lexicon must not widen ``hot_path_sync_io`` with it.
+
+    That marker fires outside any loop, so it was gated (11/11) on unbounded
+    work: subprocess spawns and whole-tree walks. A single ``p.write_text()``
+    in a hot function is bounded and ordinary. Without the decoupling this
+    change alone added 118 such candidates on the dogfood corpus.
+    """
+
+    def hot_fact(src):
+        fc = walk_file("t.py", "python", src.encode())
+        return [f.blocking_sink_kind for f in fc.perf_fn_facts if f.blocking_sink_kind]
+
+    # Point-sized reads/writes: real sinks, but not hot-path candidates.
+    for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
+        assert hot_fact(f"def f(p):\n    p.{method}()\n") == [], method
+    # Single-inode ``os`` / ``shutil`` work is the same bounded cost class and
+    # must be excluded too — 177 such candidates on the OSS corpus otherwise
+    # came through the door this attribute exists to close.
+    for expr in (
+        "os.remove(p)",
+        "os.unlink(p)",
+        "os.makedirs(p)",
+        "os.mkdir(p)",
+        "os.rmdir(p)",
+        "os.rename(p, p)",
+        "os.listdir(p)",
+        "os.scandir(p)",
+        "shutil.copyfile(p, p)",
+        "shutil.copy(p, p)",
+        "shutil.move(p, p)",
+    ):
+        src = f"import os\nimport shutil\ndef f(p):\n    {expr}\n"
+        assert hot_fact(src) == [], expr
+    # Unbounded work keeps its candidacy, as does the bare ``open`` builtin the
+    # marker was originally calibrated on.
+    for expr in ("os.walk(p)", "shutil.rmtree(p)", "shutil.copytree(p, p)"):
+        src = f"import os\nimport shutil\ndef f(p):\n    {expr}\n"
+        assert hot_fact(src) == ["filesystem"], expr
+    assert hot_fact("def f(p):\n    open(p).read()\n") == ["filesystem"]
+    assert hot_fact("import subprocess\ndef f(p):\n    subprocess.run([p])\n") == ["subprocess"]
+    # Excluding a verb from hot-path candidacy must NOT cost it the bare-sink
+    # fact the cross-function N+1 bridge runs on.
+    fc = walk_file("t.py", "python", b"import os\ndef f(p):\n    os.remove(p)\n")
+    assert [f.bare_sink_kind for f in fc.perf_fn_facts] == ["filesystem"]
+    # Still a per-iteration finding when it IS in a loop.
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "def f(ps):\n    for p in ps:\n        p.write_text('x')\n"
+    )
+
+
+def test_python_filesystem_sink_reaches_the_cross_function_bridge():
+    """A bare fs sink makes its function a cross-function reachability target.
+
+    The shape that motivated this: a per-file loop calls a small reader helper
+    that holds the actual ``read_bytes``. The loop and the I/O are in different
+    functions, so only the ``PerfFnFacts.bare_sink_kind`` fact can carry it.
+    """
+    src = (
+        "from pathlib import Path\n"
+        "def read_source(p):\n"
+        "    return Path(p).read_bytes()\n"
+        "def scan(paths):\n"
+        "    for p in paths:\n"
+        "        read_source(p)\n"
+    )
+    fc = walk_file("t.py", "python", src.encode())
+    facts = {f.function: f for f in fc.perf_fn_facts}
+    assert facts["read_source"].bare_sink_kind == "filesystem"
+    assert "read_source" in dict(facts["scan"].loop_call_targets)
+
+
 def test_ts_json_parse_in_loop():
     src = "function f(xs){ for (const x of xs) { const c = JSON.parse(JSON.stringify(x)); } }"
     assert ("json_parse_in_loop", "") in _hits("typescript", src)
