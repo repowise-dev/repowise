@@ -63,20 +63,65 @@ _CONTAINMENT_VERBS = ("contain", "consist", "comprise", "hold", "look like", "ma
 
 _WORD = re.compile(r"[a-z_]+")
 
+# A body this long is not a question, it is a report that may contain one. The
+# bound is deliberately generous: the longest genuine one-line data-shape
+# question anyone writes is well under it, and the bug reports this exists to
+# exclude run to a median of about 1200 characters.
+_BARE_QUESTION_MAX_CHARS = 400
+
+# Sentence-ish split. Only `?` actually matters below; `.`/`!`/newline are here
+# so a question sentence is bounded by the prose around it rather than swallowing
+# it. Fenced code and tracebacks are full of `.` and newlines, which is fine:
+# splitting them finer only makes it harder for a stray cue to land in a clause
+# that also ends in `?`.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.?!])\s+|\n+")
+
+
+def _interrogative_clauses(question: str) -> list[str]:
+    """The parts of ``question`` that are actually asking something.
+
+    A sentence ending in `?` is a question. If the whole input is short and asks
+    nothing explicitly, the input *is* the question — "what keys are in the
+    blame_record blob" and "describe the schema of GitCommitMeta" are how people
+    type, and demanding punctuation of them would break the short-question case
+    this fast path exists for. Anything longer with no `?` in it is a report, and
+    reports get no clauses.
+    """
+    clauses = [s.strip() for s in _SENTENCE_SPLIT.split(question) if s.strip().endswith("?")]
+    if clauses:
+        return clauses
+    if len(question) <= _BARE_QUESTION_MAX_CHARS:
+        return [question]
+    return []
+
 
 def _is_data_shape_question(question: str, question_ids: set[str]) -> bool:
     """Whether ``question`` asks for the field set of a named data blob.
 
-    Requires (a) a named identifier (something to ground on) and (b) a lexical
-    data-shape cue: a shape noun (field/key/column/schema/...), or a container
-    noun (entry/record/element/...) paired with a containment verb. Mechanism
-    questions ("how does X work") carry neither and fall through. The cue is a
-    cheap gate only; the miner is the real precision gate (it returns nothing
-    unless the fields are grounded in source), so a false-positive cue is safe.
+    Requires (a) a named identifier anywhere in the text, something to ground on,
+    and (b) a lexical data-shape cue **inside an interrogative clause**: a shape
+    noun (field/key/column/schema/...), or a container noun
+    (entry/record/element/...) paired with a containment verb. Mechanism
+    questions ("how does X work") carry neither and fall through.
+
+    The cue itself is still cheap, and the miner is still the real precision
+    gate. What the clause restriction adds is a precondition on *where* the cue
+    may sit. "A false-positive cue is safe" holds for a question someone typed
+    and fails for a body someone pasted: across a bug-report corpus a shape noun
+    like `field` or `key` appears incidentally in nearly every ticket, the
+    identifier extractor always finds something to ground on, and the miner then
+    answers a question nobody asked — returning a field list to a caller who
+    pasted a stack trace, before retrieval has run at all. Requiring the cue to
+    sit in the question's own interrogative clause keeps the short-question case
+    intact and stops an arbitrarily long body from being mined by accident.
     """
     if not question or not question_ids:
         return False
-    low = question.lower()
+    return any(_clause_carries_shape_cue(c) for c in _interrogative_clauses(question))
+
+
+def _clause_carries_shape_cue(clause: str) -> bool:
+    low = clause.lower()
     words = set(_WORD.findall(low))
     if words & _SHAPE_NOUNS:
         return True
