@@ -249,7 +249,7 @@ def _handle_read_post(
         _log_read_firing(repo_path, session_id, category, rel, text)
     return HookResult(
         context="\n".join(notices) if notices else None,
-        replacement=replacement.text if replacement is not None else None,
+        replacement=replacement.payload if replacement is not None else None,
         on_emitted=(
             (lambda r=replacement: _record_skeleton_saving(repo_path, r))
             if replacement is not None
@@ -275,6 +275,7 @@ def _skeleton_replacement(
     """
     try:
         from .read_skeleton import (
+            as_read_output,
             enabled,
             is_unbounded_read,
             skeleton_replacement,
@@ -296,6 +297,15 @@ def _skeleton_replacement(
             min_ratio_gain=_READ_NUDGE_MAX_RATIO,
             min_saved_tokens=_READ_NUDGE_MIN_SAVINGS,
         )
+        if replacement is not None:
+            # Build the wire payload here, not at emit time: if this Read's
+            # tool_response is not the shape Read documents, the replacement
+            # would be rejected downstream and the agent would get the whole
+            # file *while* the ledger recorded a saving. No payload, no row.
+            payload = as_read_output(tool_output, replacement.text)
+            if payload is None:
+                return None
+            replacement.payload = payload
     except Exception:
         # Everything is inside the try, gates included. A malformed config or
         # a stale index must cost this one enrichment, never the stale-read

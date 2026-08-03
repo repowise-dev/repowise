@@ -99,16 +99,46 @@ def repo(tmp_path: Path, fake_home: Path) -> Path:
     return root
 
 
+def _read_output(repo_path: Path, rel: str) -> dict:
+    """Read's real ``tool_response``, field for field.
+
+    Faithful on purpose. The first version of this helper sent
+    ``{"file": {"filePath", "numLines"}}`` — enough for the gates, missing
+    ``content``, and missing the ``type`` envelope — and every test passed
+    against a payload Claude Code never sends. The replacement is built *from*
+    this object, so a fixture that is not the real shape cannot catch a
+    response that is not the real shape, which is exactly what happened.
+    """
+    source = (repo_path / rel).read_text(encoding="utf-8")
+    return {
+        "type": "text",
+        "file": {
+            "filePath": str(repo_path / rel),
+            "content": source,
+            "numLines": len(source.splitlines()),
+            "startLine": 1,
+            "totalLines": len(source.splitlines()),
+        },
+    }
+
+
 def _read(repo_path: Path, rel: str = "pkg/big.py", **tool_input):
     """Fire the PostToolUse Read hook as Claude Code would."""
-    source = (repo_path / rel).read_text(encoding="utf-8")
     return _handle_post_tool_use(
         "Read",
         {"file_path": str(repo_path / rel), **tool_input},
-        {"file": {"filePath": str(repo_path / rel), "numLines": len(source.splitlines())}},
+        _read_output(repo_path, rel),
         str(repo_path),
         session_id=_SESSION,
     )
+
+
+def _served(result) -> str | None:
+    """The skeleton text out of a Read replacement, or None if nothing served."""
+    replacement = result.replacement
+    if replacement is None:
+        return None
+    return replacement["file"]["content"]
 
 
 def _edit(repo_path: Path, rel: str = "pkg/big.py"):
@@ -127,13 +157,53 @@ def _edit(repo_path: Path, rel: str = "pkg/big.py"):
 
 
 def test_an_unbounded_read_of_a_large_indexed_file_is_served_as_a_skeleton(repo: Path) -> None:
-    result = _read(repo)
+    served = _served(_read(repo))
 
-    assert result.replacement is not None
-    assert "Serving the indexed skeleton of pkg/big.py" in result.replacement
+    assert served is not None
+    assert "Serving the indexed skeleton of pkg/big.py" in served
     # Signatures survive; bodies do not.
-    assert "def func_0(argument_one, argument_two):" in result.replacement
-    assert "value_20 = argument_one" not in result.replacement
+    assert "def func_0(argument_one, argument_two):" in served
+    assert "value_20 = argument_one" not in served
+
+
+def test_the_replacement_is_shaped_like_a_read_result_not_a_string(repo: Path) -> None:
+    """Claude Code type-checks ``updatedToolOutput`` against the replaced tool.
+
+    Read's output is an object. Item 5 shipped emitting a bare string, which
+    Claude Code rejected with "does not match Read's output shape" — falling
+    back to the original file *silently*, exit 0 and no stderr, while the hook
+    went on recording a served row and a saving. Every firing was a no-op for
+    a release. This pins the shape so it cannot regress into a string again.
+    """
+    replacement = _read(repo).replacement
+
+    assert isinstance(replacement, dict), "a string here is rejected by the client"
+    assert replacement["type"] == "text"
+    file_block = replacement["file"]
+    # Exactly Read's own keys — carried through from the payload, not invented.
+    assert set(file_block) == {"filePath", "content", "numLines", "startLine", "totalLines"}
+    assert file_block["numLines"] == file_block["content"].count("\n")
+    assert file_block["totalLines"] == 1324, "the file's real length, not the skeleton's"
+
+
+def test_a_read_response_of_an_unexpected_shape_serves_nothing(repo: Path) -> None:
+    """No payload, no replacement — and critically, no saving row either.
+
+    The failure mode being ruled out is billing a saving for a replacement the
+    client then refuses, which is what made the string bug invisible.
+    """
+    from repowise.cli.commands.augment_cmd.command import _handle_post_tool_use
+
+    result = _handle_post_tool_use(
+        "Read",
+        {"file_path": str(repo / "pkg/big.py")},
+        {"type": "text"},  # no `file` block
+        str(repo),
+        session_id="shape-probe",
+    )
+
+    assert result.replacement is None
+    assert result.on_emitted is None
 
 
 def test_every_elided_span_carries_its_line_range(repo: Path) -> None:
@@ -142,7 +212,7 @@ def test_every_elided_span_carries_its_line_range(repo: Path) -> None:
     Without ranges this is a silent truncation and the agent has no way back
     to what was removed. Same contract distill makes for shell output.
     """
-    replacement = _read(repo).replacement
+    replacement = _served(_read(repo))
     assert replacement is not None
 
     markers = [ln.strip() for ln in replacement.splitlines() if ln.strip().startswith("...")]
@@ -157,7 +227,7 @@ def test_every_elided_span_carries_its_line_range(repo: Path) -> None:
 def test_kept_lines_carry_their_real_line_numbers(repo: Path) -> None:
     """Read returns ``cat -n``; dropping the gutter would leave the agent
     knowing line numbers only for the spans it cannot see."""
-    replacement = _read(repo).replacement
+    replacement = _served(_read(repo))
     assert replacement is not None
     source = (repo / "pkg" / "big.py").read_text(encoding="utf-8").splitlines()
 
@@ -244,7 +314,12 @@ def test_a_verification_read_after_an_edit_is_left_alone(repo: Path) -> None:
     from repowise.cli.commands.augment_cmd.read_state import _skeleton_replacement
 
     state = {"skeletonized": []}
-    args = (repo, "pkg/big.py", {"file_path": str(repo / "pkg/big.py")}, {"file": {"numLines": 400}})
+    args = (
+        repo,
+        "pkg/big.py",
+        {"file_path": str(repo / "pkg/big.py")},
+        _read_output(repo, "pkg/big.py"),
+    )
 
     assert _skeleton_replacement(*args, state, edited_since_read=False) is not None
     state["skeletonized"].clear()

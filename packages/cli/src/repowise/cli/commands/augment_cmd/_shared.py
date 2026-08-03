@@ -24,6 +24,12 @@ class HookResult(NamedTuple):
     :func:`as_result` lifts their bare ``str | None`` into this shape and the
     two-field response is assembled in exactly one place.
 
+    ``replacement`` is ``str | dict`` because Claude Code validates it against
+    the *replaced tool's own* output schema, not a common one: ``Bash`` takes a
+    string, ``Read`` takes ``{"type", "file": {...}}``. Handing Read a string
+    is rejected with ``does not match Read's output shape`` and the original
+    output is used — see :func:`read_skeleton.as_read_output`.
+
     ``on_emitted`` is bookkeeping the handler wants done *after* the response
     reaches the agent — savings accounting, counters. Anything here is off the
     critical path by construction, which is the only way to keep it honest:
@@ -32,7 +38,7 @@ class HookResult(NamedTuple):
     """
 
     context: str | None = None
-    replacement: str | None = None
+    replacement: str | dict | None = None
     on_emitted: Callable[[], None] | None = None
 
     def __bool__(self) -> bool:

@@ -86,12 +86,27 @@ def test_the_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
 
 
 def _read_payload_probe(repo: Path, rel: str) -> str:
-    """Source that fires the PostToolUse Read hook against a real file."""
+    """Source that fires the PostToolUse Read hook against a real file.
+
+    ``tool_response`` is Read's real shape, ``content`` included: the
+    replacement is built from this object, so a probe that stubs it loses the
+    very path it claims to be timing.
+    """
+    source = (repo / rel).read_text(encoding="utf-8")
     payload = {
         "hook_event_name": "PostToolUse",
         "tool_name": "Read",
         "tool_input": {"file_path": str(repo / rel)},
-        "tool_response": {"file": {"numLines": 400}},
+        "tool_response": {
+            "type": "text",
+            "file": {
+                "filePath": str(repo / rel),
+                "content": source,
+                "numLines": len(source.splitlines()),
+                "startLine": 1,
+                "totalLines": len(source.splitlines()),
+            },
+        },
         "cwd": str(repo),
         "session_id": "perf",
     }

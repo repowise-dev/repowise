@@ -201,6 +201,12 @@ def _emit_response(event: str, result: HookResult | str) -> None:
     can legitimately want both — a stale-read flag alongside a served
     skeleton.
 
+    ``updatedToolOutput`` is typed by the tool being replaced, so it is
+    whatever the handler built (a string for Bash-shaped output, an object for
+    Read's) and is written through unchanged. Claude Code validates it and
+    falls back to the original output on a mismatch, so getting the shape
+    wrong fails *quietly* from the agent's side — the row still says served.
+
     Suppressed when an identical emission was just produced (see
     :func:`_claim_emission`) so two concurrently-registered repowise hooks —
     one bundled in the Claude Code plugin, one written to
@@ -208,13 +214,15 @@ def _emit_response(event: str, result: HookResult | str) -> None:
     enrichment block twice on a single tool event.
     """
     result = as_result(result)
-    if not _claim_emission(event, f"{result.context or ''}\x00{result.replacement or ''}"):
+    replacement = result.replacement
+    dedup_mark = replacement if isinstance(replacement, str) else json.dumps(replacement, sort_keys=True)
+    if not _claim_emission(event, f"{result.context or ''}\x00{dedup_mark or ''}"):
         return
-    payload: dict[str, str] = {"hookEventName": event}
+    payload: dict[str, object] = {"hookEventName": event}
     if result.context:
         payload["additionalContext"] = result.context
-    if result.replacement:
-        payload["updatedToolOutput"] = result.replacement
+    if replacement:
+        payload["updatedToolOutput"] = replacement
     sys.stdout.write(json.dumps({"hookSpecificOutput": payload}))
     sys.stdout.flush()
 

@@ -69,13 +69,16 @@ class Replacement:
     call site would read as noise.
     """
 
-    __slots__ = ("full_tokens", "rel", "skeleton_tokens", "text")
+    __slots__ = ("full_tokens", "payload", "rel", "skeleton_tokens", "text")
 
     def __init__(self, *, rel: str, text: str, full_tokens: int, skeleton_tokens: int) -> None:
         self.rel = rel
         self.text = text
         self.full_tokens = full_tokens
         self.skeleton_tokens = skeleton_tokens
+        #: Read-shaped wire payload wrapping :attr:`text`, filled in by the
+        #: caller once it has the Read's own ``tool_response`` to build from.
+        self.payload: dict | None = None
 
     @property
     def saved_tokens(self) -> int:
@@ -227,6 +230,33 @@ def skeleton_replacement(
     )
 
 
+def as_read_output(tool_output: object, text: str) -> dict | None:
+    """Wrap *text* in the object shape Claude Code requires for a Read.
+
+    ``updatedToolOutput`` is validated against the schema of the tool being
+    replaced, not against a common one. Read's is
+    ``{"type": "text", "file": {"filePath", "content", "numLines",
+    "startLine", "totalLines"}}``, and handing it a bare string is rejected
+    with ``does not match Read's output shape`` — after which the *original*
+    output goes to the agent while the hook still records a served row. That
+    failure is invisible from inside the hook (exit 0, no stderr), which is
+    why this builds from the payload's own ``tool_response`` rather than
+    constructing the envelope from scratch: unknown or future keys are
+    carried through untouched and only ``content`` and the line counts move.
+
+    Returns None when the payload is not the shape we think it is, which
+    degrades to no replacement rather than to a rejected one.
+    """
+    if not isinstance(tool_output, dict):
+        return None
+    file_block = tool_output.get("file")
+    if not isinstance(file_block, dict) or "content" not in file_block:
+        return None
+    lines = text.count("\n") + (0 if text.endswith("\n") else 1)
+    updated_file = {**file_block, "content": text, "numLines": lines, "startLine": 1}
+    return {**tool_output, "file": updated_file}
+
+
 #: The elision marker ``_render`` in distill.skeleton emits: indent, then
 #: ``... N lines (start-end)``, 1-indexed and inclusive.
 _ELISION_RE = re.compile(r"^\s*\.\.\. \d+ lines \((\d+)-(\d+)\)\s*$")
@@ -239,9 +269,12 @@ def _render(rel: str, result: SkeletonResult, total_lines: int) -> str:
         f"[repowise] Serving the indexed skeleton of {rel} in place of the full file "
         f"(~{result.skeleton_tokens} tokens vs ~{result.full_tokens}; "
         f"{result.symbol_count} symbols).\n"
-        "Kept lines carry their real line numbers. Every `... N lines (a-b)` marker is "
-        "an elided span: Read this file with that offset/limit to pull it back, or Read "
-        "it again with no range to get the whole file.\n"
+        "There are two gutters. Ignore the outer one — Claude Code numbers the lines it "
+        "is handed, and it is counting skeleton lines. The inner gutter is this file's "
+        "real line numbers, and it is the one to Read against.\n"
+        "Every `... N lines (a-b)` marker is an elided span: Read this file with that "
+        "offset/limit to pull it back, or Read it again with no range to get the whole "
+        "file.\n"
         "You have NOT seen the bodies. Do not Edit, Write, or conclude what this file "
         "does or does not contain from a skeleton — read the range first.\n\n"
         f"{body}"
@@ -256,6 +289,14 @@ def _number(text: str, total_lines: int) -> str:
     exactly backwards. The numbers are recoverable without the source: each
     elision marker states the range it swallowed, so walking the rendered text
     and jumping the counter at every marker reproduces the original numbering.
+
+    This *is* a second gutter, and deliberately. Claude Code renders the
+    ``content`` it is handed through its own ``cat -n``, numbering sequentially
+    from ``startLine`` — which for a skeleton counts skeleton lines, not file
+    lines, and cannot be switched off. So the choice is two gutters where the
+    inner one is right, or one gutter that is wrong. Item 5 already settled
+    that a wrong line number is worse than none; the header names both columns
+    so the outer one cannot be mistaken for the file's.
 
     Self-checking: if the walk does not land on the file's real line count the
     reconstruction is wrong somewhere, and a wrong number is worse than none,
