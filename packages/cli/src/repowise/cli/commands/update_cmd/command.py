@@ -816,16 +816,30 @@ def run_update(
     # longer both pass a separate read check and race anyway.
     existing_lock = try_acquire_update_lock(repo_path, head)
     if existing_lock is not None:
-        import time as _time
+        from repowise.core.update_lock import (
+            UPDATE_LOCK_SUSPECT_AFTER_SECONDS,
+            format_lock_age,
+            lock_age_seconds,
+        )
 
-        elapsed = int(_time.time() - existing_lock.get("started_at", _time.time()))
+        age = lock_age_seconds(existing_lock)
         target_short = (existing_lock.get("target_commit") or "")[:8]
         write_update_pending(repo_path, head)
         console.print(
             f"[yellow]Another `repowise update` is already running "
             f"(pid {existing_lock.get('pid')}, target {target_short}, "
-            f"started {elapsed}s ago).[/yellow]"
+            f"holding the lock {format_lock_age(age)}).[/yellow]"
         )
+        # An owner we can see running is never evicted on age alone, so a run
+        # that has stopped progressing would otherwise block every later update
+        # with nothing to act on. Say how long it has been and where to look.
+        if age is not None and age > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+            console.print(
+                "[yellow]That is longer than an update normally takes. If "
+                "[bold].repowise/.update.log[/bold] has not been written to in "
+                f"that time, pid {existing_lock.get('pid')} is stuck and can be "
+                "stopped; this repo will update on the next run.[/yellow]"
+            )
         console.print(
             f"[dim]HEAD {head[:8] if head else 'HEAD'} marked as pending; "
             "the running update will roll forward to it. This run regenerated "
