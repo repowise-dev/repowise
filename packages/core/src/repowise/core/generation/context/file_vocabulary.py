@@ -1,5 +1,11 @@
 """The file's own vocabulary: the words a question about this file would use.
 
+Not to be confused with ``concept_tree/vocabulary.py``, which mines doc headings
+and binds repo-level terms to concept groups. Those terms are the same on every
+file page in the repository and so carry no discriminative power between files,
+which is the reason this per-file module exists alongside it. The two are not
+duplicates and must not be merged.
+
 A file page renders an overview, a table of symbols and a list of dependency
 paths. None of those carry the words a reader actually searches with: a flag
 name, an error message, a struct field, the phrasing of a doc comment. So a
@@ -67,7 +73,7 @@ def _words(token: str) -> list[str]:
     return [w.lower() for w in out if len(w) > 2]
 
 
-def code_vocabulary(source: str, *, max_chars: int = _MAX_CHARS) -> str:
+def file_vocabulary(source: str, *, max_chars: int = _MAX_CHARS) -> str:
     """The bounded vocabulary of one source file, most distinguishing first.
 
     Returns a plain space-joined string. Empty when *source* yields nothing,

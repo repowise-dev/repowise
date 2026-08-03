@@ -123,11 +123,11 @@ Part of the **{{ ctx.community_label }}** module cluster.
     words is not a summary. Conditional, like every section below the
     Overview, so a file that yields no vocabulary renders no heading.
 -#}
-{%- if ctx.code_vocabulary %}
+{%- if ctx.file_vocabulary %}
 
 ## In the code
 
-{{ ctx.code_vocabulary }}
+{{ ctx.file_vocabulary }}
 {%- endif %}
 
 {% include "_footer.j2" %}

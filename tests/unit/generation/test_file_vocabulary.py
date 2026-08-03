@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from repowise.core.generation.context.code_vocabulary import code_vocabulary
+from repowise.core.generation.context.file_vocabulary import file_vocabulary
 from repowise.core.generation.context_assembler import FilePageContext
 from repowise.core.generation.page_generator.structural import (
     as_markdown,
@@ -70,13 +70,13 @@ func listRun(opts *ListOptions) error {
 
 class TestWhatItLifts:
     def test_declared_field_names_survive(self):
-        out = code_vocabulary(GO_SOURCE)
+        out = file_vocabulary(GO_SOURCE)
         assert "Order" in out
         assert "ExcludePreReleases" in out
 
     def test_string_literals_survive(self):
         """Flag names and help text: the wording a bug report repeats back."""
-        out = code_vocabulary(GO_SOURCE)
+        out = file_vocabulary(GO_SOURCE)
         assert "Order of releases returned" in out
         assert "desc" in out
 
@@ -92,7 +92,7 @@ class TestWhatItLifts:
         copy of the word, which is correct, because the phrase is what a bug
         report quotes back.
         """
-        out = code_vocabulary('    Order string\nvar f = "order"\n')
+        out = file_vocabulary('    Order string\nvar f = "order"\n')
         assert out.lower().split().count("order") == 1
 
     def test_camel_case_is_also_offered_as_words(self):
@@ -101,16 +101,16 @@ class TestWhatItLifts:
         ``ExcludePreReleases`` is kept whole *and* split, because a reader asks
         "how do I exclude pre-releases" and never types the identifier.
         """
-        out = code_vocabulary(GO_SOURCE).lower()
+        out = file_vocabulary(GO_SOURCE).lower()
         for word in ("exclude", "pre", "releases"):
             assert word in out.split() or word in out
 
     def test_comment_prose_survives(self):
-        assert "ListOptions carries the flags" in code_vocabulary(GO_SOURCE)
+        assert "ListOptions carries the flags" in file_vocabulary(GO_SOURCE)
 
     def test_python_attributes_are_lifted(self):
         source = "class Config:\n    def __init__(self):\n        self.retry_budget = 3\n"
-        out = code_vocabulary(source)
+        out = file_vocabulary(source)
         assert "retry_budget" in out
 
     def test_the_tokens_the_gold_instance_needed_all_arrive(self):
@@ -122,7 +122,7 @@ class TestWhatItLifts:
         arrives as ``created``, which answers "ordered by creation date"
         exactly as well.
         """
-        out = code_vocabulary(GO_SOURCE).lower()
+        out = file_vocabulary(GO_SOURCE).lower()
         for token in ("order", "desc", "created", "releases"):
             assert token in out, f"{token!r} missing"
 
@@ -130,7 +130,7 @@ class TestWhatItLifts:
 class TestBounds:
     def test_capped(self):
         source = "\n".join(f'    Field{i} string // comment number {i}' for i in range(4000))
-        assert len(code_vocabulary(source)) <= 1200
+        assert len(file_vocabulary(source)) <= 1200
 
     def test_the_cap_cuts_the_least_specific_material(self):
         """Ordering is the reason the cap is affordable.
@@ -139,23 +139,23 @@ class TestBounds:
         truncated bag keeps the distinguishing half.
         """
         source = GO_SOURCE + "\n" + "\n".join(f"var filler{i} int" for i in range(3000))
-        out = code_vocabulary(source)
+        out = file_vocabulary(source)
         assert "Order of releases returned" in out
         assert "filler2999" not in out
 
     def test_empty_source_yields_nothing_rather_than_a_heading(self):
-        assert code_vocabulary("") == ""
+        assert file_vocabulary("") == ""
 
     def test_single_and_double_character_names_are_not_collected(self):
         """Receivers and loop variables are never what a question is about."""
-        out = code_vocabulary("func (c *Client) do(i int) { x := 1; _ = x }")
+        out = file_vocabulary("func (c *Client) do(i int) { x := 1; _ = x }")
         assert " i " not in f" {out} "
         assert " x " not in f" {out} "
 
     def test_long_blobs_do_not_eat_the_cap(self):
         """Minified data and embedded SQL are long and unsearchable."""
         blob = "A" * 900
-        out = code_vocabulary(f'    Name string\nvar data = "{blob}"')
+        out = file_vocabulary(f'    Name string\nvar data = "{blob}"')
         assert blob not in out
         assert "Name" in out
 
@@ -223,7 +223,7 @@ def _file_page(**overrides) -> FilePageContext:
 
 class TestRendering:
     def test_the_section_renders_when_there_is_vocabulary(self, jinja_env):
-        ctx = _file_page(code_vocabulary=code_vocabulary(GO_SOURCE))
+        ctx = _file_page(file_vocabulary=file_vocabulary(GO_SOURCE))
         page = jinja_env.get_template("file_page.j2").render(ctx=ctx)
         assert VOCAB_HEADING in page
         assert "Order of releases returned" in page
@@ -234,13 +234,13 @@ class TestRendering:
         An empty heading puts the same stock line into the index on thousands
         of pages, where it matches every query and distinguishes none.
         """
-        page = jinja_env.get_template("file_page.j2").render(ctx=_file_page(code_vocabulary=""))
+        page = jinja_env.get_template("file_page.j2").render(ctx=_file_page(file_vocabulary=""))
         assert VOCAB_HEADING not in page
 
     def test_it_sits_below_the_questions_block(self, jinja_env):
         """``_extract_summary`` reads back from the top. A bag of words is not
         a summary, so it must not be the first thing the page says."""
-        ctx = _file_page(code_vocabulary=code_vocabulary(GO_SOURCE))
+        ctx = _file_page(file_vocabulary=file_vocabulary(GO_SOURCE))
         page = jinja_env.get_template("file_page.j2").render(ctx=ctx)
         assert page.index("## Overview") < page.index(VOCAB_HEADING)
         assert page.index("## Questions this page answers") < page.index(VOCAB_HEADING)
@@ -253,11 +253,11 @@ class TestRendering:
         opposite granularity, deliberately.
         """
         tmpl = jinja_env.get_template("file_page.j2")
-        a = tmpl.render(ctx=_file_page(code_vocabulary=code_vocabulary(GO_SOURCE)))
+        a = tmpl.render(ctx=_file_page(file_vocabulary=file_vocabulary(GO_SOURCE)))
         b = tmpl.render(
             ctx=_file_page(
                 file_path="api/client.go",
-                code_vocabulary=code_vocabulary('type Client struct {\n\tHTTP string\n}'),
+                file_vocabulary=file_vocabulary('type Client struct {\n\tHTTP string\n}'),
             )
         )
         assert "Order of releases returned" in a
@@ -311,7 +311,7 @@ async def test_the_words_reach_the_full_text_row(fts, jinja_env):
     claim.
     """
     engine, search = fts
-    ctx = _file_page(code_vocabulary=code_vocabulary(GO_SOURCE))
+    ctx = _file_page(file_vocabulary=file_vocabulary(GO_SOURCE))
     content = jinja_env.get_template("file_page.j2").render(ctx=ctx)
     await _index(
         engine,

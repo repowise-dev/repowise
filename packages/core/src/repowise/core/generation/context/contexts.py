@@ -63,10 +63,12 @@ class FilePageContext:
     kg_tags: list[str] = field(default_factory=list)
     kg_node_summary: str = ""
     # The words the file's own source uses, bounded and ordered
-    # most-distinguishing first. See ``context/code_vocabulary.py`` for what
-    # goes in it and why. Empty when the file yields nothing, in which case the
-    # template drops the section rather than rendering an empty heading.
-    code_vocabulary: str = ""
+    # most-distinguishing first. See ``context/file_vocabulary.py`` for what
+    # goes in it and why, including why it is not the repo-level vocabulary in
+    # ``concept_tree/vocabulary.py``. Empty when the file yields nothing, in
+    # which case the template drops the section rather than rendering an empty
+    # heading.
+    file_vocabulary: str = ""
 
 
 @dataclass

@@ -14,7 +14,7 @@ from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
 from ..models import GenerationConfig
-from .code_vocabulary import code_vocabulary
+from .file_vocabulary import file_vocabulary
 from .contexts import (
     ApiContractContext,
     ArchitectureDiagramContext,
@@ -400,7 +400,7 @@ class ContextAssembler:
             # the biggest files the thinnest, which is backwards. This section
             # carries its own cap and is not charged against the prompt budget
             # because it is page content rather than model input.
-            code_vocabulary=code_vocabulary(source_text),
+            file_vocabulary=file_vocabulary(source_text),
         )
 
     # ------------------------------------------------------------------
