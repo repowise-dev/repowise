@@ -122,9 +122,9 @@ def test_root_level_files_get_a_usable_target_path():
     assert any("main.py" in g.file_paths for g in groups)
     for g in groups:
         assert g.key, "a group persisted an empty target_path"
-    assert any(
-        g.key == "root" for g in owning
-    ), f"root-anchored group did not get the root target: {[g.key for g in owning]}"
+    assert any(g.key == "root" for g in owning), (
+        f"root-anchored group did not get the root target: {[g.key for g in owning]}"
+    )
 
 
 def test_test_files_never_enter_the_concept_tree():
@@ -228,9 +228,9 @@ def test_root_documentation_and_examples_get_no_concept_page():
 
     assert claimed, "fixture produced no groups"
     for prefix in ("docs/", "docs_src/", "examples/", "samples/"):
-        assert not any(
-            p.startswith(prefix) for p in claimed
-        ), f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+        assert not any(p.startswith(prefix) for p in claimed), (
+            f"{prefix} reached the concept tree: {[p for p in claimed if p.startswith(prefix)]}"
+        )
     # The fixture is only meaningful if those files were in the input.
     assert any(p.startswith("docs_src/") for p in _support_paths())
 
@@ -297,15 +297,15 @@ def test_ranked_by_summed_pagerank_not_by_path():
     assert len(scored) > 1, "a one-group fixture cannot test ordering"
     # The fixture is only meaningful if path order disagrees with score order,
     # or the assertion below would pass on a sorted-by-path implementation.
-    assert ordered_keys != sorted(
-        ordered_keys
-    ), f"fixture is degenerate: score order equals path order ({ordered_keys})"
+    assert ordered_keys != sorted(ordered_keys), (
+        f"fixture is degenerate: score order equals path order ({ordered_keys})"
+    )
     # ui/c4 carries 1.0 per file against 0.1 elsewhere, so whichever group
     # holds it must come first.
     top_group = scored[0][1]
-    assert any(
-        "/ui/c4/" in p for p in top_group.file_paths
-    ), f"expected the ui/c4 mass to rank first, got {top_group.key}"
+    assert any("/ui/c4/" in p for p in top_group.file_paths), (
+        f"expected the ui/c4 mass to rank first, got {top_group.key}"
+    )
 
 
 def test_display_is_a_name_not_a_bare_path():
@@ -317,17 +317,26 @@ def test_display_is_a_name_not_a_bare_path():
 
 
 def test_layer_labels_from_the_kg_reach_the_title():
-    """The KG layer map is read when present and absent-safe when not."""
+    """The KG layer map is read when present and absent-safe when not.
+
+    The rescue only fires on a name too short to say anything, so the fixture is
+    a single directory whose path yields one word (``gateway`` -> "Gateway").
+    A group that already yields two words needs no prefix and would show the
+    feature nothing either way — the earlier fixture only exercised this because
+    a grouping bug had swept its files into a one-word "root" page.
+    """
+    gateway = [f"packages/app/src/gateway/f{i}.py" for i in range(8)]
+    paths = gateway + [f"packages/app/src/core/analysis/f{i}.py" for i in range(8)] + ["setup.py"]
     modules = [
         {
-            "id": "module:ui-c4",
-            "path": "packages/app/src/ui/c4",
+            "id": "module:gateway",
+            "path": "packages/app/src/gateway",
             "layerId": "layer:presentation",
-            "nodeIds": [f"file:{p}" for p in _paths() if "/ui/c4/" in p],
+            "nodeIds": [f"file:{p}" for p in gateway],
         }
     ]
-    with_kg = [g for _, g in _build_module_groups(_inputs(kg_modules=modules)).scored]
-    without_kg = [g for _, g in _build_module_groups(_inputs()).scored]
+    with_kg = [g for _, g in _build_module_groups(_inputs(paths=paths, kg_modules=modules)).scored]
+    without_kg = [g for _, g in _build_module_groups(_inputs(paths=paths)).scored]
 
     # Membership is unchanged by the layer signal: it steers merging of
     # adjacent runs, it never forces a split.

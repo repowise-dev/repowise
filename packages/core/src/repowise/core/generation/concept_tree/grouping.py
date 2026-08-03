@@ -224,6 +224,20 @@ def _target_path(members: Sequence[str], dirs: Sequence[str]) -> str:
     return "/".join(common)
 
 
+def _is_local_merge(left: Sequence[str], right: Sequence[str]) -> bool:
+    """Whether two runs may form one page without becoming a scattering.
+
+    Local means the union sits under a real shared directory, or both runs are
+    root-level files that legitimately co-locate at the repository root. Two runs
+    whose only common ancestor is the repository root but that live in different
+    top-level directories are the scattering this module's contract promises never
+    to emit, and must stay separate pages even when each is thin.
+    """
+    if _target_path([*left, *right], []):
+        return True
+    return all("/" not in m for m in left) and all("/" not in m for m in right)
+
+
 class _Partitioner:
     def __init__(self, params: GroupingParams, layer_of_file: dict[str, str]):
         self.params = params
@@ -279,8 +293,10 @@ class _Partitioner:
             left = self.visit(child)
             if not left:
                 continue
-            if len(pending) + len(left) <= self.params.max_files and self._same_layer(
-                pending, left
+            if (
+                len(pending) + len(left) <= self.params.max_files
+                and self._same_layer(pending, left)
+                and _is_local_merge(pending, left)
             ):
                 pending.extend(left)
                 continue
@@ -296,8 +312,10 @@ class _Partitioner:
         # result still fits.
         if pending and len(pending) < self.params.min_files and self.groups:
             last = self.groups[-1]
-            if len(last.members) + len(pending) <= self.params.max_files and self._same_layer(
-                last.members, pending
+            if (
+                len(last.members) + len(pending) <= self.params.max_files
+                and self._same_layer(last.members, pending)
+                and _is_local_merge(last.members, pending)
             ):
                 merged = self.make(last.members + pending)
                 self.groups[-1] = merged
@@ -336,6 +354,8 @@ def _absorb_thin(groups: list[ConceptGroup], part: _Partitioner) -> list[Concept
                     continue
                 other = working[j]
                 if other.file_count + group.file_count > params.max_files:
+                    continue
+                if not _is_local_merge(other.members, group.members):
                     continue
                 # A same-layer neighbour is preferred, but a thin group takes
                 # a cross-layer neighbour over standing alone. The layer gate
