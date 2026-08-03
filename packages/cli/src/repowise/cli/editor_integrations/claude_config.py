@@ -12,7 +12,6 @@ from repowise.cli.mcp_config import (
     merge_mcp_entry,
     resolve_repowise_command,
 )
-from repowise.core.workspace.config import find_workspace_root
 
 
 def _claude_desktop_config_path() -> Path | None:
@@ -52,6 +51,13 @@ def _resolve_mcp_target(repo_path: Path) -> Path:
     repos. Otherwise fall back to the per-repo path, preserving single-repo
     behavior.
     """
+    # Deferred: importing ``core.workspace.config`` runs ``core.workspace``'s
+    # package init, which pulls the extractor stack, the language registry,
+    # networkx and sqlalchemy — 849ms measured. ``migrate_claude_code_hooks``
+    # is called on every agent hook invocation and never reaches this
+    # function, so at module scope the whole graph was hook hot-path cost.
+    from repowise.core.workspace.config import find_workspace_root
+
     workspace_root = find_workspace_root(repo_path)
     return workspace_root if workspace_root is not None else repo_path
 

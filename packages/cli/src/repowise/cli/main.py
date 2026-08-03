@@ -6,39 +6,7 @@ import click
 
 from repowise.cli import __version__
 from repowise.cli._instrumented_group import InstrumentedGroup
-from repowise.cli.commands.augment_cmd import augment_command
-from repowise.cli.commands.claude_md_cmd import claude_md_command
-from repowise.cli.commands.corrections_cmd import corrections_command
-from repowise.cli.commands.costs_cmd import costs_command
-from repowise.cli.commands.coverage_cmd import coverage_group
-from repowise.cli.commands.dead_code_cmd import dead_code_command
-from repowise.cli.commands.decision_cmd import decision_group
-from repowise.cli.commands.delete_cmd import delete_command
-from repowise.cli.commands.distill_cmd import distill_command
-from repowise.cli.commands.doctor_cmd import doctor_command
-from repowise.cli.commands.expand_cmd import expand_command
-from repowise.cli.commands.export_cmd import export_command
-from repowise.cli.commands.generate_cmd import generate_command
-from repowise.cli.commands.health_cmd import health_command
-from repowise.cli.commands.hook_cmd import hook_group
-from repowise.cli.commands.impacted_tests_cmd import impacted_tests_command
-from repowise.cli.commands.init_cmd import init_command
-from repowise.cli.commands.login_cmd import login_command, logout_command, whoami_command
-from repowise.cli.commands.mcp_cmd import mcp_command
-from repowise.cli.commands.reindex_cmd import reindex_command
-from repowise.cli.commands.restyle_cmd import restyle_command, wiki_styles_command
-from repowise.cli.commands.risk_cmd import risk_command
-from repowise.cli.commands.saved_cmd import saved_command
-from repowise.cli.commands.search_cmd import search_command
-from repowise.cli.commands.security_cmd import security_command
-from repowise.cli.commands.serve_cmd import serve_command
-from repowise.cli.commands.status_cmd import status_command
-from repowise.cli.commands.telemetry_cmd import telemetry_command
-from repowise.cli.commands.update_cmd import update_command
-from repowise.cli.commands.watch_cmd import watch_command
-from repowise.cli.commands.whats_new_cmd import whats_new_command
-from repowise.cli.commands.workspace_cmd import workspace_group
-from repowise.core.registry import cli_registry, register_command
+from repowise.core.registry import cli_registry, register_lazy_command
 
 
 @click.group(cls=InstrumentedGroup)
@@ -60,43 +28,58 @@ def cli(ctx: click.Context) -> None:
             pass
 
 
+_COMMANDS_PKG = "repowise.cli.commands"
+
+#: ``command name -> "module:attr"``, resolved one at a time by
+#: :class:`InstrumentedGroup`. Registering objects here instead of strings
+#: is what used to import all ~35 command modules (1.1s) to dispatch one,
+#: on every invocation including every agent hook fire and MCP start.
+#:
+#: The name on the left must equal the Click command's own name — it is
+#: what `--help`, dispatch and shell completion see before the module is
+#: imported. `tests/unit/cli/test_lazy_commands.py` asserts every pair.
+_OSS_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("augment", "augment_cmd:augment_command"),
+    ("init", "init_cmd:init_command"),
+    ("delete", "delete_cmd:delete_command"),
+    ("generate-claude-md", "claude_md_cmd:claude_md_command"),
+    ("costs", "costs_cmd:costs_command"),
+    ("update", "update_cmd:update_command"),
+    ("generate", "generate_cmd:generate_command"),
+    ("dead-code", "dead_code_cmd:dead_code_command"),
+    ("health", "health_cmd:health_command"),
+    ("risk", "risk_cmd:risk_command"),
+    ("decision", "decision_cmd:decision_group"),
+    ("coverage", "coverage_cmd:coverage_group"),
+    ("impacted-tests", "impacted_tests_cmd:impacted_tests_command"),
+    ("search", "search_cmd:search_command"),
+    ("distill", "distill_cmd:distill_command"),
+    ("expand", "expand_cmd:expand_command"),
+    ("saved", "saved_cmd:saved_command"),
+    ("security", "security_cmd:security_command"),
+    ("corrections", "corrections_cmd:corrections_command"),
+    ("export", "export_cmd:export_command"),
+    ("hook", "hook_cmd:hook_group"),
+    ("status", "status_cmd:status_command"),
+    ("doctor", "doctor_cmd:doctor_command"),
+    ("watch", "watch_cmd:watch_command"),
+    ("serve", "serve_cmd:serve_command"),
+    ("mcp", "mcp_cmd:mcp_command"),
+    ("reindex", "reindex_cmd:reindex_command"),
+    ("restyle", "restyle_cmd:restyle_command"),
+    ("wiki-styles", "restyle_cmd:wiki_styles_command"),
+    ("whats-new", "whats_new_cmd:whats_new_command"),
+    ("telemetry", "telemetry_cmd:telemetry_command"),
+    ("login", "login_cmd:login_command"),
+    ("logout", "login_cmd:logout_command"),
+    ("whoami", "login_cmd:whoami_command"),
+    ("workspace", "workspace_cmd:workspace_group"),
+)
+
 # Register OSS commands through the shared registry so third-party
 # packages can extend the CLI without monkey-patching the root group.
 # Order is preserved by the registry, so `repowise --help` reads the same.
-register_command(augment_command)
-register_command(init_command)
-register_command(delete_command)
-register_command(claude_md_command)
-register_command(costs_command)
-register_command(update_command)
-register_command(generate_command)
-register_command(dead_code_command)
-register_command(health_command)
-register_command(risk_command)
-register_command(decision_group)
-register_command(coverage_group)
-register_command(impacted_tests_command)
-register_command(search_command)
-register_command(distill_command)
-register_command(expand_command)
-register_command(saved_command)
-register_command(security_command)
-register_command(corrections_command)
-register_command(export_command)
-register_command(hook_group)
-register_command(status_command)
-register_command(doctor_command)
-register_command(watch_command)
-register_command(serve_command)
-register_command(mcp_command)
-register_command(reindex_command)
-register_command(restyle_command)
-register_command(wiki_styles_command)
-register_command(whats_new_command)
-register_command(telemetry_command)
-register_command(login_command)
-register_command(logout_command)
-register_command(whoami_command)
-register_command(workspace_group)
+for _name, _target in _OSS_COMMANDS:
+    register_lazy_command(_name, f"{_COMMANDS_PKG}.{_target}")
 
 cli_registry.apply(cli)
