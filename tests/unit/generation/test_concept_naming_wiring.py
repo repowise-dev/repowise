@@ -172,6 +172,62 @@ async def test_a_run_that_writes_no_concept_page_does_not_name_one(tmp_path):
     assert provider.naming_calls == 0, "an incremental run paid for a naming call"
 
 
+def _write_repo_with_a_chapter(repo_path):
+    """A repository holding one directory that heads a subsystem.
+
+    ``src/ingestion`` has three subdirectories large enough to be groups of
+    their own plus a loose file, so it is both a leaf and a chapter. The other
+    packages keep it a minority of the repository, or the near-repo-wide guard
+    would skip it.
+    """
+    repo_path.mkdir(parents=True, exist_ok=True)
+    for sub in ("languages", "graph", "resolvers"):
+        (repo_path / "src" / "ingestion" / sub).mkdir(parents=True, exist_ok=True)
+        for i in range(12):
+            (repo_path / "src" / "ingestion" / sub / f"mod{i}.py").write_text(
+                f"def {sub}_{i}() -> int:\n    return {i}\n", encoding="utf-8"
+            )
+    (repo_path / "src" / "ingestion" / "loose.py").write_text(
+        "def loose() -> None:\n    pass\n", encoding="utf-8"
+    )
+    for pkg in ("render", "storage", "transport", "reporting"):
+        (repo_path / "src" / pkg).mkdir(parents=True, exist_ok=True)
+        for i in range(12):
+            (repo_path / "src" / pkg / f"mod{i}.py").write_text(
+                f"def {pkg}_{i}() -> int:\n    return {i}\n", encoding="utf-8"
+            )
+    return repo_path
+
+
+async def test_the_namer_never_titles_a_chapter(tmp_path):
+    """A chapter takes the name of the subsystem it heads, whatever the model said.
+
+    The model, shown a chapter's directory, names the loose files at its root,
+    and that name then stands over every page below it. Measured on this
+    repository's own index: telling the model which groups were chapters and
+    what each one contained changed two names of nine, and neither of the two
+    was a chapter that read wrong.
+    """
+    repo = _write_repo_with_a_chapter(tmp_path / "repo")
+    provider = NamingProvider(
+        _naming_payload_for({f"g{i:02d}": f"Title {i}" for i in range(1, 21)})
+    )
+
+    result = await _run(repo, provider)
+
+    pages = {p.page_id: p for p in _module_pages(result)}
+    chapter = pages.get("module_page:src/ingestion")
+    assert chapter is not None, f"fixture grew no chapter: {sorted(pages)}"
+    assert chapter.metadata.get("is_chapter") is True
+    assert chapter.title == "Ingestion Overview"
+    # The leaves under it still carry what the model called them.
+    assert any(
+        p.title.startswith("Title ")
+        for pid, p in pages.items()
+        if pid.startswith("module_page:src/ingestion/")
+    ), f"the chapter's children lost their model titles: {sorted(pages)}"
+
+
 # ---------------------------------------------------------------------------
 # Identity does not follow the title (D2)
 # ---------------------------------------------------------------------------

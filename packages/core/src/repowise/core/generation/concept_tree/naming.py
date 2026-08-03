@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Container, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -129,6 +130,122 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     if len(title.split()) < MIN_TITLE_WORDS:
         title = f"{title} Components".strip()
     return title
+
+
+# A chapter's subject is the directory it heads. ``core`` is the one stop
+# segment that survives here: as one of two segments it adds nothing ("Core
+# Ingestion" says no more than "Ingestion"), but as the whole subject it is
+# exactly what a reader means by the core package. The rest are containers with
+# no subject of their own, and no path ever ends at one on purpose.
+_CHAPTER_CONTAINERS = (_STOP_SEGMENTS - {"core"}) | {"dist", "build"}
+
+# A route parameter: ``[id]``, ``[...slug]``, ``{id}``, ``(group)``, ``:id``.
+# It names a variable rather than a subject, so a chapter at
+# ``app/repos/[id]`` is about repos.
+_DYNAMIC_SEGMENT = re.compile(r"^([\[{(].*[]})]|:.+)$")
+
+
+def _chapter_subject(target_path: str) -> str:
+    """The deepest segment of *target_path* that names something."""
+    segments = [s for s in target_path.split("/") if s]
+    if not segments:
+        return ""
+    for segment in reversed(segments):
+        if segment.lower() in _CHAPTER_CONTAINERS or _DYNAMIC_SEGMENT.match(segment):
+            continue
+        return segment
+    # Every segment is a container. The last one is still where the reader is.
+    return segments[-1]
+
+
+def _house_casing(segment: str, child_titles: Sequence[str]) -> str:
+    """How the project writes *segment* in its own page titles, or ``""``.
+
+    The children were named before their chapter needs a name, so they are the
+    one place that says whether this repository writes ``ui`` as "UI" or "Ui".
+    Taken from them rather than from an acronym list, which would be a rule
+    tuned to the repositories whose acronyms happened to be on it.
+    """
+    counts: Counter[str] = Counter()
+    for title in child_titles:
+        for word in re.split(r"[^A-Za-z0-9]+", title):
+            # An all-lowercase occurrence says nothing this function was asked
+            # about — a title carrying the word mid-sentence, or one quoting a
+            # path — and taking it would open a page title in lower case.
+            if word.lower() == segment.lower() and not word.islower():
+                counts[word] += 1
+    if not counts:
+        return ""
+    top = max(counts.values())
+    # Ties break on the string so an unchanged repository names it the same way
+    # every run.
+    return sorted(word for word, n in counts.items() if n == top)[0]
+
+
+def chapter_title(target_path: str, child_titles: Sequence[str] = ()) -> str:
+    """Name the chapter heading *target_path*, given the titles beneath it.
+
+    A chapter is not a leaf and must not be named like one. The namer, shown a
+    chapter's directory, names the loose files at that directory's root and
+    then that name stands over everything below: "Blast Radius UI" heading
+    eighteen UI modules, "Core Service Utilities" heading six core subsystems.
+    That is worse than no chapter at all, because the name now claims to head
+    things it does not describe. Measured, not assumed — a hint telling the
+    model which groups were chapters and what they contained changed two names
+    of nine and neither of those two.
+
+    What a chapter reliably *is* is the place: the directory, and the reader's
+    own word for it. So it gets that word and the word "Overview", and the only
+    thing the children are asked for is how this project spells it. Costs no
+    call, cannot drift between runs, and reproduces the four chapter names on
+    this repository's own index that read best today.
+    """
+    segment = _chapter_subject(target_path)
+    if not segment:
+        # A chapter at the repository root. It has no segment to name it by and
+        # the overview page already covers the repository, so say where it is
+        # rather than inventing a subject.
+        return "Repository Overview"
+    return f"{_house_casing(segment, child_titles) or _humanise(segment)} Overview"
+
+
+def nearest_chapter(target_path: str, chapters: Container[str]) -> str | None:
+    """The closest ancestor directory of *target_path* holding a chapter.
+
+    Strictly an ancestor, so a chapter never heads itself. Nearest rather than
+    topmost because chapters nest. The tree walks the same rule when it parents
+    a page, and a title drawn from a different set of children than the tree
+    shows beneath it is a title about the wrong pages.
+    """
+    cursor = target_path
+    while "/" in cursor:
+        cursor = cursor.rsplit("/", 1)[0]
+        if cursor in chapters:
+            return cursor
+    return None
+
+
+def chapter_titles(leaves: dict[str, str], chapters: Sequence[str]) -> dict[str, str]:
+    """Title every directory in *chapters* from the leaves it heads.
+
+    *leaves* maps a leaf page's directory to its title — every page that owns
+    files, including a directory that is both a chapter and a leaf. Titles are
+    made unique against each other and against the leaves, which do not move: a
+    leaf may carry a model-written name and a chapter yielding to it is the
+    cheaper of the two collisions to resolve.
+    """
+    keys = set(chapters)
+    kids: dict[str, list[str]] = {c: [] for c in keys}
+    for target_path, title in leaves.items():
+        parent = nearest_chapter(target_path, keys)
+        if parent is not None:
+            kids[parent].append(title)
+    ordered = sorted(keys)
+    named = disambiguate_titles(
+        [(chapter_title(c, kids[c]), c) for c in ordered],
+        reserved={t for path, t in leaves.items() if path not in keys},
+    )
+    return dict(zip(ordered, named, strict=True))
 
 
 def scc_where(members: list[str], *, max_parts: int = 2) -> str:

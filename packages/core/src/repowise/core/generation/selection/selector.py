@@ -9,7 +9,7 @@ emitted.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,8 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from ..concept_tree.grouping import ConceptGroup, group_files
 from ..concept_tree.naming import (
     _humanise,
+    chapter_title,
+    chapter_titles,
     deterministic_scope,
     deterministic_title,
     disambiguate_titles,
@@ -538,9 +540,11 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
                 ),
             )
         )
-    scored.extend(
-        _build_rollup_groups(chapters, groups, titles, files, lang_of, inputs.pagerank)
-    )
+    scored.extend(_build_rollup_groups(chapters, groups, files, lang_of, inputs.pagerank))
+    # Last, because a chapter is named from the leaves beneath it and they all
+    # have to exist first.
+    retitled = retitle_chapters([mg for _, mg in scored])
+    scored = [(score, mg) for (score, _), mg in zip(scored, retitled, strict=True)]
     scored.sort(key=lambda x: (-x[0], x[1].key))
     return ConceptCandidates(scored=scored, groups=groups, layer_labels=layer_labels)
 
@@ -618,10 +622,45 @@ def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, 
     return out
 
 
+def retitle_chapters(groups: list[ModuleGroup]) -> list[ModuleGroup]:
+    """Name every chapter after the subsystem it heads, not after its own files.
+
+    Called twice on a keyed run: once here, over the deterministic titles, and
+    once after the namer answers, because the leaf titles it is derived from
+    have changed by then. The rule is the same both times and lives in one
+    place, so the two cannot disagree. See
+    :func:`~..concept_tree.naming.chapter_title` for why a chapter is named
+    from its place rather than by the model.
+
+    A leaf is a group that owns files; a chapter that owns none is a pure
+    rollup. A directory that is both keeps one page and takes the chapter name,
+    because the name a reader sees stands over the whole subtree whatever else
+    that page also documents.
+
+    The scope sentence comes back with the title, for the same reason. A model
+    shown a chapter's directory writes about the loose files at its root, so a
+    chapter that took its scope from that call would open by promising the
+    reader a page about those files and then be a page about the subsystem.
+    """
+    chapters = [mg.key for mg in groups if mg.is_rollup]
+    if not chapters:
+        return groups
+    titles = chapter_titles({mg.key: mg.display for mg in groups if mg.file_paths}, chapters)
+    return [
+        replace(
+            mg,
+            display=titles[mg.key],
+            scope=_chapter_scope(mg.key, owns=bool(mg.file_paths)),
+        )
+        if mg.is_rollup and mg.key in titles
+        else mg
+        for mg in groups
+    ]
+
+
 def _build_rollup_groups(
     chapters: dict[str, list[str]],
     groups: list[ConceptGroup],
-    leaf_titles: list[str],
     files: list[str],
     lang_of: dict[str, str],
     pagerank: dict[str, float],
@@ -629,32 +668,22 @@ def _build_rollup_groups(
     """Chapter pages for the directories that are *not* already a leaf group.
 
     A chapter whose directory is also a leaf is built by the caller, in the same
-    loop as every other leaf, so it keeps that group's structural key, its
-    model-written title and its section — all three of which are keyed on the
-    identity the namer already gave it. Only the directories with no group of
-    their own need a page synthesised here, and those own no files.
+    loop as every other leaf, so it keeps that group's structural key and its
+    section, both of which are keyed on the identity the namer already gave it.
+    Only the directories with no group of their own need a page synthesised
+    here, and those own no files.
 
-    Titles are disambiguated against the leaf titles as well as against each
-    other: a synthesised "Ingestion Overview" and a named leaf of the same title
-    render as two identical rows in the tree, and anything keying on a title has
-    to guess between them.
+    The title set here is provisional: :func:`retitle_chapters` runs over every
+    chapter once the leaves exist and settles both kinds together, including
+    making them unique.
     """
     pending = sorted(set(chapters) - {g.target_path for g in groups})
     if not pending:
         return []
 
-    def _base_title(parent: str) -> str:
-        segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
-        return f"{_humanise(segment)} Overview".strip()
-
-    # The leaves are already settled — several of them carry a model-written
-    # title — so the chapters yield to them rather than renaming them.
-    titles = disambiguate_titles(
-        [(_base_title(p), p) for p in pending], reserved=set(leaf_titles)
-    )
-
     rollups: list[tuple[float, ModuleGroup]] = []
-    for parent, title in zip(pending, titles, strict=True):
+    for parent in pending:
+        title = chapter_title(parent)
         members = chapters[parent]
         langs = Counter(lang_of.get(m, "") for m in members)
         langs.pop("", None)

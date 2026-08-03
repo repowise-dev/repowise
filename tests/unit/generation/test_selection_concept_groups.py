@@ -25,9 +25,11 @@ from repowise.core.generation.concept_tree.grouping import ConceptGroup
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.selection import SelectionInputs, select_pages
 from repowise.core.generation.selection.selector import (
+    ModuleGroup,
     _build_module_groups,
     _build_rollup_groups,
     _chapter_members,
+    retitle_chapters,
 )
 from tests.unit.generation.test_selection_contract import (
     FakeFileInfo,
@@ -405,9 +407,8 @@ def _leaf(members: list[str]) -> ConceptGroup:
 def _synthesised(leaves: list[ConceptGroup], files: list[str]):
     """The chapters that need a page of their own, as the selector builds them."""
     chapters = _chapter_members(leaves, files)
-    titles = [g.target_path for g in leaves]  # identity titles; collisions are the point
     return chapters, _build_rollup_groups(
-        chapters, leaves, titles, files, {f: "python" for f in files}, {}
+        chapters, leaves, files, {f: "python" for f in files}, {}
     )
 
 
@@ -468,28 +469,151 @@ def test_a_directory_that_is_both_chapter_and_leaf_yields_one_page():
     assert "p/svc" not in {m.key for _, m in rollups}
 
 
+def _module_group(key: str, *, files: tuple[str, ...], chapter: bool, display: str):
+    return ModuleGroup(
+        key=key, display=display, language="python", file_paths=files, is_rollup=chapter
+    )
+
+
 def test_chapter_titles_are_disambiguated_against_the_leaves():
-    """A synthesised title never duplicates a leaf's, or another chapter's.
+    """A chapter title never duplicates a leaf's, or another chapter's.
 
     Two identical rows in the tree are indistinguishable to a reader, and
-    anything keying on a title has to guess between them.
+    anything keying on a title has to guess between them. The leaves do not
+    move: one of them may carry a model-written name, and a chapter yielding to
+    it is the cheaper of the two collisions to resolve.
     """
-    leaves = [
-        _leaf(["a/web/components/x/1.py", "a/web/components/x/2.py"]),
-        _leaf(["a/web/components/z/3.py", "a/web/components/z/4.py"]),
-        _leaf(["a/ext/components/y/5.py", "a/ext/components/y/6.py"]),
-        _leaf(["a/ext/components/w/7.py", "a/ext/components/w/8.py"]),
+    groups = [
+        # Two chapters whose directories share a last segment, plus a leaf
+        # already holding the name they would both take.
+        _module_group("a/web/components", files=(), chapter=True, display=""),
+        _module_group("a/ext/components", files=(), chapter=True, display=""),
+        _module_group(
+            "a/web/components/x", files=("a/web/components/x/1.py",),
+            chapter=False, display="Components Overview",
+        ),
+        _module_group(
+            "a/ext/components/y", files=("a/ext/components/y/5.py",),
+            chapter=False, display="Entity Cards",
+        ),
     ]
-    files = [m for g in leaves for m in g.members]
-    chapters = _chapter_members(leaves, files)
-    # Both parents humanise to the same base title, and one leaf is named the
-    # same thing again, so all three have to be resolved together.
-    leaf_titles = ["Components Overview"] + [g.target_path for g in leaves[1:]]
-    rollups = _build_rollup_groups(
-        chapters, leaves, leaf_titles, files, {f: "python" for f in files}, {}
-    )
-    titles = leaf_titles + [m.display for _, m in rollups]
+
+    out = retitle_chapters(groups)
+    titles = [g.display for g in out]
+
     assert len(titles) == len(set(titles)), titles
+    # The leaf keeps the name it was given; the chapters take qualified ones.
+    by_key = dict(zip([g.key for g in out], titles, strict=True))
+    assert by_key["a/web/components/x"] == "Components Overview"
+
+
+def test_a_chapter_is_named_for_the_directory_it_heads():
+    """Not for its own files, and not by the model.
+
+    A namer shown a chapter's directory names the loose files at that
+    directory's root, and that name then stands over everything below it. The
+    name a reader can act on is the place.
+    """
+    groups = [
+        _module_group(
+            "p/ingestion", files=("p/ingestion/loose.py",),
+            chapter=True, display="Pipeline Bootstrap Helpers",
+        ),
+        _module_group(
+            "p/ingestion/languages", files=("p/ingestion/languages/a.py",),
+            chapter=False, display="Language Catalog",
+        ),
+    ]
+
+    out = {g.key: g.display for g in retitle_chapters(groups)}
+
+    assert out["p/ingestion"] == "Ingestion Overview"
+    # A leaf is never touched: the model names those well.
+    assert out["p/ingestion/languages"] == "Language Catalog"
+
+
+def test_a_chapter_skips_container_and_route_segments():
+    """``src`` and ``[id]`` name no subject, so the chapter climbs past them."""
+    groups = [
+        _module_group("packages/ui/src", files=(), chapter=True, display=""),
+        _module_group(
+            "packages/ui/src/zoom", files=("packages/ui/src/zoom/a.ts",),
+            chapter=False, display="Zoom Canvas",
+        ),
+        _module_group("app/repos/[id]", files=(), chapter=True, display=""),
+        _module_group(
+            "app/repos/[id]/docs", files=("app/repos/[id]/docs/p.tsx",),
+            chapter=False, display="Docs Routes",
+        ),
+    ]
+
+    out = {g.key: g.display for g in retitle_chapters(groups)}
+
+    assert out["packages/ui/src"] == "Ui Overview"
+    assert out["app/repos/[id]"] == "Repos Overview"
+
+
+def test_a_chapter_spells_its_subject_the_way_the_repository_does():
+    """The children are the only place that says whether ``ui`` is "UI" or "Ui".
+
+    Taken from them rather than from an acronym list, which would be a rule
+    tuned to the repositories whose acronyms happened to be on it.
+    """
+    groups = [
+        _module_group("packages/ui/src", files=(), chapter=True, display=""),
+        _module_group(
+            "packages/ui/src/zoom", files=("packages/ui/src/zoom/a.ts",),
+            chapter=False, display="Zoom UI Canvas",
+        ),
+        _module_group(
+            "packages/ui/src/wiki", files=("packages/ui/src/wiki/b.ts",),
+            chapter=False, display="Wiki UI Panels",
+        ),
+    ]
+
+    assert {g.key: g.display for g in retitle_chapters(groups)}["packages/ui/src"] == "UI Overview"
+
+
+def test_a_chapter_takes_its_casing_only_from_a_deliberate_spelling():
+    """A lowercase occurrence in a child's title is not a spelling of the word.
+
+    It is the word used mid-sentence, or a quoted path. Taking it would open a
+    page title in lower case.
+    """
+    groups = [
+        _module_group("p/core", files=(), chapter=True, display=""),
+        _module_group(
+            "p/core/a", files=("p/core/a/x.py",),
+            chapter=False, display="Helpers for core and friends",
+        ),
+    ]
+
+    assert {g.key: g.display for g in retitle_chapters(groups)}["p/core"] == "Core Overview"
+
+
+def test_a_chapter_is_named_from_the_children_the_tree_puts_under_it():
+    """Nearest chapter, not nearest directory — chapters nest.
+
+    A title drawn from a different set of children than the tree shows beneath
+    it is a title about the wrong pages.
+    """
+    groups = [
+        _module_group("p/svc", files=(), chapter=True, display=""),
+        _module_group("p/svc/api", files=(), chapter=True, display=""),
+        # Two levels down, so its nearest chapter is api and not svc.
+        _module_group(
+            "p/svc/api/v2", files=("p/svc/api/v2/a.py",), chapter=False, display="V2 API Routes"
+        ),
+        _module_group(
+            "p/svc/db", files=("p/svc/db/b.py",), chapter=False, display="Storage Layer"
+        ),
+    ]
+
+    out = {g.key: g.display for g in retitle_chapters(groups)}
+
+    assert out["p/svc"] == "Svc Overview"
+    # "API" comes from the grandchild's title, which is what the tree nests here.
+    assert out["p/svc/api"] == "API Overview"
 
 
 def test_chapter_skips_near_repo_wide_parent():

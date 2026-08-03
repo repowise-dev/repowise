@@ -408,6 +408,12 @@ class _GenerationRun:
                     scope=scope_of.get(mg.structural_key, mg.scope),
                 )
             )
+        # A chapter is named from the leaves under it, and those leaves have
+        # just been renamed, so the names it was given at selection are stale.
+        # Same rule, same function; the model never names a chapter directly.
+        from ..selection.selector import retitle_chapters
+
+        groups_out = retitle_chapters(groups_out)
         # Generation order is left alone: it is summed PageRank, so the most
         # central subsystem is written first and lands in the store earliest.
         # Where the reader meets each page is ``order``, applied by the tree.
