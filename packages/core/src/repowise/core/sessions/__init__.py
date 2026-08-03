@@ -19,6 +19,7 @@ from repowise.core.sessions.adapters.claude_code import (
     parse_timestamp,
     transcript_dir_for,
 )
+from repowise.core.sessions.adapters.codex import CodexAdapter
 from repowise.core.sessions.cursor import CursorStore, iter_new_events
 from repowise.core.sessions.events import (
     INTERRUPT_MARKER,
@@ -31,6 +32,7 @@ from repowise.core.sessions.events import (
 __all__ = [
     "INTERRUPT_MARKER",
     "ClaudeCodeAdapter",
+    "CodexAdapter",
     "CursorStore",
     "Event",
     "HarnessAdapter",
