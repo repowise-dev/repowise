@@ -351,7 +351,6 @@ class _GenerationRun:
             production_files=[m for g in groups for m in g.members],
             repo_root=Path(self.repo_path) if self.repo_path else None,
             layer_labels=dict(getattr(self.selection, "layer_labels", None) or {}),
-            chapter_children=dict(getattr(self.selection, "chapter_children", None) or {}),
             entry_points={
                 p.file_info.path
                 for p in self.parsed_files

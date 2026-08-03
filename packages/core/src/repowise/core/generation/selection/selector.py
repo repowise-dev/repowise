@@ -118,11 +118,6 @@ class ConceptCandidates:
     scored: list[tuple[float, ModuleGroup]] = field(default_factory=list)
     groups: list[ConceptGroup] = field(default_factory=list)
     layer_labels: dict[str, str] = field(default_factory=dict)
-    #: Directories that head a subsystem, mapped to the target paths of the
-    #: groups immediately below them. A chapter is named at a different
-    #: altitude from a leaf, and the namer cannot tell the two apart from the
-    #: payload alone: both are a directory with files under it.
-    chapter_children: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -144,9 +139,6 @@ class Selection:
     # so the cost estimator and scope resolution keep costing nothing.
     concept_groups: list[ConceptGroup] = field(default_factory=list)
     layer_labels: dict[str, str] = field(default_factory=dict)
-    #: ``chapter target_path -> the target paths it heads``. See
-    #: :class:`ConceptCandidates`.
-    chapter_children: dict[str, list[str]] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         """Per-page-type counts of the pages this run will emit.
@@ -550,17 +542,7 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
         _build_rollup_groups(chapters, groups, titles, files, lang_of, inputs.pagerank)
     )
     scored.sort(key=lambda x: (-x[0], x[1].key))
-    children: dict[str, list[str]] = {parent: [] for parent in chapters}
-    for group in groups:
-        parent = group.target_path.rsplit("/", 1)[0] if "/" in group.target_path else ""
-        if parent in children:
-            children[parent].append(group.target_path)
-    return ConceptCandidates(
-        scored=scored,
-        groups=groups,
-        layer_labels=layer_labels,
-        chapter_children=children,
-    )
+    return ConceptCandidates(scored=scored, groups=groups, layer_labels=layer_labels)
 
 
 # A rollup covering more than this fraction of the whole repository is not a
@@ -776,7 +758,6 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         module_groups=[m for _, m in modules],
         concept_groups=list(concepts.groups),
         layer_labels=dict(concepts.layer_labels),
-        chapter_children=dict(concepts.chapter_children),
         api_contract_paths=[p for _, p in apis],
         infra_paths=[p for _, p in infras],
         scc_groups=[g for _, g in sccs],
