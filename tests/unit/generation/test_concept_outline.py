@@ -439,3 +439,78 @@ class TestChapterPayload:
 
         assert before == after
         assert all("heads" not in e for e in after["groups"])
+
+
+class TestCycleNaming:
+    """A cycle page was titled by the hash of its members, which nothing searches for."""
+
+    def test_a_cycle_inside_one_subsystem_is_named_for_it(self):
+        from repowise.core.generation.concept_tree.naming import scc_where
+
+        assert (
+            scc_where(
+                [
+                    "src/core/ingestion/resolvers/a.py",
+                    "src/core/ingestion/resolvers/b.py",
+                ]
+            )
+            == "Ingestion Resolvers"
+        )
+
+    def test_a_cycle_that_crosses_subsystems_names_the_biggest_two(self):
+        """Crossing is the interesting thing about it, so the title says so."""
+        from repowise.core.generation.concept_tree.naming import scc_where
+
+        where = scc_where(
+            [
+                "tests/a.py",
+                "tests/b.py",
+                "tests/c.py",
+                "packages/x.py",
+                "packages/y.py",
+                "docs/d.py",
+            ]
+        )
+        assert where == "Tests and Packages"
+
+    def test_a_crossing_cycle_breaks_size_ties_on_the_path(self):
+        """So the title does not move between runs on an unchanged repository."""
+        from repowise.core.generation.concept_tree.naming import scc_where
+
+        assert scc_where(["zeta/a.py", "alpha/b.py"]) == "Alpha and Zeta"
+
+    def test_members_with_no_directory_yield_no_name(self):
+        """Better to keep the id than to render a title claiming less than it."""
+        from repowise.core.generation.concept_tree.naming import scc_where
+
+        assert scc_where(["main.py"]) == ""
+
+    def test_the_name_is_stable_for_an_unchanged_cycle(self):
+        from repowise.core.generation.concept_tree.naming import scc_where
+
+        members = ["b/x.py", "a/y.py", "a/z.py"]
+        assert scc_where(sorted(members)) == scc_where(sorted(reversed(members)))
+
+    def test_titles_are_unique_across_the_run(self):
+        """Several cycles through one subsystem all describe themselves the same."""
+        from repowise.core.generation.page_generator.levels import _scc_titles
+
+        titles = _scc_titles(
+            [
+                ("scc-aaa", ["src/ingest/resolvers/a.py", "src/ingest/resolvers/b.py"]),
+                ("scc-bbb", ["src/ingest/resolvers/c.py", "src/ingest/resolvers/d.py"]),
+                ("scc-ccc", ["src/store/q.py", "src/store/r.py"]),
+            ]
+        )
+
+        assert len(set(titles.values())) == 3
+        # The one that keeps the plain name is decided by path order, not by
+        # input order, so a re-run does not swap them.
+        assert titles["scc-ccc"] == "Circular Dependency: Store"
+
+    def test_a_nameless_cycle_falls_back_to_its_id(self):
+        from repowise.core.generation.page_generator.levels import _scc_titles
+
+        titles = _scc_titles([("scc-aaa", ["main.py"])])
+
+        assert titles["scc-aaa"] == "Circular Dependency: scc-aaa"

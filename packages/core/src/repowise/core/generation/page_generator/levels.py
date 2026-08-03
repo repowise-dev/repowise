@@ -187,15 +187,45 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     return coros
 
 
+def _scc_titles(scc_groups: list[Any]) -> dict[str, str]:
+    """``scc id -> title``, unique across the run's cycles.
+
+    Names are computed here rather than per page because uniqueness is a
+    property of the set: several cycles through one subsystem all describe
+    themselves the same way — three of this repository's seventeen are
+    "Ingestion Resolvers" — and two identical rows in the tree are
+    indistinguishable to a reader.
+
+    Resolved over the whole set even when the run emits a subset, so a scoped
+    run gives a cycle the same name a full one does.
+    """
+    from ..concept_tree.naming import disambiguate_titles, scc_where
+
+    pairs: list[tuple[str, str]] = []
+    for scc_id, scc_files in scc_groups:
+        where = scc_where(sorted(scc_files))
+        pairs.append((f"Circular Dependency: {where}" if where else "Circular Dependency", scc_id))
+    # Ties break on the cycle's own id, which is a hash of its members, so the
+    # discriminator is stable for an unchanged cycle.
+    titles = disambiguate_titles(pairs)
+    return {
+        scc_id: (title if title != "Circular Dependency" else f"Circular Dependency: {scc_id}")
+        for title, (_t, scc_id) in zip(titles, pairs, strict=True)
+    }
+
+
 def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 3 (scc_page), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
+    titles = _scc_titles(list(run.sel_scc_groups))
     for scc_id, scc_files in run.sel_scc_groups:
         fc_list = [run.file_page_contexts[f] for f in scc_files if f in run.file_page_contexts]
         pid = compute_page_id("scc_page", scc_id)
         if run._emit(pid):
-            coros.append((pid, gen.generate_scc_page(scc_id, scc_files, fc_list)))
+            coros.append(
+                (pid, gen.generate_scc_page(scc_id, scc_files, fc_list, title=titles.get(scc_id)))
+            )
     return coros
 
 

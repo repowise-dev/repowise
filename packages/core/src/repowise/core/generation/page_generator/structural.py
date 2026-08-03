@@ -484,6 +484,10 @@ class StructuralRenderMixin:
             title=title,
             template="scc_page.j2",
             ctx=ctx,
+            # The heading says where the cycle is. The page id stays the hash
+            # and the page still prints it, so a log line or a link naming one
+            # still resolves.
+            page_title=title,
             # Ranked by how many cross-edges each file carries: the highest
             # is the cheapest place to break the cycle. Computed here rather
             # than in Jinja because the template language makes grouping

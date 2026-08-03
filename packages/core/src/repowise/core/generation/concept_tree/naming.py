@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -128,6 +129,47 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     if len(title.split()) < MIN_TITLE_WORDS:
         title = f"{title} Components".strip()
     return title
+
+
+def scc_where(members: list[str], *, max_parts: int = 2) -> str:
+    """Where a dependency cycle lives, from its members' directories.
+
+    A cycle page was titled by the hash of its member list — ``Circular
+    Dependency: scc-0fa5536d91fc``. Nothing a reader could search for names a
+    hash, which is why every one of them on this repository's index had no
+    inbound link at all: the title said only that the page existed.
+
+    Naming it after the place it happens in is the cheapest fix that keeps the
+    page and its id. Structural and repo-agnostic: the directories the members
+    share, or the two most-represented ones when they share nothing, which is
+    the honest description of a cycle that spans subsystems.
+
+    Returns an empty string when there is nothing to say, so the caller keeps
+    the id rather than rendering a title that claims less than the id does.
+    """
+    dirs = [m.rsplit("/", 1)[0] for m in members if "/" in m]
+    if not dirs:
+        return ""
+
+    common = dirs[0].split("/")
+    for d in dirs[1:]:
+        parts = d.split("/")
+        common = [a for a, b in zip(common, parts, strict=False) if a == b]
+        if not common:
+            break
+    if common:
+        # Everything is under one directory, so name that directory. The last
+        # two segments for the same reason concept titles use them: the tail
+        # carries the meaning and the head is usually a container.
+        meaningful = [s for s in common if s.lower() not in _STOP_SEGMENTS] or common
+        return " ".join(_humanise(s) for s in meaningful[-2:])
+
+    # No shared root: the cycle crosses subsystems, which is the interesting
+    # thing about it. Name the biggest two, in size order, ties on path so the
+    # title does not move between runs on an unchanged repository.
+    counts = Counter(d.split("/")[0] for d in dirs)
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:max_parts]
+    return " and ".join(_humanise(seg) for seg, _n in top)
 
 
 def disambiguate_titles(

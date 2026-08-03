@@ -339,10 +339,24 @@ class PerTypeGenerationMixin:
         scc_id: str,
         scc_files: list[str],
         file_contexts: list[FilePageContext],
+        title: str | None = None,
     ) -> GeneratedPage:
+        from ..concept_tree.naming import scc_where
+
         ctx = self._assembler.assemble_scc_page(scc_id, scc_files, file_contexts)
         members = sorted(scc_files)
-        page = self._structural_scc_page(ctx, scc_id, f"Circular Dependency: {scc_id}")
+        # Titled by where the cycle is, not by the hash of its member list. The
+        # id keeps the hash, so nothing is redirected and no link breaks; only
+        # the words a reader and a search see change.
+        #
+        # The caller names the whole set at once, because uniqueness is a
+        # property of the set. This fallback is for a caller that has one
+        # cycle and no set — the name is still better than the hash, and the
+        # collision it cannot see is one two identical names would have had.
+        if not title:
+            where = scc_where(members)
+            title = f"Circular Dependency: {where}" if where else f"Circular Dependency: {scc_id}"
+        page = self._structural_scc_page(ctx, scc_id, title)
         page.metadata["file_paths"] = members
         return page
 
