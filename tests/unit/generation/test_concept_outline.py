@@ -380,3 +380,62 @@ def test_a_trailing_number_stays_with_its_word():
     )
 
     assert deterministic_title(group) == "C4 Nodes"
+
+
+class TestChapterPayload:
+    """A chapter is named at a different altitude, so the namer is told it is one."""
+
+    def _groups(self):
+        from repowise.core.generation.concept_tree.grouping import ConceptGroup
+
+        return [
+            ConceptGroup(
+                members=["src/ingest/main.py"], dirs=["src/ingest"], target_path="src/ingest"
+            ),
+            ConceptGroup(
+                members=["src/ingest/lang/a.py"],
+                dirs=["src/ingest/lang"],
+                target_path="src/ingest/lang",
+            ),
+            ConceptGroup(
+                members=["src/ingest/graph/b.py"],
+                dirs=["src/ingest/graph"],
+                target_path="src/ingest/graph",
+            ),
+        ]
+
+    def test_a_chapter_entry_names_the_parts_it_heads(self):
+        payload, _index = build_payload(
+            self._groups(),
+            chapter_children={"src/ingest": ["src/ingest/lang", "src/ingest/graph"]},
+        )
+        by_dir = {e["dir"]: e for e in payload["groups"]}
+
+        assert by_dir["src/ingest"]["heads"] == ["graph", "lang"]
+
+    def test_only_the_chapter_carries_heads(self):
+        payload, _index = build_payload(
+            self._groups(),
+            chapter_children={"src/ingest": ["src/ingest/lang", "src/ingest/graph"]},
+        )
+        by_dir = {e["dir"]: e for e in payload["groups"]}
+
+        assert "heads" not in by_dir["src/ingest/lang"]
+        assert "heads" not in by_dir["src/ingest/graph"]
+
+    def test_heads_are_basenames_not_paths(self):
+        """A model given a full path quotes it, and a quoted path is a citation."""
+        payload, _index = build_payload(
+            self._groups(),
+            chapter_children={"src/ingest": ["src/ingest/lang", "src/ingest/graph"]},
+        )
+        heads = {e["dir"]: e.get("heads") for e in payload["groups"]}["src/ingest"]
+
+        assert all("/" not in h for h in heads)
+
+    def test_no_chapters_leaves_the_payload_as_it_was(self):
+        before, _ = build_payload(self._groups())
+        after, _ = build_payload(self._groups(), chapter_children={})
+
+        assert before == after
+        assert all("heads" not in e for e in after["groups"])

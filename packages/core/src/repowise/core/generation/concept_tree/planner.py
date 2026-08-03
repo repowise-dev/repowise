@@ -70,6 +70,10 @@ class PlannerInputs:
     entry_points: set[str] = field(default_factory=set)
     #: Test files, kept only so the validator can prove none leaked in.
     test_files: set[str] = field(default_factory=set)
+    #: ``chapter target_path -> the target paths it heads``. A chapter is named
+    #: at a different altitude from a leaf and the payload cannot show the
+    #: difference on its own: both are a directory with files under it.
+    chapter_children: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _reasoning_kwargs(reasoning: str | None) -> dict[str, str]:
@@ -356,6 +360,7 @@ async def name_groups(
         layer_labels=inputs.layer_labels,
         summaries=inputs.summaries,
         entry_points=inputs.entry_points,
+        chapter_children=inputs.chapter_children,
     )
     payload["repo"] = inputs.repo_name
 

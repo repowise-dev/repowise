@@ -233,6 +233,11 @@ Good: "Dependency Graph Construction", "Output Distillation", \
 - {min_words} to {max_words} words. Every title must be unique.
 - An enumerative title is right only when a group genuinely spans several small \
 areas, e.g. "Dead Code, Security, and Change Risk".
+- A group with a `heads` list is a CHAPTER: the other groups it names sit under \
+it, and a reader meets it before any of them. Name the whole subsystem those \
+parts add up to, not the files this group happens to hold and not any one of \
+its parts. If its files are entry points, wiring or shared types for the \
+parts below, the subsystem is still what to name.
 - Where a suggested name is given for a group, prefer it: it is the project's \
 own word for this, taken from its documentation.
 
@@ -309,6 +314,7 @@ def build_payload(
     summaries: dict[str, str] | None = None,
     suggestions: dict[str, str] | None = None,
     entry_points: set[str] | None = None,
+    chapter_children: dict[str, list[str]] | None = None,
     max_filenames: int = 6,
 ) -> tuple[dict[str, Any], dict[str, ConceptGroup]]:
     """Build the namer's payload and the id-to-group index that decodes it.
@@ -359,6 +365,12 @@ def build_payload(
         group_entries = sorted(e.rsplit("/", 1)[-1] for e in entries if e in set(group.members))
         if group_entries:
             entry["entry_points"] = group_entries[:3]
+        heads = (chapter_children or {}).get(group.target_path)
+        if heads:
+            # Basenames only, for the same reason filenames are: a model given
+            # full paths quotes them, and a quoted path is a citation somebody
+            # then has to verify.
+            entry["heads"] = [h.rsplit("/", 1)[-1] for h in sorted(heads)][:8]
         entries_out.append(entry)
 
     return {"repo": "", "groups": entries_out}, index
