@@ -37,10 +37,14 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
       already warned for this HEAD, emit a one-line stale-wiki notice.
 
   PostToolUse → Read
-    * Skeleton nudge: a large Read of an indexed file gets a one-line
-      pointer at the skeleton surface (get_context include=["skeleton"]),
-      with a cheap bounds-arithmetic estimate of the saving. Once per file
-      per session.
+    * Skeleton replacement: an unbounded Read of a large indexed file is
+      served as its skeleton via updatedToolOutput, elision markers and
+      1-indexed line ranges intact, once per file per session. Opt-in
+      (hooks.read_skeleton), default off. This is the only handler that
+      changes what a tool returned rather than adding to it.
+    * Skeleton nudge: the fallback when the replacement does not apply —
+      a one-line pointer at get_context(include=["skeleton"]) with a cheap
+      bounds-arithmetic estimate.
     * Stale-read notice: when this file was Edited/Written after the
       session's previous Read of it, flag that earlier excerpts are stale.
       Once per file per session, never blocking.
@@ -79,6 +83,7 @@ from pathlib import Path
 
 import click
 
+from ._shared import HookResult, as_result
 from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit
@@ -159,6 +164,11 @@ def _run_augment(*, client: str | None = None) -> None:
     )
     if result:
         _emit_response(event, result)
+    if result.on_emitted is not None:
+        # Post-response bookkeeping, for the same reason _count_run is below:
+        # the agent must not wait on accounting.
+        with contextlib.suppress(Exception):
+            result.on_emitted()
     _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
 
 
@@ -182,8 +192,14 @@ def _count_run(cwd: str, session_id: str, event: str, tool: str, *, emitted: boo
         return
 
 
-def _emit_response(event: str, context: str) -> None:
+def _emit_response(event: str, result: HookResult | str) -> None:
     """Write the hook JSON response to stdout.
+
+    Two fields, and they are not alternatives: ``additionalContext`` is
+    appended to what the agent sees, ``updatedToolOutput`` replaces the tool
+    result outright. Claude Code accepts both together, and the Read surface
+    can legitimately want both — a stale-read flag alongside a served
+    skeleton.
 
     Suppressed when an identical emission was just produced (see
     :func:`_claim_emission`) so two concurrently-registered repowise hooks —
@@ -191,15 +207,15 @@ def _emit_response(event: str, context: str) -> None:
     ``~/.claude/settings.json`` by ``repowise init`` — can't echo the same
     enrichment block twice on a single tool event.
     """
-    if not _claim_emission(event, context):
+    result = as_result(result)
+    if not _claim_emission(event, f"{result.context or ''}\x00{result.replacement or ''}"):
         return
-    response = {
-        "hookSpecificOutput": {
-            "hookEventName": event,
-            "additionalContext": context,
-        }
-    }
-    sys.stdout.write(json.dumps(response))
+    payload: dict[str, str] = {"hookEventName": event}
+    if result.context:
+        payload["additionalContext"] = result.context
+    if result.replacement:
+        payload["updatedToolOutput"] = result.replacement
+    sys.stdout.write(json.dumps({"hookSpecificOutput": payload}))
     sys.stdout.flush()
 
 
@@ -259,8 +275,13 @@ def _handle_post_tool_use(
     *,
     client: str | None = None,
     session_id: str = "",
-) -> str | None:
-    """Dispatch PostToolUse events from Claude or Codex."""
+) -> HookResult:
+    """Dispatch PostToolUse events from Claude or Codex.
+
+    Every branch but Read yields plain additional context, so they keep
+    returning ``str | None`` and :func:`as_result` lifts them here — the
+    two-field shape exists in one place rather than in eight.
+    """
     # The edit-tool freshness notice is a Codex-only lifecycle hook, gated on
     # the Codex client so the widened Claude matcher (Read|Edit|Write) can't
     # emit Codex-flavored banners to Claude Code users. Both clients record
@@ -269,10 +290,10 @@ def _handle_post_tool_use(
     if tool_name in _EDIT_TOOL_NAMES:
         if client == "codex":
             _record_edit(tool_input, cwd, session_id)
-            return _handle_post_edit_use(
-                cwd, session_id=session_id, tool_input=tool_input
+            return as_result(
+                _handle_post_edit_use(cwd, session_id=session_id, tool_input=tool_input)
             )
-        return _handle_edit_post(tool_input, cwd, session_id)
+        return as_result(_handle_edit_post(tool_input, cwd, session_id))
     if tool_name == "Read":
         # Read-after-served KPI: logged to the ledger, never spoken about.
         _log_read_after_served(tool_input, tool_output, cwd, session_id)
@@ -280,12 +301,14 @@ def _handle_post_tool_use(
     if tool_name in ("Bash", "PowerShell"):
         # The PowerShell tool (Windows Claude Code) surfaces the same
         # stdout/stderr response shape as Bash — one handler covers both.
-        return _handle_bash_post(tool_input, tool_output, cwd)
+        return as_result(_handle_bash_post(tool_input, tool_output, cwd))
     if tool_name in ("Grep", "Glob"):
-        return _handle_search_post(tool_name, tool_input, tool_output, cwd, session_id)
+        return as_result(
+            _handle_search_post(tool_name, tool_input, tool_output, cwd, session_id)
+        )
     if tool_name.startswith("mcp__") and "repowise" in tool_name.lower():
         # Served-content bookkeeping for the read-after-served KPI. Never
         # emits — measurement only.
         _handle_mcp_read_post(tool_output, cwd, session_id)
-        return None
-    return None
+        return HookResult()
+    return HookResult()

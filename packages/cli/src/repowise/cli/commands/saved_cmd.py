@@ -123,8 +123,10 @@ def saved_command(
         border_style="dim",
         show_footer=True,
         caption=(
-            "Covers the 'repowise distill' command/hook path plus MCP "
-            "counterfactual savings (mcp:<tool>); group by source to split them."
+            "Covers the 'repowise distill' command/hook path, MCP "
+            "counterfactual savings (mcp:<tool>), and the Read hook serving a "
+            "skeleton in place of a whole file (read_skeleton / hook-read); "
+            "group by source to split them."
         ),
     )
     table.add_column(group_by.capitalize(), style="cyan", footer="[bold]TOTAL[/bold]")

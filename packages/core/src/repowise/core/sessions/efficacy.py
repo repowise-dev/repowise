@@ -29,7 +29,7 @@ What counts as acting, per surface
 surface       category        acted when, within the window
 ============= =============== ==================================================
 read          skeleton_nudge  a skeleton/structure call on the named file
-read          reread          *respected*: the file is not re-read in full again
+read          skeleton_served n/a — the hook already did it (see below)
 read          stale_read      n/a — a warning, not a pointer
 search        triage          a named file is touched
 search        rescue          the named file or symbol is touched
@@ -41,6 +41,14 @@ A ranged Read after a skeleton nudge is deliberately **not** acting: reading a
 range of a file you just read in full is ordinary edit-prep and cannot be
 attributed to the nudge. It is tracked separately as
 :data:`AMBIGUOUS` evidence so the generous bound stays reportable.
+
+The skeleton *replacement* rows (``skeleton_served`` and its two recovery
+categories) are structurally unlike the rest: their text goes out as
+``updatedToolOutput``, so it never appears as a transcript
+``hook_additional_context`` line and this module's pattern pass will never
+see it. That is fine and deliberate — the hook writes those rows directly and
+Gate A is a ratio of row counts, not a question about what the agent did
+next. There is no action to look for, because the hook took it.
 
 Surfaces with no recommended action (``stale_read``) and surfaces that emit
 nothing at all (``read_enrich``'s read-after-served KPI) are never marked
@@ -79,12 +87,27 @@ CLASSIFIED_SURFACES = ("read", "search", "fix_history")
 #: firing is not a failure. Reported as a count, excluded from rates. The
 #: stale-read notice belongs here because the behavior it asks for — stop
 #: reasoning from a pre-edit excerpt — leaves no trace in the transcript.
-NO_ACTION_EXPECTED = frozenset({("read", "stale_read"), ("read_enrich", "read_after_served")})
+NO_ACTION_EXPECTED = frozenset(
+    {
+        ("read", "stale_read"),
+        ("read_enrich", "read_after_served"),
+        # The skeleton replacement and its two recovery counters. Nothing is
+        # asked of the agent, so an unacted row is not a failure — these are
+        # Gate A's numerator and denominator, not an adoption rate.
+        ("read", "skeleton_served"),
+        ("read", "skeleton_recovered_full"),
+        ("read", "skeleton_ranged"),
+    }
+)
 
 #: Firings whose recommended outcome is a *non*-action, scored as compliance
 #: (did the agent avoid re-offending?) rather than adoption. Same ``acted``
 #: column, and ``repowise hook stats`` labels these "respected" so the two are
 #: never read as the same measurement.
+#:
+#: ``read``/``reread`` is retired — the notice no longer fires (see
+#: ``augment_cmd/read_state.py``). The classifier stays so historical rows and
+#: transcript backfills still settle correctly; nothing new lands here.
 COMPLIANCE_CATEGORIES = frozenset({("read", "reread")})
 
 

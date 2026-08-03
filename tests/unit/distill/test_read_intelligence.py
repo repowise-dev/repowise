@@ -3,6 +3,11 @@
 Exercises the augment handlers directly (the `_handle_post_tool_use`
 dispatch layer), below `_emit_response`'s cross-process dedup, so the
 per-session state file is the only rate limiter under test.
+
+Scope: the *additional context* half of the Read surface — what the hook says
+alongside a tool result. The half that replaces a tool result outright lives
+in `tests/unit/cli/test_augment_read_skeleton.py`; the helpers below read
+`HookResult.context` so a replacement can never be mistaken for a notice here.
 """
 
 from __future__ import annotations
@@ -52,22 +57,31 @@ def _write_big_file(repo: Path, rel: str, lines: int = 600) -> Path:
     return path
 
 
+def _post(tool: str, **kwargs) -> str | None:
+    """Dispatch a PostToolUse event and return only what the agent is *told*.
+
+    Every assertion in this module is about ``additionalContext``. Unwrapping
+    here keeps a stray ``updatedToolOutput`` from reading as a notice.
+    """
+    return _handle_post_tool_use(tool, **kwargs).context
+
+
 def _read_event(repo: Path, rel: str, num_lines: int = 150, session: str = SESSION):
-    return _handle_post_tool_use(
+    return _post(
         "Read",
-        {"file_path": str(repo / rel)},
-        {"file": {"numLines": num_lines}},
-        str(repo),
+        tool_input={"file_path": str(repo / rel)},
+        tool_output={"file": {"numLines": num_lines}},
+        cwd=str(repo),
         session_id=session,
     )
 
 
 def _edit_event(repo: Path, rel: str, tool: str = "Edit", session: str = SESSION):
-    return _handle_post_tool_use(
+    return _post(
         tool,
-        {"file_path": str(repo / rel)},
-        {"success": True},
-        str(repo),
+        tool_input={"file_path": str(repo / rel)},
+        tool_output={"success": True},
+        cwd=str(repo),
         session_id=session,
     )
 
@@ -89,12 +103,8 @@ class TestSkeletonNudge:
 
         first = _read_event(repo, "src/big.py")
         assert first is not None and 'include=["skeleton"]' in first
-        # Second read of the same big file surfaces a re-read notice (content
-        # already in context), not a second skeleton pointer.
-        second = _read_event(repo, "src/big.py")
-        assert second is not None and 'include=["skeleton"]' not in second
-        assert "already read" in second
-        # Third read: both the skeleton and re-read notices are once-per-file.
+        # Every subsequent read of the same file this session is silent.
+        assert _read_event(repo, "src/big.py") is None
         assert _read_event(repo, "src/big.py") is None
         # A new session resets the claim — skeleton pointer fires again.
         third_session = _read_event(repo, "src/big.py", session="session-2")
@@ -117,11 +127,11 @@ class TestSkeletonNudge:
     def test_silent_outside_any_repowise_repo(self, tmp_path: Path) -> None:
         plain = tmp_path / "plain"
         _write_big_file(plain, "src/big.py")
-        result = _handle_post_tool_use(
+        result = _post(
             "Read",
-            {"file_path": str(plain / "src/big.py")},
-            {"file": {"numLines": 150}},
-            str(plain),
+            tool_input={"file_path": str(plain / "src/big.py")},
+            tool_output={"file": {"numLines": 150}},
+            cwd=str(plain),
             session_id=SESSION,
         )
         assert result is None
@@ -199,11 +209,11 @@ class TestStaleReadNotice:
 
     def test_edit_outside_repo_records_nothing(self, repo: Path, tmp_path: Path) -> None:
         outside = tmp_path.parent / "elsewhere.py"
-        result = _handle_post_tool_use(
+        result = _post(
             "Edit",
-            {"file_path": str(outside)},
-            {"success": True},
-            str(repo),
+            tool_input={"file_path": str(outside)},
+            tool_output={"success": True},
+            cwd=str(repo),
             session_id=SESSION,
         )
         assert result is None
@@ -211,51 +221,27 @@ class TestStaleReadNotice:
         assert state["edits"] == {}
 
 
-class TestRereadNotice:
-    def test_full_reread_of_unchanged_file_is_flagged(self, repo: Path) -> None:
+class TestRetiredRereadNotice:
+    """The re-read notice was deleted; these keep it deleted.
+
+    It scored 100% "respected" only because agents rarely read the same file a
+    third time — it was measuring the base rate. The case it argued is now
+    handled by serving a skeleton instead of saying so.
+    """
+
+    def test_a_full_reread_of_an_unchanged_file_says_nothing(self, repo: Path) -> None:
         _write_big_file(repo, "a.py", lines=200)
-        assert _read_event(repo, "a.py", num_lines=150) is None  # first read
-        notice = _read_event(repo, "a.py", num_lines=150)
-        assert notice is not None
-        assert "a.py" in notice and "already read" in notice
-        assert "get_symbol" in notice
+        for _ in range(3):
+            assert _read_event(repo, "a.py", num_lines=150) is None
 
-    def test_notice_is_once_per_file_per_session(self, repo: Path) -> None:
-        _write_big_file(repo, "a.py", lines=200)
-        _read_event(repo, "a.py", num_lines=150)
-        assert _read_event(repo, "a.py", num_lines=150) is not None
-        assert _read_event(repo, "a.py", num_lines=150) is None
-
-    def test_partial_reread_is_not_flagged(self, repo: Path) -> None:
-        # A targeted range re-read is the behavior we recommend; never nag it.
-        _write_big_file(repo, "a.py", lines=200)
-        _read_event(repo, "a.py", num_lines=150)
-        result = _handle_post_tool_use(
-            "Read",
-            {"file_path": str(repo / "a.py"), "offset": 40, "limit": 30},
-            {"file": {"numLines": 30}},
-            str(repo),
-            session_id=SESSION,
-        )
-        assert result is None
-
-    def test_small_file_reread_is_not_flagged(self, repo: Path) -> None:
-        _write_big_file(repo, "a.py", lines=10)
-        assert _read_event(repo, "a.py", num_lines=10) is None
-        assert _read_event(repo, "a.py", num_lines=10) is None
-
-    def test_edit_between_reads_is_stale_not_reread(self, repo: Path) -> None:
+    def test_an_edit_between_reads_still_flags_staleness(self, repo: Path) -> None:
+        """The notice that survived, and the one that did not, in one place."""
         _write_big_file(repo, "a.py", lines=200)
         _read_event(repo, "a.py", num_lines=150)
         _edit_event(repo, "a.py")
         notice = _read_event(repo, "a.py", num_lines=150)
         assert notice is not None and "stale" in notice
         assert "already read" not in notice
-
-    def test_new_session_forgets_history(self, repo: Path) -> None:
-        _write_big_file(repo, "a.py", lines=200)
-        _read_event(repo, "a.py", num_lines=150)
-        assert _read_event(repo, "a.py", num_lines=150, session="other") is None
 
 
 class TestSessionState:
@@ -293,11 +279,11 @@ class TestSessionState:
 
     def test_codex_edit_banner_still_fires_and_records(self, repo: Path) -> None:
         (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
-        result = _handle_post_tool_use(
+        result = _post(
             "Edit",
-            {"file_path": str(repo / "a.py")},
-            {"success": True},
-            str(repo),
+            tool_input={"file_path": str(repo / "a.py")},
+            tool_output={"success": True},
+            cwd=str(repo),
             client="codex",
             session_id=SESSION,
         )

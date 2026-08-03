@@ -237,6 +237,31 @@ distill:
   `commands.enabled: false`, so a rewrite hook installed globally from another
   repo stays inert in this one.
 
+### The `hooks:` block
+
+Opt-in behaviour for the agent hooks ([HOOKS.md](../agent/HOOKS.md)). Absent
+means every key below is off.
+
+```yaml
+hooks:
+  read_skeleton: false           # serve large indexed files as skeletons
+```
+
+- `read_skeleton` lets the PostToolUse Read hook return the *skeleton* of a
+  file instead of the file, for an unbounded Read of a large indexed file, once
+  per file per session. Signatures stay; bodies become `... N lines (a-b)`
+  markers carrying 1-indexed ranges, so any elided span can be pulled back with
+  a ranged Read — and reading the file a second time returns it whole.
+  Savings land in `repowise saved` under the `read_skeleton` filter.
+- **Default off, deliberately.** This is the only hook that changes what a tool
+  returned rather than adding to it, and it is being measured against a
+  pass/fail threshold set before it was built. Turn it on if you want the
+  token saving now; leave it off if you want the agent to see exactly what it
+  asked for.
+- `REPOWISE_HOOK_READ_SKELETON=1` overrides the file for one session.
+  Requires Claude Code 2.1.218+ (older clients silently fall back to the
+  one-line pointer at `get_context(include=["skeleton"])`).
+
 ### The `mcp:` block
 
 Controls which tools the MCP server advertises. The default surface is curated

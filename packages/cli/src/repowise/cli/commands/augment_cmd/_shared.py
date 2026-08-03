@@ -9,8 +9,41 @@ from __future__ import annotations
 
 import tempfile
 import time
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
+
+
+class HookResult(NamedTuple):
+    """What one PostToolUse handler wants the hook to do.
+
+    ``context`` is appended to what the agent sees (``additionalContext``);
+    ``replacement`` *replaces* the tool result outright
+    (``updatedToolOutput``). Most handlers only ever set ``context``, so
+    :func:`as_result` lifts their bare ``str | None`` into this shape and the
+    two-field response is assembled in exactly one place.
+
+    ``on_emitted`` is bookkeeping the handler wants done *after* the response
+    reaches the agent — savings accounting, counters. Anything here is off the
+    critical path by construction, which is the only way to keep it honest:
+    a docstring promising "this runs after the response" is not enforcement,
+    and the first version of this got it wrong.
+    """
+
+    context: str | None = None
+    replacement: str | None = None
+    on_emitted: Callable[[], None] | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.context or self.replacement)
+
+
+def as_result(value: HookResult | str | None) -> HookResult:
+    """Normalize a handler return into a :class:`HookResult`."""
+    if isinstance(value, HookResult):
+        return value
+    return HookResult(context=value or None)
 
 #: Wall clock at the first moment repowise code runs in this hook process.
 #: Every ledger row carries the elapsed time to its own write, which is the

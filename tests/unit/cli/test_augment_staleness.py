@@ -298,9 +298,11 @@ class TestPowerShellDispatch:
             str(repo_path),
             session_id="s",
         )
-        assert msg is not None
-        assert "Wiki is stale" in msg
-        assert new_head[:8] in msg
+        assert msg.context is not None
+        assert "Wiki is stale" in msg.context
+        assert new_head[:8] in msg.context
+        # Only the Read surface ever replaces a tool result.
+        assert msg.replacement is None
 
     def test_powershell_failed_command_is_silent(self, repo):
         from repowise.cli.commands.augment_cmd import _handle_post_tool_use
@@ -321,7 +323,7 @@ class TestPowerShellDispatch:
             str(repo_path),
             session_id="s",
         )
-        assert msg is None
+        assert not msg
 
 
 class TestDocsEnabledWording:

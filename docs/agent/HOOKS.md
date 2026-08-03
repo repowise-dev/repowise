@@ -127,10 +127,27 @@ what it depends on, and that it is a hotspot, without a separate MCP call:
 in `.repowise/state.json` and, if the wiki is behind, reminds the agent to run
 `repowise update` so it never silently works from outdated docs.
 
-**Read-intelligence.** On `Read` of an indexed file, repowise can nudge the agent
-toward the cheaper `get_context(..., include=["skeleton"])` for structure-level
-questions, and emit a per-file stale-read notice when the file changed after
-indexing.
+**Read-intelligence.** On `Read` of an indexed file, repowise emits a per-file
+stale-read notice when the file changed after the session's previous read of it,
+and points at the cheaper `get_context(..., include=["skeleton"])` for
+structure-level questions.
+
+With `hooks.read_skeleton: true` in `.repowise/config.yaml` (**off by default**,
+see [CONFIG.md](../reference/CONFIG.md)), that pointer becomes an action: an
+unbounded `Read` of a large indexed file returns the file's *skeleton* instead of
+the file, once per file per session. Signatures stay, keeping their real line
+numbers; bodies collapse to `... N lines (a-b)` markers carrying 1-indexed ranges,
+so the agent can range-read any elided span back — the same reversibility contract
+`repowise distill` makes for shell output. Reading the file again with no range
+returns it whole. Savings appear in `repowise saved` under the `read_skeleton`
+filter.
+
+This is the only hook that replaces a tool result rather than adding to it, which
+is why it ships opt-in and why the skeleton always says what it removed. One
+consequence is worth knowing: a Read the agent saw only as a skeleton still
+satisfies Claude Code's read-before-edit precondition, so an `Edit` (especially
+with `replace_all`) or a `Write` could touch bodies it never saw. Editing such a
+file raises a one-line warning, once per file, until the file is read in full.
 
 **Edit-time "governed by" decisions.** When the agent edits a file governed by an
 architectural decision (via `decision_node_links`), it gets a one-line notice

@@ -14,7 +14,9 @@ same job for the ``repowise-rewrite`` PreToolUse hook.
 
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +28,9 @@ _HEAVY_PREFIXES = (
     "networkx",
     "scipy",
     "sqlalchemy",
+    # 216ms, and it hid behind the others: the Read path reached it through
+    # distill.store's module scope while every other guard here still passed.
+    "structlog",
     "repowise.core.workspace",
     "repowise.core.ingestion",
     "repowise.core.pipeline",
@@ -78,6 +83,102 @@ def test_the_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
         env=_fake_home(tmp_path),
     )
     assert heavy == "", f"the hook self-heal pulled in:\n{heavy}"
+
+
+def _read_payload_probe(repo: Path, rel: str) -> str:
+    """Source that fires the PostToolUse Read hook against a real file."""
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(repo / rel)},
+        "tool_response": {"file": {"numLines": 400}},
+        "cwd": str(repo),
+        "session_id": "perf",
+    }
+    return (
+        "import sys, json, io; "
+        f"sys.stdin = io.StringIO({json.dumps(payload)!r}); "
+        "from repowise.cli.commands.augment_cmd import _run_augment; "
+        "_run_augment(client=None); "
+    )
+
+
+def _indexed_repo(tmp_path: Path, *, opted_in: bool) -> tuple[Path, str]:
+    """A repo the Read hook will take all the way to the skeleton path."""
+    repo = tmp_path / "repo"
+    (repo / ".repowise").mkdir(parents=True)
+    rel = "big.py"
+    lines = []
+    for i in range(60):
+        lines.append(f"def func_{i}(a, b):")
+        lines.extend(f"    x{j} = a + b + {j}" for j in range(20))
+        lines.append("")
+    source = "\n".join(lines)
+    (repo / rel).write_text(source, encoding="utf-8")
+
+    con = sqlite3.connect(repo / ".repowise" / "wiki.db")
+    con.execute(
+        "CREATE TABLE wiki_symbols (file_path TEXT, name TEXT, kind TEXT, "
+        "signature TEXT, start_line INTEGER, end_line INTEGER)"
+    )
+    for i in range(60):
+        start = i * 22 + 1
+        con.execute(
+            "INSERT INTO wiki_symbols VALUES (?, ?, ?, ?, ?, ?)",
+            (rel, f"func_{i}", "function", f"def func_{i}(a, b)", start, start + 20),
+        )
+    con.commit()
+    con.close()
+
+    if opted_in:
+        (repo / ".repowise" / "config.yaml").write_text(
+            "hooks:\n  read_skeleton: true\n", encoding="utf-8"
+        )
+    return repo, rel
+
+
+def test_a_read_that_serves_a_skeleton_imports_nothing_heavy(tmp_path: Path) -> None:
+    """The Read hook's most expensive path, guarded at its most expensive.
+
+    ``repowise.core.distill.skeleton`` used to cost 556ms to import — not for
+    anything in the skeleton, but because a package ``__init__`` runs on any
+    submodule import and ``budget.py`` reached into ``generation.context`` for
+    a four-line heuristic. Both are fixed; this is what keeps them fixed.
+    """
+    repo, rel = _indexed_repo(tmp_path, opted_in=True)
+    env = _fake_home(tmp_path)
+    env["REPOWISE_HOOK_UPDATED_OUTPUT"] = "1"
+    code = (
+        _read_payload_probe(repo, rel)
+        + f"heavy = sorted(m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r})); "
+        "print('\\n'.join(heavy), file=sys.stderr)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env
+    )
+    # Guard the guard: a gate that silently stopped firing would pass an
+    # import-graph assertion trivially, which is how this test would rot.
+    assert "updatedToolOutput" in out.stdout, "the probe did not reach the skeleton path"
+    assert out.stderr.strip() == "", f"a skeleton-serving Read pulled in:\n{out.stderr}"
+
+
+def test_a_read_in_a_repo_that_did_not_opt_in_imports_nothing_heavy(tmp_path: Path) -> None:
+    """Off by default has to be *cheap* by default, not merely quiet."""
+    repo, rel = _indexed_repo(tmp_path, opted_in=False)
+    code = (
+        _read_payload_probe(repo, rel)
+        + f"heavy = sorted(m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r})); "
+        "print('\\n'.join(heavy), file=sys.stderr)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_fake_home(tmp_path),
+    )
+    assert "updatedToolOutput" not in out.stdout, "an opted-out repo had its Read replaced"
+    assert out.stderr.strip() == "", f"an opted-out Read pulled in:\n{out.stderr}"
 
 
 def test_a_silent_invocation_imports_nothing_heavy(tmp_path: Path) -> None:
