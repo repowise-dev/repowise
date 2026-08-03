@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from repowise.cli.commands.update_cmd import (
     _infer_legacy_docs_enabled,
+)
+from repowise.cli.commands.update_cmd import (
     _resolve_index_only_mode as _resolve_mode,
 )
 

@@ -24,20 +24,20 @@ import re
 from dataclasses import dataclass, field
 
 __all__ = [
-    "RATIONALE_MARKERS",
     "CAUSAL_MARKERS",
-    "LINE_PREFIXES",
-    "C_BLOCK_EXTS",
     "CODE_EXTENSIONS",
+    "C_BLOCK_EXTS",
+    "LINE_PREFIXES",
+    "RATIONALE_MARKERS",
     "CommentBlock",
     "HarvestedComment",
     "extract_comment_blocks",
-    "has_rationale_marker",
+    "harvest_file_rationale",
     "has_causal_marker",
-    "marker_strength",
+    "has_rationale_marker",
     "is_license_or_boilerplate",
     "looks_like_commented_out_code",
-    "harvest_file_rationale",
+    "marker_strength",
 ]
 
 # ---------------------------------------------------------------------------

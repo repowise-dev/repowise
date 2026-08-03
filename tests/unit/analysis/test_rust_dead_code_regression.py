@@ -6,8 +6,6 @@ does NOT produce a false positive in dead code analysis.
 from __future__ import annotations
 
 import networkx as nx
-import pytest
-from pathlib import Path
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 
@@ -16,38 +14,44 @@ class TestRustNeverFlagPatterns:
     """Validate never-flag patterns cover Rust conventions."""
 
     def test_build_rs_never_flagged(self):
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         import fnmatch
+
+        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         path = "crates/typst-pdf/build.rs"
         assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
 
     def test_examples_never_flagged(self):
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         import fnmatch
+
+        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         path = "examples/hello.rs"
         assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
 
     def test_benches_never_flagged(self):
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         import fnmatch
+
+        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         path = "crates/typst/benches/bench.rs"
         assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
 
     def test_tests_dir_never_flagged(self):
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         import fnmatch
+
+        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         path = "tests/src/run.rs"
         assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
 
     def test_bin_target_never_flagged(self):
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         import fnmatch
+
+        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         path = "crates/typst-cli/src/bin/typst.rs"
         assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
 
     def test_fuzz_target_never_flagged(self):
-        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         import fnmatch
+
+        from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
         path = "tests/fuzz/fuzz_targets/compile.rs"
         assert any(fnmatch.fnmatch(path, p) for p in _NEVER_FLAG_PATTERNS)
 
@@ -131,6 +135,7 @@ class TestProcMacroCrateDetection:
         (crate_dir / "src" / "lib.rs").write_text("// proc-macro crate\n")
 
         import networkx as nx
+
         from repowise.core.ingestion.resolvers.context import ResolverContext
         from repowise.core.ingestion.resolvers.rust_workspace import (
             get_or_build_cargo_workspace_index,

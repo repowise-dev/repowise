@@ -15,11 +15,9 @@ import click
 import pytest
 
 from repowise.cli.helpers import (
-    CommandTarget,
     WorkspaceNotFound,
     resolve_command_target,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

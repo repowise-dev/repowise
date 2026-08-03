@@ -31,9 +31,9 @@ from .data import (
     DecisionSummary,
     EditorFileData,
     HotspotFile,
+    KeyModule,
     KGLayerSummary,
     KGTourStepSummary,
-    KeyModule,
 )
 from .tech_stack import detect_build_commands, detect_tech_stack
 

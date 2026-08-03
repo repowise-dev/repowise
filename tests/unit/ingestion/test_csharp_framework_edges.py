@@ -18,10 +18,9 @@ import networkx as nx
 
 from repowise.core.ingestion.dynamic_hints.dotnet import DotNetDynamicHints
 from repowise.core.ingestion.framework_edges import add_framework_edges
-from repowise.core.ingestion.models import FileInfo, ParsedFile, Symbol
+from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
-
 
 # ---------------------------------------------------------------------------
 # Framework edges

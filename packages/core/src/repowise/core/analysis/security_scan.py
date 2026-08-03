@@ -124,5 +124,5 @@ class SecurityScanner:
                         "detected_at": now,
                     },
                 )
-            except Exception:  # noqa: BLE001 — table may not exist pre-migration
+            except Exception:
                 break

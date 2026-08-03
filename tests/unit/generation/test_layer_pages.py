@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from repowise.core.generation.context_assembler import LayerPageContext
 from repowise.core.generation.models import GENERATION_LEVELS, PageType
-
 
 # ---------------------------------------------------------------------------
 # Model tests
@@ -195,6 +193,7 @@ class TestBuildLevel5Coros:
     def _make_run(self, tmp_path, layers, nodes=None, edges=None, tour=None):
         """Build a minimal mock _GenerationRun with KG context."""
         from unittest.mock import MagicMock
+
         from repowise.core.generation.kg_context import KnowledgeGraphContext
 
         if nodes is None:
@@ -264,6 +263,7 @@ class TestBuildLevel5Coros:
 
     def test_no_kg_returns_empty(self):
         from unittest.mock import MagicMock
+
         from repowise.core.generation.kg_context import KnowledgeGraphContext
         from repowise.core.generation.page_generator.levels import build_level5_coros
 

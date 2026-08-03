@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -380,7 +380,7 @@ def _scan_spring_autoconfig(
     return {k: tuple(v) for k, v in result.items()}
 
 
-def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
+def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     """Build the JVM workspace index from all ``.java`` and ``.kt`` files in the path set.
 
     One walk over the path set; each file read at most once (via
@@ -464,7 +464,7 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
 _INDEX_KEY = "_jvm_workspace_index"
 
 
-def get_or_build_jvm_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
+def get_or_build_jvm_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     """Return the cached JvmWorkspaceIndex, building it on first access."""
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:

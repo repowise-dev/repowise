@@ -18,7 +18,6 @@ from repowise.core.workspace.cross_repo import (
 from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
 from repowise.core.workspace.system_graph import build_system_graph
 
-
 # ---------------------------------------------------------------------------
 # Fixture builders (mirror test_system_graph.py)
 # ---------------------------------------------------------------------------

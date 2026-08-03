@@ -23,7 +23,6 @@ from repowise.core.persistence.database import init_db
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

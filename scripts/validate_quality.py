@@ -15,11 +15,10 @@ Usage:
 from __future__ import annotations
 
 import sys
-from collections import Counter
 from pathlib import Path
 
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
-from repowise.core.ingestion.language_data import BUILTIN_CALLS, BUILTIN_PARENTS, get_builtin_calls
+from repowise.core.ingestion.language_data import BUILTIN_PARENTS, get_builtin_calls
 
 
 def main() -> None:
@@ -43,7 +42,7 @@ def main() -> None:
     print(f"Parsed {len(parsed_files)} files")
 
     # --- Check 1: Builtin call filtering ---
-    print(f"\n--- CHECK 1: Builtin Call Filtering ---")
+    print("\n--- CHECK 1: Builtin Call Filtering ---")
     total_calls = 0
     builtin_leaks = []
     for pf in parsed_files:
@@ -62,7 +61,7 @@ def main() -> None:
         print(f"  PASS: {total_calls} calls extracted, 0 builtins leaked")
 
     # --- Check 2: Heritage builtin filtering ---
-    print(f"\n--- CHECK 2: Heritage Builtin Filtering ---")
+    print("\n--- CHECK 2: Heritage Builtin Filtering ---")
     total_heritage = 0
     heritage_leaks = []
     for pf in parsed_files:
@@ -87,7 +86,7 @@ def main() -> None:
     graph = builder.build()
 
     # --- Check 3: Cross-language call edges ---
-    print(f"\n--- CHECK 3: Cross-Language Call Edges ---")
+    print("\n--- CHECK 3: Cross-Language Call Edges ---")
     cross_lang_edges = []
     for u, v, d in graph.edges(data=True):
         if d.get("edge_type") != "calls":
@@ -109,7 +108,7 @@ def main() -> None:
         print(f"  PASS: {call_edges} call edges, 0 cross-language")
 
     # --- Check 4: Community detection quality ---
-    print(f"\n--- CHECK 4: Community Detection ---")
+    print("\n--- CHECK 4: Community Detection ---")
     cd = builder.community_detection()
     info = builder.community_info()
 
@@ -137,24 +136,24 @@ def main() -> None:
         for bl in bad_labels[:5]:
             print(bl)
     else:
-        print(f"  PASS: All communities have meaningful labels")
+        print("  PASS: All communities have meaningful labels")
 
     if test_dominated:
         print(f"  WARN: {len(test_dominated)} test-dominated communities:")
         for td in test_dominated[:5]:
             print(td)
     else:
-        print(f"  PASS: No test-dominated communities")
+        print("  PASS: No test-dominated communities")
 
     # Print top 10 communities
-    print(f"\n  Top communities:")
+    print("\n  Top communities:")
     for cid, ci in sorted(info.items(), key=lambda x: -x[1].size)[:10]:
         if ci.size <= 1:
             continue
         print(f"    [{cid}] {ci.label:20s}  size={ci.size:3d}  cohesion={ci.cohesion:.3f}  lang={ci.dominant_language}")
 
     # --- Check 5: Execution flows ---
-    print(f"\n--- CHECK 5: Execution Flows ---")
+    print("\n--- CHECK 5: Execution Flows ---")
     try:
         report = builder.execution_flows()
         if report.flows:
@@ -171,13 +170,13 @@ def main() -> None:
             if bad_entries:
                 print(f"  WARN: {len(bad_entries)} demo/test/script entry points found")
             else:
-                print(f"  PASS: No demo/test entry points in flows")
+                print("  PASS: No demo/test entry points in flows")
 
             # Check crosses_community
             crossing = [f for f in report.flows if f.crosses_community]
             print(f"  {len(crossing)}/{len(report.flows)} flows cross community boundaries")
         else:
-            print(f"  No flows detected (may be too few call edges)")
+            print("  No flows detected (may be too few call edges)")
     except Exception as exc:
         print(f"  ERROR: {exc}")
 

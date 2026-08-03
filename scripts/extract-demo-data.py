@@ -2,7 +2,6 @@
 """Extract data from fastapi/.repowise/wiki.db into static JSON files for the hosted frontend demo."""
 
 import json
-import os
 import sqlite3
 from collections import defaultdict
 from pathlib import Path

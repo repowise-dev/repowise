@@ -15,9 +15,9 @@ import pytest
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
+    crud,
     upsert_repository,
 )
-from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge
 from repowise.server.schemas import (
     ArchitectureGraphResponse,

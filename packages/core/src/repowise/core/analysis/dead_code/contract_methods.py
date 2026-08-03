@@ -26,7 +26,6 @@ overrides without static callers, etc.
 
 from __future__ import annotations
 
-
 # Method names reserved by COM / IUnknown / IDispatch. Case-sensitive —
 # Windows COM uses PascalCase universally.
 _COM_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({

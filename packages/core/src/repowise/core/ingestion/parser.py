@@ -25,7 +25,7 @@ Capture-name conventions (shared across ALL .scm files):
 from __future__ import annotations
 
 import re
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 import structlog
@@ -90,7 +90,7 @@ QUERIES_DIR = Path(__file__).parent / "queries"
 _MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
 
 
-@lru_cache(maxsize=None)
+@cache
 def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
     """Process-wide cache of compiled tree-sitter Query objects.
 

@@ -25,7 +25,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.persistence.models import GitMetadata
 from repowise.server.schemas import ReviewerSuggestion
 
-
 # Tunable weights.
 _W_DIRECT = 1.0
 _W_COCHANGE = 0.5

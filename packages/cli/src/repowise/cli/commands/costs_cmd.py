@@ -13,7 +13,6 @@ from repowise.cli.helpers import (
     console,
     get_db_url_for_repo,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 

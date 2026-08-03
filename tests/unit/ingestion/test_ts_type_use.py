@@ -20,7 +20,6 @@ from datetime import datetime
 from pathlib import Path
 
 import networkx as nx
-import pytest
 
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.ingestion.graph import GraphBuilder

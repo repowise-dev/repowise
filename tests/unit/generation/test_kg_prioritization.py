@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from repowise.core.generation.selection.scoring import score_file
 from repowise.core.generation.page_generator.tiering import partition_file_tiers
-
+from repowise.core.generation.selection.scoring import score_file
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -15,7 +15,11 @@ Built-in embedders:
 """
 
 from repowise.core.providers.embedding.base import Embedder, MockEmbedder
-from repowise.core.providers.embedding.registry import get_embedder, list_embedders, register_embedder
+from repowise.core.providers.embedding.registry import (
+    get_embedder,
+    list_embedders,
+    register_embedder,
+)
 
 __all__ = [
     "Embedder",

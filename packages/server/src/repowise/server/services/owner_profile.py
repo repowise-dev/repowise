@@ -31,7 +31,6 @@ from repowise.core.ingestion.git_indexer import (
 )
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 
-
 # ---------------------------------------------------------------------------
 # Identity
 # ---------------------------------------------------------------------------

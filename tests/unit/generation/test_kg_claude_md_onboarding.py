@@ -14,17 +14,15 @@ from repowise.core.generation.editor_files.data import (
     KGLayerSummary,
     KGTourStepSummary,
 )
+from repowise.core.generation.kg_context import KnowledgeGraphContext
 from repowise.core.generation.onboarding.signals import OnboardingSignals
+from repowise.core.generation.onboarding.subkinds.codebase_map import (
+    CodebaseMapContext,
+)
 from repowise.core.generation.onboarding.subkinds.how_it_works import (
     HowItWorksContext,
     _build,
 )
-from repowise.core.generation.onboarding.subkinds.codebase_map import (
-    CodebaseMapContext,
-    _build as _build_codebase_map,
-)
-from repowise.core.generation.kg_context import KnowledgeGraphContext
-
 
 # ---------------------------------------------------------------------------
 # Template helpers

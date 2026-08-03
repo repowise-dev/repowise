@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 
-def _record_components(record_node: "Node", src: str) -> list[tuple[str, str]]:
+def _record_components(record_node: Node, src: str) -> list[tuple[str, str]]:
     """Return [(name, type_text), ...] for each component of a record header."""
     params = record_node.child_by_field_name("parameters")
     if params is None:
@@ -51,7 +51,7 @@ def _record_components(record_node: "Node", src: str) -> list[tuple[str, str]]:
 
 
 def java_record_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Emit canonical constructor + accessors + equals/hashCode/toString."""
     if "record" not in src:

@@ -25,12 +25,12 @@ from .pricing import _lookup_cost
 from .types import CostEstimate, CostRange, PageTypePlan
 
 __all__ = [
+    "DEFAULT_COVERAGE_OPTIONS",
+    "RECOMMENDED_COVERAGE",
     "CostEstimate",
     "CostRange",
     "CoverageOption",
-    "DEFAULT_COVERAGE_OPTIONS",
     "PageTypePlan",
-    "RECOMMENDED_COVERAGE",
     "_lookup_cost",
     "approximate_generation_plan",
     "build_generation_plan",

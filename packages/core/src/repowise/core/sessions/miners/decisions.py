@@ -366,7 +366,9 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
                 continue
             if event.kind not in ("user", "assistant"):
                 continue
+            print(event.kind, repr(event.text))
             sentences = _choice_sentences(event.text)
+            print("CHOICES:", _choice_sentences(event.text))
             if sentences:
                 _add(
                     SessionCandidate(

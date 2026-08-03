@@ -77,7 +77,7 @@ _TYPE_LOGGER_ANNOTATIONS = {
 }
 
 
-def _bare_annotation_names(modifiers_node: "Node", src: str) -> set[str]:
+def _bare_annotation_names(modifiers_node: Node, src: str) -> set[str]:
     """Return the bare names of every annotation on a modifiers node.
 
     ``@lombok.Data`` / ``@Data`` / ``@Data(staticConstructor="of")`` all
@@ -95,7 +95,7 @@ def _bare_annotation_names(modifiers_node: "Node", src: str) -> set[str]:
     return names
 
 
-def _field_info(field_node: "Node", src: str) -> tuple[str, str, bool, set[str]] | None:
+def _field_info(field_node: Node, src: str) -> tuple[str, str, bool, set[str]] | None:
     """Return (field_name, type_text, is_final, field_annotations) or None.
 
     A single ``field_declaration`` can declare multiple variables
@@ -137,7 +137,7 @@ def _field_info(field_node: "Node", src: str) -> tuple[str, str, bool, set[str]]
     return name, type_text, is_final, field_annotations
 
 
-def _class_fields(class_node: "Node", src: str) -> list[tuple[str, str, bool, set[str]]]:
+def _class_fields(class_node: Node, src: str) -> list[tuple[str, str, bool, set[str]]]:
     """Return a list of (name, type_text, is_final, annotations) per declared field."""
     fields: list[tuple[str, str, bool, set[str]]] = []
     body = class_node.child_by_field_name("body")
@@ -202,7 +202,7 @@ def _add(out: list[Symbol], file_info: FileInfo, *, name: str, kind: str,
 
 
 def _emit_for_class(
-    class_node: "Node", src: str, file_info: FileInfo, out: list[Symbol]
+    class_node: Node, src: str, file_info: FileInfo, out: list[Symbol]
 ) -> None:
     name_node = class_node.child_by_field_name("name")
     if name_node is None:
@@ -332,7 +332,7 @@ def _emit_for_class(
 
 
 def lombok_synthetic_symbols(
-    root: "Node", src: str, file_info: FileInfo
+    root: Node, src: str, file_info: FileInfo
 ) -> list[Symbol]:
     """Emit synthetic symbols for Lombok-annotated Java classes."""
     # Cheap reject path: if the source doesn't even mention `@`, there

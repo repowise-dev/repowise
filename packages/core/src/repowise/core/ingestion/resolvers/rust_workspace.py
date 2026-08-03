@@ -87,7 +87,7 @@ def get_or_build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
         return cached  # type: ignore[return-value]
 
     index = _build_cargo_workspace_index(ctx)
-    setattr(ctx, "_cargo_workspace_index", index)
+    ctx._cargo_workspace_index = index
     return index
 
 

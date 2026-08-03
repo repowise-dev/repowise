@@ -225,7 +225,7 @@ def build_blame_index(
         # ``--line-porcelain`` repeats headers on every line which makes the
         # parser robust to out-of-order line emission from --incremental.
         raw = repo.git.blame("--line-porcelain", "HEAD", "--", file_path)
-    except Exception as exc:  # noqa: BLE001 — blame is best-effort
+    except Exception as exc:
         logger.debug(
             "blame_index_failed",
             path=file_path,

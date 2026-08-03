@@ -18,6 +18,8 @@ Architecture:
   - :mod:`subkinds`  — subkind modules that register themselves on import.
 """
 
+# Side-effect import: registers every implemented subkind.
+from . import subkinds  # noqa: F401
 from .registry import SubkindSpec, get_spec, iter_specs, register
 from .signals import OnboardingSignals
 from .slots import (
@@ -36,12 +38,8 @@ from .slots import (
     target_path,
 )
 
-# Side-effect import: registers every implemented subkind.
-from . import subkinds  # noqa: E402, F401
-
 __all__ = [
     "ONBOARDING_ORDER",
-    "OnboardingSignals",
     "PROMOTED_SLOTS",
     "SLOT_ACTIVE_LANDSCAPE",
     "SLOT_ARCHITECTURE_GUIDE",
@@ -53,6 +51,7 @@ __all__ = [
     "SLOT_KEY_CONCEPTS",
     "SLOT_PROJECT_OVERVIEW",
     "SLOT_TITLES",
+    "OnboardingSignals",
     "SubkindSpec",
     "get_spec",
     "iter_specs",

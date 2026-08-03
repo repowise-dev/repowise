@@ -88,7 +88,7 @@ def _build(signals: OnboardingSignals) -> CodebaseMapContext | None:
         # Entry points within the directory (cap at 3 — overflow goes in the
         # full top_files list).
         entry_points = sorted(
-            (f.file_info.path for f in files if f.file_info.is_entry_point)
+            f.file_info.path for f in files if f.file_info.is_entry_point
         )[:3]
 
         # Top files by PageRank within the directory (skip generated/clones).

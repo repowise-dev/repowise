@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from repowise.cli.hooks import install, status, _strip_legacy_block
+from repowise.cli.hooks import _strip_legacy_block, install, status
 
 
 @pytest.fixture

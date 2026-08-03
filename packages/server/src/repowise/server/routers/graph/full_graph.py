@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, Query
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.deps import get_db_session

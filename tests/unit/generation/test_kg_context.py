@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.generation.kg_context import KGFileContext, KnowledgeGraphContext
+from repowise.core.generation.kg_context import KnowledgeGraphContext
 
 
 @pytest.fixture

@@ -5,11 +5,9 @@ a genuine per-iteration I/O boundary; every NEGATIVE is a shape the loop-body
 scoping / constant-loop skip / execution-sink gate must NOT flag.
 """
 
-import os
 import subprocess
 import time
 
-import httpx
 import requests
 from sqlalchemy import select
 

@@ -102,8 +102,8 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
 
 def _resolve_csharp_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve C# ``@param.type`` captures via ``DotNetProjectIndex``.
@@ -173,8 +173,8 @@ _RUST_BUILTIN_TYPES = frozenset({
 
 def _resolve_rust_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Rust ``@param.type`` captures via stem map + import graph."""
@@ -214,8 +214,8 @@ def _find_rust_type_file(
     type_name: str,
     from_path: str,
     sorted_imports: list[str],
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> str | None:
     """Find the file defining *type_name*, preferring imported files."""
@@ -237,8 +237,8 @@ def _find_rust_type_file(
 
 def _resolve_go_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Go ``@param.type`` captures via the Go package index.
@@ -354,8 +354,8 @@ _CPP_STL_HEAD_NAMES: frozenset[str] = frozenset({
 
 def _resolve_c_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve C / C++ ``@param.type`` captures via ``#include`` + stem map.
@@ -436,8 +436,8 @@ def _find_c_type_file(
     from_path: str,
     sorted_imports: list[str],
     sorted_siblings: list[str],
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> str | None:
     """Find the file defining *type_name*, preferring ``#include``d headers.
@@ -470,8 +470,8 @@ def _find_c_type_file(
 
 def _resolve_ts_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve TS/JS ``@param.type`` captures via import bindings + stem map.
@@ -565,8 +565,8 @@ def _resolve_ts_type_refs(
 def _find_ts_type_in_stem_map(
     type_name: str,
     from_path: str,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> str | None:
     """Locate ``type_name`` via the global stem map.
@@ -596,8 +596,8 @@ def _find_ts_type_in_stem_map(
 
 def _resolve_jvm_type_refs(
     parsed: ParsedFile,
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Java / Kotlin ``@param.type`` captures via ``JvmWorkspaceIndex``.
@@ -703,8 +703,8 @@ _STRATEGIES: dict[str, Strategy] = {
 
 def resolve_type_refs(
     parsed_files: dict[str, ParsedFile],
-    ctx: "ResolverContext",
-    graph: "nx.DiGraph",
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
 ) -> dict[str, int]:
     """Dispatch each parsed file to its language's type-ref strategy.
 
@@ -730,7 +730,7 @@ def resolve_type_refs(
 # ---------------------------------------------------------------------------
 
 def _add_or_merge_type_use_edge(
-    graph: "nx.DiGraph",
+    graph: nx.DiGraph,
     src: str,
     dst: str,
     type_name: str,

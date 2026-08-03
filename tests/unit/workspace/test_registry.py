@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,7 +13,6 @@ from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import Page, Repository
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.registry import RepoContext, RepoRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -776,12 +776,12 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
 
 
 __all__ = [
-    "CMakeTarget",
     "CMakeFile",
-    "parse_cmake_lists",
+    "CMakeTarget",
     "discover_cmake_reactor",
-    "parse_cmake_file_api_reply",
-    "parse",
-    "filenames",
     "ecosystem",
+    "filenames",
+    "parse",
+    "parse_cmake_file_api_reply",
+    "parse_cmake_lists",
 ]

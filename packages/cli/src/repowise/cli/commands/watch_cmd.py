@@ -11,12 +11,9 @@ import click
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
-    find_workspace_root,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
-
 
 # ---------------------------------------------------------------------------
 # Single-repo watch (existing behavior)

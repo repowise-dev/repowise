@@ -15,7 +15,7 @@ import io
 import re
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 import networkx as nx
@@ -329,7 +329,7 @@ def _heuristic_label(
 
 
 def _deduplicate_labels(
-    communities_info: dict[int, "CommunityInfo"],
+    communities_info: dict[int, CommunityInfo],
     extra_generic: frozenset[str] = frozenset(),
 ) -> None:
     """Add sub-labels to disambiguate communities that share the same label.

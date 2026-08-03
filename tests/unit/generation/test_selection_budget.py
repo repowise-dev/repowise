@@ -9,7 +9,6 @@ configured ``coverage_pct``. They are the contract that prevents the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -23,7 +22,6 @@ from repowise.core.generation.selection.budget import (
     allocate_budget,
     compute_budget,
 )
-
 
 # ---------------------------------------------------------------------------
 # Lightweight ParsedFile / Symbol stand-ins

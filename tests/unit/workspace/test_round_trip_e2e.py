@@ -19,8 +19,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.update import (
     sync_workspace_state_from_disk,

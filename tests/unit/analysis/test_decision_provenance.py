@@ -13,7 +13,6 @@ from repowise.core.analysis.decision_provenance import (
     verify_quote,
 )
 
-
 # ---------------------------------------------------------------------------
 # Source ranking ladder
 # ---------------------------------------------------------------------------

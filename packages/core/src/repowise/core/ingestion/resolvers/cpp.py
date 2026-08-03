@@ -33,7 +33,6 @@ from pathlib import Path
 
 from .context import ResolverContext
 
-
 _SOURCE_TU_EXTS: tuple[str, ...] = (".c", ".cc", ".cpp", ".cxx", ".c++", ".cppm", ".ixx", ".mxx")
 _HEADER_EXTS: tuple[str, ...] = (".h", ".hpp", ".hxx", ".hh", ".h++", ".inc")
 

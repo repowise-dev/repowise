@@ -15,7 +15,6 @@ from rich.table import Table
 from repowise.cli.cost_estimator import CoverageOption
 from repowise.cli.ui import BRAND, BRAND_STYLE
 
-
 # Columns shown in the coverage table. ``onboarding`` is constant
 # across percentages (curated slots) but we include it so the user
 # sees the full picture.

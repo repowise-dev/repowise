@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 # -- File score --------------------------------------------------------
 
 # Bonuses applied additively on top of normalized PageRank+betweenness.

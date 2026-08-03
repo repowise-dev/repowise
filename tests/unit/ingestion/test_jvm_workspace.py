@@ -8,7 +8,6 @@ import networkx as nx
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.jvm_workspace import (
-    JvmWorkspaceIndex,
     build_jvm_workspace_index,
 )
 

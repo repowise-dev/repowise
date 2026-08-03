@@ -18,7 +18,6 @@ from .estimator import estimate_cost
 from .plans import build_generation_plan
 from .types import CostEstimate, PageTypePlan
 
-
 # Coverage percentages presented in the init UI. The 20% slot is the
 # recommended default — fewer than 10% loses key concepts; more than
 # 50% starts paying for diminishing-return file pages.

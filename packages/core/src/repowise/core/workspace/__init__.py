@@ -5,6 +5,12 @@ Public API re-exports for the workspace package.
 
 from __future__ import annotations
 
+from .architecture_metrics import (
+    ArchitectureMetrics,
+    NodeArchitectureRole,
+    architecture_score,
+    compute_architecture_metrics,
+)
 from .config import (
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DATA_DIR,
@@ -15,22 +21,14 @@ from .config import (
     ensure_workspace_data_dir,
     find_workspace_root,
 )
-from .scanner import (
-    DiscoveredRepo,
-    ScanResult,
-    scan_for_repos,
-)
-from .registry import (
-    RepoContext,
-    RepoRegistry,
-)
-from .update import (
-    RepoUpdateResult,
-    check_repo_staleness,
-    reconcile_repo_head_commit,
-    run_cross_repo_hooks,
-    update_single_repo_index,
-    update_workspace,
+from .contracts import (
+    CONTRACTS_FILENAME,
+    Contract,
+    ContractLink,
+    ContractStore,
+    load_contract_store,
+    run_contract_extraction,
+    save_contract_store,
 )
 from .cross_repo import (
     CROSS_REPO_EDGES_FILENAME,
@@ -41,15 +39,6 @@ from .cross_repo import (
     run_cross_repo_analysis,
     save_overlay,
 )
-from .contracts import (
-    CONTRACTS_FILENAME,
-    Contract,
-    ContractLink,
-    ContractStore,
-    load_contract_store,
-    run_contract_extraction,
-    save_contract_store,
-)
 from .diagnostics import (
     WEAK_LINK_CONFIDENCE_THRESHOLD,
     ExtractionDiagnostics,
@@ -58,6 +47,15 @@ from .diagnostics import (
     UnmatchedConsumer,
     UnmatchedReason,
     build_diagnostics,
+)
+from .registry import (
+    RepoContext,
+    RepoRegistry,
+)
+from .scanner import (
+    DiscoveredRepo,
+    ScanResult,
+    scan_for_repos,
 )
 from .system_graph import (
     EDGE_KINDS,
@@ -70,11 +68,13 @@ from .system_graph import (
     run_system_graph_build,
     save_system_graph,
 )
-from .architecture_metrics import (
-    ArchitectureMetrics,
-    NodeArchitectureRole,
-    architecture_score,
-    compute_architecture_metrics,
+from .update import (
+    RepoUpdateResult,
+    check_repo_staleness,
+    reconcile_repo_head_commit,
+    run_cross_repo_hooks,
+    update_single_repo_index,
+    update_workspace,
 )
 
 __all__ = [

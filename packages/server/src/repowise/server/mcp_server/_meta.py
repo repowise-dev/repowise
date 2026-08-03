@@ -18,7 +18,7 @@ Rules of thumb baked into the hint generators:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -238,8 +238,8 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     updated_at = getattr(repository, "updated_at", None)
     age_days: int | None = None
     if isinstance(updated_at, datetime):
-        ua = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
-        age_days = max(0, (datetime.now(timezone.utc) - ua).days)
+        ua = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=UTC)
+        age_days = max(0, (datetime.now(UTC) - ua).days)
         out["index_age_days"] = age_days
 
     local_path = getattr(repository, "local_path", None)

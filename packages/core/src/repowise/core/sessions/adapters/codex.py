@@ -8,21 +8,29 @@ JSONL line into the shared session ``Event`` shape used by the miners.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 import json
+import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
-from repowise.core.sessions.adapters.base import HarnessAdapter, RawPrefilter
-from repowise.core.sessions.events import Event, ToolResult, ToolUse
-from repowise.core.sessions.adapters.claude_code import parse_timestamp
 from repowise.core.fs_walk import iter_glob
+from repowise.core.sessions.adapters.base import HarnessAdapter, RawPrefilter
+from repowise.core.sessions.adapters.claude_code import parse_timestamp
+from repowise.core.sessions.events import Event, ToolResult, ToolUse
+
+_TOOL_CALL_RE = re.compile(r"tools\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_SHELL_COMMAND_RE = re.compile(r'"command"\s*:\s*"([^"]*)"')
+_PATH_RE = re.compile(r"(?m)^([^\r\n]+(?:\\|/)[^\r\n]+)$")
 
 
 class CodexAdapter(HarnessAdapter):
     """Normalizes Codex session JSONL into the shared Event stream."""
 
     name: ClassVar[str] = "codex"
+
+    def __init__(self):
+        self._tool_calls: dict[str, ToolUse] = {}
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         root = projects_root if projects_root is not None else Path.home() / ".codex" / "sessions"
@@ -39,8 +47,14 @@ class CodexAdapter(HarnessAdapter):
             return None
 
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-        entry_kind = entry.get("type") if isinstance(entry.get("type"), str) and entry.get("type") else None
-        payload_kind = payload.get("type") if isinstance(payload.get("type"), str) and payload.get("type") else None
+        entry_kind = (
+            entry.get("type") if isinstance(entry.get("type"), str) and entry.get("type") else None
+        )
+        payload_kind = (
+            payload.get("type")
+            if isinstance(payload.get("type"), str) and payload.get("type")
+            else None
+        )
         kind = _event_kind(entry_kind, payload_kind, payload)
 
         event = Event(
@@ -50,7 +64,9 @@ class CodexAdapter(HarnessAdapter):
                 _str_or_none(payload.get("session_id")),
                 _str_or_none(entry.get("session_id")),
             ),
-            cwd=_first_non_empty_str(_str_or_none(payload.get("cwd")), _str_or_none(entry.get("cwd"))),
+            cwd=_first_non_empty_str(
+                _str_or_none(payload.get("cwd")), _str_or_none(entry.get("cwd"))
+            ),
             usage=None,
             message_id=_str_or_none(payload.get("id")) or _str_or_none(entry.get("message_id")),
             model=_str_or_none(payload.get("model")) or _str_or_none(entry.get("model")),
@@ -63,7 +79,9 @@ class CodexAdapter(HarnessAdapter):
             event.text = ""
             return event
 
-        text = _extract_text(entry.get("text"), payload.get("message"), payload.get("content"), payload.get("output"))
+        text = _extract_text(
+            entry.get("text"), payload.get("message"), payload.get("content"), payload.get("output")
+        )
         if text:
             event.text = text
 
@@ -78,10 +96,7 @@ class CodexAdapter(HarnessAdapter):
             if isinstance(tool_id, str) and isinstance(name, str):
                 tool_input = payload.get("input")
 
-                if(isinstance(tool_input,(dict, str))):
-                    normalized_input = tool_input
-                else:
-                    normalized_input = {}
+                normalized_input = tool_input if isinstance(tool_input, (dict, str)) else {}
                 event.tool_uses.append(
                     ToolUse(
                         id=tool_id,
@@ -91,8 +106,8 @@ class CodexAdapter(HarnessAdapter):
                 )
 
         return event
-    
-    def iter_events(self, path:Path, *, prefilter: RawPrefilter | None = None)-> Iterator[Event]:
+
+    def iter_events(self, path: Path, *, prefilter: RawPrefilter | None = None) -> Iterator[Event]:
         current_session = None
         with path.open(encoding="utf-8", errors="replace") as fh:
             for raw in fh:
@@ -102,17 +117,17 @@ class CodexAdapter(HarnessAdapter):
                 if event is None:
                     continue
                 if event.kind == "session_meta":
-                    current_session = event.session_id 
+                    current_session = event.session_id
+                    self._tool_calls.clear()
                 if event.session_id is None:
                     event.session_id = current_session
-                
+
                 yield event
 
-    @staticmethod
-    def _fill_response_item(event: Event, payload: dict[str, Any]) -> None:
+    def _fill_response_item(self, event: Event, payload: dict[str, Any]) -> None:
         """Handles response_item entries in Codex transcripts, and converts them to either text, tool uses or tool results
 
-        Codex uses response_item entries to represent things like message, tool call or tool results 
+        Codex uses response_item entries to represent things like message, tool call or tool results
         """
         payload_type = payload.get("type")
         if payload_type == "message":
@@ -124,6 +139,7 @@ class CodexAdapter(HarnessAdapter):
         if payload_type == "custom_tool_call":
             tool_id = payload.get("call_id")
             name = payload.get("name")
+
             if isinstance(tool_id, str) and isinstance(name, str):
                 tool_input = payload.get("input")
 
@@ -134,29 +150,89 @@ class CodexAdapter(HarnessAdapter):
                 else:
                     normalized_input = {}
 
-                event.tool_uses.append(
-                    ToolUse(
-                        id=tool_id,
-                        name=_normalize_tool_name(name, normalized_input ),
-                        input=normalized_input,
-                    )
+                normalized_name = _normalize_tool_name(name, normalized_input)
+
+                tool = ToolUse(
+                    id=tool_id,
+                    name=normalized_name,
+                    input=normalized_input,
                 )
+
+                self._tool_calls[tool_id] = tool
+                event.tool_uses.append(tool)
             return
 
         if payload_type == "custom_tool_call_output":
             output = payload.get("output")
             text = _extract_text(None, None, output, None)
+
             if text:
                 event.text = text
+
             call_id = payload.get("call_id")
-            if isinstance(call_id, str):
-                event.tool_results.append(
-                    ToolResult(tool_use_id=call_id, is_error=False, content=output, payload=output)
+            if not isinstance(call_id, str):
+                return
+
+            tool = self._tool_calls.pop(call_id, None)
+
+            if tool is not None and tool.name == "search_codebase":
+                rewritten = _rewrite_search_output(output)
+
+                rewritten = _rewrite_search_output(output)
+
+                results = rewritten["result"]["results"]
+                if results:
+                    tool.input["path"] = results[0]["file"]
+
+                output = json.dumps(rewritten)
+
+            event.tool_results.append(
+                ToolResult(
+                    tool_use_id=call_id,
+                    is_error=False,
+                    content=output,
+                    payload=output,
                 )
+            )
 
 
+def _rewrite_search_output(output: list[dict[str, str]]) -> dict:
+    """Convert rg --files output into the MCP search_codebase result shape."""
 
-def _normalize_tool_name(name: str, tool_input: dict[str, Any]) -> str:    
+    texts = []
+    for block in output:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str):
+                texts.append(text)
+
+    full_text = "\n".join(texts)
+
+    results = []
+
+    for line in full_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        if (
+            line.startswith("Script ")
+            or line.startswith("Exit code:")
+            or line.startswith("Wall time")
+            or line == "Output:"
+        ):
+            continue
+
+        results.append({"file": line.replace("\\", "/")})
+
+    return {
+        "result": {
+            "results": results,
+        }
+    }
+
+
+def _normalize_tool_name(name: str, tool_input: dict[str, Any]) -> str:
     aliases = {
         "search": "search_codebase",
         "search_codebase": "search_codebase",
@@ -169,7 +245,31 @@ def _normalize_tool_name(name: str, tool_input: dict[str, Any]) -> str:
         "run_command": "bash",
         "exec": "bash",
     }
-    return aliases.get(name.lower(), name)
+    if name.lower() != "exec":
+        return aliases.get(name.lower(), name)
+
+    command = tool_input.get("command")
+    if not isinstance(command, str):
+        return "bash"
+
+    match = _TOOL_CALL_RE.search(command)
+    if not match:
+        return "bash"
+
+    embedded_tool = match.group(1)
+    if embedded_tool == "shell_command":
+        shell_match = _SHELL_COMMAND_RE.search(command)
+        if not shell_match:
+            return "bash"
+
+        shell_command = shell_match.group(1)
+
+        if re.search(r"\brg(?:\.exe)?\b", shell_command):
+            return "search_codebase"
+
+        return "bash"
+
+    return aliases.get(embedded_tool.lower(), embedded_tool)
 
 
 def _event_kind(entry_kind: str | None, payload_kind: str | None, payload: dict[str, Any]) -> str:

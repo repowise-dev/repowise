@@ -46,7 +46,6 @@ from repowise.server.mcp_server.tool_context.kg import (
     _find_tour_step_for_file,
 )
 
-
 # Skeleton-by-default threshold for file targets. Measured on this repo: a
 # 1,400-line file's default card costs ~2.5k tokens for 16 bare signatures,
 # while the smart skeleton costs ~1.7k and carries every signature plus

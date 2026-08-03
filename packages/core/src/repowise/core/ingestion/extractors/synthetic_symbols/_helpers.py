@@ -63,7 +63,7 @@ def build_synthetic_symbol(
     )
 
 
-def enclosing_type_name(node: "Node", src: str, ancestor_types: frozenset[str]) -> str | None:
+def enclosing_type_name(node: Node, src: str, ancestor_types: frozenset[str]) -> str | None:
     """Walk up to find the nearest type-defining ancestor and return its name."""
     ancestor = node.parent
     while ancestor is not None:

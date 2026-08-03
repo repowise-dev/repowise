@@ -4,9 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import (
     batch_upsert_graph_edges,

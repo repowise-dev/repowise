@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -12,7 +11,6 @@ import pytest
 from repowise.core.generation.context_assembler import ContextAssembler, FilePageContext
 from repowise.core.generation.kg_context import KGFileContext
 from repowise.core.generation.models import GenerationConfig
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -246,8 +244,9 @@ class TestTokenBudgetWithKG:
 class TestFilePageTemplate:
     @pytest.fixture
     def jinja_env(self):
-        from jinja2 import Environment, FileSystemLoader
         from pathlib import Path
+
+        from jinja2 import Environment, FileSystemLoader
 
         template_dir = Path(__file__).resolve().parents[3] / "packages" / "core" / "src" / "repowise" / "core" / "generation" / "templates"
         return Environment(loader=FileSystemLoader(str(template_dir)))

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
 _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
     ".py": (

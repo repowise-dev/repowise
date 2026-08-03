@@ -9,9 +9,6 @@ import networkx as nx
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.rust import resolve_rust_import
 from repowise.core.ingestion.resolvers.rust_workspace import (
-    CargoCrate,
-    CargoDep,
-    CargoWorkspaceIndex,
     get_or_build_cargo_workspace_index,
 )
 

@@ -32,7 +32,6 @@ degrade gracefully.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -359,7 +358,7 @@ def _register_target(index: CppWorkspaceIndex, t: CppTarget) -> None:
                 index.public_header_includes.setdefault(rel, hdr)
 
 
-def build_cpp_workspace_index(ctx: "ResolverContext") -> CppWorkspaceIndex:
+def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
     index = CppWorkspaceIndex()
     if ctx.repo_path is None:
         return index
@@ -434,7 +433,7 @@ def build_cpp_workspace_index(ctx: "ResolverContext") -> CppWorkspaceIndex:
 _INDEX_KEY = "_cpp_workspace_index"
 
 
-def get_or_build_cpp_index(ctx: "ResolverContext") -> CppWorkspaceIndex:
+def get_or_build_cpp_index(ctx: ResolverContext) -> CppWorkspaceIndex:
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:
         return cached

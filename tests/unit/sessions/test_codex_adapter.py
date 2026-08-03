@@ -4,13 +4,12 @@ import json
 from pathlib import Path
 
 from repowise.core.sessions import CodexAdapter, Event
-
-from repowise.core.sessions.miners.demand import mine_events_demand
+from repowise.core.sessions.adapters.codex import _normalize_tool_name
 from repowise.core.sessions.miners.decisions import mine_events
+from repowise.core.sessions.miners.demand import mine_events_demand
 
 FIXTURE = Path(__file__).parent / "data" / "codex_session.jsonl"
-REPO_PREFIX = "c:\\users\\x\\repo"
-
+REPO_PREFIX = r"C:\Users\Rehan\Documents\Codex\2026-07-14\c"
 ADAPTER = CodexAdapter()
 
 
@@ -30,12 +29,11 @@ def test_normalize_real_codex_rollout() -> None:
     events = list(ADAPTER.iter_events(FIXTURE))
 
     meta = next(e for e in events if e.kind == "session_meta")
-    assistant = next(e for e in events if e.kind == "assistant")
-    tool = next(e for e in events if e.tool_uses) 
 
     assert isinstance(meta, Event)
     assert meta.kind == "session_meta"
     assert meta.is_meta is True
+
 
 def test_normalize_handles_session_meta_and_custom_tool_payloads() -> None:
     session_meta = json.dumps(
@@ -92,7 +90,8 @@ def test_normalize_handles_session_meta_and_custom_tool_payloads() -> None:
     assert output_event is not None
     assert output_event.tool_results[0].tool_use_id == "call_1"
     assert output_event.text == "done"
-    
+
+
 def test_iter_events_threads_session_id() -> None:
     events = list(ADAPTER.iter_events(FIXTURE))
 
@@ -101,27 +100,40 @@ def test_iter_events_threads_session_id() -> None:
     assert session is not None
     assert all(e.session_id == session for e in events)
 
+
 def test_codex_rollout_feeds_demand_miner() -> None:
     events = list(ADAPTER.iter_events(FIXTURE))
 
-
     demand = mine_events_demand(events, REPO_PREFIX)
 
-    # assert demand
+    assert demand["outputs/sqlite-signup-demo/app.py"] == 1
+
 
 def test_codex_rollout_feeds_decision_miner() -> None:
     events = list(ADAPTER.iter_events(FIXTURE))
 
-
     decisions = mine_events(events, REPO_PREFIX)
 
-    # will need to update these after finishing with the adapter change so miners receive correct inputs and produce an output, also transcript will be updated then these asserts will be aligned
-    # assert len(decisions) == 1
+    assert len(decisions) == 1
 
-    # decision = decisions[0]
-    # assert decision.kind == "explicit_choice"
-    # assert decision.files == ["pkg/app.py"]
-    # assert decision.quotes == [
-    #     "We chose Flask because it is lightweight, keeps SQLite integration straightforward, and avoids unnecessary boilerplate for this small application."
-    # ]
-    
+    decision = decisions[0]
+
+    assert decision.kind == "explicit_choice"
+    assert decision.files == ["outputs/sqlite-signup-demo/app.py"]
+    assert decision.session_id is not None
+
+    assert decision.quotes == [
+        "We chose Flask because it is lightweight, keeps SQLite integration straightforward, and avoids unnecessary boilerplate for this small application."
+    ]
+
+
+def test_normalize_exec_rg_to_search_codebase():
+    assert (
+        _normalize_tool_name(
+            "exec",
+            {
+                "command": ('const r = await tools.shell_command({"command":"rg --files"});'),
+            },
+        )
+        == "search_codebase"
+    )

@@ -22,7 +22,6 @@ from repowise.core.workspace.update import (
     update_workspace,
 )
 
-
 # ---------------------------------------------------------------------------
 # sync_workspace_state_from_disk — Phase C1
 # ---------------------------------------------------------------------------
