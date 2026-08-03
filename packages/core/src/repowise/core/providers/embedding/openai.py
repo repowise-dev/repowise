@@ -20,6 +20,9 @@ Dimensions:
     text-embedding-3-small  → 1536 dims
     text-embedding-3-large  → 3072 dims
     text-embedding-ada-002  → 1536 dims
+
+    REPOWISE_EMBEDDING_DIMS (or the ``dimensions`` arg) overrides the width and
+    is passed to the API so the returned vectors match. See ``OpenAIEmbedder``.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
-from typing import ClassVar
+from typing import Any, ClassVar
 
 
 class OpenAIEmbedder:
@@ -39,7 +42,9 @@ class OpenAIEmbedder:
         base_url: Optional custom base URL for OpenAI-compatible endpoints.
         dimensions: Output width for a model not in ``_DIMS`` (e.g. a local
             OpenAI-compatible embedder). Falls back to REPOWISE_EMBEDDING_DIMS,
-            then to the known-model table, then 1536.
+            then to the known-model table, then 1536. An overridden width is
+            also sent to the API so the returned vectors match the declaration;
+            an endpoint that does not implement the parameter ignores it.
     """
 
     _DIMS: ClassVar[dict[str, int]] = {
@@ -67,12 +72,27 @@ class OpenAIEmbedder:
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._model = model
         self._timeout = timeout
-        self._dimensions = self._resolve_dimensions(dimensions, model)
+        # When the user overrides the width, request that width from the API too,
+        # so the returned vectors match the declaration instead of the model's
+        # default — otherwise the store is sized to a width the vectors never
+        # have. Servers that don't implement the parameter ignore it (returning
+        # their native width, which the override then correctly declares); one
+        # that can't honour it rejects the request loudly rather than silently
+        # returning a mismatched width. No model is special-cased here: the
+        # endpoint, not a hardcoded name table, decides what it accepts.
+        self._dimensions, self._request_dimensions = self._resolve_dimensions(dimensions, model)
         self._client: object | None = None  # cached; created once on first embed()
 
     @classmethod
-    def _resolve_dimensions(cls, dimensions: int | None, model: str) -> int:
-        """Explicit arg > REPOWISE_EMBEDDING_DIMS > known-model table > 1536.
+    def _resolve_dimensions(cls, dimensions: int | None, model: str) -> tuple[int, int | None]:
+        """Resolve ``(declared_width, override)``.
+
+        ``override`` is the user-chosen width — explicit arg or
+        ``REPOWISE_EMBEDDING_DIMS`` — once validated, or ``None`` when the width
+        falls back to the known-model table. It doubles as the value to request
+        from the API: ``None`` means send no ``dimensions`` (keep the stock
+        request byte-identical). Precedence for the declared width:
+        explicit arg > REPOWISE_EMBEDDING_DIMS > known-model table > 1536.
 
         A local OpenAI-compatible embedder (e.g. a self-hosted model) is not in
         ``_DIMS``; without an override its width would silently default to 1536
@@ -81,12 +101,18 @@ class OpenAIEmbedder:
         """
         if dimensions is None:
             env = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-            dimensions = int(env) if env else None
+            if env:
+                try:
+                    dimensions = int(env)
+                except ValueError:
+                    # Match the message every other bad value raises below,
+                    # instead of a raw "invalid literal for int()".
+                    raise ValueError("dimensions must be a positive integer") from None
         if dimensions is None:
-            return cls._DIMS.get(model, 1536)
+            return cls._DIMS.get(model, 1536), None
         if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
             raise ValueError("dimensions must be a positive integer")
-        return dimensions
+        return dimensions, dimensions
 
     @property
     def dimensions(self) -> int:
@@ -109,6 +135,7 @@ class OpenAIEmbedder:
 
         model = self._model
         timeout = self._timeout
+        request_dimensions = self._request_dimensions
 
         def _embed_sync() -> list[list[float]]:
             import openai  # type: ignore[import-untyped]
@@ -120,7 +147,10 @@ class OpenAIEmbedder:
                     timeout=timeout,
                     base_url=self._base_url,
                 )
-            response = self._client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
+            create_kwargs: dict[str, Any] = {"model": model, "input": texts}
+            if request_dimensions is not None:
+                create_kwargs["dimensions"] = request_dimensions
+            response = self._client.embeddings.create(**create_kwargs)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]
             return [_l2_normalize(v) for v in raw_vectors]
 

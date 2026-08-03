@@ -140,9 +140,11 @@ def _embedder_kwargs(name: str) -> dict[str, Any]:
     """Map repowise embedding env vars onto an embedder's constructor kwargs.
 
     Kept backend-agnostic: ``REPOWISE_EMBEDDING_MODEL`` applies to any embedder
-    that accepts a ``model`` arg; ``REPOWISE_EMBEDDING_DIMS`` is gemini-specific
-    (its constructor exposes ``output_dimensionality``). Anything not set here
-    falls through to the embedder's own defaults.
+    that accepts a ``model`` arg. ``REPOWISE_EMBEDDING_DIMS`` is read directly by
+    the openai and ollama embedders in their own constructors; only gemini needs
+    it mapped here, because its constructor spells the width
+    ``output_dimensionality``. Anything not set here falls through to the
+    embedder's own defaults.
 
     When the embedder needs an API key and the environment has none, the key is
     recovered from the repo/global config so the server matches the index it
