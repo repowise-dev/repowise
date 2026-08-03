@@ -1,14 +1,23 @@
-"""Token estimation for distill — thin façade over the shared heuristic.
+"""Token estimation for distill — the shared 4-chars-per-token heuristic.
 
-Reuses the generation-side 4-chars-per-token estimator so every repowise
-subsystem reports savings on the same scale. No tiktoken dependency.
+Every repowise subsystem reports savings on this one scale, and no subsystem
+carries a tiktoken dependency to do it.
+
+The estimator *lives* here, and ``generation.context.token_budget`` re-exports
+it, rather than the other way round. Deliberate: distill is a leaf utility
+with no package-level graph, while ``generation.context``'s ``__init__`` pulls
+the assembler → the ingestion models → networkx (538ms). Importing four lines
+of arithmetic must not cost that, on the hook path or anywhere else.
 """
 
 from __future__ import annotations
 
-from repowise.core.generation.context.token_budget import estimate_tokens
-
 __all__ = ["estimate_tokens", "savings_pct"]
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count using the 4-chars-per-token heuristic."""
+    return len(text) // 4
 
 
 def savings_pct(raw_tokens: int, distilled_tokens: int) -> float:
