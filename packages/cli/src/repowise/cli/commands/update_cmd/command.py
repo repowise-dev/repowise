@@ -66,6 +66,13 @@ from .workspace import _workspace_update
 
 log = structlog.get_logger(__name__)
 
+#: How far back the hook-efficacy classifier re-reads transcripts on an update.
+#: Wider than the update cadence on purpose: a firing near the end of a session
+#: has no following tool calls yet, so re-running over the same transcript later
+#: is what upgrades an early "ignored" to the truth. Re-classification is
+#: idempotent (the ledger id is a hash of the firing's own text).
+_EFFICACY_LOOKBACK_SECONDS = 7 * 86400.0
+
 
 def _docs_provider_prompt_allowed(emitter: Any) -> bool:
     """Whether a docs run may block on an interactive provider prompt.
@@ -1359,6 +1366,25 @@ def run_update(
         degraded.append(f"Injection feedback: {exc}")
         if verbose:
             console.print(f"[yellow]Injection feedback skipped: {exc}[/yellow]")
+
+    # The same feedback question for the non-decision hook surfaces. Those
+    # firings point at a file or a search result rather than a decision record,
+    # so they are judged by what the agent did next — which only the transcript
+    # knows. Scoped to transcripts touched since the last update; the whole
+    # history is a one-off `repowise hook backfill`.
+    try:
+        from repowise.core.sessions.efficacy import ingest_transcript_efficacy
+
+        if session_mining_enabled(cfg):
+            classified = ingest_transcript_efficacy(
+                repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
+            )
+            if verbose and classified:
+                console.print(f"Hook firings classified: [green]{sum(classified.values())}[/green]")
+    except Exception as exc:
+        degraded.append(f"Hook efficacy: {exc}")
+        if verbose:
+            console.print(f"[yellow]Hook efficacy classification skipped: {exc}[/yellow]")
 
     # Count of decision records touched by evolution, surfaced in the panel.
     decisions_evolved = 0

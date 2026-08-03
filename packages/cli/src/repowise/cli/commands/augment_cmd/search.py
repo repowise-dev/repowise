@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
-
 from ._shared import _extract_output_text, _find_repo_root
+
+# NOTE: repowise.core.persistence.sql is imported inside _rescue/_triage, not
+# here. At module scope it costs ~790ms on every single hook invocation — it
+# pulls persistence -> crud -> analysis -> dead_code.analyzer — and command.py
+# imports this module unconditionally, so a Read or Bash hook that never runs
+# a search was paying the whole bill. Both users are already async functions
+# that defer their sqlalchemy imports; this is the same rule applied one line
+# further. Keep it deferred.
 
 # Tunables — fixed thresholds keep the fire pattern predictable across
 # repos. If these ever need to vary, derive them from indexed-row counts
@@ -43,7 +49,7 @@ def _handle_search_post(
     if result_count >= _DIGEST_THRESHOLD:
         digest = _grep_flood_digest(repo_path, output_text)
         if digest:
-            _log_search_firing(repo_path, session_id, "digest", output_text, digest)
+            _log_search_firing(repo_path, session_id, "digest", digest)
             return digest
         # Unparseable output (e.g. Glob path lists): fall through to triage.
 
@@ -75,31 +81,30 @@ def _handle_search_post(
 
     enrichment = asyncio.run(_search_enrich(repo_path, pattern, mode, result_count))
     if enrichment:
-        _log_search_firing(repo_path, session_id, mode, pattern, enrichment)
+        _log_search_firing(repo_path, session_id, mode, enrichment)
     return enrichment
 
 
 def _log_search_firing(
-    repo_path: Path, session_id: str, category: str, keyed_on: str, text: str
-) -> None:
+    repo_path: Path, session_id: str, category: str, text: str) -> None:
     """Record one search enrichment in the shared ledger; measurement only.
 
     All hook surfaces share the sessions.db efficacy ledger so the miner can
-    classify used vs ignored firings in one pass. Keyed on the category plus a
-    content hash — the same rescue repeated in one session logs once. Never
-    changes what the agent sees; any failure is silent.
+    classify used vs ignored firings in one pass. Keyed on a hash of the
+    emitted text (:func:`_shared._ledger_key`) — the same enrichment repeated
+    in one session logs once, and the transcript classifier can recompute the
+    id from what the agent saw. Never changes what the agent sees; any failure
+    is silent.
     """
     if not session_id:
         return
-    import hashlib
-
+    from ._shared import _ledger_key
     from .decision_inject import _claim_ledger
 
-    digest = hashlib.sha1(keyed_on.encode("utf-8", "replace")).hexdigest()[:12]
     _claim_ledger(
         repo_path,
         session_id,
-        f"search:{category}:{digest}",
+        _ledger_key("search", category, text),
         node_id="",
         surface="search",
         category=category,
@@ -439,6 +444,8 @@ async def _rescue(
     if not clean:
         return None
 
+    from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
+
     # Build a small set of token variants. Cheap; helps catch case-style
     # drift without a heavy similarity index.
     variants = _name_variants(clean)
@@ -515,6 +522,7 @@ async def _triage(
     from sqlalchemy import select
 
     from repowise.core.persistence import GraphNode, WikiSymbol
+    from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 
     if not clean:
         return None

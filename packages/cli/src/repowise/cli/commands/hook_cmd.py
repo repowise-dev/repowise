@@ -375,6 +375,197 @@ def rewrite_status(path: str | None, workspace: bool, no_workspace: bool) -> Non
         console.print(f"  {icon} AGENTS.md distill section: {state} ({repo_path})")
 
 
+@hook_group.command("stats")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Emit the raw per-surface rows as JSON instead of a table.",
+)
+def hook_stats(path: str | None, as_json: bool) -> None:
+    """Show what the agent hooks fired and whether the agent acted on it.
+
+    Reads the efficacy ledger in .repowise/sessions/sessions.db. The live
+    hooks write a row the moment they fire; `repowise hook backfill` (and the
+    update-time pass) replay transcripts to settle whether each firing was
+    acted on. A surface showing firings but no verdicts has not been
+    classified yet — run the backfill.
+    """
+    import json as json_mod
+
+    from repowise.core.sessions.efficacy import CLASSIFIED_SURFACES, NO_ACTION_EXPECTED
+    from repowise.core.sessions.staging import SessionStagingStore, default_store_path
+
+    target = resolve_command_target(path=path, workspace_flag=False, no_workspace_flag=True)
+    assert target.repo_path is not None
+    if not default_store_path(target.repo_path).exists():
+        console.print("[yellow]No hook ledger yet.[/yellow] Run `repowise hook backfill`.")
+        return
+
+    store = SessionStagingStore.open_default(target.repo_path)
+    try:
+        rows = store.efficacy_rows()
+        session_totals = store.session_duration_totals()
+        runs = store.hook_run_totals()
+        by_tool = store.hook_run_by_tool()
+    finally:
+        store.close()
+    if not rows:
+        console.print("[yellow]Hook ledger is empty.[/yellow] Run `repowise hook backfill`.")
+        return
+
+    if as_json:
+        console.print_json(json_mod.dumps({"surfaces": rows, "runs": by_tool}))
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Agent hook efficacy", header_style="bold")
+    table.add_column("surface/category")
+    table.add_column("fired", justify="right")
+    table.add_column("sessions", justify="right")
+    table.add_column("acted", justify="right")
+    table.add_column("rate", justify="right")
+    table.add_column("cost", justify="right")
+    table.add_column("median ms", justify="right")
+
+    for row in rows:
+        pair = (row["surface"], row["category"])
+        classified = row["evaluated"]
+        if row["surface"] not in CLASSIFIED_SURFACES:
+            # Decision rows are judged as followed-vs-contradicted against the
+            # decision records, not as acted-on; read_enrich never emits.
+            acted, rate = "-", "[dim]n/a[/dim]"
+        elif pair in NO_ACTION_EXPECTED:
+            acted, rate = "-", "[dim]n/a[/dim]"
+        elif not classified:
+            acted, rate = "-", "[dim]unclassified[/dim]"
+        else:
+            acted = str(row["acted"])
+            pct = 100.0 * row["acted"] / classified
+            colour = "green" if pct >= 20 else ("yellow" if pct >= 5 else "red")
+            rate = f"[{colour}]{pct:.1f}%[/{colour}]"
+        n = row["duration_ms_count"]
+        table.add_row(
+            f"{row['surface']}/{row['category']}" if row["category"] else row["surface"],
+            str(row["firings"]),
+            str(row["sessions"]),
+            acted,
+            rate,
+            f"~{row['chars'] // 4}t",
+            f"{row['duration_ms_total'] // n}" if n else "[dim]-[/dim]",
+        )
+    console.print(table)
+    console.print(
+        "  [dim]rate is over classified firings only; 'n/a' marks a notice with no "
+        "action to take, and read/reread counts as respected-not-re-offended.[/dim]"
+    )
+
+    if session_totals:
+        session_totals.sort()
+        median = session_totals[len(session_totals) // 2]
+        worst = session_totals[-1]
+        console.print(
+            f"  [dim]emitting firings cost, per session: median {median / 1000:.1f}s, "
+            f"worst {worst / 1000:.1f}s across {len(session_totals)} sessions.[/dim]"
+        )
+
+    if not runs:
+        console.print(
+            "\n  [dim]No invocation counts yet — silent hook runs are only recorded "
+            "going forward, and they are most of the cost. Re-check after a session "
+            "or two.[/dim]"
+        )
+        return
+
+    calls = sorted(r["calls"] for r in runs)
+    spent = sorted(r["total_ms"] for r in runs)
+    total_calls = sum(calls)
+    total_emitted = sum(r["emitted"] for r in runs)
+    console.print(
+        f"\n[bold]Hook invocations[/bold] across {len(runs)} session(s): "
+        f"{total_calls} calls, {total_emitted} of them said something "
+        f"({100.0 * total_emitted / total_calls:.0f}%)."
+    )
+    console.print(
+        f"  per session: median {calls[len(calls) // 2]} calls / "
+        f"{spent[len(spent) // 2] / 1000:.1f}s, worst {calls[-1]} calls / "
+        f"{spent[-1] / 1000:.1f}s"
+    )
+    console.print(
+        "  [dim]in-process time only: the interpreter start before repowise loads "
+        "is not counted, so this is a floor.[/dim]"
+    )
+    for row in by_tool[:6]:
+        label = f"{row['event']}:{row['tool']}" if row["tool"] else row["event"]
+        console.print(
+            f"    {label:28} {row['calls']:5} calls  "
+            f"{row['total_ms'] / 1000:7.1f}s  "
+            f"[dim]{row['calls'] - row['emitted']} silent[/dim]"
+        )
+
+
+@hook_group.command("backfill")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--all-projects",
+    is_flag=True,
+    default=False,
+    help="Also replay transcripts from this repo's worktrees, not just this checkout.",
+)
+@click.option(
+    "--days",
+    type=int,
+    default=None,
+    help="Only replay transcripts modified in the last N days (default: all history).",
+)
+@click.option(
+    "--reset",
+    is_flag=True,
+    default=False,
+    help=(
+        "Clear the read/search/fix_history rows before replaying. Run this once "
+        "after upgrading: rows written under the older ledger keys cannot be "
+        "matched to a transcript firing and would be counted twice."
+    ),
+)
+def hook_backfill(path: str | None, all_projects: bool, days: int | None, reset: bool) -> None:
+    """Replay agent transcripts into the hook efficacy ledger.
+
+    Every firing is keyed by a hash of its own text, so this is safe to re-run:
+    a replayed firing settles the row it already owns instead of adding a new
+    one. Scanning is single-pass and local; nothing leaves the machine.
+    """
+    import time
+
+    from repowise.core.sessions.efficacy import discover_transcripts, ingest_transcript_efficacy
+
+    target = resolve_command_target(path=path, workspace_flag=False, no_workspace_flag=True)
+    assert target.repo_path is not None
+
+    found = discover_transcripts(target.repo_path, all_projects=all_projects)
+    if not found:
+        console.print(
+            "[yellow]No Claude Code transcripts found for this repo.[/yellow] "
+            "Hook efficacy is measured from them, so there is nothing to backfill."
+        )
+        return
+
+    since = time.time() - days * 86400.0 if days else None
+    console.print(f"Replaying {len(found)} transcript(s)...")
+    counts = ingest_transcript_efficacy(
+        target.repo_path, all_projects=all_projects, since=since, reset=reset
+    )
+    if not counts:
+        console.print("  [dim]No repowise hook firings in range.[/dim]")
+        return
+    for key in sorted(counts, key=lambda k: -counts[k]):
+        console.print(f"  {key:28} {counts[key]}")
+    console.print("\nRun `repowise hook stats` to see action rates.")
+
+
 @hook_group.command("status")
 @click.argument("path", required=False, default=None)
 @click.option(

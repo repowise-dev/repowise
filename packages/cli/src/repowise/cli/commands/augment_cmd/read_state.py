@@ -149,6 +149,7 @@ def _handle_read_post(
 
     state = _load_session_state(repo_path, session_id)
     notices: list[str] = []
+    fired: list[tuple[str, str]] = []  # (category, text) for the efficacy ledger
 
     # Stale-read: this session Read the file, then Edited/Wrote it, and is
     # now Reading it again. The fresh Read is fine — the flag is about any
@@ -162,6 +163,7 @@ def _handle_read_post(
             f"[repowise] {rel} changed (Edit/Write) after your previous read of it — "
             "excerpts from before that edit are stale."
         )
+        fired.append(("stale_read", notices[-1]))
 
     # Re-read: already read this session, unchanged since (the read→edit→read
     # case is the stale notice above), and this is a full re-read of a
@@ -185,6 +187,7 @@ def _handle_read_post(
             "its content is still in context. For a specific symbol use "
             f'get_symbol("{rel}::Name") or a line-range read instead of re-reading the file.'
         )
+        fired.append(("reread", notices[-1]))
 
     state["seq"] += 1
     state["reads"][rel] = state["seq"]
@@ -192,9 +195,39 @@ def _handle_read_post(
     nudge = _skeleton_nudge(repo_path, rel, tool_output, state)
     if nudge:
         notices.append(nudge)
+        fired.append(("skeleton_nudge", nudge))
 
     _save_session_state(repo_path, state)
+    for category, text in fired:
+        _log_read_firing(repo_path, session_id, category, rel, text)
     return "\n".join(notices) if notices else None
+
+
+def _log_read_firing(
+    repo_path: Path, session_id: str, category: str, rel: str, text: str
+) -> None:
+    """Record one Read-surface firing in the shared efficacy ledger.
+
+    Measurement only — never changes what the agent sees, and the once-per-
+    file-per-session gate stays the state file above, not this row. The key is
+    the shared text hash (:func:`_shared._ledger_key`) so the transcript
+    classifier in :mod:`repowise.core.sessions.efficacy` settles *this* row
+    rather than inserting a second one for the same firing.
+    """
+    if not session_id:
+        return
+    from ._shared import _ledger_key
+    from .decision_inject import _claim_ledger
+
+    _claim_ledger(
+        repo_path,
+        session_id,
+        _ledger_key("read", category, text),
+        node_id=rel,
+        surface="read",
+        category=category,
+        chars=len(text),
+    )
 
 
 def _read_output_line_count(tool_output: object) -> int:

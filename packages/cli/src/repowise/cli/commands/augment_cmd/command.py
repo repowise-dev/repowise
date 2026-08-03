@@ -125,22 +125,22 @@ def _run_augment(*, client: str | None = None) -> None:
 
     if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
         session_id = payload.get("session_id", "")
-        result = _handle_codex_context_event(
-            event, cwd, session_id if isinstance(session_id, str) else ""
-        )
+        session_id = session_id if isinstance(session_id, str) else ""
+        result = _handle_codex_context_event(event, cwd, session_id)
         if result:
             _emit_response(event, result)
+        _count_run(cwd, session_id, event, "", emitted=bool(result))
         return
 
     if event == "SessionStart":
         # Claude Code lifecycle hook: live index-freshness + trust context,
         # plus the relevance-ranked standing-decisions block.
         session_id = payload.get("session_id", "")
-        result = _handle_claude_session_start(
-            cwd, session_id if isinstance(session_id, str) else ""
-        )
+        session_id = session_id if isinstance(session_id, str) else ""
+        result = _handle_claude_session_start(cwd, session_id)
         if result:
             _emit_response(event, result)
+        _count_run(cwd, session_id, event, "", emitted=bool(result))
         return
 
     if event != "PostToolUse":
@@ -148,16 +148,38 @@ def _run_augment(*, client: str | None = None) -> None:
 
     tool_output = payload.get("tool_response", payload.get("tool_output", {}))
     session_id = payload.get("session_id", "")
+    session_id = session_id if isinstance(session_id, str) else ""
     result = _handle_post_tool_use(
         tool_name,
         tool_input,
         tool_output,
         cwd,
         client=client,
-        session_id=session_id if isinstance(session_id, str) else "",
+        session_id=session_id,
     )
     if result:
         _emit_response(event, result)
+    _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
+
+
+def _count_run(cwd: str, session_id: str, event: str, tool: str, *, emitted: bool) -> None:
+    """Bill this invocation to the hook-latency counter; never fails the hook.
+
+    Deliberately after the response is written: the agent must not wait on
+    bookkeeping, and a broken sidecar must not cost an enrichment that was
+    already computed. The reported time therefore excludes this write itself.
+    """
+    if not session_id:
+        return
+    try:
+        from ._shared import _find_repo_root
+        from .decision_inject import _record_hook_run
+
+        repo_path = _find_repo_root(Path(cwd))
+        if repo_path is not None:
+            _record_hook_run(repo_path, session_id, event, tool, emitted=emitted)
+    except Exception:
+        return
 
 
 def _emit_response(event: str, context: str) -> None:

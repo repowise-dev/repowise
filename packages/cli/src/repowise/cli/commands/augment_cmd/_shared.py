@@ -8,7 +8,41 @@ depend on ``_shared``, never the other way around.
 from __future__ import annotations
 
 import tempfile
+import time
+from functools import lru_cache
 from pathlib import Path
+
+#: Wall clock at the first moment repowise code runs in this hook process.
+#: Every ledger row carries the elapsed time to its own write, which is the
+#: part of hook latency repowise controls. It is a *lower bound* on what the
+#: user waits: the interpreter start and the click import happen before this
+#: module loads, and the response is written after. Claude Code records the
+#: true end-to-end figure as ``attachment.durationMs``, which the transcript
+#: pass in :mod:`repowise.core.sessions.efficacy` writes over the top.
+_T0 = time.perf_counter()
+
+
+def _elapsed_ms() -> int:
+    """Milliseconds of in-process hook work so far (see :data:`_T0`)."""
+    return int((time.perf_counter() - _T0) * 1000)
+
+
+def _ledger_key(surface: str, category: str, text: str) -> str:
+    """Efficacy-ledger id for one emission, keyed on the text itself.
+
+    The text is the one part of a firing that survives verbatim into the
+    transcript, so keying on it lets the update-time classifier
+    (:func:`repowise.core.sessions.efficacy.ledger_key`, which must stay
+    identical to this) find the very row the hook wrote and settle whether the
+    agent acted on it. Keying on the inputs instead would not work: the flood
+    digest's input is the whole grep output, which the transcript does not
+    keep. Doubling as the once-per-session dedup key is free — the same
+    enrichment worded the same way has nothing new to say.
+    """
+    import hashlib
+
+    digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    return f"{surface}:{category}:{digest}"
 
 
 def _extract_output_text(tool_output: object) -> str:
@@ -58,6 +92,7 @@ def _relativize(file_path: str, repo_path: Path) -> str | None:
     return rel.as_posix()
 
 
+@lru_cache(maxsize=8)
 def _find_repo_root(cwd: Path) -> Path | None:
     """Walk up from cwd to find a directory with .repowise/.
 
@@ -65,6 +100,10 @@ def _find_repo_root(cwd: Path) -> Path | None:
     system temp ROOT is always a stray artifact (a tool that indexed with
     cwd=$TMP), so neither counts as a repo opt-in; repos legitimately created
     UNDER either directory still match.
+
+    Memoized: one hook invocation asks several times with the same cwd, and
+    the walk costs up to 20 ``resolve()``/``is_dir()`` syscall pairs. The
+    cache lives only as long as the hook process, so it cannot go stale.
     """
     current = Path(cwd).resolve()
     try:

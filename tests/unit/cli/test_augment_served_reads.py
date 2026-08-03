@@ -170,9 +170,9 @@ def test_served_ranges_parser_shapes():
 
 def test_search_firing_logs_to_ledger(tmp_path):
     repo = _repo(tmp_path)
-    _log_search_firing(repo, "sess-1", "rescue", "parse_yaml", "[repowise] rescue text")
-    _log_search_firing(repo, "sess-1", "rescue", "parse_yaml", "[repowise] rescue text")  # dedup
-    _log_search_firing(repo, "", "rescue", "parse_yaml", "text")  # no session id: skipped
+    _log_search_firing(repo, "sess-1", "rescue", "[repowise] rescue text")
+    _log_search_firing(repo, "sess-1", "rescue", "[repowise] rescue text")  # dedup
+    _log_search_firing(repo, "", "rescue", "text")  # no session id: skipped
 
     rows = _ledger_rows(repo)
     assert len(rows) == 1
@@ -180,6 +180,22 @@ def test_search_firing_logs_to_ledger(tmp_path):
     assert (session_id, surface, category) == ("sess-1", "search", "rescue")
     assert key.startswith("search:rescue:")
     assert chars == len("[repowise] rescue text")
+
+
+def test_search_firing_key_matches_the_transcript_classifier(tmp_path):
+    """The live row and the replayed firing must be the same row, not two.
+
+    The classifier recomputes a firing's ledger id from the text it finds in
+    the transcript; if that drifts from what the hook wrote, every firing is
+    counted twice and none of them is ever marked acted.
+    """
+    from repowise.core.sessions.efficacy import ledger_key
+
+    repo = _repo(tmp_path)
+    text = "[repowise] No literal match for `parse_yaml`. Closest indexed symbol: func `x` in a.py"
+    _log_search_firing(repo, "sess-1", "rescue", text)
+
+    assert _ledger_rows(repo)[0][1] == ledger_key("search", "rescue", text)
 
 
 def test_claim_ledger_migrates_legacy_sidecar(tmp_path):

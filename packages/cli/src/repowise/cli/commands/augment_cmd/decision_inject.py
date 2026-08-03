@@ -623,10 +623,12 @@ def _edit_fix_history_notice(repo_path: Path, rel: str, session_id: str) -> str 
     line += "."
 
     if session_id:
+        from ._shared import _ledger_key
+
         claimed, shown = _claim_ledger(
             repo_path,
             session_id,
-            f"fix_history:{rel}",
+            _ledger_key("fix_history", "edit_notice", line),
             node_id=rel,
             surface="fix_history",
             category="edit_notice",
@@ -689,6 +691,8 @@ _INJECTIONS_TABLE_SQL = (
     "surface TEXT NOT NULL DEFAULT '', "
     "category TEXT NOT NULL DEFAULT '', "
     "chars INTEGER NOT NULL DEFAULT 0, "
+    "duration_ms INTEGER NOT NULL DEFAULT 0, "
+    "acted INTEGER NOT NULL DEFAULT 0, "
     "PRIMARY KEY (session_id, decision_id))"
 )
 
@@ -698,10 +702,29 @@ _LEDGER_COLUMNS = (
     ("surface", "TEXT NOT NULL DEFAULT ''"),
     ("category", "TEXT NOT NULL DEFAULT ''"),
     ("chars", "INTEGER NOT NULL DEFAULT 0"),
+    ("duration_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("acted", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
+#: One ledger connection per hook process, opened lazily. A single invocation
+#: can write several rows (two notices plus the run counter), and connect +
+#: WAL pragma + the CREATE/PRAGMA/ALTER migration is the expensive part, not
+#: the INSERT. The process is short-lived and single-threaded, so caching is
+#: safe; every writer commits, and process exit closes the handle.
+#: Keyed by repo path, not global: a hook process only ever sees one repo, but
+#: the test suite drives many through one interpreter, and a cache that
+#: ignored the path would hand the second repo the first one's database.
+_CONN: dict[Path, sqlite3.Connection | None] = {}
+
+
 def _open_injections(repo_path: Path) -> sqlite3.Connection | None:
+    """The shared ledger connection, migrated and ready. None if unusable.
+
+    Callers must NOT close the returned connection — see :data:`_CONN`.
+    """
+    if repo_path in _CONN:
+        return _CONN[repo_path]
     db_path = repo_path / ".repowise" / "sessions" / "sessions.db"
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -709,13 +732,58 @@ def _open_injections(repo_path: Path) -> sqlite3.Connection | None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=1000")
         conn.execute(_INJECTIONS_TABLE_SQL)
+        conn.execute(_HOOK_RUNS_TABLE_SQL)
         existing = {row[1] for row in conn.execute("PRAGMA table_info(injections)")}
         for name, decl in _LEDGER_COLUMNS:
             if name not in existing:
                 conn.execute(f"ALTER TABLE injections ADD COLUMN {name} {decl}")
+        _CONN[repo_path] = conn
         return conn
     except (sqlite3.Error, OSError):
+        _CONN[repo_path] = None
         return None
+
+
+_HOOK_RUNS_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS hook_runs ("
+    "session_id TEXT NOT NULL, event TEXT NOT NULL, tool TEXT NOT NULL, "
+    "calls INTEGER NOT NULL DEFAULT 0, emitted INTEGER NOT NULL DEFAULT 0, "
+    "total_ms INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_id, event, tool))"
+)
+
+
+def _record_hook_run(
+    repo_path: Path, session_id: str, event: str, tool: str, *, emitted: bool
+) -> None:
+    """Count one hook invocation and what it cost. Best-effort, never raises.
+
+    Every invocation lands here, including the large majority that return
+    nothing: the matcher covers Read/Edit/Write/Grep/Glob/Bash/PowerShell and
+    the repowise MCP tools, and a silent run still pays the import cost. The
+    harness only writes a transcript record for hooks that *emitted*, so
+    without this counter the silent invocations — the bulk of the bill — are
+    invisible. Aggregated per (session, event, tool) rather than one row per
+    call, so the table stays small and the write stays a single upsert.
+    """
+    if not session_id:
+        return
+    from ._shared import _elapsed_ms
+
+    conn = _open_injections(repo_path)
+    if conn is None:
+        return
+    try:
+        conn.execute(
+            "INSERT INTO hook_runs (session_id, event, tool, calls, emitted, total_ms) "
+            "VALUES (?, ?, ?, 1, ?, ?) "
+            "ON CONFLICT(session_id, event, tool) DO UPDATE SET "
+            "calls = calls + 1, emitted = emitted + excluded.emitted, "
+            "total_ms = total_ms + excluded.total_ms",
+            (session_id, event, tool, 1 if emitted else 0, _elapsed_ms()),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        pass
 
 
 def _record_injections(
@@ -733,18 +801,19 @@ def _record_injections(
     if conn is None:
         return
     try:
+        from ._shared import _elapsed_ms
+
         now = time.time()
+        elapsed = _elapsed_ms()
         conn.executemany(
             "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category) "
-            "VALUES (?, ?, ?, ?, 'decision', 'session_start')",
-            [(session_id, did, node_id, now) for did in decision_ids],
+            "(session_id, decision_id, node_id, shown_at, surface, category, duration_ms) "
+            "VALUES (?, ?, ?, ?, 'decision', 'session_start', ?)",
+            [(session_id, did, node_id, now, elapsed) for did in decision_ids],
         )
         conn.commit()
     except sqlite3.Error:
         pass
-    finally:
-        conn.close()
 
 
 def _claim_ledger(
@@ -765,16 +834,31 @@ def _claim_ledger(
     surface_injection_count)`` where the count covers only rows that actually
     carried text (``chars > 0``) on *surface* — pure measurement rows must not
     eat into an injection cap. Fail-closed: any error reports unclaimed.
+
+    ``duration_ms`` records what this firing has cost so far (see
+    :func:`_shared._elapsed_ms`); it is what ``repowise hook stats`` reports
+    until a transcript pass replaces it with the harness-measured total.
     """
+    from ._shared import _elapsed_ms
+
     conn = _open_injections(repo_path)
     if conn is None:
         return False, 0
     try:
         cur = conn.execute(
             "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category, chars) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, key, node_id, time.time(), surface, category, chars),
+            "(session_id, decision_id, node_id, shown_at, surface, category, chars, "
+            "duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id,
+                key,
+                node_id,
+                time.time(),
+                surface,
+                category,
+                chars,
+                _elapsed_ms(),
+            ),
         )
         claimed = cur.rowcount > 0
         count = conn.execute(
@@ -785,8 +869,6 @@ def _claim_ledger(
         return claimed, int(count)
     except sqlite3.Error:
         return False, 0
-    finally:
-        conn.close()
 
 
 def _claim_injection(
@@ -800,15 +882,17 @@ def _claim_injection(
     the strict per-session notice cap. Fail-closed: any error reports
     unclaimed, so a sidecar glitch degrades to silence, never to spam.
     """
+    from ._shared import _elapsed_ms
+
     conn = _open_injections(repo_path)
     if conn is None:
         return False, 0
     try:
         cur = conn.execute(
             "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category) "
-            "VALUES (?, ?, ?, ?, 'decision', 'edit_notice')",
-            (session_id, decision_id, node_id, time.time()),
+            "(session_id, decision_id, node_id, shown_at, surface, category, duration_ms) "
+            "VALUES (?, ?, ?, ?, 'decision', 'edit_notice', ?)",
+            (session_id, decision_id, node_id, time.time(), _elapsed_ms()),
         )
         claimed = cur.rowcount > 0
         # Surface-scoped: read/search enrichment rows also carry a node_id and
@@ -822,5 +906,3 @@ def _claim_injection(
         return claimed, int(count)
     except sqlite3.Error:
         return False, 0
-    finally:
-        conn.close()
