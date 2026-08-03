@@ -39,6 +39,20 @@ class SubkindSpec:
                        references; first occurrence sets priority and duplicates
                        are ignored. Missing files, symbols, or ranges become
                        observable evidence skips rather than generation errors.
+        deterministic: The page is rendered from its context alone, with no
+                       provider call, on every run. Set it when the page is
+                       made of facts rather than of judgements: a model asked
+                       to restate enumerable facts resamples them, and two
+                       renders of one unchanged repository then differ. Such a
+                       subkind needs only its ``stub/`` template, because that
+                       is the only one that ever renders.
+        needs_module_corroboration: Populate
+                       ``OnboardingSignals.module_corroboration`` for this
+                       subkind. Declared here rather than tested for by slot
+                       name in the level builder, so a second subkind that
+                       wants it cannot silently receive an empty tuple. It
+                       costs a batched store read, and a run emitting no
+                       subkind that wants it does not pay for one.
     """
 
     slot: str
@@ -46,6 +60,8 @@ class SubkindSpec:
     template: str
     build_context: BuildContext
     evidence_references: EvidenceReferences | None = None
+    deterministic: bool = False
+    needs_module_corroboration: bool = False
 
 
 _REGISTRY: dict[str, SubkindSpec] = {}

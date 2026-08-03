@@ -716,7 +716,7 @@ class _GenerationRun:
         final = (
             await _levels.build_level6_coros(self)
             + _levels.build_level7_coros(self)
-            + _levels.build_level8_coros(self)
+            + await _levels.build_level8_coros(self)
         )
         final_pages = await self.run_level(final, 8)
         # Tag promoted onboarding slots (repo_overview / architecture_diagram).

@@ -523,10 +523,24 @@ class PerTypeGenerationMixin:
 
         target = _onboarding.target_path(spec.slot)
         references = spec.evidence_references(ctx) if spec.evidence_references else ()
-        if self._config.deterministic:
+        if self._config.deterministic or spec.deterministic:
             # No grounding post-check: a template can only cite what the
             # context handed it, so there is nothing ungrounded to strip.
-            page = self._stub_onboarding_page(spec, ctx, target)
+            #
+            # ``spec.deterministic`` takes this path on every run, not only
+            # under ``--no-prose``. The subkinds that set it are made of facts
+            # the run already holds, and asking a model to restate those is how
+            # a page that changed nothing comes back different — measured on
+            # the overview at two calls one second apart.
+            #
+            # The two paths render the same template and make opposite claims
+            # about the result: a ``--no-prose`` page is a page waiting for a
+            # model, and a ``deterministic`` subkind's page is finished.
+            page = (
+                self._model_free_onboarding_page(spec, ctx, target)
+                if spec.deterministic
+                else self._stub_onboarding_page(spec, ctx, target)
+            )
             evidence = self._disabled_source_evidence(
                 page_key,
                 "deterministic_generation",

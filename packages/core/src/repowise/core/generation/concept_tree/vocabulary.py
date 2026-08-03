@@ -457,7 +457,7 @@ def _definition_after_heading(text: str, offset: int) -> str | None:
     blank line above; anchoring on the end sidesteps that entirely.
     """
     lines = text[offset:].split("\n")[1 : _DEFINITION_SCAN_LINES + 1]
-    for line in lines:
+    for start, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
@@ -465,11 +465,34 @@ def _definition_after_heading(text: str, offset: int) -> str | None:
             return None
         if stripped.startswith(_NOT_PROSE):
             continue
-        sentence = _first_sentence(stripped)
+        sentence = _first_sentence(_join_markdown_wrapped(lines, start))
         if _MIN_DEFINITION_CHARS <= len(sentence) <= _MAX_DEFINITION_CHARS:
             return sentence
         return None
     return None
+
+
+def _join_markdown_wrapped(lines: list[str], start: int) -> str:
+    """The markdown paragraph beginning at ``start``, rejoined into one string.
+
+    The reST scan has done this since #1248; the markdown scan never did, and a
+    hard-wrapped README is as common as a hard-wrapped ``.txt``. Reading one
+    line returned the author's sentence cut where their editor wrapped it —
+    "Blast radius is the set of accounts a posting can reach through the
+    ledger" — which then reads as a definition that trails off mid-thought.
+
+    Stops at the paragraph break, at the next heading, at anything that is not
+    prose, and as soon as the text has a sentence in it.
+    """
+    parts = [lines[start].strip()]
+    for offset in range(start + 1, len(lines)):
+        if _SENTENCE_END.search(" ".join(parts)):
+            break
+        nxt = lines[offset].strip()
+        if not nxt or nxt.startswith(_NOT_PROSE) or _HEADING_LINE.match(lines[offset]):
+            break
+        parts.append(nxt)
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +790,16 @@ def _scan_tree(repo_root: Path) -> tuple[list[tuple[str, str]], frozenset[str]]:
     truncated = False
 
     for dirpath, dirnames, filenames in fs_walk.walk_repo(repo_root, prune_dirs=_EXTRA_PRUNED_DIRS):
+        # Hidden directories are tool and agent territory — CI definitions,
+        # editor state, hook configuration — never the subsystem prose that
+        # answers "was this term built". The walker already prunes the named
+        # ones and any nested checkout, but a *stale* worktree copy has had its
+        # ``.git`` file removed and reads as ordinary source: on this
+        # repository that put a second, deeper copy of every docstring under
+        # ``.claude/`` ahead of the original, and the mined definitions cited
+        # paths a reader has no reason to open. Pruning the whole class costs
+        # one string test and no repository keeps its documented source here.
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for name in dirnames:
             dir_names.add(_singular(name.lower()))
         if truncated:

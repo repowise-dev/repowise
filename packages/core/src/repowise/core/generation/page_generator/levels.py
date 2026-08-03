@@ -294,9 +294,19 @@ async def _module_corroboration(run: _GenerationRun) -> list[str]:
     vanishes from the front page, and the store alone is one generation stale
     on a full run. Never raises — a store that cannot answer costs reach, not
     a page.
+
+    Memoised on the run. Two levels want it — the overview at 6 and the
+    glossary at 8 — and it costs a batched store read, so the second caller
+    reuses the first's answer rather than paying it again. A run that emits
+    neither page never reaches this.
     """
+    cached = getattr(run, "_module_corroboration_corpus", None)
+    if cached is not None:
+        return cached
+
     groups = run.sel_module_groups
     if not groups:
+        run._module_corroboration_corpus = []
         return []
 
     summaries: dict[str, str] = {}
@@ -332,7 +342,9 @@ async def _module_corroboration(run: _GenerationRun) -> list[str]:
         from_this_run=sum(1 for mg in groups if run.completed_page_summaries.get(mg.key)),
         with_summary=len(summaries),
     )
-    return [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in groups]
+    corpus = [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in groups]
+    run._module_corroboration_corpus = corpus
+    return corpus
 
 
 async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
@@ -476,7 +488,7 @@ def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
     return terms
 
 
-def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+async def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 8 (curated onboarding collection)."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
@@ -511,6 +523,15 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         kg_layers = tuple(run.kg_ctx.get_layers())
         kg_tour_steps = tuple(run.kg_ctx.get_tour())
 
+    # The corpus costs a batched store read, so only a run emitting a subkind
+    # that declared it wants one pays for it. Memoised, so a run that also
+    # emits the overview builds it once for both.
+    module_corroboration = (
+        tuple(await _module_corroboration(run))
+        if any(spec.needs_module_corroboration for _page_id, spec in emitted)
+        else ()
+    )
+
     signals = _onboarding.OnboardingSignals(
         repo_name=run.repo_name,
         repo_structure=run.repo_structure,
@@ -531,6 +552,7 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         tour_stops=tuple(run.tour_stops),
         layer_order=tuple(run.layer_order),
         house_terms=_mine_house_terms(run),
+        module_corroboration=module_corroboration,
     )
     for page_id, spec in emitted:
         coros.append((page_id, gen.generate_onboarding_page(spec, signals)))

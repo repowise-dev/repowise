@@ -64,6 +64,13 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
     A page is "template" (unwritten) when a model never touched it: the
     template provider stamps ``provider_name='template'`` and
     ``metadata.deterministic=True``. Either signal is enough.
+
+    ``metadata.model_free`` overrides both. Those pages carry the same two
+    signals and mean the opposite by them: their subkind is registered
+    ``deterministic``, so no model is ever going to write one. Counting them as
+    unwritten would offer them to ``generate --unwritten`` on every run, bill a
+    cost estimate for prose that will not be written, and leave the reader UI's
+    "bulk generate" affordance up on a wiki that is complete.
     """
     records: list[PageRecord] = []
     for p in pages:
@@ -71,8 +78,8 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
             meta = json.loads(getattr(p, "metadata_json", None) or "{}")
         except ValueError:
             meta = {}
-        is_template = getattr(p, "provider_name", "") == "template" or bool(
-            meta.get("deterministic")
+        is_template = not meta.get("model_free") and (
+            getattr(p, "provider_name", "") == "template" or bool(meta.get("deterministic"))
         )
         records.append(
             PageRecord(

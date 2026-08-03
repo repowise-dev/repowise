@@ -168,9 +168,13 @@ def test_subkinds_registered_in_canonical_order() -> None:
     # ONBOARDING_ORDER.
     expected = [s for s in ONBOARDING_ORDER if s not in PROMOTED_SLOTS.values()]
     assert slots == expected
-    # Six templated subkinds + the topology-driven guided tour.
-    assert len(slots) == 7
+    # Six templated subkinds, the topology-driven guided tour, and the
+    # glossary, which is rendered without a model at all.
+    assert len(slots) == 8
     assert "guided_tour" in slots
+    # Last, and it must stay last: a glossary is a lookup surface, not a
+    # reading step.
+    assert slots[-1] == "glossary"
 
 
 def test_onboarding_level_is_eight() -> None:

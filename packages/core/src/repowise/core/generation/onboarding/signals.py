@@ -55,3 +55,10 @@ class OnboardingSignals:
     # nothing, or when nothing it documents was built — all three are logged
     # where the mining happens, because an empty tuple here cannot say which.
     house_terms: tuple[HouseTerm, ...] = ()
+    # What the structural side calls the parts of the system: one string per
+    # module group, its title followed by its summary. The corroborating
+    # artifact for a mined term — a group is cut from the dependency graph and
+    # named from the code, so a term appearing in one was arrived at twice,
+    # independently. Empty on every run that emits no page needing it, because
+    # building it costs a store read.
+    module_corroboration: tuple[str, ...] = ()

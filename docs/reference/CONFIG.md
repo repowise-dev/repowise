@@ -120,8 +120,10 @@ Keys name model-written synthesis pages: `repo_overview` or
 `onboarding/<slot>` for `guided_tour`, `getting_started`, `codebase_map`,
 `key_concepts`, `how_it_works`, `development_guide`, and `active_landscape`.
 `onboarding/project_overview` is invalid because that promoted slot is the
-`repo_overview` page. Unknown keys and malformed values fail generation with a
-configuration error instead of being ignored.
+`repo_overview` page. `onboarding/glossary` is accepted but has no effect: that
+page is rendered from mined vocabulary alone, with no model in its path, so
+there is no prompt for extra evidence to reach. Unknown keys and malformed
+values fail generation with a configuration error instead of being ignored.
 
 Each value is an ordered list of repository-relative paths. A file is eligible
 only when it was included in the indexed source map and contains non-empty

@@ -69,11 +69,23 @@ export function isModelWrittenType(pageType: string | null | undefined): boolean
 /** True when a model-written page is still a structural stub (no prose yet).
  *  Scoped to the model-written types: a stub carries `provider_name ===
  *  "template"`, a written page a real provider. Returns false for every
- *  structural page type, which is never a stub in this sense. */
+ *  structural page type, which is never a stub in this sense.
+ *
+ *  `metadata.model_free` marks a page whose subkind is rendered without a
+ *  model by design — the glossary quotes mined definitions and has no prompt
+ *  at all. It carries `provider_name === "template"` like a stub and means the
+ *  opposite by it: the page is finished, and no model is ever going to write
+ *  it. Without this check the tree marks it "a model has not written this page
+ *  yet", offers a regenerate button that cannot help, and keeps the bulk
+ *  generate affordance up on a complete wiki. */
 export function isStubPage(
-  page: { page_type?: string; provider_name?: string } | null | undefined,
+  page:
+    | { page_type?: string; provider_name?: string; metadata?: Record<string, unknown> }
+    | null
+    | undefined,
 ): boolean {
   if (!page || !isModelWrittenType(page.page_type)) return false;
+  if (page.metadata?.["model_free"]) return false;
   return page.provider_name === "template";
 }
 
@@ -83,9 +95,13 @@ export function isStubPage(
 //
 // One slot — project_overview — is *promoted*: its
 // content lives in the existing repo_overview page, tagged via
-// `metadata.onboarding_slot`. The other seven are dedicated
+// `metadata.onboarding_slot`. The other eight are dedicated
 // `page_type === "onboarding"` pages with `metadata.subkind` discriminating
 // them.
+//
+// A slot missing from this map is not merely unlabelled: `isOnboardingSlot`
+// gates on it, so `getOnboardingSlot` returns null and the page drops out of
+// the Onboarding folder entirely. Add every new slot here.
 //
 // This map is display text only. The *reading order* used to be duplicated
 // here as an ONBOARDING_ORDER array kept in lockstep with `slots.py` by
@@ -102,6 +118,7 @@ export const ONBOARDING_SLOT_TITLES = {
   how_it_works: "How It Works",
   development_guide: "Development Guide",
   active_landscape: "Active Landscape",
+  glossary: "Glossary",
 } as const;
 
 export type OnboardingSlot = keyof typeof ONBOARDING_SLOT_TITLES;

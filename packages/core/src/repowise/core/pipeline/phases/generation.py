@@ -167,12 +167,20 @@ async def run_generation(
     }
     if progress:
         if onboarding_generated or promoted_present:
+            # Imported here, not at module scope: importing the onboarding
+            # package registers every subkind, and this module is on the CLI's
+            # import path where that cost buys nothing.
+            from repowise.core.generation.onboarding.slots import ONBOARDING_ORDER
+
             slots_made = sorted(
                 {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
             )
             progress.on_message(
                 "info",
-                f"Onboarding: {len(slots_made)}/8 slots — {', '.join(slots_made)}",
+                # Derived rather than written down: the denominator was a
+                # literal 8 and went stale the first time a slot was added.
+                f"Onboarding: {len(slots_made)}/{len(ONBOARDING_ORDER)} slots"
+                f" — {', '.join(slots_made)}",
             )
         # Placeholders left behind by a failed provider call are in this list
         # like any other page, and the run reports them as failures a line

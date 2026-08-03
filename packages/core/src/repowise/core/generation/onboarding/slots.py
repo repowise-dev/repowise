@@ -1,8 +1,8 @@
 """Onboarding slot identifiers and reading order.
 
-The Onboarding collection is a fixed set of eight curated slots. One slot is
+The Onboarding collection is a fixed set of nine curated slots. One slot is
 "promoted": it reuses the existing `repo_overview` page, tagged via
-``metadata.onboarding_slot``. The other seven are new pages with
+``metadata.onboarding_slot``. The other eight are new pages with
 ``page_type='onboarding'`` and a ``metadata.subkind`` discriminator.
 
 Slot identifiers are used three ways:
@@ -23,7 +23,7 @@ from __future__ import annotations
 # rendered prompt is byte-identical. Bump when a builder or template change
 # should reach already-cached pages. (File pages have an equivalent in
 # ``_generation_fingerprint``; onboarding pages had none until this.)
-ONBOARDING_GENERATION_VERSION = "2"
+ONBOARDING_GENERATION_VERSION = "3"
 
 # ---- Slot identifiers ----
 
@@ -35,9 +35,14 @@ SLOT_KEY_CONCEPTS = "key_concepts"
 SLOT_HOW_IT_WORKS = "how_it_works"
 SLOT_DEVELOPMENT_GUIDE = "development_guide"
 SLOT_ACTIVE_LANDSCAPE = "active_landscape"
+SLOT_GLOSSARY = "glossary"
 
 # Fixed reading order. Slots not yet implemented are silently skipped at
 # generation time and absent from the UI tree.
+#
+# The glossary is last on purpose: it is a lookup surface rather than a reading
+# step, and a reader who does not yet know the vocabulary is not helped by
+# meeting all of it at once.
 ONBOARDING_ORDER: tuple[str, ...] = (
     SLOT_PROJECT_OVERVIEW,
     SLOT_GUIDED_TOUR,
@@ -47,6 +52,7 @@ ONBOARDING_ORDER: tuple[str, ...] = (
     SLOT_HOW_IT_WORKS,
     SLOT_DEVELOPMENT_GUIDE,
     SLOT_ACTIVE_LANDSCAPE,
+    SLOT_GLOSSARY,
 )
 
 # Maps existing page_type → onboarding slot. The generator tags these pages
@@ -67,6 +73,7 @@ SLOT_TITLES: dict[str, str] = {
     SLOT_HOW_IT_WORKS: "How It Works",
     SLOT_DEVELOPMENT_GUIDE: "Development Guide",
     SLOT_ACTIVE_LANDSCAPE: "Active Landscape",
+    SLOT_GLOSSARY: "Glossary",
 }
 
 

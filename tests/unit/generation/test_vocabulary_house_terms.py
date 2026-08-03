@@ -825,3 +825,38 @@ def test_extract_terms_does_not_read_txt_documents(txt_docs_repo: Path) -> None:
     """The planner's input does not move. It mines markdown only, and the
     binding it performs is measured against exactly that corpus."""
     assert extract_terms(txt_docs_repo) == []
+
+
+def test_a_hard_wrapped_markdown_sentence_is_read_whole(tmp_path: Path) -> None:
+    """A README wraps at the column as readily as a ``.txt`` does.
+
+    The reStructuredText scan has rejoined wrapped lines since it learned to;
+    the markdown scan read one line and returned the author's sentence cut
+    where their editor wrapped it. That fragment then trails off mid-thought,
+    which every consumer renders as prose the repository wrote.
+    """
+    root = tmp_path / "ledger"
+    (root / "src").mkdir(parents=True)
+    (root / "README.md").write_text(
+        "# Ledger\n"
+        "\n"
+        "## Blast radius\n"
+        "\n"
+        "Blast radius is the set of accounts a posting can reach through the\n"
+        "ledger graph.\n"
+        "\n"
+        "## Dead code\n"
+        "\n"
+        "Dead code is a rule no posting path reaches.\n",
+        encoding="utf-8",
+    )
+    (root / "src" / "engine.py").write_text(
+        '"""Blast radius and dead code for the ledger."""\n', encoding="utf-8"
+    )
+
+    by_term = {t.term: t for t in extract_house_terms(root)}
+    assert by_term["Blast radius"].definition == (
+        "Blast radius is the set of accounts a posting can reach through the ledger graph."
+    )
+    # A sentence that already fits on one line is unaffected.
+    assert by_term["Dead code"].definition == "Dead code is a rule no posting path reaches."

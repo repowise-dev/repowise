@@ -575,6 +575,35 @@ class StructuralRenderMixin:
         page.metadata["onboarding_slot"] = spec.slot
         return page
 
+    def _model_free_onboarding_page(self, spec: Any, ctx: Any, target_path: str) -> GeneratedPage:
+        """Render a subkind that is finished without a model, not stubbed.
+
+        The same template, and a different claim about it. A stub is real
+        material with the prose missing, so it sits below the reader UI's
+        banner threshold and the tree offers to have a model write it. A
+        ``deterministic`` subkind is already everything its page is meant to
+        be — every statement on it came from the index and no model saw it —
+        which is exactly the claim :data:`TEMPLATE_PAGE_CONFIDENCE` makes.
+
+        ``model_free`` is stamped for the consumers that would otherwise read
+        ``provider_name='template'`` as "unwritten": scope resolution would
+        offer this page to ``generate --unwritten`` forever, and the web reader
+        would mark it "a model has not written this page yet" — on a page no
+        model is ever going to write.
+        """
+        page = self._render_page(
+            page_type="onboarding",
+            target_path=target_path,
+            title=spec.title,
+            template=f"{_STUB_PREFIX}/onboarding/{spec.template}",
+            ctx=ctx,
+            slot=spec.slot,
+        )
+        page.metadata["subkind"] = spec.slot
+        page.metadata["onboarding_slot"] = spec.slot
+        page.metadata["model_free"] = True
+        return page
+
 
 def _rank_cycle_participants(ctx: Any) -> list[dict]:
     """Order a cycle's files by how many of its edges they carry.

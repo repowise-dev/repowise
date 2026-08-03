@@ -32,6 +32,7 @@ from ..context.evidence import (
     select_prompt_evidence,
 )
 from ..context_assembler import ContextAssembler, FilePageContext
+from ..house_vocabulary import cell
 from ..models import (
     MODEL_PAGE_CONFIDENCE,
     GeneratedPage,
@@ -202,6 +203,11 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         self._jinja_env.filters.setdefault("oneline", oneline)
         self._jinja_env.filters.setdefault("as_markdown", as_markdown)
         self._jinja_env.filters.setdefault("signature", signature)
+        # A pipe ends a table cell wherever it appears, and a deterministic
+        # template interpolates the repository's own prose — which routinely
+        # quotes a shell pipeline. Without this every column to the right of
+        # one shifts.
+        self._jinja_env.filters.setdefault("table_cell", cell)
 
     # ------------------------------------------------------------------
     # generate_all — orchestration (delegates to orchestrate.py)

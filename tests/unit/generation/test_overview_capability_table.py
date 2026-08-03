@@ -122,7 +122,7 @@ def test_a_term_with_no_path_anywhere_is_not_offered():
 def test_selection_is_logged_with_what_it_kept_and_what_it_dropped():
     with capture_logs() as logs:
         select_capabilities([_term("DONE"), _term("Dead code")], MODULES)
-    event = next(e for e in logs if e["event"] == "overview_capabilities_selected")
+    event = next(e for e in logs if e["event"] == "house_vocabulary.selected")
     assert event["mined"] == 2
     assert event["corroborated"] == 1
     assert event["terms"] == ["Dead code"]
@@ -134,7 +134,7 @@ def test_mining_terms_that_no_module_page_corroborates_is_a_warning():
     corroboration corpus looks like, so the counts that separate them go out."""
     with capture_logs() as logs:
         select_capabilities([_term("DONE")], MODULES)
-    assert any(e["event"] == "overview_capabilities_uncorroborated" for e in logs)
+    assert any(e["event"] == "house_vocabulary.uncorroborated" for e in logs)
 
 
 # ---------------------------------------------------------------------------
@@ -182,20 +182,28 @@ def test_prose_that_is_not_a_statement_is_not_offered_as_a_definition(text):
 
 
 @pytest.mark.parametrize(
-    "text",
+    "term,text",
     [
-        "Dead code is code no import path reaches.",
-        "Blast radius is the set of files a change can reach through the import graph.",
-        "Middleware for utilizing Web-server-provided authentication.",
+        ("Dead code", "Dead code is code no import path reaches."),
+        (
+            "Blast radius",
+            "Blast radius is the set of files a change can reach through the import graph.",
+        ),
+        ("Middleware", "Middleware for utilizing Web-server-provided authentication."),
         # Terse, and still the repository's own answer. Both of these were
         # rejected by a first cut of the test that was tuned too strict.
-        "Blast-radius request/response models.",
-        "Decisions are co-located in the page vector store under the "
-        "``decision:<record_id>`` namespace (no separate table).",
+        ("Blast radius", "Blast-radius request/response models."),
+        (
+            "Decisions",
+            "Decisions are co-located in the page vector store under the "
+            "``decision:<record_id>`` namespace (no separate table).",
+        ),
     ],
 )
-def test_a_real_sentence_survives(text):
-    picked = select_capabilities([_term("Dead code", definition=text)], MODULES)
+def test_a_real_sentence_survives(term, text):
+    """Each sentence is paired with the term it names, because a definition
+    that never mentions its term is rejected as prose that merely sat nearby."""
+    picked = select_capabilities([_term(term, definition=text)], [*MODULES, term])
     assert picked[0].definition == text
 
 
@@ -220,7 +228,7 @@ def test_a_rejected_definition_does_not_leave_its_source_behind():
 def test_a_rejected_definition_is_logged():
     with capture_logs() as logs:
         select_capabilities([_term("Dead code", definition="$ repowise dead-code")], MODULES)
-    assert any(e["event"] == "overview_capability_definition_rejected" for e in logs)
+    assert any(e["event"] == "house_vocabulary.definition_rejected" for e in logs)
 
 
 def test_a_term_the_repository_never_defined_still_gets_a_row():
@@ -252,8 +260,9 @@ def test_a_pipe_in_mined_prose_does_not_break_the_table():
 
 
 def test_a_long_definition_is_cut_rather_than_wrapping_the_row():
+    long_sentence = "Dead code is " + "unreachable " * 60 + "code."
     table = build_capability_table(
-        select_capabilities([_term("Dead code", definition="word " * 100)], MODULES)
+        select_capabilities([_term("Dead code", definition=long_sentence)], MODULES)
     )
     row = next(line for line in table.splitlines() if line.startswith("| Dead code"))
     assert "…" in row

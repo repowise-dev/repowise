@@ -292,7 +292,7 @@ async def test_the_repository_is_mined_once_for_both_levels(tmp_path):
     """Mining walks the whole repository. Two consumers, one walk."""
     run = _run(tmp_path)
     await build_level6_coros(run)
-    build_level8_coros(run)
+    await build_level8_coros(run)
 
     from_overview = tuple(c.term for c in run.gen.overview_kwargs["capabilities"])
     onboarding_terms = run.gen.onboarding_signals[0].house_terms
@@ -311,9 +311,54 @@ async def test_onboarding_still_gets_its_terms_when_the_overview_mined_first(tmp
     from a warm cache rather than from a fresh walk."""
     run = _run(tmp_path)
     await build_level6_coros(run)
-    build_level8_coros(run)
+    await build_level8_coros(run)
 
     assert [t.term for t in run.gen.onboarding_signals[0].house_terms] == [
         "Blast radius",
         "Change risk",
     ]
+
+
+# ---------------------------------------------------------------------------
+# The glossary reads the same corroboration corpus
+# ---------------------------------------------------------------------------
+#
+# It is the second consumer of both mined vocabulary and module corroboration.
+# Both cost a pass the run should pay once: mining walks the whole repository,
+# and corroboration reads module summaries out of the store.
+
+
+async def test_the_glossary_is_handed_the_corroboration_corpus(tmp_path):
+    run = _run(tmp_path)
+    await build_level8_coros(run)
+
+    corpus = run.gen.onboarding_signals[0].module_corroboration
+    assert corpus
+    # Title first, summary under it -- what makes a match mean something.
+    assert corpus[0].startswith("Blast Radius Evaluation")
+
+
+async def test_the_corroboration_corpus_is_built_once_for_both_levels(tmp_path):
+    """Level 6 and level 8 both want it, and it costs a batched store read."""
+    store = _Store({"src": "Evaluates the blast radius of a change."})
+    run = _run(tmp_path, written={}, store=store)
+
+    await build_level6_coros(run)
+    asked_after_overview = list(store.asked)
+    await build_level8_coros(run)
+
+    assert asked_after_overview, "the overview should have read the store"
+    assert store.asked == asked_after_overview, "level 8 read the store a second time"
+
+
+async def test_a_run_with_no_glossary_page_does_not_build_the_corpus(tmp_path):
+    """A scoped run that asked for one onboarding page should not pay for a
+    store read that only the glossary consumes."""
+    store = _Store({"src": "Evaluates the blast radius of a change."})
+    run = _run(tmp_path, store=store)
+    run._emit = lambda page_id: "glossary" not in page_id
+
+    await build_level8_coros(run)
+
+    assert store.asked == []
+    assert all(s.module_corroboration == () for s in run.gen.onboarding_signals)
