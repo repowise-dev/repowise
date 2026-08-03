@@ -361,6 +361,134 @@ class TestInitRendersGenerationChecks:
         assert "checks did not run" in output
 
 
+def _stub_page(page_id: str) -> GeneratedPage:
+    """A page whose provider call failed and fell back to a structural render."""
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
+
+    page = _page(page_id)
+    page.metadata[STUB_FALLBACK_ERROR] = "provider exploded"
+    return page
+
+
+class TestStubsAreNotCountedTwice:
+    """A failed page that left a placeholder is one page, not two outcomes.
+
+    A provider failure still hands back a row, rendered from structure alone,
+    so the page exists and a later run can find and refill it. That row is in
+    ``generated_pages`` like any other, so the summary counted it as generated
+    and, from the job checkpoint, as failed. On a real build that read as 3762
+    generated and 10 failed out of a 92-page plan: three numbers that cannot
+    all describe the same run.
+    """
+
+    def _run(self, tmp_path, monkeypatch, pages, failures):
+        jobs_dir = tmp_path / ".repowise" / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        js = JobSystem(jobs_dir)
+        job_id = js.create_job(str(tmp_path), SimpleNamespace(max_concurrency=1), "mock", "m")
+        for page_id in failures:
+            js.fail_page(job_id, page_id, "Provider error")
+
+        printed: list[str] = []
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.console.print",
+            lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.run_async", lambda coro: pages
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation._enrich_knowledge_graph",
+            lambda **kw: None,
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.flush_cost_tracker", lambda t: None
+        )
+
+        run_repo_generation(
+            repo_path=tmp_path,
+            result=SimpleNamespace(
+                job_id=job_id,
+                repo_name="test_repo",
+                parsed_files=[],
+                source_map={},
+                graph_builder=MagicMock(),
+                repo_structure=MagicMock(),
+                git_meta_map={},
+            ),
+            provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+            gen_config=SimpleNamespace(max_concurrency=1, deterministic=False),
+            concurrency=1,
+            embedder_name_resolved="mock",
+            resume=False,
+            verbose=True,
+        )
+        return "\n".join(printed)
+
+    def test_placeholder_pages_are_excluded_from_the_generated_count(self, tmp_path, monkeypatch):
+        """Two written pages plus two placeholders is "2 generated", not 4."""
+        pages = [
+            _page("module_page:a"),
+            _page("module_page:b"),
+            _stub_page("module_page:c"),
+            _stub_page("module_page:d"),
+        ]
+        output = self._run(tmp_path, monkeypatch, pages, ["module_page:c", "module_page:d"])
+
+        assert "Generated [bold]2[/bold] pages" in output
+        assert "2 failed" in output
+        assert "Generated [bold]4[/bold] pages" not in output
+
+    def test_the_placeholder_is_named_so_a_present_page_is_not_a_surprise(
+        self, tmp_path, monkeypatch
+    ):
+        """Calling a page that exists "missing" reads as the report being wrong."""
+        pages = [_page("module_page:a"), _stub_page("module_page:c")]
+        output = self._run(tmp_path, monkeypatch, pages, ["module_page:c"])
+
+        assert "1 of them left a placeholder page" in output
+        assert "repowise init --resume" in output
+
+    def test_hard_failures_alone_mention_no_placeholder(self, tmp_path, monkeypatch):
+        """A failure that produced no row at all has nothing to explain away."""
+        output = self._run(tmp_path, monkeypatch, [_page("module_page:a")], ["module_page:z"])
+
+        assert "Generated [bold]1[/bold] pages" in output
+        assert "placeholder" not in output
+
+    def test_a_clean_run_is_unaffected(self, tmp_path, monkeypatch):
+        output = self._run(tmp_path, monkeypatch, [_page("module_page:a")], [])
+
+        assert "Generated [bold]1[/bold] pages" in output
+        assert "failed" not in output
+
+
+def test_completion_panel_excludes_placeholders_from_the_page_count(monkeypatch):
+    """The panel derives the same split from the same helper, not its own count."""
+    printed_panels = []
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.reporting.build_completion_panel",
+        lambda title, metrics, next_steps=None: printed_panels.append(metrics) or "PANEL",
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.reporting.console.print", lambda *a, **kw: None
+    )
+
+    result = _completion_result([_page("module_page:a"), _stub_page("module_page:b")])
+    result.failed_page_ids = ["module_page:b"]
+
+    show_completion(
+        repo_path="/fake",
+        result=result,
+        start=0.0,
+        effective_index_only=False,
+        run_mode="standard",
+        provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+    )
+
+    assert dict(printed_panels[0]).get("Pages generated") == "1 (1 failed)"
+
+
 def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypatch):
     """When result has a job_id attached, run_repo_generation queries that exact job checkpoint."""
     jobs_dir = tmp_path / ".repowise" / "jobs"

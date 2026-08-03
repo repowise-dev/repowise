@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
@@ -173,7 +174,13 @@ async def run_generation(
                 "info",
                 f"Onboarding: {len(slots_made)}/8 slots — {', '.join(slots_made)}",
             )
-        progress.on_message("info", f"Generated {len(generated_pages)} pages")
+        # Placeholders left behind by a failed provider call are in this list
+        # like any other page, and the run reports them as failures a line
+        # later. Counting the list here made the two lines disagree.
+        progress.on_message(
+            "info",
+            f"Generated {len(generated_pages) - count_stub_fallbacks(generated_pages)} pages",
+        )
         # Surface the FAQ-weighted budget tilt when session demand shaped it
         # (silent on fresh repos with no history — nothing to weight yet).
     _phase_done(progress, "onboarding")

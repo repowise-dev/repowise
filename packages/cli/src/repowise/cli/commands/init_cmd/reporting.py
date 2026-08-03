@@ -243,13 +243,20 @@ def show_completion(
         total_tokens = sum(p.total_tokens for p in _pages)
         # Split model-written from the zero-LLM deterministic coverage tail so
         # broad coverage reads as thoroughness, not padding.
+        # A stub standing in for a failed provider call is in ``_pages`` like
+        # any other page, so counting the list here reported it as generated
+        # while the same run reported it as failed one line down.
+        from repowise.core.generation.models import count_stub_fallbacks
+
+        _stubs = count_stub_fallbacks(_pages)
+        _written = len(_pages) - _stubs
         _det = sum(1 for p in _pages if getattr(p, "provider_name", "") == "template")
         _ai = len(_pages) - _det
-        _pages_label = str(len(_pages))
+        _pages_label = str(_written)
         if _failed_ids:
-            _pages_label = f"{len(_pages)} ({len(_failed_ids)} failed)"
+            _pages_label = f"{_written} ({len(_failed_ids)} failed)"
         elif _det:
-            _pages_label = f"{len(_pages)} ({_ai} model-written · {_det} from structure)"
+            _pages_label = f"{_written} ({_ai} model-written · {_det} from structure)"
         # The ledger has the real figure; before this the panel reported
         # millions of tokens and no dollars, on a run the user had just
         # approved a dollar estimate for.

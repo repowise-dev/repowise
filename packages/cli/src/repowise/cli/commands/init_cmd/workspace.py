@@ -408,9 +408,14 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             result.generated_pages = generated_pages
             # (result.vector_store is set inside _run_workspace_generation
             # so the Phase-2C decision dedup can reuse the same store.)
-            pages_generated = len(generated_pages)
+            # Excludes placeholders left behind by failed provider calls, which
+            # are members of this list like any other page. The single-repo
+            # flow reports the same split.
+            from repowise.core.generation.models import count_stub_fallbacks
+
+            pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
             docs_mode = "llm"
-            console.print(f"    [green]✓[/green] Generated {len(generated_pages)} pages\n")
+            console.print(f"    [green]✓[/green] Generated {pages_generated} pages\n")
         except CostGateDeclined:
             # Declining only ever meant "not at that price". Fall back to the
             # free template renderer rather than leaving the repo with no wiki
