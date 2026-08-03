@@ -34,6 +34,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "opencode": "opencode/default",
     "ollama": "qwen3.5:4b",
     "openrouter": "google/gemini-3.5-flash-lite",
+    "orcarouter": "google/gemini-3.5-flash-lite",
     "litellm": "groq/llama-3.1-70b-versatile",
 }
 
@@ -47,6 +48,7 @@ _PROVIDER_ENV: dict[str, str] = {
     "opencode": "__OPENCODE_CLI__",
     "ollama": "OLLAMA_BASE_URL",
     "openrouter": "OPENROUTER_API_KEY",
+    "orcarouter": "ORCAROUTER_API_KEY",
     # The picker iterates this map, so a provider missing here never renders a
     # row no matter what `_PROVIDER_DEFAULTS` says. litellm was in the defaults
     # only, which made it unreachable from init.
@@ -63,6 +65,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "opencode": "https://opencode.ai",
     "ollama": "https://ollama.com/download",
     "openrouter": "https://openrouter.ai/keys",
+    "orcarouter": "https://www.orcarouter.ai",
     "litellm": "https://docs.litellm.ai/docs/providers",
 }
 
@@ -72,6 +75,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
 # provider-specific belongs here so one column keeps one meaning.
 _PROVIDER_NOTES: dict[str, str] = {
     "gemini": "recommended",
+    "orcarouter": "multi-vendor gateway",
     "codex_cli": "uses your Codex CLI login",
     "opencode": "uses your opencode CLI setup",
     "ollama": "runs on your machine, no key",

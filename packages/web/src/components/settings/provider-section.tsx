@@ -19,7 +19,7 @@ import {
   type SaveState,
 } from "@repowise-dev/ui/settings";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "opencode", "ollama", "litellm", "mock"] as const;
+const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "orcarouter", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
@@ -28,6 +28,7 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   anthropic: "claude-haiku-4-5",
   deepseek: "deepseek-v4-flash",
   kimi: "kimi-for-coding",
+  orcarouter: "google/gemini-3.5-flash-lite",
   opencode: "opencode/default",
   ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",
@@ -41,6 +42,7 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   ollama: { vars: ["OLLAMA_BASE_URL"], installHint: "https://ollama.ai" },
   deepseek: { vars: ["DEEPSEEK_API_KEY"], installHint: "pip install openai" },
   kimi: { vars: ["KIMI_API_KEY"], installHint: "pip install openai" },
+  orcarouter: { vars: ["ORCAROUTER_API_KEY"], installHint: "pip install openai" },
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
   opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
   mock: { vars: [], installHint: "No key needed" },

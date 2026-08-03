@@ -8,6 +8,7 @@ Built-in providers:
     - anthropic   → AnthropicProvider
     - openai      → OpenAIProvider
     - openrouter  → OpenRouterProvider
+    - orcarouter  → OrcaRouterProvider
     - deepseek    → DeepSeekProvider
     - kimi        → KimiProvider
     - ollama      → OllamaProvider
@@ -44,6 +45,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "anthropic": ("repowise.core.providers.llm.anthropic", "AnthropicProvider"),
     "openai": ("repowise.core.providers.llm.openai", "OpenAIProvider"),
     "openrouter": ("repowise.core.providers.llm.openrouter", "OpenRouterProvider"),
+    "orcarouter": ("repowise.core.providers.llm.orcarouter", "OrcaRouterProvider"),
     "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
@@ -66,6 +68,7 @@ PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
     "openrouter": ("OPENROUTER_API_KEY",),
+    "orcarouter": ("ORCAROUTER_API_KEY",),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),  # either one
     "deepseek": ("DEEPSEEK_API_KEY",),
     "kimi": ("KIMI_API_KEY",),
@@ -77,6 +80,7 @@ PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
 PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_BASE_URL",),
     "openai": ("OPENAI_BASE_URL",),
+    "orcarouter": ("ORCAROUTER_BASE_URL",),
     "gemini": ("GEMINI_BASE_URL",),
     "deepseek": ("DEEPSEEK_BASE_URL",),
     "kimi": ("KIMI_BASE_URL",),
@@ -107,6 +111,7 @@ PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = (
     "anthropic",
     "openai",
     "openrouter",
+    "orcarouter",
     "ollama",
     "gemini",
     "deepseek",
@@ -292,6 +297,7 @@ def get_provider(
             "gemini": "google-genai",
             "ollama": "openai",  # ollama uses the openai package
             "openrouter": "openai",  # openrouter uses the openai package
+            "orcarouter": "openai",  # orcarouter uses the openai package
             "deepseek": "openai",  # deepseek uses the openai package
             "kimi": "openai",  # kimi uses the openai package
             "litellm": "litellm",

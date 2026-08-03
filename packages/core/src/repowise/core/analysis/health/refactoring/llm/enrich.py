@@ -166,6 +166,7 @@ def build_enrichment_provider(
         "anthropic": "ANTHROPIC_API_KEY",
         "openai": "OPENAI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
+        "orcarouter": "ORCAROUTER_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
         "kimi": "KIMI_API_KEY",
         "gemini": "GEMINI_API_KEY",
