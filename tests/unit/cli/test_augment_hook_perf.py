@@ -178,7 +178,14 @@ def test_a_read_that_serves_a_skeleton_imports_nothing_heavy(tmp_path: Path) -> 
 
 
 def test_a_read_in_a_repo_that_did_not_opt_in_imports_nothing_heavy(tmp_path: Path) -> None:
-    """Off by default has to be *cheap* by default, not merely quiet."""
+    """Off by default has to be *cheap* by default, not merely quiet.
+
+    This is now the counterfactual's perf guard as well, and that is the more
+    demanding case: the measurement runs on Reads that are *not* being
+    replaced, so a repo with the feature off pays it on every qualifying read
+    and gets no tokens back. It has to stay on the same cheap import graph as
+    the path it stands in for.
+    """
     repo, rel = _indexed_repo(tmp_path, opted_in=False)
     code = (
         _read_payload_probe(repo, rel)
@@ -194,6 +201,11 @@ def test_a_read_in_a_repo_that_did_not_opt_in_imports_nothing_heavy(tmp_path: Pa
     )
     assert "updatedToolOutput" not in out.stdout, "an opted-out repo had its Read replaced"
     assert out.stderr.strip() == "", f"an opted-out Read pulled in:\n{out.stderr}"
+
+    # Guard the guard, same as the opted-in case: if the counterfactual stopped
+    # running, the import assertion above would pass by doing nothing at all.
+    state = json.loads((repo / ".repowise" / ".augment-session.json").read_text("utf-8"))
+    assert state["forgone"] == [rel], "the probe did not reach the counterfactual"
 
 
 def test_a_silent_invocation_imports_nothing_heavy(tmp_path: Path) -> None:
