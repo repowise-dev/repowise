@@ -62,6 +62,10 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         # Files served as a skeleton this session. Doubles as the once-per-
         # file gate and as the "did the agent come back for it" marker.
         "skeletonized": [],
+        # Files this session measured a *forgone* saving for — the
+        # counterfactual leg, which runs only while the feature is off.
+        # Doubles as its once-per-file gate.
+        "forgone": [],
         # Skeletonized files the agent later read in full, and files whose
         # edit-from-a-skeleton warning has already fired. Both exist to keep
         # that warning to exactly the window where it is true.
@@ -289,7 +293,10 @@ def _skeleton_replacement(
         # A verification re-read after an edit needs fidelity, not structure.
         if edited_since_read or rel in state["skeletonized"]:
             return None
-        if not enabled(repo_path) or not supports_updated_output():
+        if not enabled(repo_path):
+            _measure_forgone(repo_path, rel, state)
+            return None
+        if not supports_updated_output():
             return None
         replacement = skeleton_replacement(
             repo_path,
@@ -314,6 +321,49 @@ def _skeleton_replacement(
     if replacement is not None:
         state["skeletonized"].append(rel)
     return replacement
+
+
+#: Files per session the counterfactual will measure before it stops. The real
+#: path spends ~30ms and hands back thousands of tokens; this one spends the
+#: same and hands back nothing but a number, on the *common* case — every
+#: qualifying Read in a repo that has the feature off. A few dozen files is
+#: plenty to characterise a repo, and the cap is what keeps a measurement from
+#: costing more than the thing it is measuring.
+_MAX_FORGONE_PER_SESSION = 40
+
+
+def _measure_forgone(repo_path: Path, rel: str, state: dict) -> None:
+    """Record what serving this Read as a skeleton *would* have saved.
+
+    Runs only when the feature is off, which is the point: a repo that
+    declined can still see what declining costs, and item 5's own saving can
+    be characterised on real work before it is switched on anywhere.
+
+    **This settles A1 and nothing else.** A1 asks whether the replacement is a
+    net win, and the numbers here are exact — the same skeleton, the same
+    token counts the real path would have billed. A2 asks how often the agent
+    has to come back for the whole file, and nothing was replaced here, so
+    nothing was recovered and there is no recovery rate to read. A large
+    forgone total is not a pass; see the caveat ``repowise saved`` prints.
+
+    Gated at least as hard as the path it stands in for: once per file, capped
+    per session, and every cheap gate the caller already applied still
+    applies. Any failure is silence.
+    """
+    if rel in state["forgone"] or len(state["forgone"]) >= _MAX_FORGONE_PER_SESSION:
+        return
+    from .read_skeleton import record_forgone, skeleton_replacement
+
+    would_have = skeleton_replacement(
+        repo_path,
+        rel,
+        min_ratio_gain=_READ_NUDGE_MAX_RATIO,
+        min_saved_tokens=_READ_NUDGE_MIN_SAVINGS,
+    )
+    if would_have is None:
+        return
+    state["forgone"].append(rel)
+    record_forgone(repo_path, would_have)
 
 
 def _log_skeleton_recovery(

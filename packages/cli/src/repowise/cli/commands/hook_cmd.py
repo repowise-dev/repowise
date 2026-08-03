@@ -375,6 +375,81 @@ def rewrite_status(path: str | None, workspace: bool, no_workspace: bool) -> Non
         console.print(f"  {icon} AGENTS.md distill section: {state} ({repo_path})")
 
 
+@hook_group.group("read-skeleton")
+def read_skeleton_group() -> None:
+    """Manage skeleton-served Reads (Claude Code).
+
+    An unbounded Read of a large indexed file comes back as its skeleton —
+    signatures kept, bodies elided, every elided span carrying the line range
+    that reads it back. Reading the same file a second time returns it whole.
+
+    There is no hook to install: the PostToolUse hook `repowise init` already
+    set up carries this. What these commands move is the per-repo verdict
+    `hooks.read_skeleton` in .repowise/config.yaml, which `repowise init`
+    writes from the same answer as the rewrite hook. Use these to change your
+    mind about one repo without re-running init.
+    """
+
+
+@read_skeleton_group.command("install")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def read_skeleton_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Serve large indexed Reads as skeletons in this repo."""
+    _set_read_skeleton(path, workspace, no_workspace, enabled=True)
+
+
+@read_skeleton_group.command("uninstall")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def read_skeleton_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Stop replacing Reads in this repo; they come back whole."""
+    _set_read_skeleton(path, workspace, no_workspace, enabled=False)
+
+
+def _set_read_skeleton(
+    path: str | None, workspace: bool, no_workspace: bool, *, enabled: bool
+) -> None:
+    """Write ``hooks.read_skeleton`` for the target repo or workspace."""
+    from repowise.cli.helpers import save_hook_read_skeleton_enabled
+
+    target = _hook_target(path, workspace, no_workspace)
+    word = "[green]on[/green]" if enabled else "[yellow]off[/yellow]"
+    touched = 0
+    for repo_path in _target_repo_paths(target):
+        if not (repo_path / ".repowise").is_dir():
+            continue
+        save_hook_read_skeleton_enabled(repo_path, enabled=enabled)
+        console.print(f"  Skeleton-served Reads: {word} ({repo_path})")
+        touched += 1
+    if not touched:
+        console.print("  [yellow]No indexed repo here — run `repowise init` first.[/yellow]")
+
+
+@read_skeleton_group.command("status")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def read_skeleton_status(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Report whether Reads are being served as skeletons, and what it saved."""
+    from repowise.cli.commands.augment_cmd.read_skeleton import enabled as read_skeleton_enabled
+
+    target = _hook_target(path, workspace, no_workspace)
+    for repo_path in _target_repo_paths(target):
+        on = read_skeleton_enabled(repo_path)
+        icon = "[green]✓[/green]" if on else "[dim]✗[/dim]"
+        console.print(f"  {icon} skeleton-served Reads: {'on' if on else 'off'} ({repo_path})")
+        if not on:
+            # The counterfactual is the whole point of measuring while off:
+            # a repo that declined can still see what declining costs it.
+            console.print(
+                "      [dim]`repowise saved` shows what this would have saved "
+                "if it were on.[/dim]"
+            )
+
+
 @hook_group.command("stats")
 @click.argument("path", required=False, default=None)
 @click.option(

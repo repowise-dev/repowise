@@ -361,6 +361,52 @@ def _indexed_symbols(db_path: Path, rel: str) -> list[SkeletonSymbol]:
 # ---------------------------------------------------------------------------
 
 
+#: The counterfactual's own table. Deliberately *not* the ``savings`` ledger:
+#: every row there is an event that happened, and ``repowise saved`` sums them
+#: into a headline figure that is already published. A forgone saving did not
+#: happen, and adding it to that sum would inflate a real number with a
+#: hypothetical one — the precise misreading the caveat exists to prevent.
+_FORGONE_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS forgone_savings ("
+    "created_at REAL NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL, "
+    "raw_tokens INTEGER NOT NULL, distilled_tokens INTEGER NOT NULL)"
+)
+
+
+def record_forgone(repo_path: Path, replacement: Replacement) -> None:
+    """Record a saving this repo *would* have made, had the feature been on.
+
+    Same never-create-the-store rule as :func:`record_saving`, and the same
+    reason for spelling the path out rather than importing it.
+    """
+    db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+    if not db_path.exists():
+        return
+    try:
+        import time
+
+        con = sqlite3.connect(str(db_path), timeout=2)
+        try:
+            con.execute(_FORGONE_TABLE_SQL)
+            con.execute(
+                "INSERT INTO forgone_savings "
+                "(created_at, source, path, raw_tokens, distilled_tokens) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    time.time(),
+                    _SAVINGS_SOURCE,
+                    replacement.rel,
+                    replacement.full_tokens,
+                    replacement.skeleton_tokens,
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        return
+
+
 def record_saving(repo_path: Path, replacement: Replacement) -> None:
     """Bill this replacement to the savings ledger so ``repowise saved`` sees it.
 

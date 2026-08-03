@@ -255,11 +255,18 @@ hooks:
   markers carrying 1-indexed ranges, so any elided span can be pulled back with
   a ranged Read — and reading the file a second time returns it whole.
   Savings land in `repowise saved` under the `read_skeleton` filter.
-- **Default off, deliberately.** This is the only hook that changes what a tool
-  returned rather than adding to it, and it is being measured against a
-  pass/fail threshold set before it was built. Turn it on if you want the
-  token saving now; leave it off if you want the agent to see exactly what it
-  asked for.
+- **Written by the rewrite-hook question in `repowise init`.** Saying yes there
+  turns this on too; `--no-editor-setup` and `--no-distill-hook` turn it off
+  with everything else. There is no separate prompt, because that question
+  already asks the broader thing — letting repowise's hooks intervene in your
+  agent's tool calls — and rewriting a shell command is the larger
+  intervention of the two. To change your mind for one repo without re-running
+  init, use `repowise hook read-skeleton install | uninstall | status`.
+- **What it costs while off.** Every Read that *would* have been served as a
+  skeleton is measured anyway, and `repowise saved` reports the total under
+  "Not saved". That figure is what the replacement would have taken off the
+  bill and only that — nothing was replaced, so nothing was read back, so it
+  says nothing about how often the agent would have wanted the whole file.
 - `REPOWISE_HOOK_READ_SKELETON=1` overrides the file for one session.
   Requires Claude Code 2.1.218+ (older clients silently fall back to the
   one-line pointer at `get_context(include=["skeleton"])`).

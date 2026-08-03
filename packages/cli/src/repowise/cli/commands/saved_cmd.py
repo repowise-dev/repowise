@@ -158,7 +158,53 @@ def saved_command(
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
     _print_missed_summary_line(start, missed_days)
     _print_reread_summary_line(start, missed_days)
+    _print_forgone_read_skeleton_line(db_path, since_ts)
     console.print()
+
+
+def _print_forgone_read_skeleton_line(db_path: Path, since_ts: float | None) -> None:
+    """What skeleton-served Reads would have saved, for repos that have it off.
+
+    Read out of its own table rather than the savings ledger, and printed
+    below the total rather than inside it, because none of it happened.
+
+    The caveat is not decoration. This number is exactly half the question:
+    it says what the replacement would have taken off the bill, and it cannot
+    say what the agent would then have had to read back, because nothing was
+    replaced and so nothing was recovered. A repo can show a large figure here
+    and still be one where serving skeletons is a bad trade.
+    """
+    import sqlite3
+
+    try:
+        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
+        try:
+            where, params = "", ()
+            if since_ts is not None:
+                where, params = " WHERE created_at >= ?", (since_ts,)
+            files, raw, distilled = con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(raw_tokens),0), "
+                f"COALESCE(SUM(distilled_tokens),0) FROM forgone_savings{where}",
+                params,
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return  # no such table: this repo never measured, which is not an error
+    if not files:
+        return
+
+    console.print(
+        f"  [dim]Not saved:[/dim] skeleton-served Reads are [yellow]off[/yellow] here — "
+        f"{files:,} file{'' if files == 1 else 's'} would have cost "
+        f"[bold]{raw - distilled:,}[/bold] fewer tokens ({raw:,} → {distilled:,}). "
+        f"[dim]Turn on with `repowise hook read-skeleton install`.[/dim]"
+    )
+    console.print(
+        "  [dim]This is what the replacement would have taken off the bill, and only "
+        "that: nothing was replaced, so nothing was read back, so it says nothing "
+        "about how often the agent would have needed the whole file anyway.[/dim]"
+    )
 
 
 def _missed_report(start: Path, days: float) -> dict | None:

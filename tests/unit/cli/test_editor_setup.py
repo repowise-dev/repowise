@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import pytest
 from rich.console import Console
 
 from repowise.cli import mcp_config
@@ -197,6 +198,60 @@ def test_distill_optout_recorded_despite_no_editor_setup(monkeypatch, tmp_path: 
     )
     assert installs == []
     assert verdicts == [False]
+
+
+def _hook_verdicts(repo_path: Path) -> tuple[object, object]:
+    """``(distill.commands.enabled, hooks.read_skeleton)`` as written to disk."""
+    import yaml
+
+    cfg = yaml.safe_load((repo_path / ".repowise" / "config.yaml").read_text("utf-8")) or {}
+    return (
+        ((cfg.get("distill") or {}).get("commands") or {}).get("enabled"),
+        (cfg.get("hooks") or {}).get("read_skeleton"),
+    )
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_the_rewrite_hook_answer_decides_read_skeleton_too(
+    monkeypatch, tmp_path: Path, answer: bool
+) -> None:
+    """One question, both keys.
+
+    The prompt already means "repowise's hooks may intervene in my agent's
+    tool calls", and rewriting a Bash command into `repowise distill` is a
+    larger intervention than serving a Read as its skeleton, not a smaller
+    one — so a second prompt would be asking for permission already given.
+
+    The concrete thing this pins is that read-skeleton has *a* writer at all.
+    It shipped with none, reachable only by hand-editing YAML, which left its
+    gate needing 50 firings it could never collect.
+    """
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(
+        "repowise.cli.agent_adapters.claude_code.ClaudeCodeAdapter.install_rewrite_hook",
+        lambda self: tmp_path / "settings.json",
+    )
+
+    offer_distill_rewrite_hook(_silent_console(), [tmp_path], answer, yes=True)
+
+    assert _hook_verdicts(tmp_path) == (answer, answer)
+
+
+def test_no_editor_setup_turns_off_read_skeleton_as_well(monkeypatch, tmp_path: Path) -> None:
+    """One flag, one meaning: no hooks. An opt-out that left read-skeleton on
+    would be `--no-editor-setup` still letting a hook rewrite what Read
+    returns."""
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+    (tmp_path / ".repowise").mkdir()
+
+    offer_distill_rewrite_hook(
+        _silent_console(), [tmp_path], False, yes=True, no_editor_setup=True
+    )
+
+    assert _hook_verdicts(tmp_path) == (False, False)
 
 
 def test_distill_offer_silent_when_undecided_and_setup_off(monkeypatch, tmp_path: Path) -> None:

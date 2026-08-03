@@ -553,6 +553,92 @@ def test_the_saving_is_billed_to_the_ledger_repowise_saved_reads(repo: Path) -> 
     assert 0 < distilled < raw
 
 
+# ---------------------------------------------------------------------------
+# The counterfactual: what the feature would have saved, while it is off
+# ---------------------------------------------------------------------------
+
+
+def _forgone_rows(repo_path: Path) -> list[tuple]:
+    db = repo_path / ".repowise" / "omissions" / "omissions.db"
+    if not db.exists():
+        return []
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(
+            "SELECT path, raw_tokens, distilled_tokens FROM forgone_savings"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        con.close()
+
+
+@pytest.fixture
+def repo_off(repo: Path) -> Path:
+    """The same repo with the feature explicitly declined."""
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: false\n", encoding="utf-8"
+    )
+    from repowise.core.distill.store import OmissionStore
+
+    OmissionStore.open_default(repo).close()
+    return repo
+
+
+def test_a_repo_with_it_off_still_measures_what_it_would_have_saved(repo_off: Path) -> None:
+    """Otherwise the gate can never run: off means no data, and no data means
+    the flag stays off by inaction rather than by evidence."""
+    result = _read(repo_off)
+
+    assert result.replacement is None, "measuring must not replace anything"
+    rows = _forgone_rows(repo_off)
+    assert len(rows) == 1
+    path, raw, distilled = rows[0]
+    assert path == "pkg/big.py"
+    assert 0 < distilled < raw
+
+
+def test_a_forgone_saving_is_kept_out_of_the_savings_ledger(repo_off: Path) -> None:
+    """`repowise saved` sums that table into a headline figure. Nothing here
+    happened, so adding it would inflate a real number with a hypothetical."""
+    _read(repo_off)
+
+    assert _forgone_rows(repo_off)
+    assert not _savings_rows(repo_off)
+
+
+def test_the_counterfactual_measures_each_file_once(repo_off: Path) -> None:
+    for _ in range(4):
+        _read(repo_off)
+
+    assert len(_forgone_rows(repo_off)) == 1
+
+
+def test_the_counterfactual_stops_at_the_per_session_cap(repo_off: Path) -> None:
+    """It runs on Reads that are *not* being replaced — the common case — so
+    an uncapped measurement would cost more than the feature it measures."""
+    from repowise.cli.commands.augment_cmd import read_state
+
+    source = (repo_off / "pkg" / "big.py").read_text(encoding="utf-8")
+    for i in range(read_state._MAX_FORGONE_PER_SESSION + 5):
+        rel = f"pkg/copy_{i}.py"
+        (repo_off / rel).write_text(source, encoding="utf-8")
+        _write_index(repo_off, rel, source)
+        _read(repo_off, rel)
+
+    assert len(_forgone_rows(repo_off)) == read_state._MAX_FORGONE_PER_SESSION
+
+
+def test_no_omission_store_means_no_forgone_row_either(repo: Path) -> None:
+    """Same never-create-the-store rule as the real saving."""
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_skeleton: false\n", encoding="utf-8"
+    )
+    _read(repo)
+
+    assert not (repo / ".repowise" / "omissions").exists()
+
+
 def test_no_omission_store_means_no_store_is_created(repo: Path) -> None:
     """A hook is not the place to opt a repo into distill bookkeeping."""
     _read(repo)

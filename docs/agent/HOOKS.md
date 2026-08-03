@@ -132,15 +132,19 @@ stale-read notice when the file changed after the session's previous read of it,
 and points at the cheaper `get_context(..., include=["skeleton"])` for
 structure-level questions.
 
-With `hooks.read_skeleton: true` in `.repowise/config.yaml` (**off by default**,
-see [CONFIG.md](../reference/CONFIG.md)), that pointer becomes an action: an
+With `hooks.read_skeleton: true` in `.repowise/config.yaml` — which `repowise
+init` writes from the same yes/no as the rewrite hook, and which `repowise hook
+read-skeleton install | uninstall | status` toggles afterwards — that pointer
+becomes an action: an
 unbounded `Read` of a large indexed file returns the file's *skeleton* instead of
 the file, once per file per session. Signatures stay, keeping their real line
 numbers; bodies collapse to `... N lines (a-b)` markers carrying 1-indexed ranges,
 so the agent can range-read any elided span back — the same reversibility contract
 `repowise distill` makes for shell output. Reading the file again with no range
 returns it whole. Savings appear in `repowise saved` under the `read_skeleton`
-filter.
+filter. In a repo that has it off, the same Reads are still *measured*, and
+`repowise saved` reports what they would have saved — a number about size only,
+never about whether the agent could work from a skeleton.
 
 This is the only hook that replaces a tool result rather than adding to it, which
 is why it ships opt-in and why the skeleton always says what it removed. One

@@ -602,6 +602,21 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
     save_config_partial(repo_path, distill=distill)
 
 
+def save_hook_read_skeleton_enabled(repo_path: Path, *, enabled: bool) -> None:
+    """Deep-merge ``hooks.read_skeleton`` into ``.repowise/config.yaml``.
+
+    Same shape as :func:`save_distill_commands_enabled`, and written by the
+    same consent: the rewrite-hook prompt means "let repowise's hooks
+    intervene in your agent's tool calls", and rewriting a Bash command is a
+    larger intervention than serving a Read as its skeleton, not a smaller
+    one. There is deliberately no second question.
+    """
+    cfg = load_config(repo_path)
+    hooks = dict(cfg.get("hooks") or {})
+    hooks["read_skeleton"] = enabled
+    save_config_partial(repo_path, hooks=hooks)
+
+
 def config_fingerprint(repo_path: Path) -> str:
     """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
 
