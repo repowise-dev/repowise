@@ -130,7 +130,9 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     return title
 
 
-def disambiguate_titles(titled: list[tuple[str, str]]) -> list[str]:
+def disambiguate_titles(
+    titled: list[tuple[str, str]], *, reserved: set[str] | None = None
+) -> list[str]:
     """Make a set of ``(title, target_path)`` pairs' titles unique.
 
     Path-derived names collide easily: two packages that each hold a ``ui``
@@ -143,10 +145,16 @@ def disambiguate_titles(titled: list[tuple[str, str]]) -> list[str]:
     already used, and falls back to its full target path if even that
     repeats. Input order does not matter: the pairs are resolved in path
     order, so the same set always produces the same names.
+
+    *reserved* names are already taken by pages not in *titled*, so a caller
+    naming a second population against a settled one yields to it rather than
+    renaming it. Passing the settled titles in *titled* instead would let this
+    rename them — and a caller that then keeps only its own slice silently
+    discards those renames, leaving the collision it asked to resolve.
     """
     order = sorted(range(len(titled)), key=lambda i: titled[i][1])
     out = list(titled)
-    used: set[str] = set()
+    used: set[str] = set(reserved or ())
     for i in order:
         title, target = titled[i]
         if title not in used:

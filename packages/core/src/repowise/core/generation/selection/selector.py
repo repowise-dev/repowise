@@ -85,10 +85,24 @@ class ModuleGroup:
     #: outline planner. Threaded to the renderer so the opener can situate the
     #: page against its siblings. Empty on the deterministic path until named.
     scope: str = ""
-    #: A rollup page overviews a subsystem directory whose detail lives on the
-    #: child concept pages below it. It carries its members only for context and
-    #: owns none of them, so the leaves keep their files.
+    #: A rollup page heads the subsystem directory whose detail lives on the
+    #: child concept pages below it. It still owns whatever ``file_paths``
+    #: holds — a directory that has children *and* loose files of its own is
+    #: one page that does both, because both would otherwise be
+    #: ``module_page:{that directory}`` and only one page can have an id.
     is_rollup: bool = False
+    #: Files the renderer may read to describe the page, beyond the ones it
+    #: owns. A rollup sets this to its whole subsystem so the prose can be
+    #: about the subsystem while ``file_paths`` stays the disjoint ownership
+    #: claim. Empty means "the same files it owns", which is every leaf.
+    #:
+    #: The split exists because three consumers read ``file_paths`` as an
+    #: ownership claim and assume the partition is disjoint — the tree's
+    #: ``module_of_file``, the incremental cascade's ``module_page_of``, and
+    #: ``related_pages``' sibling map. Widening ``file_paths`` for context
+    #: silently broke all three: a rollup out-claimed its own leaves for every
+    #: file in the subtree.
+    context_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -485,11 +499,17 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
             for g in groups
         ]
     )
+    # Which directories head a subsystem. Computed before the groups are built
+    # so a directory that is both a chapter and a leaf becomes one page rather
+    # than colliding with itself on ``module_page:{dir}``.
+    chapters = _chapter_members(groups, files)
+
     scored: list[tuple[float, ModuleGroup]] = []
     for group, title in zip(groups, titles, strict=True):
         langs = Counter(lang_of.get(m, "") for m in group.members)
         langs.pop("", None)
         score = sum(inputs.pagerank.get(m, 0.0) for m in group.members)
+        subsystem = chapters.get(group.target_path)
         scored.append(
             (
                 score,
@@ -508,11 +528,19 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
                     # Filled here so the deterministic path carries a scope
                     # sentence; the naming call overwrites it with a written one
                     # when a provider is present.
-                    scope=deterministic_scope(group),
+                    scope=(
+                        _chapter_scope(group.target_path, owns=True)
+                        if subsystem
+                        else deterministic_scope(group)
+                    ),
+                    is_rollup=subsystem is not None,
+                    context_paths=tuple(subsystem or ()),
                 ),
             )
         )
-    scored.extend(_build_rollup_groups(groups, files, lang_of, inputs.pagerank))
+    scored.extend(
+        _build_rollup_groups(chapters, groups, titles, files, lang_of, inputs.pagerank)
+    )
     scored.sort(key=lambda x: (-x[0], x[1].key))
     return ConceptCandidates(scored=scored, groups=groups, layer_labels=layer_labels)
 
@@ -525,96 +553,131 @@ def _build_module_groups(inputs: SelectionInputs) -> ConceptCandidates:
 _ROLLUP_MAX_MEMBER_FRACTION = 0.5
 
 
-def _build_rollup_groups(
-    groups: list[ConceptGroup],
-    files: list[str],
-    lang_of: dict[str, str],
-    pagerank: dict[str, float],
-) -> list[tuple[float, ModuleGroup]]:
-    """Emit one overview page per parent directory that owns several concept pages.
+def _chapter_scope(parent: str, *, owns: bool) -> str:
+    """The scope sentence for a chapter, on the deterministic path."""
+    segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
+    lead = (
+        f"Heads the {_humanise(segment)} subsystem and links to the concept pages "
+        "documenting its parts"
+    )
+    if owns:
+        return (
+            f"{lead}; the files directly under this directory are documented here and "
+            "the rest of the detail lives on those child pages."
+        )
+    return f"{lead}; the detail lives on those child pages, not here."
+
+
+def _chapter_members(groups: list[ConceptGroup], files: list[str]) -> dict[str, list[str]]:
+    """Directories that head a subsystem → every production file beneath them.
 
     The partition splits a large subsystem into path-local leaves, so a
     directory such as ``.../ingestion`` gets no page of its own — only its
     children do. A reader asking "what is the ingestion subsystem" then lands on
     a file, not the subsystem, and a directory-level retrieval query has nothing
     to match against, because directory-level retrieval matches a page to a
-    directory by exact ``target_path`` equality. This adds a page whose
-    ``target_path`` is exactly that parent directory: an overview that names its
-    child pages and links down to them from its body.
+    directory by exact ``target_path`` equality. A chapter is a page whose
+    ``target_path`` is exactly that parent directory: it names its child pages
+    and links down to them from its body.
 
     The rule is purely structural and repo-agnostic: a parent is eligible when at
-    least two leaf concept pages are its *immediate* children and no leaf already
-    claims that directory. With leaves at mixed depths several ancestor levels can
-    each qualify, so two guards keep the set sane: a parent covering more than
-    ``_ROLLUP_MAX_MEMBER_FRACTION`` of the repository is left to the repository
-    overview, and colliding titles are disambiguated the same way leaf titles are.
+    least two leaf concept pages are its *immediate* children. With leaves at
+    mixed depths several ancestor levels can each qualify, which is intended —
+    chapters nest — but one guard keeps the set sane: a parent covering more than
+    ``_ROLLUP_MAX_MEMBER_FRACTION`` of the repository is not a subsystem
+    overview, it is the repository overview under another name, and that page
+    already exists.
 
-    A rollup carries its subsystem's files only so the renderer has real material
-    to summarise; it owns none of them (``is_rollup`` → empty ``file_paths``), so
-    the leaves below keep their files and nothing is documented twice. In the nav
-    tree it currently sits alongside its children under their shared layer rather
-    than nesting them; the body still links down via ``child_pages``. True tree
-    nesting is a deferred nicety, not a correctness requirement.
+    Eligibility deliberately does **not** exclude a parent that is itself a leaf
+    group. Both pages would be ``module_page:{parent}`` and only one page can
+    have an id, so excluding it was the only way to avoid a collision — but it
+    excluded exactly the directories a reader most wants a chapter for. On this
+    repository it suppressed nine of thirteen, including one heading eighteen
+    child pages. Such a parent becomes a single page that both owns its own
+    loose files and heads its children; see ``ModuleGroup.context_paths`` for how
+    ownership stays disjoint while the prose still covers the subsystem.
 
     All paths here are POSIX-normalised upstream (the grouper lowercases
     separators), so the ``/`` splits below are safe.
     """
     total = len(files)
-    leaf_targets = {g.target_path for g in groups}
-    direct_children: dict[str, list[ConceptGroup]] = {}
+    child_count: Counter[str] = Counter()
     for g in groups:
         tp = g.target_path
-        if "/" not in tp:
-            continue
-        parent = tp.rsplit("/", 1)[0]
-        direct_children.setdefault(parent, []).append(g)
+        if "/" in tp:
+            child_count[tp.rsplit("/", 1)[0]] += 1
 
-    # First pass: which parents qualify, and over what members. Titles are
-    # computed in a second pass so they can be disambiguated as a set.
-    candidates: list[tuple[str, list[str]]] = []
-    for parent, children in sorted(direct_children.items()):
-        if len(children) < 2 or parent in leaf_targets:
+    out: dict[str, list[str]] = {}
+    for parent, kids in sorted(child_count.items()):
+        if kids < 2:
             continue
         members = sorted(f for f in files if f.startswith(parent + "/"))
         if not members or (total and len(members) > _ROLLUP_MAX_MEMBER_FRACTION * total):
             continue
-        candidates.append((parent, members))
+        out[parent] = members
+    return out
 
-    # Disambiguate overview titles against each other exactly as leaf titles are,
-    # so two same-named subsystems in different packages ("Components Overview"
-    # under packages/web and packages/vscode) do not render as identical rows.
+
+def _build_rollup_groups(
+    chapters: dict[str, list[str]],
+    groups: list[ConceptGroup],
+    leaf_titles: list[str],
+    files: list[str],
+    lang_of: dict[str, str],
+    pagerank: dict[str, float],
+) -> list[tuple[float, ModuleGroup]]:
+    """Chapter pages for the directories that are *not* already a leaf group.
+
+    A chapter whose directory is also a leaf is built by the caller, in the same
+    loop as every other leaf, so it keeps that group's structural key, its
+    model-written title and its section — all three of which are keyed on the
+    identity the namer already gave it. Only the directories with no group of
+    their own need a page synthesised here, and those own no files.
+
+    Titles are disambiguated against the leaf titles as well as against each
+    other: a synthesised "Ingestion Overview" and a named leaf of the same title
+    render as two identical rows in the tree, and anything keying on a title has
+    to guess between them.
+    """
+    pending = sorted(set(chapters) - {g.target_path for g in groups})
+    if not pending:
+        return []
+
     def _base_title(parent: str) -> str:
         segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
         return f"{_humanise(segment)} Overview".strip()
 
-    titles = disambiguate_titles([(_base_title(p), p) for p, _ in candidates])
+    # The leaves are already settled — several of them carry a model-written
+    # title — so the chapters yield to them rather than renaming them.
+    titles = disambiguate_titles(
+        [(_base_title(p), p) for p in pending], reserved=set(leaf_titles)
+    )
 
     rollups: list[tuple[float, ModuleGroup]] = []
-    for (parent, members), title in zip(candidates, titles, strict=True):
+    for parent, title in zip(pending, titles, strict=True):
+        members = chapters[parent]
         langs = Counter(lang_of.get(m, "") for m in members)
         langs.pop("", None)
-        segment = parent.rsplit("/", 1)[-1] if "/" in parent else parent
-        score = sum(pagerank.get(m, 0.0) for m in members)
         rollups.append(
             (
-                score,
+                sum(pagerank.get(m, 0.0) for m in members),
                 ModuleGroup(
                     key=parent,
                     display=title,
                     language=langs.most_common(1)[0][0] if langs else "unknown",
-                    file_paths=tuple(members),
+                    # Owns nothing: every file beneath it belongs to one of the
+                    # leaves below. The subsystem reaches the renderer through
+                    # ``context_paths`` instead.
+                    file_paths=(),
                     label=None,
                     cohesion=None,
                     # Hashed over the full subsystem with a distinct prefix so a
-                    # rollup can never collide with a leaf whose members are a
+                    # chapter can never collide with a leaf whose members are a
                     # subset of these, and so the sweep tracks it as its own row.
                     structural_key=member_structural_key(members, prefix="concept-rollup"),
-                    scope=(
-                        f"Overviews the {_humanise(segment)} subsystem as a whole and "
-                        "links to the concept pages documenting its parts; the detail "
-                        "lives on those child pages, not here."
-                    ),
+                    scope=_chapter_scope(parent, owns=False),
                     is_rollup=True,
+                    context_paths=tuple(members),
                 ),
             )
         )

@@ -27,6 +27,7 @@ from repowise.core.generation.selection import SelectionInputs, select_pages
 from repowise.core.generation.selection.selector import (
     _build_module_groups,
     _build_rollup_groups,
+    _chapter_members,
 )
 from tests.unit.generation.test_selection_contract import (
     FakeFileInfo,
@@ -401,8 +402,17 @@ def _leaf(members: list[str]) -> ConceptGroup:
     return ConceptGroup(members=sorted(members), dirs=[tp], target_path=tp)
 
 
-def test_rollup_emitted_for_parent_of_two_leaf_pages():
-    """A parent that owns >=2 leaf pages and is itself no leaf gets an overview.
+def _synthesised(leaves: list[ConceptGroup], files: list[str]):
+    """The chapters that need a page of their own, as the selector builds them."""
+    chapters = _chapter_members(leaves, files)
+    titles = [g.target_path for g in leaves]  # identity titles; collisions are the point
+    return chapters, _build_rollup_groups(
+        chapters, leaves, titles, files, {f: "python" for f in files}, {}
+    )
+
+
+def test_chapter_emitted_for_parent_of_two_leaf_pages():
+    """A parent that heads >=2 leaf pages and is itself no leaf gets a chapter.
 
     Its target_path is exactly that directory, because directory-level retrieval
     matches a page to a directory by exact target_path equality.
@@ -412,40 +422,58 @@ def test_rollup_emitted_for_parent_of_two_leaf_pages():
         _leaf(["p/ingestion/graph/c.py", "p/ingestion/graph/d.py"]),
         # Two unrelated subsystems so ingestion stays a minority of the repo and
         # the near-repo-wide guard does not fire; each owns a single leaf, so
-        # neither earns an overview of its own.
+        # neither earns a chapter of its own.
         _leaf([f"p/other/e{i}.py" for i in range(6)]),
         _leaf([f"p/extra/g{i}.py" for i in range(6)]),
     ]
     files = [m for g in leaves for m in g.members] + ["p/ingestion/loose.py"]
-    lang_of = {f: "python" for f in files}
 
-    rollups = _build_rollup_groups(leaves, files, lang_of, {})
-    keys = {m.key for _, m in rollups}
+    chapters, rollups = _synthesised(leaves, files)
 
-    # ingestion owns two leaf children; the others own one each, so no overview.
-    assert keys == {"p/ingestion"}
+    # ingestion heads two leaf children; the others head one each, so no chapter.
+    assert set(chapters) == {"p/ingestion"}
+    assert {m.key for _, m in rollups} == {"p/ingestion"}
     (_, roll) = rollups[0]
     assert roll.is_rollup is True
     assert roll.structural_key.startswith("concept-rollup")
-    # It carries the subsystem's files for context, including loose ones.
-    assert "p/ingestion/loose.py" in roll.file_paths
+    # No group of its own, so it owns nothing and every file stays with a leaf.
+    assert roll.file_paths == ()
+    # It still reads the subsystem's files for context, including loose ones.
+    assert "p/ingestion/loose.py" in roll.context_paths
 
 
-def test_rollup_target_never_collides_with_a_leaf():
-    """A parent that is already a leaf page is not given a second overview."""
+def test_a_directory_that_is_both_chapter_and_leaf_yields_one_page():
+    """The parent keeps its own group and heads its children from it.
+
+    Both pages would be ``module_page:p/svc`` and only one page can have an id,
+    so this is the case that used to be dropped. Dropping it removed the
+    chapter a reader most wants: the directory holding both the subsystem's
+    entry points and its parts.
+    """
+    parent = _leaf(["p/svc/a.py", "p/svc/b.py"])  # target p/svc — the parent itself
     leaves = [
-        _leaf(["p/svc/a.py", "p/svc/b.py"]),  # target p/svc — the parent itself
+        parent,
         _leaf(["p/svc/api/c.py", "p/svc/api/d.py"]),
         _leaf(["p/svc/db/e.py", "p/svc/db/f.py"]),
+        _leaf([f"p/other/e{i}.py" for i in range(8)]),
     ]
     files = [m for g in leaves for m in g.members]
-    rollups = _build_rollup_groups(leaves, files, {f: "python" for f in files}, {})
-    # p/svc is a leaf target, so no rollup claims that page id.
+
+    chapters, rollups = _synthesised(leaves, files)
+
+    # p/svc heads a subsystem...
+    assert "p/svc" in chapters
+    # ...but no second page is synthesised for it, because its own group is the
+    # page. Exactly one thing may claim ``module_page:p/svc``.
     assert "p/svc" not in {m.key for _, m in rollups}
 
 
-def test_rollup_titles_are_disambiguated():
-    """Two same-named subsystems in different packages get distinct titles."""
+def test_chapter_titles_are_disambiguated_against_the_leaves():
+    """A synthesised title never duplicates a leaf's, or another chapter's.
+
+    Two identical rows in the tree are indistinguishable to a reader, and
+    anything keying on a title has to guess between them.
+    """
     leaves = [
         _leaf(["a/web/components/x/1.py", "a/web/components/x/2.py"]),
         _leaf(["a/web/components/z/3.py", "a/web/components/z/4.py"]),
@@ -453,17 +481,50 @@ def test_rollup_titles_are_disambiguated():
         _leaf(["a/ext/components/w/7.py", "a/ext/components/w/8.py"]),
     ]
     files = [m for g in leaves for m in g.members]
-    rollups = _build_rollup_groups(leaves, files, {f: "python" for f in files}, {})
-    titles = [m.display for _, m in rollups]
+    chapters = _chapter_members(leaves, files)
+    # Both parents humanise to the same base title, and one leaf is named the
+    # same thing again, so all three have to be resolved together.
+    leaf_titles = ["Components Overview"] + [g.target_path for g in leaves[1:]]
+    rollups = _build_rollup_groups(
+        chapters, leaves, leaf_titles, files, {f: "python" for f in files}, {}
+    )
+    titles = leaf_titles + [m.display for _, m in rollups]
     assert len(titles) == len(set(titles)), titles
 
 
-def test_rollup_skips_near_repo_wide_parent():
-    """A parent covering most of the repo is the repo overview, not a rollup."""
+def test_chapter_skips_near_repo_wide_parent():
+    """A parent covering most of the repo is the repo overview, not a chapter."""
     leaves = [
         _leaf(["mono/a/x.py", "mono/a/y.py"]),
         _leaf(["mono/b/z.py", "mono/b/w.py"]),
     ]
     files = [m for g in leaves for m in g.members]
-    rollups = _build_rollup_groups(leaves, files, {f: "python" for f in files}, {})
+    chapters, rollups = _synthesised(leaves, files)
+    assert "mono" not in chapters
     assert "mono" not in {m.key for _, m in rollups}
+
+
+def test_chapters_never_double_claim_a_file():
+    """Ownership stays a partition once chapters own files.
+
+    The tree's ``module_of_file``, the incremental cascade's ``module_page_of``
+    and ``related_pages``' sibling map all read ``file_paths`` as an exclusive
+    claim and resolve a conflict by silently picking one. A chapter that
+    out-claimed its own leaves would reparent their files onto itself.
+    """
+    leaves = [
+        _leaf(["p/svc/a.py", "p/svc/b.py"]),
+        _leaf(["p/svc/api/c.py", "p/svc/api/d.py"]),
+        _leaf(["p/svc/db/e.py", "p/svc/db/f.py"]),
+        _leaf(["p/ingestion/lang/g.py", "p/ingestion/lang/h.py"]),
+        _leaf(["p/ingestion/graph/i.py", "p/ingestion/graph/j.py"]),
+        _leaf([f"p/other/k{i}.py" for i in range(8)]),
+    ]
+    files = [m for g in leaves for m in g.members]
+    _chapters, rollups = _synthesised(leaves, files)
+
+    claims: list[str] = [m for g in leaves for m in g.members]
+    claims += [p for _, mg in rollups for p in mg.file_paths]
+
+    assert sorted(claims) == sorted(files), "every file is claimed exactly once"
+    assert len(claims) == len(set(claims))

@@ -224,7 +224,11 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     for mg in run.sel_module_groups:
-        fcs = [run.file_page_contexts[fp] for fp in mg.file_paths if fp in run.file_page_contexts]
+        # Read from the wider set: a chapter's prose is about its whole
+        # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
+        # documents what. They are the same list for every leaf.
+        material = getattr(mg, "context_paths", ()) or mg.file_paths
+        fcs = [run.file_page_contexts[fp] for fp in material if fp in run.file_page_contexts]
         if not fcs:
             # A concept group whose files all failed to build a context. The
             # partition is total, so this is a hole in the tree rather than a
@@ -233,7 +237,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             log.warning(
                 "module_page.skipped_no_file_contexts",
                 target_path=mg.key,
-                members=len(mg.file_paths),
+                members=len(material),
             )
             continue
         page_id = compute_page_id("module_page", mg.key)
@@ -268,7 +272,10 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                         if getattr(mg, "is_rollup", False)
                         else None
                     ),
-                    owns_files=not getattr(mg, "is_rollup", False),
+                    # Ownership is what ``file_paths`` says, not what the page's
+                    # shape implies: a chapter that is also a leaf directory
+                    # heads its children *and* documents its own loose files.
+                    owns_files=bool(mg.file_paths),
                 ),
             )
         )
