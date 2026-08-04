@@ -195,6 +195,42 @@ def load_state(repo_path: Path) -> dict[str, Any]:
     return {}
 
 
+#: Slots the last whole-repo generation put in front of this repository's
+#: signals, which is not the same as the slots that produced a page. The two
+#: differ, and only the first answers "has this index ever been offered a
+#: Glossary?".
+ONBOARDING_SLOTS_OFFERED_KEY = "onboarding_slots_offered"
+
+
+def stamp_offered_slots(state: dict[str, Any], *, enabled: bool = True) -> None:
+    """Record which onboarding slots this whole-repo run evaluated.
+
+    Only a run that generates the whole repository may call this: the slot
+    gates read whole-repo signals, so a scoped run that saw one changed file
+    has not offered anything to anything.
+
+    Written because a missing onboarding row has two causes that look identical
+    in a store and want opposite responses. A slot registered after this index
+    was built has never been evaluated here, and ``update --full`` would build
+    it; a slot that *was* evaluated and whose gate refused the repository will
+    be refused again by the same signals, and telling the user to spend a model
+    run on it is a lie. Measured on ``test-repos/microdot``: of the five
+    registered slots, two produce pages and three (``getting_started``,
+    ``active_landscape``, ``glossary``) are gate-skipped on every run, full or
+    fresh. A notice driven by the rows alone would name all three, forever, and
+    none of them would ever arrive.
+
+    ``enabled`` is the run's ``enable_onboarding``. A run with onboarding off
+    offered nothing, and recording otherwise would silence the notice for a
+    user who later turns it on.
+    """
+    from repowise.core.generation.onboarding import iter_specs
+
+    state[ONBOARDING_SLOTS_OFFERED_KEY] = (
+        sorted(spec.slot for spec in iter_specs()) if enabled else []
+    )
+
+
 def save_state(repo_path: Path, state: dict[str, Any], *, full_index: bool = False) -> None:
     """Write *state* to ``.repowise/state.json``.
 

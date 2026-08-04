@@ -800,6 +800,13 @@ def run_update(
             )
         except Exception as exc:
             log.debug("reindex_notice_skipped", error=str(exc))
+        # Up-to-date code does not mean a complete wiki either. This path is
+        # where an orientation page registered after the index was built is
+        # most likely to go unmentioned forever: it returns before the
+        # generation code, so nothing else in the run can notice.
+        from .slot_notice import surface_missing_slots
+
+        surface_missing_slots(repo_path, emitter=emitter, dry_run=dry_run)
         if emitter is not None:
             emitter.done(
                 ok=True,
@@ -921,6 +928,13 @@ def run_update(
             _surface_release_news(written_by=verdict.written_by)
     except Exception as exc:  # never block a routine update on the upgrade layer
         log.debug("store_upgrade_skipped", error=str(exc))
+
+    # An orientation page registered after this index was built cannot arrive
+    # below, because this run's parsed_files is the changed-file slice, so name
+    # the command that does reach it. Says nothing when there is nothing to say.
+    from .slot_notice import surface_missing_slots
+
+    surface_missing_slots(repo_path, emitter=emitter, dry_run=dry_run)
 
     render_header(repo_path, base_ref, head)
 

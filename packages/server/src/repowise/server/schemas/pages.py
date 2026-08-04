@@ -40,6 +40,33 @@ def _layer_stamp(obj: object, metadata: dict | None) -> tuple[str | None, str | 
     )
 
 
+def _is_chapter(obj: object, metadata: dict | None) -> bool:
+    """Whether this page heads a chapter, read off its metadata blob.
+
+    Promoted for the same reason as the layer stamp, and read the same way: a
+    chapter *is* a ``module_page`` and only its metadata says otherwise, so a
+    reader drawing from a summary listing shows it as an ordinary module that
+    happens to have children. That is the reader dead-end a chapter exists to
+    close.
+
+    Absent on every page written before chapters shipped, which reads as "not a
+    chapter" and leaves those wikis exactly as they render today.
+    """
+    if metadata is None:
+        raw = getattr(obj, "metadata_json", None) or ""
+        if "is_chapter" not in raw:
+            return False
+        try:
+            metadata = json.loads(raw)
+        except ValueError:
+            # Same call as the layer stamp makes: a blob that will not parse
+            # says nothing, rather than guessing a shape for the page.
+            return False
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("is_chapter"))
+
+
 def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
     """The part of a page row that costs nothing to send.
 
@@ -66,6 +93,7 @@ def _summary_fields(obj: object, metadata: dict | None = None) -> dict:
         content_chars=len(obj.content or ""),  # type: ignore[attr-defined]
         layer_id=layer_id,
         layer_name=layer_name,
+        is_chapter=_is_chapter(obj, metadata),
         human_notes=obj.human_notes,  # type: ignore[attr-defined]
         parent_page_id=obj.parent_page_id,  # type: ignore[attr-defined]
         display_order=obj.display_order,  # type: ignore[attr-defined]
@@ -109,6 +137,10 @@ class PageSummaryResponse(BaseModel):
     # layers were stamped — both of which read as "ungrouped", not as an error.
     layer_id: str | None = None
     layer_name: str | None = None
+    # Whether this module page heads a chapter. A chapter shares its page type
+    # with the modules beneath it, so without this a listing cannot tell them
+    # apart and the reader labels a chapter "Module".
+    is_chapter: bool = False
     human_notes: str | None = None
     # Position in the wiki outline. Older rows carry no placement, which reads
     # as a flat wiki and is what those rows actually describe.

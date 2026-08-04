@@ -42,6 +42,7 @@ from repowise.cli.helpers import (
     resolve_reasoning,
     run_async,
     save_state,
+    stamp_offered_slots,
 )
 from repowise.core.docs_mode import docs_mode_state_fields
 
@@ -511,6 +512,11 @@ def upgrade_to_full(
     # `update --full` regenerates the whole wiki (concept tree included), so it
     # brings the store to the terminal store format the same way a full init
     # does. Stamp it as such rather than clamping at the reindex gate.
+    #
+    # This is also the run that answers the missing-slot notice: it evaluates
+    # every registered onboarding slot against whole-repo signals, so after it
+    # there is nothing left for the notice to report.
+    stamp_offered_slots(state, enabled=config.enable_onboarding)
     save_state(repo_path, state, full_index=True)
     if embedder_name and embedder_name != cfg.get("embedder"):
         from repowise.cli.helpers import save_config_partial

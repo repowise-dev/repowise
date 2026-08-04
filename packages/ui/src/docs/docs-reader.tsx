@@ -11,7 +11,7 @@ import {
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
 import { formatRelativeTime, formatTokens } from "../lib/format";
-import { getPageTypeLabel } from "../lib/page-types";
+import { getPageLabel } from "../lib/page-types";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
 import { WikiMarkdown } from "../wiki/wiki-markdown";
@@ -406,7 +406,7 @@ function DocsReaderBody({
                 be untrue. */}
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px] text-[var(--color-text-tertiary)] mb-5">
               <span className="font-mono text-[10px] uppercase tracking-[0.12em]">
-                {getPageTypeLabel(page.page_type)}
+                {getPageLabel(page)}
               </span>
               <span aria-hidden className="opacity-40">&middot;</span>
               <span className="text-[var(--color-text-secondary)]">

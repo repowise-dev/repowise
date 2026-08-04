@@ -57,6 +57,17 @@ export interface DocPageSummary {
    */
   layer_id?: string | null;
   layer_name?: string | null;
+  /**
+   * Whether this module page heads a chapter: a subsystem's landing page,
+   * with the module pages of its directory nested under it.
+   *
+   * Promoted out of `metadata` for the same reason as the layer stamp: a
+   * chapter's `page_type` is `module_page`, exactly like the pages beneath it,
+   * so a listing that drops the blob cannot tell a chapter from an ordinary
+   * module that happens to have children. Absent on every page written before
+   * chapters shipped, which reads as `false`.
+   */
+  is_chapter?: boolean;
   human_notes: string | null;
   /**
    * Position in the wiki outline, computed once at generation time so every

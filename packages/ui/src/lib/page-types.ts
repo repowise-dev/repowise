@@ -43,6 +43,26 @@ export function getPageTypeLabel(pageType: string): string {
   return PAGE_TYPE_CONFIG[pageType]?.label ?? pageType.replace(/_/g, " ");
 }
 
+/**
+ * What to call a page, given the page rather than only its type.
+ *
+ * A chapter is a `module_page`, deliberately: it is a module page with a
+ * better partition rather than an eleventh page type. So its type alone
+ * labels it "Module", which is what the modules nested *under* it are called
+ * too. `is_chapter` is the only thing that separates them, so anywhere a
+ * reader is told what a page is, it has to be read.
+ *
+ * Takes a partial so a caller holding a summary row, a full page, or a search
+ * hit can all pass what they have.
+ */
+export function getPageLabel(
+  page: { page_type?: string; is_chapter?: boolean } | null | undefined,
+): string {
+  if (!page?.page_type) return "";
+  if (page.is_chapter && page.page_type === "module_page") return "Chapter";
+  return getPageTypeLabel(page.page_type);
+}
+
 // ---------------------------------------------------------------------------
 // Model-written pages
 // ---------------------------------------------------------------------------

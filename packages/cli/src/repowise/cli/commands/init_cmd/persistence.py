@@ -17,10 +17,12 @@ from repowise.cli._repo_session import open_repo_db
 from repowise.cli.helpers import (
     config_fingerprint,
     get_head_commit,
+    load_config,
     load_state,
     run_async,
     save_config,
     save_state,
+    stamp_offered_slots,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.core.docs_mode import docs_mode_state_fields
@@ -359,6 +361,14 @@ def save_full_state_and_config(
     # A full init/index genuinely brings the store to the current store format
     # (its pages are the concept tree), so stamp the terminal version rather
     # than clamping at the reindex gate a routine persist would stop below.
+    #
+    # The same run offered every registered onboarding slot its signals, so
+    # record which ones. A slot absent from a fresh index was refused by its
+    # gate, not missed, and the missing-slot notice must not report it.
+    # Read back rather than passed in: init writes ``enable_onboarding: false``
+    # to config.yaml before it reaches here, and only when it is false, so the
+    # file is the run's own answer by the time this runs.
+    stamp_offered_slots(state, enabled=bool(load_config(repo_path).get("enable_onboarding", True)))
     save_state(repo_path, state, full_index=True)
 
     if kg is not None:
