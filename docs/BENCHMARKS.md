@@ -95,10 +95,10 @@ Two things we will not claim from it:
   answers, which is larger than every per-arm effect in the run. The quality
   column is inside the instrument's noise, and "no significant difference" is not
   parity. An equivalence claim needs a TOST that we have not run.
-- **Not a universal saving.** Our largest agent run, 48 questions on
-  `pallets/flask`, reads **+5.1% cost** with no quality difference (p = 0.64).
-  Different repo, different prompt, larger n. Both runs are published, and the
-  -33.5% should never be quoted without this sentence near it.
+- **Not a universal saving.** This is n=15 on one repository, at one commit,
+  under one prompt and one model. Cost deltas move with all four, and other runs
+  in [repowise-bench](https://github.com/repowise-dev/repowise-bench) land
+  elsewhere. Treat -33.5% as this configuration's result, not a constant.
 
 ### What the agent stops doing
 
@@ -118,9 +118,9 @@ Loading one commit's context through `get_context` costs **2,391 tokens against
 compounds to **-41% of the context re-read across the session**.
 
 These are token and call counts, and they are not the same as dollars: agent-side
-prompt caching mutes the cost delta on repeated context, which is exactly why the
-cost figure from this same study did not replicate at n=48 above. We report what
-the runs establish, which is the exploration the agent no longer performs.
+prompt caching mutes the cost delta on repeated context even where token counts
+drop sharply. We report what these runs establish, which is the exploration the
+agent no longer performs.
 
 Reports:
 **[flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md)** ·
@@ -140,15 +140,14 @@ issued at least one call the server answered.
 
 | Tool | Tools advertised | Schema cost (chars) | Cells adopted |
 |---|---:|---:|---:|
-| **repowise** | 11 | 17,561 | **15 / 15** |
+| **repowise** | 10 | 17,561 | **15 / 15** |
 | CodeGraph | 1 | 1,567 | 13 / 15 |
 | Serena | 29 | 29,050 | 4 / 15 |
 | Graphify | 10 | 5,482 | 3 / 15 |
 | code-review-graph | 30 | 28,118 | **0 / 15** |
 
-Tool counts are what each server actually advertised in this run, not what its
-docs claim. Ours reads 11 because the benchmark build served one tool beyond the
-default profile of 10; the number in the table is the one the agent saw.
+Tool counts are the surface each server advertises. Schema cost is measured on
+the exact build used in the run.
 
 code-review-graph advertises 30 tools over a built, embedded graph of 40,904
 nodes and 380,168 edges, and the agent never called it once. A capability an
@@ -156,7 +155,7 @@ agent does not reach for is not a capability.
 
 **Our own caveat, because it belongs to us to say:** this is an advantage of
 naming and surface design, not of retrieval quality, and adoption is clearly
-**not** ordered by surface size. We serve 11 tools and get called 15/15;
+**not** ordered by surface size. We serve 10 tools and get called 15/15;
 CodeGraph serves 1 and gets called 13/15; Serena serves 29 and gets called 4/15.
 Designing tools an agent picks up is a real skill and this table measures it, but
 it measures nothing about what comes back.
