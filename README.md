@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/dev.repowise%2Frepowise.svg)](https://mcptoplist.com/server/dev.repowise%2Frepowise)
+
 <!-- mcp-name: dev.repowise/repowise -->
 
 <div align="center">
