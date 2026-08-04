@@ -462,6 +462,54 @@ def _best_verification(values: list[str]) -> str:
     return "unverified"
 
 
+async def reconcile_source_ranks(session: AsyncSession) -> int:
+    """Re-stamp evidence rows whose stored rank predates a ``SOURCE_RANK`` edit.
+
+    ``DecisionEvidence.source_rank`` is written once at insert time, and two
+    ``ORDER BY`` clauses read it straight from the column, so it cannot simply be
+    derived on read. That makes the ladder a value stored in every row: editing
+    ``SOURCE_RANK`` leaves existing rows on the previous ladder, and because
+    ``bulk_upsert_decisions`` derives headline confidence from
+    ``max(e.source_rank)``, a store would end up averaging two incompatible
+    scales without anything looking wrong.
+
+    Idempotent and cheap: the common case is a single indexed scan matching no
+    rows. Confidence and verification are re-derived only for the decisions whose
+    evidence actually moved, reusing the same expressions as the upsert path so
+    there is one definition of how a headline is scored.
+
+    Returns the number of evidence rows re-stamped (0 when already reconciled).
+    """
+    rows = (await session.execute(select(DecisionEvidence))).scalars().all()
+    moved = [row for row in rows if row.source_rank != rank_for_source(row.source)]
+    if not moved:
+        return 0
+
+    for row in moved:
+        row.source_rank = rank_for_source(row.source)
+    await session.flush()
+
+    for decision_id in {row.decision_id for row in moved}:
+        rec = await session.get(DecisionRecord, decision_id)
+        if rec is None:
+            continue
+        evidence = await list_decision_evidence(session, decision_id)
+        if not evidence:
+            continue
+        best_ver = _best_verification([e.verification for e in evidence])
+        rec.confidence = compute_confidence(
+            max(e.source_rank for e in evidence),
+            len({e.source for e in evidence}),
+            best_ver,
+        )
+        rec.verification = best_ver
+
+    structlog.get_logger(__name__).info(
+        "decisions.source_ranks_reconciled", evidence_rows=len(moved)
+    )
+    return len(moved)
+
+
 async def list_decision_evidence(
     session: AsyncSession,
     decision_id: str,

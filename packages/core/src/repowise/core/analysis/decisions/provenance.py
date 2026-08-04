@@ -35,10 +35,23 @@ __all__ = [
 # discarded). ``test_name`` and ``inferred`` are placeholders for later phases
 # (LLM-docs harvest lands ``llm_inferred`` in Phase 2) but the full ladder is
 # defined now so ranks are stable across phases.
+#
+# A person outranks a document. ``session`` sits above ``adr`` because a
+# transcript carries the user's own words about a choice they were making at the
+# time, corroborated by them in the moment; an ADR is someone's later write-up
+# of it. With ``session`` below ``adr`` the promotion branch in
+# ``crud.decisions`` (``>=``) never fired for a transcript, so a mined document
+# overwrote the headline a user had actually said.
+#
+# ``adr`` and ``pr`` deliberately tie at 7: both are written-up accounts of a
+# decision rather than the decision being made, and the ``>=`` comparison means
+# the later-arriving one takes the headline. The set of *values* is unchanged by
+# the session/adr swap, so ``MAX_SOURCE_RANK`` stays 9 and no other source's
+# confidence moves.
 SOURCE_RANK: dict[str, int] = {
     "cli": 9,  # human-authored manual entry — most authoritative
-    "adr": 8,  # architecture decision records (structured, intentional)
-    "session": 7,  # mined from agent-session transcripts (user-corroborated)
+    "session": 8,  # a user's own words in a transcript, corroborated by them
+    "adr": 7,  # architecture decision records (structured, intentional)
     "pr": 7,  # PR / squash-merge body
     "commit": 6,  # individual commit message
     "git_archaeology": 6,  # alias for commit-mined decisions

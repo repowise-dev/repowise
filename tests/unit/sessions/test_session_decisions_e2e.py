@@ -224,6 +224,12 @@ async def test_init_pipeline_respects_session_mining_gate(tmp_path, monkeypatch)
     assert "session" not in report.by_source
 
 
-def test_session_rank_sits_between_adr_and_commit():
-    assert SOURCE_RANK["session"] == 7
-    assert SOURCE_RANK["adr"] > SOURCE_RANK["session"] > SOURCE_RANK["commit"]
+def test_session_rank_sits_above_adr_and_below_cli():
+    """A transcript is the user speaking; an ADR is a write-up of it.
+
+    This used to assert ``adr > session``, which meant the ``>=`` promotion
+    branch in ``crud.decisions`` never fired for a transcript and a mined
+    document overwrote the user's own words.
+    """
+    assert SOURCE_RANK["session"] == 8
+    assert SOURCE_RANK["cli"] > SOURCE_RANK["session"] > SOURCE_RANK["adr"]

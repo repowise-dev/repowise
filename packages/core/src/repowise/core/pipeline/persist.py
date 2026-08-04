@@ -1172,6 +1172,18 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     except Exception as _purge_err:
         logger.debug("decision_purge_skipped", error=str(_purge_err))
 
+    # Re-stamp evidence rows left on a previous SOURCE_RANK ladder. Local stores
+    # are created by ``init_db`` and never see Alembic, so the migration alone
+    # would only reach hosted; this is the same repair on the path every store
+    # takes. No-op scan once reconciled, and it runs whether or not this run
+    # produced decisions, because a store with nothing new still holds the rows.
+    try:
+        from repowise.core.persistence.crud import reconcile_source_ranks
+
+        await reconcile_source_ranks(session)
+    except Exception as _rank_err:
+        logger.debug("decision_rank_reconcile_skipped", error=str(_rank_err))
+
     if decision_dicts:
         # Reuse the run's shared vector store for semantic (paraphrase) dedup
         # and to make decisions searchable; title dedup still runs when None.
