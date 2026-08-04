@@ -528,34 +528,67 @@ the rows we lose beside the rows we win.
 
 ## How it compares on capability
 
-This table is about what each tool does. For measured head-to-head numbers
-against the open-source agent-context tools, see
-**[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**.
+No single product competes with all of this, so there is no single table. Three
+axes, three sets of real peers. Rows marked *measured* are head-to-head numbers,
+and they link to **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** where the sample
+sizes, the tests and the rows we lose all live.
 
-| | repowise | Google Code Wiki | DeepWiki | Swimm | CodeScene |
-|---|---|---|---|---|---|
-| Self-hostable, open source | ✅ AGPL-3.0 | ❌ cloud only | ❌ cloud only | ❌ Enterprise only | ✅ Docker |
-| Private repo, no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
-| Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
-| MCP server for AI agents | ✅ 10 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
-| Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ | ❌ |
-| Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Command-output distillation | ✅ reversible | ❌ | ❌ | ❌ | ❌ |
-| Learns from your usage (session-mined decisions, demand-weighted docs) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Code health score (1-10) | ✅ 25 markers | ❌ | ❌ | ❌ | ✅ 25-30 |
-| Brain Method / LCOM4 / god class | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |
-| Untested-hotspot detection | ✅ coverage × hotspot | ❌ | ❌ | ❌ | ❌ |
-| Health trend + declining alerts | ✅ rolling snapshots | ❌ | ❌ | ❌ | ✅ |
-| Concrete cross-file refactoring plans | ✅ graph-aware + blast radius | ❌ | ❌ | ❌ | ⚠️ within-function only |
-| Dataflow-verified within-function plans | ✅ CFG + reaching definitions | ❌ | ❌ | ❌ | ⚠️ LLM-generated, unverified |
-| Git intelligence (hotspots, ownership, co-change) | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Pre-merge change-risk scoring | ✅ 0-10 + directives | ❌ | ❌ | ❌ | ✅ |
-| Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Dead code detection | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP | ❌ | ❌ | ❌ | ❌ |
-| Local dashboard | ✅ | ❌ | ❌ | ❌ IDE only | ✅ |
+### As an agent context layer
+
+Against the tools doing the same job: index a repository, serve it to a coding
+agent over MCP.
+
+| | repowise | CodeGraph | Serena | DeepWiki |
+|---|---|---|---|---|
+| Self-hostable, open source | ✅ AGPL-3.0 | ✅ | ✅ | ❌ cloud only |
+| Private repo, no cloud | ✅ | ✅ | ✅ | ❌ OSS forks only |
+| MCP tools served | 10 | 1 | 29 | 3 |
+| **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42)* | ✅ **0.746** | 0.610 | not in this run | not measured |
+| **The agent actually calls it** *([measured](docs/BENCHMARKS.md#3-whether-agents-call-the-tools-at-all), n=15)* | ✅ **15/15** | 13/15 | 4/15 | not measured |
+| **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
+| Generated documentation | ✅ | ❌ | ❌ | ✅ |
+| Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
+| Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ |
+| Command-output distillation | ✅ reversible | ❌ | ❌ | ❌ |
+| Learns from your usage (session-mined decisions, demand-weighted docs) | ✅ | ❌ | ❌ | ❌ |
+| Architectural decision records | ✅ | ❌ | ❌ | ❌ |
+| Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP | ❌ | ❌ | ❌ |
+
+CodeGraph builds its index **22x faster than we do**, and if a call graph is all
+you need, that is the right trade. Graphify and code-review-graph were in the same
+measured field and are on the benchmarks page.
+
+### As a code health tool
+
+| | repowise | CodeScene |
+|---|---|---|
+| Self-hostable, open source | ✅ AGPL-3.0 | ✅ Docker |
+| Code health score (1-10) | ✅ 25 markers | ✅ 25-30 |
+| Brain Method / LCOM4 / god class | ✅ | ✅ |
+| **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
+| **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
+| Defect-prediction AUC, published and reproducible | ✅ 0.74 over 21 repos | ✅ Code Red study |
+| Git intelligence (hotspots, ownership, co-change) | ✅ | ✅ |
+| Pre-merge change-risk scoring | ✅ 0-10 + directives | ✅ |
+| Health trend + declining alerts | ✅ rolling snapshots | ✅ |
+| Bus factor analysis | ✅ | ✅ |
+| Concrete cross-file refactoring plans | ✅ graph-aware + blast radius | ⚠️ within-function only |
+| Dataflow-verified within-function plans | ✅ CFG + reaching definitions | ⚠️ LLM-generated, unverified |
+| Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ |
+| Untested-hotspot detection | ✅ coverage × hotspot | ❌ |
+| Dead code detection | ✅ | ❌ |
+| Serves it to an AI agent over MCP | ✅ | ✅ |
+| Local dashboard | ✅ | ✅ |
+
+CodeScene is the only other vendor in this category with a published empirical
+defect study, which is why it is the one we ran head to head against.
+
+### Documentation generators
+
+DeepWiki, Google Code Wiki and Swimm generate documentation from a repository,
+which overlaps one of our five layers. **We have not measured against them**, so
+there is no table here rather than a table of checkmarks. DeepWiki appears above
+because it also serves an agent over MCP, which is a job we can be measured on.
 
 ### The PR bot, against the LLM review bots
 

@@ -36,7 +36,7 @@ checkmark do a number's job.
 
 ---
 
-## 1 · Finding the right files
+## 1. Finding the right files
 
 **Grading here is deterministic. No LLM judge is involved anywhere in this
 number**, which makes it the most reproducible result on the page. ContextBench
@@ -73,7 +73,7 @@ Raw data and harness:
 
 ---
 
-## 2 · Cost in a real agent loop
+## 2. Cost in a real agent loop
 
 Fifteen questions on `django/django`, stratified across five question shapes,
 drawn and pre-registered before any money was spent. Every arm got a
@@ -132,7 +132,7 @@ Raw data for the stratified run:
 
 ---
 
-## 3 · Whether agents call the tools at all
+## 3. Whether agents call the tools at all
 
 Same 15 questions, same agent, same neutral prompt, every server verified alive
 and serving its full advertised surface. This counts the cells where the agent
@@ -145,6 +145,10 @@ issued at least one call the server answered.
 | Serena | 29 | 29,050 | 4 / 15 |
 | Graphify | 10 | 5,482 | 3 / 15 |
 | code-review-graph | 30 | 28,118 | **0 / 15** |
+
+Tool counts are what each server actually advertised in this run, not what its
+docs claim. Ours reads 11 because the benchmark build served one tool beyond the
+default profile of 10; the number in the table is the one the agent saw.
 
 code-review-graph advertises 30 tools over a built, embedded graph of 40,904
 nodes and 380,168 edges, and the agent never called it once. A capability an
@@ -159,7 +163,7 @@ it measures nothing about what comes back.
 
 ---
 
-## 4 · Command-output compression
+## 4. Command-output compression
 
 `repowise distill <cmd>` compresses command output *before* the agent reads it:
 errors first, exit code preserved, every omission recoverable through an inline
@@ -183,7 +187,7 @@ Full guide: **[docs/agent/DISTILL.md](agent/DISTILL.md)**
 
 ---
 
-## 5 · Code health predicts defects
+## 5. Code health predicts defects
 
 A health score is worth something only if the files it flags are the files that
 break. Scores are taken at a historical commit, bug fixes are counted over the
@@ -214,7 +218,7 @@ Reports:
 
 ---
 
-## 6 · Indexing time, the row we lose
+## 6. Indexing time, the row we lose
 
 We are the slowest indexer in the field, on every repo we measured, and it is not
 close. On `django/django`:
