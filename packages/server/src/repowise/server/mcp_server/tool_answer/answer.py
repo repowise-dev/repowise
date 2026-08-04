@@ -587,6 +587,37 @@ def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
     return payload
 
 
+def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
+    """Attach the ranked shortlist to a payload that is about to be returned.
+
+    ``get_answer`` has several early returns that fire *after* retrieval has
+    run: the qualified-miss guard, answer-by-union, the value-extraction fast
+    path, the legacy abstain, and both degraded paths. Each was written as a
+    complete reply in its own terms — the union hands back every definition of
+    the named symbol, the extractor hands back the literal assignment line —
+    and each set ``retrieval`` to ``[]`` and returned.
+
+    That is right about ``retrieval``, which is re-read evidence for a synthesised
+    answer, and wrong about what the caller is left holding. ``resolved_pool``
+    already exists at every one of these sites: the full ranked file list, built
+    before the 5-hit synthesis cap, at no further cost. Discarding it means a
+    caller whose question tripped one of these gates gets a narrower reply than
+    one whose question did not, and gets it *because* we recognised their question
+    more precisely. Measured on the 70 ContextBench dev instances, the gates that
+    fire after retrieval account for 20 firings and 15 answers that named no gold
+    file, every one of them with a ranked pool in hand.
+
+    So the shortlist travels with every reply. This adds to a payload and takes
+    nothing away: no gate stops firing, no predicate moves, and the special reply
+    each gate exists to give is returned unchanged. It is deliberately NOT the
+    fix of loosening a gate — finding A11 measured that at -6.4 recall@5.
+    """
+    candidates = _serialize_candidates(resolved_pool)
+    if candidates:
+        payload["candidates"] = candidates
+    return payload
+
+
 def _degraded_payload(
     *,
     reason: str,
@@ -595,6 +626,7 @@ def _degraded_payload(
     fallback_targets: list[str],
     repository,
     t0: float,
+    resolved_pool: list[dict] | None = None,
 ) -> dict:
     """Shape a synthesis-less get_answer response.
 
@@ -605,24 +637,27 @@ def _degraded_payload(
     set only the top-level key, so a caller watching ``_meta`` saw a normal
     empty answer.
     """
-    return {
-        "answer": "",
-        "citations": [],
-        "confidence": "low",
-        "degraded": reason,
-        "fallback_targets": fallback_targets,
-        "retrieval": _serialize_hits(hits),
-        "note": note,
-        "_meta": {
-            **_build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                hint=_answer_hint("low", len(hits)),
-                repository=repository,
-                targets=fallback_targets,
-            ),
+    return _with_candidates(
+        {
+            "answer": "",
+            "citations": [],
+            "confidence": "low",
             "degraded": reason,
+            "fallback_targets": fallback_targets,
+            "retrieval": _serialize_hits(hits),
+            "note": note,
+            "_meta": {
+                **_build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("low", len(hits)),
+                    repository=repository,
+                    targets=fallback_targets,
+                ),
+                "degraded": reason,
+            },
         },
-    }
+        resolved_pool if resolved_pool is not None else hits,
+    )
 
 
 @mcp.tool()
@@ -918,27 +953,31 @@ async def get_answer(
     # never degrade to a confidently-wrong answer (CodeGraph #173).
     if homonyms.get("qualified_miss"):
         missed = homonyms["qualified_miss"]
-        return {
-            "answer": "",
-            "citations": [],
-            "confidence": "low",
-            "note": (
-                f"No indexed definition matches the qualified name(s) {missed}. "
-                "The base name is defined elsewhere, but not under the "
-                "class/module you named, so this is not returning a same-named "
-                "symbol from another file, to avoid a confidently-wrong answer. "
-                'Re-check the qualifier, or call search_codebase mode="symbol" '
-                "on the base name to see every definition."
-            ),
-            "fallback_targets": [],
-            "retrieval": [],
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                hint=_answer_hint("low", 0),
-                repository=repository,
-                targets=[],
-            ),
-        }
+        return _with_candidates(
+            {
+                "answer": "",
+                "citations": [],
+                "confidence": "low",
+                "note": (
+                    f"No indexed definition matches the qualified name(s) {missed}. "
+                    "The base name is defined elsewhere, but not under the "
+                    "class/module you named, so this is not returning a same-named "
+                    "symbol from another file, to avoid a confidently-wrong answer. "
+                    'Re-check the qualifier, or call search_codebase mode="symbol" '
+                    "on the base name to see every definition. The files retrieval "
+                    "ranked for this question are in candidates."
+                ),
+                "fallback_targets": [],
+                "retrieval": [],
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("low", 0),
+                    repository=repository,
+                    targets=[],
+                ),
+            },
+            resolved_pool,
+        )
 
     # --- Answer-by-union (homonym exact-name lookup) -----------------------
     # The question named a symbol with N>=2 defs no qualifier disambiguates
@@ -983,6 +1022,10 @@ async def get_answer(
                     f" {len(more_defs)} more are in more_definitions; call "
                     "get_symbol with the listed id, do NOT Read."
                 )
+            note += (
+                " If the question was about something other than these definitions, "
+                "candidates holds the files retrieval ranked for it."
+            )
             payload: dict = {
                 "answer": (
                     f"`{', '.join(names)}` has {total} definition(s) in this repo; "
@@ -1005,7 +1048,7 @@ async def get_answer(
             }
             if more_defs:
                 payload["more_definitions"] = more_defs
-            return payload
+            return _with_candidates(payload, resolved_pool)
         # Bodies unreadable (no repo root / files gone) — fall through to the
         # normal retrieval/gate path rather than returning an empty union.
 
@@ -1016,26 +1059,34 @@ async def get_answer(
     ]
 
     if not hits:
-        return {
-            "answer": "",
-            "citations": [],
-            "confidence": "low",
-            "fallback_targets": [],
-            "retrieval": [],
-            "note": (
-                "No wiki hits for this question. Rephrase around the code "
-                'concept, or use search_codebase (mode="symbol" for an '
-                'identifier, mode="path" for a file name); if the question '
-                "names a file, call get_context on it directly. Grep only "
-                "if those come back empty too."
-            ),
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                hint=_answer_hint("low", 0),
-                repository=repository,
-                targets=[],
-            ),
-        }
+        # Wrapped like every other post-retrieval return even though the pool is
+        # necessarily empty here (``resolved_pool`` is ``hits`` before the cap, so
+        # no hits means no pool). Keeping the invariant "every return after
+        # retrieval goes through ``_with_candidates``" is what stops the next
+        # reordering of this function quietly re-opening the hole.
+        return _with_candidates(
+            {
+                "answer": "",
+                "citations": [],
+                "confidence": "low",
+                "fallback_targets": [],
+                "retrieval": [],
+                "note": (
+                    "No wiki hits for this question. Rephrase around the code "
+                    'concept, or use search_codebase (mode="symbol" for an '
+                    'identifier, mode="path" for a file name); if the question '
+                    "names a file, call get_context on it directly. Grep only "
+                    "if those come back empty too."
+                ),
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("low", 0),
+                    repository=repository,
+                    targets=[],
+                ),
+            },
+            resolved_pool,
+        )
 
     # Attach real page content to the top hits, once, for every retrieval —
     # before anything downstream branches on how good the retrieval looks.
@@ -1148,7 +1199,7 @@ async def get_answer(
             repository=repository,
             targets=fallback_targets,
         )
-        return gated
+        return _with_candidates(gated, resolved_pool)
 
     # Confidence is the only axis we gate on. We deliberately do NOT add a
     # second gate keyed on question shape (e.g. relational questions
@@ -1173,28 +1224,32 @@ async def get_answer(
             answer_text = extraction["answer"]
             if extraction.get("value_source"):
                 answer_text += "\n\n" + extraction["value_source"]
-            return {
-                "answer": answer_text,
-                "citations": [extraction["file"]],
-                "confidence": "high",
-                "retrieval_quality": (
-                    "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
-                ),
-                "grounding": "extracted",
-                "fallback_targets": fallback_targets,
-                "retrieval": [],
-                "note": (
-                    "Extracted verbatim from the live source line — no LLM "
-                    "synthesis involved. Cite directly; no verification "
-                    "Read needed."
-                ),
-                "_meta": _build_meta(
-                    timing_ms=(time.perf_counter() - t0) * 1000,
-                    hint=_answer_hint("high", len(hits)),
-                    repository=repository,
-                    targets=[extraction["file"], *fallback_targets],
-                ),
-            }
+            return _with_candidates(
+                {
+                    "answer": answer_text,
+                    "citations": [extraction["file"]],
+                    "confidence": "high",
+                    "retrieval_quality": (
+                        "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
+                    ),
+                    "grounding": "extracted",
+                    "fallback_targets": fallback_targets,
+                    "retrieval": [],
+                    "note": (
+                        "Extracted verbatim from the live source line — no LLM "
+                        "synthesis involved. Cite directly; no verification "
+                        "Read needed. candidates holds the files retrieval ranked, "
+                        "for the wider question the value sits inside."
+                    ),
+                    "_meta": _build_meta(
+                        timing_ms=(time.perf_counter() - t0) * 1000,
+                        hint=_answer_hint("high", len(hits)),
+                        repository=repository,
+                        targets=[extraction["file"], *fallback_targets],
+                    ),
+                },
+                resolved_pool,
+            )
 
     # --- Synthesis (LLM) ---------------------------------------------------
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
@@ -1218,6 +1273,7 @@ async def get_answer(
             fallback_targets=fallback_targets,
             repository=repository,
             t0=t0,
+            resolved_pool=resolved_pool,
         )
 
     # Decision fusion (why-shaped questions only) + structured prelude. Both
@@ -1258,6 +1314,7 @@ async def get_answer(
             fallback_targets=fallback_targets,
             repository=repository,
             t0=t0,
+            resolved_pool=resolved_pool,
         )
 
     citations = [
