@@ -28,8 +28,6 @@ from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
     SLOT_ACTIVE_LANDSCAPE,
-    SLOT_CODEBASE_MAP,
-    SLOT_DEVELOPMENT_GUIDE,
     SLOT_GETTING_STARTED,
     SLOT_HOW_IT_WORKS,
     SLOT_KEY_CONCEPTS,
@@ -168,10 +166,10 @@ def test_subkinds_registered_in_canonical_order() -> None:
     # ONBOARDING_ORDER.
     expected = [s for s in ONBOARDING_ORDER if s not in PROMOTED_SLOTS.values()]
     assert slots == expected
-    # Six templated subkinds, the topology-driven guided tour, and the
-    # glossary, which is rendered without a model at all.
-    assert len(slots) == 8
-    assert "guided_tour" in slots
+    # Four templated subkinds plus the glossary, which is rendered without a
+    # model at all. The promoted overview brings orientation to six pages.
+    assert len(slots) == 5
+    assert len(ONBOARDING_ORDER) == 6
     # Last, and it must stay last: a glossary is a lookup surface, not a
     # reading step.
     assert slots[-1] == "glossary"
@@ -182,35 +180,11 @@ def test_onboarding_level_is_eight() -> None:
 
 
 def test_target_path_format() -> None:
-    assert target_path("codebase_map") == "onboarding/codebase_map"
+    assert target_path("key_concepts") == "onboarding/key_concepts"
 
 
 def test_promoted_slots_map() -> None:
     assert PROMOTED_SLOTS == {"repo_overview": "project_overview"}
-
-
-# ---------------------------------------------------------------------------
-# Codebase map — always generates
-# ---------------------------------------------------------------------------
-
-
-def test_codebase_map_always_builds() -> None:
-    spec = onboarding.get_spec(SLOT_CODEBASE_MAP)
-    assert spec is not None
-    files = [
-        _file("src/auth/login.py", symbols=["Login"]),
-        _file("src/auth/session.py", symbols=["Session"]),
-        _file("src/auth/middleware.py", symbols=["AuthMiddleware"]),
-        _file("src/api/routes.py", symbols=["Router"]),
-        _file("src/api/handlers.py", symbols=["Handler"]),
-        _file("src/api/serializers.py", symbols=["Serializer"]),
-    ]
-    sig = _signals(files=files)
-    ctx = spec.build_context(sig)
-    assert ctx is not None
-    assert len(ctx.directories) >= 1
-    # Largest dir first
-    assert ctx.directories[0].file_count >= ctx.directories[-1].file_count
 
 
 # ---------------------------------------------------------------------------
@@ -835,12 +809,13 @@ async def test_missing_onboarding_evidence_is_visible_in_page_provenance() -> No
 
 
 async def test_evidence_for_a_gated_page_is_reported_as_not_generated() -> None:
-    spec = onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE)
+    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
     assert spec is not None
-    signals = _signals(files=[_file("src/one.py")])
+    # One symbol is below the concept gate, so the page is never generated.
+    signals = _signals(files=[_file("src/one.py", symbols=["One"])])
     config = GenerationConfig(
         source_evidence_files={
-            "onboarding/development_guide": ("docs/development.md",),
+            "onboarding/key_concepts": ("docs/concepts.md",),
         },
     )
     generator = PageGenerator(MockProvider(), ContextAssembler(config), config)
@@ -851,43 +826,9 @@ async def test_evidence_for_a_gated_page_is_reported_as_not_generated() -> None:
     assert page is None
     assert any(
         entry.get("event") == "source_evidence.skipped"
-        and entry.get("skipped")
-        == [{"path": "docs/development.md", "reason": "page_not_generated"}]
+        and entry.get("skipped") == [{"path": "docs/concepts.md", "reason": "page_not_generated"}]
         for entry in logs
     )
-
-
-# ---------------------------------------------------------------------------
-# Development guide — gated on ≥2 structural signals
-# ---------------------------------------------------------------------------
-
-
-def test_development_guide_skipped_for_unconventional_repo() -> None:
-    spec = onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE)
-    assert spec is not None
-    sig = _signals(files=[_file("src/a.py"), _file("src/b.py")])
-    assert spec.build_context(sig) is None
-
-
-def test_development_guide_fires_with_suffix_pattern_and_test_mirror() -> None:
-    spec = onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE)
-    assert spec is not None
-    files = [
-        _file("src/auth_handler.py", symbols=["AuthHandler"]),
-        _file("src/user_handler.py", symbols=["UserHandler"]),
-        _file("src/billing_handler.py", symbols=["BillingHandler"]),
-        _file("src/order_handler.py", symbols=["OrderHandler"]),
-        _file("tests/test_auth_handler.py"),
-        _file("tests/test_user_handler.py"),
-        _file("tests/test_billing_handler.py"),
-    ]
-    sig = _signals(files=files)
-    ctx = spec.build_context(sig)
-    assert ctx is not None
-    suffixes = {p.suffix for p in ctx.suffix_patterns}
-    assert "handler" in suffixes
-    assert ctx.test_mirror is not None
-    assert ctx.test_mirror.test_root == "tests"
 
 
 # ---------------------------------------------------------------------------
@@ -931,50 +872,6 @@ def test_tag_promoted_pages_sets_onboarding_slot() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Guided tour — gated on having a real (multi-stop) tour
-# ---------------------------------------------------------------------------
-
-
-def _tour_stops(n: int) -> tuple[dict, ...]:
-    return tuple(
-        {
-            "order": i + 1,
-            "target_path": f"src/file_{i}.py",
-            "page_type": "file_page",
-            "title": f"file_{i}.py",
-            "depth": i,
-            "kind": "code",
-            "reason": "reason",
-        }
-        for i in range(n)
-    )
-
-
-def test_guided_tour_skipped_without_enough_stops() -> None:
-    spec = onboarding.get_spec("guided_tour")
-    assert spec is not None
-    sig = _signals(files=[_file("src/main.py", is_entry_point=True)], tour_stops=_tour_stops(1))
-    assert spec.build_context(sig) is None
-
-
-def test_guided_tour_builds_with_stops_and_summaries() -> None:
-    spec = onboarding.get_spec("guided_tour")
-    assert spec is not None
-    sig = _signals(
-        files=[_file("src/main.py", is_entry_point=True)],
-        tour_stops=_tour_stops(3),
-        layer_order=("API", "Service", "Data"),
-        completed_page_summaries={"src/file_0.py": "Entry orchestrator."},
-    )
-    ctx = spec.build_context(sig)
-    assert ctx is not None
-    assert len(ctx.stops) == 3
-    assert ctx.layer_order == ["API", "Service", "Data"]
-    # Summary is attached to the matching stop.
-    assert ctx.stops[0].summary == "Entry orchestrator."
-
-
-# ---------------------------------------------------------------------------
 # Templates render
 # ---------------------------------------------------------------------------
 
@@ -1000,12 +897,6 @@ def _jinja_env() -> jinja2.Environment:
 @pytest.mark.parametrize(
     "subkind_slot,ctx_factory",
     [
-        (
-            SLOT_CODEBASE_MAP,
-            lambda: onboarding.get_spec(SLOT_CODEBASE_MAP).build_context(
-                _signals(files=[_file(f"src/m{i}.py", symbols=[f"M{i}"]) for i in range(6)])
-            ),
-        ),
         (
             SLOT_ACTIVE_LANDSCAPE,
             lambda: onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE).build_context(
@@ -1059,33 +950,6 @@ def _jinja_env() -> jinja2.Environment:
                 _signals(
                     files=[_file("src/main.py", is_entry_point=True)],
                     external_systems=({"name": "fastapi", "ecosystem": "pypi"},),
-                )
-            ),
-        ),
-        (
-            "guided_tour",
-            lambda: onboarding.get_spec("guided_tour").build_context(
-                _signals(
-                    files=[_file("src/main.py", is_entry_point=True)],
-                    tour_stops=_tour_stops(3),
-                    layer_order=("API", "Service"),
-                    completed_page_summaries={"src/file_0.py": "Entry orchestrator."},
-                )
-            ),
-        ),
-        (
-            SLOT_DEVELOPMENT_GUIDE,
-            lambda: onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE).build_context(
-                _signals(
-                    files=[
-                        _file("src/auth_handler.py"),
-                        _file("src/user_handler.py"),
-                        _file("src/billing_handler.py"),
-                        _file("src/order_handler.py"),
-                        _file("tests/test_auth_handler.py"),
-                        _file("tests/test_user_handler.py"),
-                        _file("tests/test_billing_handler.py"),
-                    ]
                 )
             ),
         ),

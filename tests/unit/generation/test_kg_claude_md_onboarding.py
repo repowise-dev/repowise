@@ -16,9 +16,6 @@ from repowise.core.generation.editor_files.data import (
 )
 from repowise.core.generation.kg_context import KnowledgeGraphContext
 from repowise.core.generation.onboarding.signals import OnboardingSignals
-from repowise.core.generation.onboarding.subkinds.codebase_map import (
-    CodebaseMapContext,
-)
 from repowise.core.generation.onboarding.subkinds.how_it_works import (
     HowItWorksContext,
     _build,
@@ -257,52 +254,6 @@ class TestHowItWorksWithTour:
         )
         ctx = _build(signals)
         assert ctx is None
-
-
-# ---------------------------------------------------------------------------
-# CodebaseMap + KG layers tests
-# ---------------------------------------------------------------------------
-
-
-class TestCodebaseMapWithLayers:
-    def test_layers_in_context(self):
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-            kg_layers=[{"name": "Core", "description": "Core logic", "nodeIds": ["file:a.py"]}],
-        )
-        assert len(ctx.kg_layers) == 1
-
-    def test_template_renders_layers(self, onboarding_env):
-        tmpl = onboarding_env.get_template("codebase_map.j2")
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-            kg_layers=[
-                {
-                    "name": "Core",
-                    "description": "Core business logic",
-                    "nodeIds": ["file:a.py", "file:b.py"],
-                },
-                {"name": "API", "description": "REST API layer", "nodeIds": ["file:c.py"]},
-            ],
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "## Architectural Layers" in rendered
-        assert "**Core**" in rendered
-        assert "**API**" in rendered
-
-    def test_template_no_layers_section(self, onboarding_env):
-        tmpl = onboarding_env.get_template("codebase_map.j2")
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "Architectural Layers" not in rendered
 
 
 # ---------------------------------------------------------------------------

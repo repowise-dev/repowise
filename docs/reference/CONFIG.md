@@ -116,14 +116,19 @@ entries, no configured files are added; `onboarding/how_it_works` can still add
 exact excerpts automatically for symbols in its detected flows. The default
 shared `token_budget` is `8000`.
 
-Keys name model-written synthesis pages: `repo_overview` or
-`onboarding/<slot>` for `guided_tour`, `getting_started`, `codebase_map`,
-`key_concepts`, `how_it_works`, `development_guide`, and `active_landscape`.
+Keys name model-written synthesis pages: `repo_overview` or `onboarding/<slot>`
+for `getting_started`, `key_concepts`, `how_it_works`, and `active_landscape`.
 `onboarding/project_overview` is invalid because that promoted slot is the
 `repo_overview` page. `onboarding/glossary` is accepted but has no effect: that
 page is rendered from mined vocabulary alone, with no model in its path, so
 there is no prompt for extra evidence to reach. Unknown keys and malformed
 values fail generation with a configuration error instead of being ignored.
+
+`onboarding/guided_tour`, `onboarding/codebase_map` and
+`onboarding/development_guide` named pages that have since been retired. A
+config still carrying one is accepted and the entry is ignored, with a warning
+naming the key — an upgrade must not turn a previously valid config into a
+failed generation. Remove the entry to silence it.
 
 Each value is an ordered list of repository-relative paths. A file is eligible
 only when it was included in the indexed source map and contains non-empty

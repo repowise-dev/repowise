@@ -451,6 +451,8 @@ async def _persist_full_update_async(
     # Filled by the tombstone step; read by the full-text block after the
     # session closes, so it has to survive a step that was skipped.
     tombstoned_page_ids: list[str] = []
+    # Same contract, for rows of a page that has been retired outright.
+    swept_page_ids: list[str] = []
     try:
         await init_db(engine)
         sf = create_session_factory(engine)
@@ -464,6 +466,29 @@ async def _persist_full_update_async(
             # Batched (one SELECT + one flush); the checkpointer sink already
             # streamed each page per-commit for durability.
             await upsert_pages_from_generated(session, generated_pages, repo_id)
+
+            # Delete rows of pages that have been retired since this index was
+            # built. Nothing else on the update path can reach them: an update
+            # runs with ``file_pages_only``, so the ladder returns before the
+            # repo-wide levels and never visits an onboarding row to notice it
+            # should not exist. Without this the retirement reaches only users
+            # who re-index, and everyone else keeps being served a page the
+            # product no longer has.
+            try:
+                from repowise.core.pipeline.persist import sweep_retired_pages
+
+                swept_page_ids = await sweep_retired_pages(session, repo_id)
+
+                # Drop the embeddings before the SQL session commits, the same
+                # ordering ``init`` uses: the vector store is a separate engine,
+                # so there is no write-lock conflict, the delete is idempotent,
+                # and an interrupted run self-heals forwards rather than leaving
+                # an embedding whose page is gone. ``decision_vector_store`` is
+                # the shared page/decision store despite the name.
+                if swept_page_ids and decision_vector_store is not None:
+                    await decision_vector_store.delete_many(swept_page_ids)
+            except Exception as exc:
+                _skip("Retired page sweep", exc)
 
             # Tombstone pages for deleted/renamed files — regeneration only
             # rewrites pages for files that still exist.
@@ -761,6 +786,12 @@ async def _persist_full_update_async(
             # slot.
             if tombstoned_page_ids:
                 await fts.delete_many(tombstoned_page_ids)
+            # A swept page's FTS row outlives the page row unless it is deleted
+            # here, and search hydrates title and snippet from the FTS copy
+            # itself — so an orphan keeps answering queries in full, pointing
+            # at a page that now 404s. Worse than never having swept it.
+            if swept_page_ids:
+                await fts.delete_many(swept_page_ids)
         except Exception as exc:
             _skip("Full-text search indexing", exc)
         return total_pages

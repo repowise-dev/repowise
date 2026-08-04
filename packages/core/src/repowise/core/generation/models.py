@@ -17,7 +17,11 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Literal
 
+import structlog
+
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # PageType and generation levels
@@ -68,6 +72,23 @@ def _source_evidence_page_keys() -> set[str]:
     }
 
 
+def _retired_page_keys() -> set[str]:
+    """Config keys that named a page which has since been retired.
+
+    A key here was valid in a release the user has already run, so it cannot be
+    treated as a typo: raising would turn an upgrade into a failed generation
+    for a config that was correct when it was written.  Derived from the
+    retirement table rather than listed again, so a slot cannot be retired
+    without this following.
+
+    An onboarding page's config key is its ``target_path``, which is the half
+    of the page id after the type.
+    """
+    from .page_redirects import RETIRED_IDS
+
+    return {page_id.split(":", 1)[1] for page_id in RETIRED_IDS if page_id.startswith("onboarding:")}
+
+
 def _normalize_evidence_files(
     raw_files: Mapping[str, Any], *, label: str
 ) -> dict[str, tuple[str, ...]]:
@@ -83,11 +104,26 @@ def _normalize_evidence_files(
     ``str(...).strip()`` a key before the membership check. ``from_repo_config``
     always did; direct construction did not, so a padded key like
     ``" repo_overview "`` is now trimmed and accepted where it used to raise.
+
+    A key naming a *retired* page is dropped with a warning rather than raised
+    on. The strictness here is aimed at a typo, which is only ever a mistake;
+    a retired key is a config that was correct when it was written, and an
+    upgrade that turns it into a failed generation punishes the user for a
+    decision this project made.
     """
     valid_page_keys = _source_evidence_page_keys()
+    retired_page_keys = _retired_page_keys()
     result: dict[str, tuple[str, ...]] = {}
     for raw_page_key, raw_paths in raw_files.items():
         page_key = str(raw_page_key).strip()
+        if page_key in retired_page_keys:
+            logger.warning(
+                "generation_context_key_retired",
+                label=label,
+                page_key=page_key,
+                detail="page has been retired; the entry is ignored, remove it to silence this",
+            )
+            continue
         if page_key not in valid_page_keys:
             raise ValueError(
                 f"{label} keys must name repo_overview or a "

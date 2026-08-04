@@ -48,7 +48,7 @@ class TestFilePathOf:
     def test_scc_overview_and_onboarding_pages_name_no_file(self):
         assert file_path_of("scc_page", "scc-8f21ab") is None
         assert file_path_of("repo_overview", "cli") is None
-        assert file_path_of("onboarding", "onboarding/guided_tour") is None
+        assert file_path_of("onboarding", "onboarding/how_it_works") is None
         assert file_path_of("layer_page", "presentation") is None
 
     def test_an_empty_target_path_resolves_to_nothing(self):
@@ -77,7 +77,7 @@ class TestHitFilePath:
 class TestFileCandidates:
     def test_pages_that_name_no_file_do_not_consume_a_slot(self):
         hits = [
-            _page("onboarding", "onboarding/guided_tour"),
+            _page("onboarding", "onboarding/how_it_works"),
             _page("file_page", "a.go"),
             _page("module_page", "pkg/cmd"),
             _page("file_page", "b.go"),
@@ -118,7 +118,7 @@ class TestFileCandidates:
             _page("file_page", "a.go"),
             _page("scc_page", "scc-11"),
             _page("repo_overview", "cli"),
-            _page("onboarding", "onboarding/guided_tour"),
+            _page("onboarding", "onboarding/how_it_works"),
             _page("file_page", "b.go"),
             _page("file_page", "c.go"),
         ]
@@ -133,7 +133,7 @@ class TestFileCandidates:
         assert len(file_candidates(hits, limit=10)) == 10
 
     def test_no_files_reached_yields_no_block(self):
-        hits = [_page("repo_overview", "cli"), _page("onboarding", "onboarding/guided_tour")]
+        hits = [_page("repo_overview", "cli"), _page("onboarding", "onboarding/how_it_works")]
         assert file_candidates(hits, limit=10) == []
 
     def test_empty_pool_yields_no_block(self):

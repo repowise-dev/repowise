@@ -945,6 +945,8 @@ async def persist_incremental_index(
     # Filled by the tombstone step; read after the session closes, so it has to
     # survive a step that was skipped.
     tombstoned_page_ids: list[str] = []
+    # Same contract, for rows of a page that has been retired outright.
+    swept_page_ids: list[str] = []
     try:
         await init_db(engine)
         sf = create_session_factory(engine)
@@ -960,6 +962,18 @@ async def persist_incremental_index(
                     await _prune_stale_file_rows(session, repo_id, current_graph_file_paths, set())
                 except Exception as exc:
                     _skip("Stale row prune", exc)
+
+            # Delete rows of pages retired since this index was built. This
+            # path never regenerates a repo-wide page, so nothing else here
+            # would ever visit one to notice it should be gone, and for a user
+            # whose updates all come from the post-commit hook this is the only
+            # place a retirement can land.
+            try:
+                from repowise.core.pipeline.persist import sweep_retired_pages
+
+                swept_page_ids = await sweep_retired_pages(session, repo_id)
+            except Exception as exc:
+                _skip("Retired page sweep", exc)
 
             # Tombstone pages for deleted/renamed files FIRST — a fresh page
             # for a file that no longer exists misleads every retrieval
@@ -1123,14 +1137,30 @@ async def persist_incremental_index(
         # A tombstone can never be an answer — hydration drops it — but
         # retrieval fetches a fixed number of rows before that check runs, so
         # every tombstone left in the index costs a real candidate its slot.
-        if tombstoned_page_ids:
+        #
+        # A swept page's FTS row is worse than a tombstone: search hydrates
+        # title and snippet from the FTS copy itself, so an orphan answers in
+        # full while the page it names 404s.
+        if tombstoned_page_ids or swept_page_ids:
             try:
                 from repowise.core.persistence.search import FullTextSearch
 
                 fts = FullTextSearch(engine)
                 await fts.ensure_index()
-                await fts.delete_many(tombstoned_page_ids)
+                if tombstoned_page_ids:
+                    await fts.delete_many(tombstoned_page_ids)
+                if swept_page_ids:
+                    await fts.delete_many(swept_page_ids)
             except Exception as exc:
                 _skip("Tombstone full-text removal", exc)
+
+        # Ceiling: the swept pages' *vector* embeddings survive this path.
+        # There is no store here to delete them from, and building one would
+        # pull the lancedb import onto the post-commit hook, which
+        # ``deterministic.py`` avoids on purpose — and with the default mock
+        # embedder this path never wrote a page embedding in the first place.
+        # LanceDB hydrates a hit from its own columns, so a residual embedding
+        # can still surface in semantic search until the next docs-mode update
+        # (which does delete it) or a reindex.
     finally:
         await engine.dispose()

@@ -406,7 +406,7 @@ class TestClassifyHitKind:
         from repowise.server.mcp_server.tool_search import _classify_hit_kind
 
         assert _classify_hit_kind("", "repo_overview") == "doc"
-        assert _classify_hit_kind("onboarding/guided_tour", "onboarding") == "doc"
+        assert _classify_hit_kind("onboarding/how_it_works", "onboarding") == "doc"
 
     def test_file_page_paths_classify_by_role(self):
         from repowise.server.mcp_server.tool_search import _classify_hit_kind
@@ -1005,7 +1005,7 @@ class TestSearchCandidates:
 
         await _seed_page("module_page:pkg/cmd/release", "pkg/cmd/release", "module_page")
         await _seed_page(
-            "onboarding:onboarding/guided_tour", "onboarding/guided_tour", "onboarding"
+            "onboarding:onboarding/how_it_works", "onboarding/how_it_works", "onboarding"
         )
         await _seed_page("file_page:pkg/cmd/release/list.go", "pkg/cmd/release/list.go")
         await _seed_page("file_page:pkg/cmd/release/http.go", "pkg/cmd/release/http.go")
@@ -1016,10 +1016,10 @@ class TestSearchCandidates:
                     "module_page:pkg/cmd/release", "Release", "module_page", "pkg/cmd/release", 0.90
                 ),
                 _mk_result(
-                    "onboarding:onboarding/guided_tour",
+                    "onboarding:onboarding/how_it_works",
                     "Guided Tour",
                     "onboarding",
-                    "onboarding/guided_tour",
+                    "onboarding/how_it_works",
                     0.80,
                 ),
                 _mk_result(

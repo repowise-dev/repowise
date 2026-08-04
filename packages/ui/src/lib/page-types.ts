@@ -95,7 +95,7 @@ export function isStubPage(
 //
 // One slot — project_overview — is *promoted*: its
 // content lives in the existing repo_overview page, tagged via
-// `metadata.onboarding_slot`. The other eight are dedicated
+// `metadata.onboarding_slot`. The other five are dedicated
 // `page_type === "onboarding"` pages with `metadata.subkind` discriminating
 // them.
 //
@@ -111,14 +111,33 @@ export function isStubPage(
 
 export const ONBOARDING_SLOT_TITLES = {
   project_overview: "Project Overview",
-  guided_tour: "Guided Tour",
   getting_started: "Getting Started",
-  codebase_map: "Codebase Map",
   key_concepts: "Key Concepts",
   how_it_works: "How It Works",
-  development_guide: "Development Guide",
   active_landscape: "Active Landscape",
   glossary: "Glossary",
+
+  // ---- Retired slots, kept only to label rows an old index still holds ----
+  //
+  // These three stopped being generated (see `slots.py`), and
+  // `sweep_retired_pages` deletes their rows on the next docs update of any
+  // kind. An index built before that release still holds them until the user
+  // runs one, and `serve` does not.
+  //
+  // Only the *folder* view is affected — the default domain view places pages
+  // by the stamped `parent_page_id` and labels them from `page.title`, so it
+  // never consults this map. But `buildOnboardingFolder` does, and dropping a
+  // slot from here does not hide such a row: `getOnboardingSlot` returns null
+  // and `buildTree` lets the page fall through to path-based grouping, which
+  // surfaces it as a stray top-level `onboarding/` directory beside the
+  // Onboarding folder. That reads as a bug rather than a retirement, so they
+  // stay listed and an un-swept row keeps the label it has always had.
+  //
+  // Ceiling: delete these three lines once no supported index predates the
+  // sweep.
+  guided_tour: "Guided Tour",
+  codebase_map: "Codebase Map",
+  development_guide: "Development Guide",
 } as const;
 
 export type OnboardingSlot = keyof typeof ONBOARDING_SLOT_TITLES;

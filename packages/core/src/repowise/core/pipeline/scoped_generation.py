@@ -208,7 +208,7 @@ async def execute_scoped_generation(
     from repowise.core.pipeline import run_generation
     from repowise.core.pipeline.persist import (
         mark_page_ids_stale,
-        sweep_retired_page_types,
+        sweep_retired_pages,
         sweep_superseded_generated_pages,
     )
 
@@ -254,7 +254,7 @@ async def execute_scoped_generation(
         # emit a retired type, so absence is never evidence of a narrow scope.
         # Here rather than only on the full path because an index that is only
         # ever updated incrementally is exactly the one still serving them.
-        swept_page_ids += await sweep_retired_page_types(session, repo_id)
+        swept_page_ids += await sweep_retired_pages(session, repo_id)
         # A scoped run holds only the pages it was asked for, so it cannot
         # work out where they sit. Placement comes from the store, which has
         # the whole set; without this the pages it touched lose their place.

@@ -839,4 +839,44 @@ describe("DocsTree", () => {
     // Both files are in the single bottom folder.
     expect(screen.getByText("Auto-documented files (2)")).toBeInTheDocument();
   });
+
+  // Three orientation slots were retired, and their rows survive in every
+  // index built before the sweep that removes them. `ONBOARDING_SLOT_TITLES`
+  // still lists all three on purpose, and this is the reason: in *folder*
+  // view a dedicated onboarding page whose slot is not in that map does not
+  // disappear, it falls through to path-based grouping and surfaces as a stray
+  // top-level `onboarding/` directory beside the Onboarding folder. That reads
+  // as a bug rather than a retirement.
+  //
+  // The default domain view is unaffected either way — it places pages by the
+  // stamped parent_page_id and labels them from page.title — so folder view is
+  // what this has to assert on.
+  it("keeps a retired onboarding slot in the Onboarding folder rather than a stray directory", () => {
+    const retired = makePage({
+      id: "onboarding:onboarding/codebase_map",
+      page_type: "onboarding",
+      title: "Codebase Map",
+      target_path: "onboarding/codebase_map",
+      metadata: { subkind: "codebase_map" },
+      parent_page_id: ROOT.id,
+      display_order: 3,
+    });
+    render(
+      <DocsTree
+        pages={[ROOT, ONBOARDING, retired]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Switch to folder view"));
+
+    // Both slots are in the one Onboarding folder, the retired one labelled
+    // from the map, which is exactly what keeping its entry buys.
+    const onboardingRow = rowLabels().find((l) => l.includes("Onboarding")) ?? "";
+    expect(onboardingRow).not.toBe("");
+    expect(screen.getByText("Codebase Map")).toBeInTheDocument();
+    expect(screen.getByText("Getting Started")).toBeInTheDocument();
+    // The failure mode if the entry were dropped: a bare `onboarding` row.
+    expect(rowLabels().some((l) => l.trim() === "onboarding")).toBe(false);
+  });
 });

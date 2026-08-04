@@ -639,19 +639,19 @@ async def _prune_stale_file_rows(
 _SWEPT_GENERATED_PAGE_TYPES = STRUCTURALLY_KEYED_PAGE_TYPES
 
 
-async def sweep_retired_page_types(session: Any, repo_id: str) -> list[str]:
-    """Delete every row of a page type that no longer exists.
+async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
+    """Delete every row of a page that no longer exists, by type or by id.
 
     Distinct from the two sweeps below, and simpler than either: those ask what
     *this* run produced, because a page of a live type may legitimately be
-    absent from a scoped run. A retired type has no legitimate rows at all —
+    absent from a scoped run. A retired page has no legitimate rows at all —
     nothing emits one and no failure mode can make anything emit one — so the
     question never arises and this is safe on every path, full or scoped.
 
     The retirement tables are the source of truth rather than a list repeated
-    here. A type is retired exactly when a reader following its id gets sent
+    here. A page is retired exactly when a reader following its id gets sent
     somewhere else, and that is what those tables say; keeping a second list
-    would let a type be redirected without being swept, which is the state this
+    would let a page be redirected without being swept, which is the state this
     function was written to clear.
 
     That state is the reason this exists. The architecture diagram merged into
@@ -663,26 +663,44 @@ async def sweep_retired_page_types(session: Any, repo_id: str) -> list[str]:
     second-ranked retrieval hit for "how does the ingestion pipeline work",
     competing with the overview it had been merged into.
 
-    Returns the swept page ids so the caller can drop them from FTS after the
-    session closes (the FTS store must not be touched in-session).
+    Retirement by *id* is the second half of the same argument, and the reason
+    this is no longer named for types. Three orientation slots retired out of
+    the onboarding collection while five stayed, so their rows cannot be
+    reached by page type: ``onboarding`` still has legitimate rows and always
+    will. Sweeping the exact ids is the only way those leave a store, and the
+    safety argument is unchanged — a retired id names a page nothing emits.
+
+    Returns the swept page ids so the caller can drop them from the vector
+    store and from FTS. A row deleted here but left in either of those is worse
+    than one never swept: search still answers from the FTS copy, with the full
+    title and snippet of a page the reader can no longer open.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import delete, or_, select
 
     from repowise.core.generation.page_redirects import (
+        RETIRED_IDS,
         SUPERSEDED_TO_REPO_WIDE,
         SUPERSEDED_TYPES,
     )
     from repowise.core.persistence.models import Page, PageVersion
 
-    retired = sorted(set(SUPERSEDED_TYPES) | set(SUPERSEDED_TO_REPO_WIDE))
-    if not retired:
+    retired_types = sorted(set(SUPERSEDED_TYPES) | set(SUPERSEDED_TO_REPO_WIDE))
+    retired_ids = sorted(RETIRED_IDS)
+    if not retired_types and not retired_ids:
         return []
+
+    # Either rule can match, and a page matched by both is one row either way.
+    match_clauses = []
+    if retired_types:
+        match_clauses.append(Page.page_type.in_(retired_types))
+    if retired_ids:
+        match_clauses.append(Page.id.in_(retired_ids))
 
     stale = (
         (
             await session.execute(
                 select(Page.id).where(
-                    Page.repository_id == repo_id, Page.page_type.in_(retired)
+                    Page.repository_id == repo_id, or_(*match_clauses)
                 )
             )
         )
@@ -697,10 +715,11 @@ async def sweep_retired_page_types(session: Any, repo_id: str) -> list[str]:
         )
     if stale:
         logger.info(
-            "retired_page_types_swept",
+            "retired_pages_swept",
             repo_id=repo_id,
             count=len(stale),
-            types=retired,
+            types=retired_types,
+            ids=retired_ids,
         )
     return list(stale)
 
@@ -1357,7 +1376,7 @@ async def persist_pipeline_result(
     )
     # Rows of a page type that no longer exists at all. Independent of what
     # this run produced, so it runs on every path rather than only here.
-    swept_page_ids += await sweep_retired_page_types(session, repo_id)
+    swept_page_ids += await sweep_retired_pages(session, repo_id)
 
     # Placement depends on the whole page set, so it is computed here rather
     # than during generation, after the sweep has retired anything stale.

@@ -77,7 +77,7 @@ def test_a_page_that_names_no_file_is_not_offered_as_one():
     """
     hits = [
         {"page_type": "module_page", "target_path": "pkg/cmd/release"},
-        {"page_type": "onboarding", "target_path": "onboarding/guided_tour"},
+        {"page_type": "onboarding", "target_path": "onboarding/how_it_works"},
         {"page_type": "scc_page", "target_path": "scc-8f21ab"},
         {"page_type": "file_page", "target_path": "pkg/cmd/release/list.go"},
     ]

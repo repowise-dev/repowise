@@ -1,8 +1,8 @@
 """Render tests for deterministic templates the sample repo cannot reach.
 
 ``tests/integration/test_deterministic_generation.py`` covers the page types
-the fixture repo actually produces. Four templates are unreachable there: the
-layer page needs a knowledge graph, and three onboarding slots gate themselves
+the fixture repo actually produces. The rest are unreachable there: the layer
+page needs a knowledge graph, and the onboarding slots below gate themselves
 off on a fixture with no git history and no dependency manifest. Rendering
 them here keeps a Jinja typo from shipping unnoticed.
 """
@@ -17,14 +17,6 @@ from repowise.core.generation.onboarding.subkinds.active_landscape import (
     ActiveLandscapeContext,
     HotDir,
     HotFile,
-)
-from repowise.core.generation.onboarding.subkinds.development_guide import (
-    DevelopmentGuideContext,
-    SuffixPattern,
-)
-from repowise.core.generation.onboarding.subkinds.development_guide import (
-    # Aliased so pytest does not try to collect it as a test class.
-    TestMirror as _TestMirror,
 )
 from repowise.core.generation.onboarding.subkinds.getting_started import (
     GettingStartedContext,
@@ -68,25 +60,6 @@ def test_getting_started_renders(generator):
     assert "**uv**" in page.content
     assert "Run `uv sync`." in page.content
     assert "`httpx`" in page.content
-
-
-def test_development_guide_renders(generator):
-    ctx = DevelopmentGuideContext(
-        repo_name="demo",
-        suffix_patterns=[SuffixPattern(suffix="_cmd.py", examples=["a_cmd.py"], file_count=4)],
-        test_mirror=_TestMirror(test_root="tests", matched_files=12, source_files=20),
-        parallel_dirs=["packages/core", "packages/cli"],
-        entry_points=["src/main.py"],
-    )
-    page = generator._stub_onboarding_page(
-        _onboarding_spec("development_guide", "development_guide.j2"),
-        ctx,
-        "onboarding/development_guide",
-    )
-
-    assert "`_cmd.py`" in page.content
-    assert "tests" in page.content
-    assert "12 of 20" in page.content
 
 
 def test_active_landscape_renders(generator):

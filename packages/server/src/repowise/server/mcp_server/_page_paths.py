@@ -8,7 +8,7 @@ repository overview it is the repository's name.
 
 Every one of those is a legitimate thing to *rank*, and none of them is a
 legitimate thing to hand back in a field named ``path`` or ``file``. An agent
-told to read ``onboarding/guided_tour`` or ``pkg/cmd/release`` gets an error,
+told to read ``onboarding/how_it_works`` or ``pkg/cmd/release`` gets an error,
 and nothing in the response says the string was never a path. This module is
 the one place that distinction is written down, so the tools cannot drift on
 it.
