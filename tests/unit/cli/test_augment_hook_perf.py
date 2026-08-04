@@ -208,6 +208,76 @@ def test_a_read_in_a_repo_that_did_not_opt_in_imports_nothing_heavy(tmp_path: Pa
     assert state["forgone"] == [rel], "the probe did not reach the counterfactual"
 
 
+def _indexed_search_repo(tmp_path: Path) -> Path:
+    """A repo the Grep hook will take all the way to a triage emission.
+
+    Three tables, spelled as the fast lookups read them: the repository row
+    they resolve the id from, the symbols the coverage leg needs, and the file
+    nodes the PageRank leg needs. Written with stdlib sqlite3 for the same
+    reason the hook now reads it that way.
+    """
+    repo = tmp_path / "repo"
+    (repo / ".repowise").mkdir(parents=True)
+    con = sqlite3.connect(repo / ".repowise" / "wiki.db")
+    con.execute("CREATE TABLE repositories (id TEXT, local_path TEXT)")
+    con.execute("INSERT INTO repositories VALUES ('r1', ?)", (str(repo),))
+    con.execute(
+        "CREATE TABLE wiki_symbols (repository_id TEXT, file_path TEXT, name TEXT, "
+        "kind TEXT, start_line INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO wiki_symbols VALUES ('r1', 'src/b.py', 'parse_yaml', 'function', 42)"
+    )
+    con.execute(
+        "CREATE TABLE graph_nodes (repository_id TEXT, node_id TEXT, node_type TEXT, "
+        "pagerank REAL)"
+    )
+    for node_id, pagerank in (("src/a.py", 0.9), ("src/b.py", 0.1)):
+        con.execute("INSERT INTO graph_nodes VALUES ('r1', ?, 'file', ?)", (node_id, pagerank))
+    con.commit()
+    con.close()
+    return repo
+
+
+def test_a_triage_that_queries_the_index_imports_nothing_heavy(tmp_path: Path) -> None:
+    """The surface that *does* reach the index, on the same cheap graph.
+
+    Triage queried the wiki through the ORM, so a firing cost ~1.1s of cold
+    ``repowise.core.persistence`` import against 34ms of query. It now runs on
+    stdlib sqlite3. This is the guard that keeps it there, and unlike the
+    silent-invocation test above it can only pass by actually emitting.
+    """
+    repo = _indexed_search_repo(tmp_path)
+    content = "\n".join(
+        f"src/{'a' if i % 2 else 'b'}.py:{i}:parse_yaml(x)" for i in range(1, 21)
+    )
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "parse_yaml"},
+        "tool_response": {"mode": "content", "content": content, "numLines": 20},
+        "cwd": str(repo),
+        "session_id": "perf",
+    }
+    code = (
+        "import sys, json, io; "
+        f"sys.stdin = io.StringIO({json.dumps(payload)!r}); "
+        "from repowise.cli.commands.augment_cmd import _run_augment; "
+        "_run_augment(client=None); "
+        f"heavy = sorted(m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r})); "
+        "print('\\n'.join(heavy), file=sys.stderr)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_fake_home(tmp_path),
+    )
+    assert "Most likely relevant" in out.stdout, "the probe did not reach a triage emission"
+    assert out.stderr.strip() == "", f"a triage emission pulled in:\n{out.stderr}"
+
+
 def test_a_silent_invocation_imports_nothing_heavy(tmp_path: Path) -> None:
     """A payload the hook has nothing to say about must stay on the cheap path."""
     code = (

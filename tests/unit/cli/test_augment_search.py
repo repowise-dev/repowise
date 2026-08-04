@@ -3,9 +3,12 @@
 The hook is designed to be silent on the common case (focused search
 already returned what the agent wanted) and only speak up when it can
 add information the raw result didn't carry. These tests pin the
-boundary cases of the decision tree without hitting the wiki — the
-``_search_enrich`` async path is mocked because it requires a real
-wiki.db, and is exercised end-to-end in integration tests instead.
+boundary cases of the decision tree without hitting the wiki.
+
+``_fast_search_enrich`` is the mocked seam because it is the one every
+mode reaches first, including the zero-result rescue it declines to serve
+and hands straight back to the ORM. Both lookup paths need a real wiki.db
+and are exercised end-to-end in integration tests instead.
 """
 
 from __future__ import annotations
@@ -335,12 +338,12 @@ def _call(tool_name, pattern, output_text, cwd):
 
 class TestDecisionTree:
     def test_skip_when_pattern_is_path(self, repowise_cwd) -> None:
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             assert _call("Grep", "src/foo.py", "src/foo.py:1: x", repowise_cwd) is None
             enrich.assert_not_called()
 
     def test_skip_when_no_pattern(self, repowise_cwd) -> None:
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             assert (
                 _handle_search_post(
                     tool_name="Grep",
@@ -362,7 +365,7 @@ class TestDecisionTree:
         Before the widened rescue this test passed anyway, on the focused-set
         skip below rather than on the branch it names.
         """
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             with patch.object(augment_cmd.search, "_find_repo_root", return_value=None):
                 assert _call("Grep", "auth", "src/a.py:1: hit", tmp_path) is None
             enrich.assert_not_called()
@@ -376,10 +379,9 @@ class TestDecisionTree:
         """
         output = "\n".join(f"src/file{i}.py:1: hit" for i in range(5))
         sentinel = object()
-        with (
-            patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich,
-            patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]),
-        ):
+        with patch.object(
+            augment_cmd.search, "_fast_search_enrich", return_value=sentinel
+        ) as enrich:
             _call("Grep", "parse_yaml", output, repowise_cwd)
         args = enrich.call_args_list[0].args
         assert args[2] == "rescue_wide"
@@ -398,7 +400,7 @@ class TestDecisionTree:
         query off the common path: it runs before any wiki lookup.
         """
         output = "\n".join(f"src/file{i}.py:1: hit" for i in range(5))
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             assert _call("Grep", pattern, output, repowise_cwd) is None
             enrich.assert_not_called()
 
@@ -411,7 +413,7 @@ class TestDecisionTree:
         parse gate rather than passing on the cheaper one above it.
         """
         output = "\n".join(f"unstructured line {i}" for i in range(5))
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             assert _call("Grep", "parse_yaml", output, repowise_cwd) is None
             enrich.assert_not_called()
 
@@ -426,14 +428,15 @@ class TestDecisionTree:
     def test_rescue_mode_on_true_zero_results(self, repowise_cwd, tool_output) -> None:
         """A positively-identified zero + concept query → rescue mode."""
         sentinel = object()
-        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
-            with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
-                _handle_search_post(
-                    tool_name="Grep",
-                    tool_input={"pattern": "parse_yaml"},
-                    tool_output=tool_output,
-                    cwd=str(repowise_cwd),
-                )
+        with patch.object(
+            augment_cmd.search, "_fast_search_enrich", return_value=sentinel
+        ) as enrich:
+            _handle_search_post(
+                tool_name="Grep",
+                tool_input={"pattern": "parse_yaml"},
+                tool_output=tool_output,
+                cwd=str(repowise_cwd),
+            )
             (call_args,) = enrich.call_args_list
             kwargs = call_args.kwargs or {}
             args = call_args.args
@@ -448,10 +451,9 @@ class TestDecisionTree:
         text claims there was no literal match at all.
         """
         sentinel = object()
-        with (
-            patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich,
-            patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]),
-        ):
+        with patch.object(
+            augment_cmd.search, "_fast_search_enrich", return_value=sentinel
+        ) as enrich:
             _handle_search_post(
                 tool_name="Grep",
                 tool_input={"pattern": "distill_savings"},
@@ -470,7 +472,7 @@ class TestDecisionTree:
         ],
     )
     def test_unknown_shape_skips_never_rescues(self, repowise_cwd, tool_output) -> None:
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             result = _handle_search_post(
                 tool_name="Grep",
                 tool_input={"pattern": "parse_yaml"},
@@ -491,7 +493,7 @@ class TestDecisionTree:
     )
     def test_zero_match_rescue_skipped_when_irrelevant(self, repowise_cwd, tool_input) -> None:
         """Regex patterns and single non-code-file scopes never rescue."""
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             result = _handle_search_post(
                 tool_name="Grep",
                 tool_input=tool_input,
@@ -507,9 +509,10 @@ class TestDecisionTree:
 
         big = "\n".join(f"src/file{i}.py:1: hit" for i in range(_TRIAGE_THRESHOLD + 5))
         sentinel = object()
-        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
-            with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
-                _call("Grep", "auth", big, repowise_cwd)
+        with patch.object(
+            augment_cmd.search, "_fast_search_enrich", return_value=sentinel
+        ) as enrich:
+            _call("Grep", "auth", big, repowise_cwd)
             call_args = enrich.call_args_list[0]
             args = call_args.args
             kwargs = call_args.kwargs or {}
@@ -546,9 +549,10 @@ class TestFloodDigest:
     def test_few_files_fall_through_to_triage(self, repowise_cwd) -> None:
         """A flood concentrated in 1-2 files is already navigable — no digest."""
         sentinel = "triaged"
-        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
-            with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
-                out = _call("Grep", "auth", _flood(files=2, per_file=40), repowise_cwd)
+        with patch.object(
+            augment_cmd.search, "_fast_search_enrich", return_value=sentinel
+        ) as enrich:
+            out = _call("Grep", "auth", _flood(files=2, per_file=40), repowise_cwd)
             assert out == sentinel
             assert enrich.called
 
@@ -561,7 +565,7 @@ class TestFloodDigest:
         hook says nothing.
         """
         big = "\n".join(f"line {i} of something unstructured" for i in range(60))
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+        with patch.object(augment_cmd.search, "_fast_search_enrich") as enrich:
             assert _call("Grep", "auth", big, repowise_cwd) is None
             enrich.assert_not_called()
 

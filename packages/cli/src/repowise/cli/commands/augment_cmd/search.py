@@ -21,8 +21,10 @@ and are not billed to the savings ledger; only the *served* digest
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+from . import fast_lookup
 from ._shared import HookResult, _extract_output_text, _find_repo_root
 
 # NOTE: repowise.core.persistence.sql is imported inside _rescue/_triage, not
@@ -32,6 +34,10 @@ from ._shared import HookResult, _extract_output_text, _find_repo_root
 # a search was paying the whole bill. Both users are already async functions
 # that defer their sqlalchemy imports; this is the same rule applied one line
 # further. Keep it deferred.
+#
+# The three lookups that no longer need it at all go through ``fast_lookup``,
+# which is stdlib ``sqlite3`` only and therefore safe at module scope. Every
+# fast path here falls back to the ORM one below it, never to silence.
 
 # Tunables — fixed thresholds keep the fire pattern predictable across
 # repos. If these ever need to vary, derive them from indexed-row counts
@@ -141,11 +147,13 @@ def _handle_search_post(
         if not matched:
             return HookResult()
 
-    import asyncio
+    enrichment = _fast_search_enrich(repo_path, pattern, mode, result_count, matched)
+    if enrichment is _ORM:
+        import asyncio
 
-    enrichment = asyncio.run(
-        _search_enrich(repo_path, pattern, mode, result_count, matched)
-    )
+        enrichment = asyncio.run(
+            _search_enrich(repo_path, pattern, mode, result_count, matched)
+        )
     if enrichment:
         _log_search_firing(repo_path, session_id, mode, enrichment)
     return HookResult(context=enrichment or None)
@@ -287,15 +295,17 @@ def _grep_flood_digest(repo_path: Path, output_text: str) -> str | None:
         # One or two files: the raw output is already navigable.
         return None
 
-    file_order = None
-    ranked_by_graph = False
-    try:
-        import asyncio
-
-        file_order = asyncio.run(_pagerank_file_order(repo_path, list(groups.keys())))
-        ranked_by_graph = file_order is not None
-    except Exception:
+    paths = list(groups.keys())
+    file_order = _fast_pagerank_file_order(repo_path, paths)
+    if file_order is _ORM:
         file_order = None
+        try:
+            import asyncio
+
+            file_order = asyncio.run(_pagerank_file_order(repo_path, paths))
+        except Exception:
+            file_order = None
+    ranked_by_graph = file_order is not None
 
     if file_order is None:
         file_order = sorted(groups, key=lambda p: -len(groups[p]))
@@ -394,12 +404,116 @@ async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] |
     finally:
         await engine.dispose()
 
-    if not rows:
+    return _order_by_pagerank(paths, normalized, dict(rows))
+
+
+def _order_by_pagerank(
+    paths: list[str], normalized: dict[str, str], by_node: dict[str, float]
+) -> list[str] | None:
+    """Grep-spelled *paths*, PageRank first, unranked tail in grep order.
+
+    Shared by both lookup paths so the ordering cannot drift between them.
+    """
+    if not by_node:
         return None
-    rank = {normalized[node_id]: pr or 0.0 for node_id, pr in rows if node_id in normalized}
+    rank = {
+        normalized[node_id]: pr or 0.0
+        for node_id, pr in by_node.items()
+        if node_id in normalized
+    }
     ranked = sorted(rank, key=lambda p: -rank[p])
     rest = [p for p in paths if p not in rank]
     return ranked + rest
+
+
+# ---------------------------------------------------------------------------
+# Fast path: the same three lookups without the persistence import
+# ---------------------------------------------------------------------------
+
+#: "The fast path could not answer this; run the ORM query." Distinct from
+#: ``None``, which is a real answer meaning "stay silent", and the reason
+#: these helpers cannot just return ``None`` on failure: that would turn a
+#: missing table into a silently dropped surface.
+_ORM = object()
+
+
+def _wiki_db_exists(repo_path: Path) -> bool:
+    """Whether this repo has a local index at all.
+
+    Both ORM entry points bail out before their sqlalchemy imports on this
+    check, so the fast path has to answer "no index" the same way, with
+    silence, not with a fallback that pays the import to learn the same thing.
+    """
+    return (repo_path / ".repowise" / "wiki.db").exists()
+
+
+def _fast_pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | None | object:
+    """``_pagerank_file_order`` over stdlib sqlite3. ``_ORM`` to fall back."""
+    if not _wiki_db_exists(repo_path):
+        return None
+    conn = fast_lookup.connect(repo_path)
+    if conn is None:
+        return _ORM
+    try:
+        repository_id = fast_lookup.repo_id(conn, repo_path)
+        if repository_id is None:
+            return None
+        normalized = _as_node_ids(repo_path, paths)
+        by_node = fast_lookup.pagerank(conn, repository_id, list(normalized))
+        return _order_by_pagerank(paths, normalized, by_node)
+    except sqlite3.Error:
+        return _ORM
+    finally:
+        conn.close()
+
+
+def _fast_search_enrich(
+    repo_path: Path,
+    pattern: str,
+    mode: str,
+    result_count: int,
+    matched: dict[str, int] | None,
+) -> str | None | object:
+    """Triage and the widened rescue without the ORM. ``_ORM`` to fall back.
+
+    The zero-result rescue is not served here on purpose: 45% of its queries
+    fall through to ``FullTextSearch``, so it stays on the shared retrieval
+    code and pays the import it actually uses.
+    """
+    if mode not in ("triage", "rescue_wide") or not matched:
+        return _ORM
+    clean = _clean_pattern(pattern)
+    if not clean:
+        return None
+    if not _wiki_db_exists(repo_path):
+        return None
+    conn = fast_lookup.connect(repo_path)
+    if conn is None:
+        return _ORM
+    try:
+        repository_id = fast_lookup.repo_id(conn, repo_path)
+        if repository_id is None:
+            return None
+        if mode == "triage":
+            if len(matched) < 2:
+                return None
+            paths = _triage_candidates(matched)
+            symbol_names: dict[str, list[str]] = {}
+            for file_path, name in fast_lookup.symbols_matching(
+                conn, repository_id, paths, clean
+            ):
+                if file_path and name:
+                    symbol_names.setdefault(file_path, []).append(name)
+            pagerank = fast_lookup.pagerank(conn, repository_id, paths)
+            return _triage_text(pattern, result_count, matched, symbol_names, pagerank)
+        rows = fast_lookup.symbols_named(
+            conn, repository_id, sorted(_name_variants(clean)), _RESCUE_EXACT_FETCH
+        )
+        return _rescue_wide_text(pattern, clean, matched, rows)
+    except sqlite3.Error:
+        return _ORM
+    finally:
+        conn.close()
 
 
 def _looks_like_path_lookup(pattern: str) -> bool:
@@ -576,8 +690,6 @@ async def _search_enrich(
     matched: dict[str, int] | None = None,
 ) -> str | None:
     """Run the rescue or triage query against the wiki and format output."""
-    import re
-
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
@@ -602,7 +714,7 @@ async def _search_enrich(
                 return None
             repo_id = repo.id
 
-            clean = re.sub(r"[^\w./_-]", "", pattern).strip("./")
+            clean = _clean_pattern(pattern)
 
             if mode == "rescue":
                 return await _rescue(session, engine, repo_id, pattern, clean)
@@ -687,25 +799,12 @@ async def _rescue(
         .limit(_RESCUE_TOP_N if matched is None else _RESCUE_EXACT_FETCH)
     )
     rows = (await session.execute(sym_stmt)).all()
+    if matched is not None:
+        return _rescue_wide_text(pattern, clean, matched, rows)
     if rows:
-        # Rank: prefer exact-token-equal matches; then shortest name (most
-        # specific). All ties broken by file path lex order for stability.
-        def _rank(row):
-            name = (row[0] or "").lower()
-            return (name not in lowered, len(name), row[2] or "")
-
-        rows = sorted(rows, key=_rank)[:_RESCUE_TOP_N]
+        rows = _rescue_rank(rows, lowered)
         first = rows[0]
         line = f":{first[3]}" if first[3] else ""
-        if matched is not None:
-            if (first[2] or "") in matched:
-                # The agent already has this file. Nothing new to say.
-                return None
-            return (
-                f"[repowise] `{pattern}` matched {len(matched)} "
-                f"file{'s' if len(matched) != 1 else ''}, but not {first[2]}{line}, "
-                f"where indexed {first[1]} `{first[0]}` is defined."
-            )
         extras = ""
         if len(rows) > 1:
             extras = f" (+{len(rows) - 1} more)"
@@ -713,9 +812,6 @@ async def _rescue(
             f"[repowise] No literal match for `{pattern}`. Closest indexed symbol: "
             f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
         )
-
-    if matched is not None:
-        return None
 
     # Fall back to FTS on wiki content. Only return if the FTS row actually
     # points at a code page (file/module/api), not a generic doc page.
@@ -794,8 +890,7 @@ async def _triage(
         # it. Emitting there would be pure cost.
         return None
 
-    # Widest floods first-cut by match count. See _TRIAGE_MAX_CANDIDATES.
-    paths = sorted(matched, key=lambda p: (-matched[p], p))[:_TRIAGE_MAX_CANDIDATES]
+    paths = _triage_candidates(matched)
 
     sym_stmt = select(WikiSymbol.file_path, WikiSymbol.name).where(
         WikiSymbol.repository_id == repo_id,
@@ -817,11 +912,48 @@ async def _triage(
         for node_id, pr in (await session.execute(pr_stmt)).all()
         if node_id
     }
+    return _triage_text(pattern, result_count, matched, symbol_names, pagerank)
+
+
+# ---------------------------------------------------------------------------
+# Pure ranking and formatting, shared by the ORM and sqlite3 paths
+# ---------------------------------------------------------------------------
+#
+# Everything below takes rows and returns text. Both lookup paths run the same
+# two queries and then land here, so a ported query can change what it costs
+# but not what it says.
+
+
+def _clean_pattern(pattern: str) -> str:
+    """The pattern reduced to a symbol-ish token for index lookups."""
+    import re
+
+    return re.sub(r"[^\w./_-]", "", pattern).strip("./")
+
+
+def _triage_candidates(matched: dict[str, int]) -> list[str]:
+    """Matched files the ranker considers, widest floods first-cut by count.
+
+    See :data:`_TRIAGE_MAX_CANDIDATES`; also the parameter list of both index
+    queries, so the cut has to happen before either of them runs.
+    """
+    return sorted(matched, key=lambda p: (-matched[p], p))[:_TRIAGE_MAX_CANDIDATES]
+
+
+def _triage_text(
+    pattern: str,
+    result_count: int,
+    matched: dict[str, int],
+    symbol_names: dict[str, list[str]],
+    pagerank: dict[str, float],
+) -> str | None:
+    """Fuse the three legs and render triage's block, or None to stay silent."""
     if not symbol_names and not pagerank:
         # The index knows nothing about any matched file. Re-listing the
         # grep's own top files back at it is not worth the tokens.
         return None
 
+    paths = _triage_candidates(matched)
     legs = [
         paths,
         _coverage_order(pattern, paths, symbol_names),
@@ -839,6 +971,44 @@ async def _triage(
     )
     lines = [header] + [f"  {p}  ({matched[p]} matches)" for p in ranked]
     return "\n".join(lines)
+
+
+def _rescue_rank(rows: list, lowered: set[str]) -> list:
+    """Best rescue candidates first, capped at :data:`_RESCUE_TOP_N`.
+
+    Prefer exact-token-equal matches; then the shortest name, as the most
+    specific; ties broken by file path lex order so the answer is stable
+    across query plans.
+    """
+
+    def _key(row):
+        name = (row[0] or "").lower()
+        return (name not in lowered, len(name), row[2] or "")
+
+    return sorted(rows, key=_key)[:_RESCUE_TOP_N]
+
+
+def _rescue_wide_text(
+    pattern: str, clean: str, matched: dict[str, int], rows: list
+) -> str | None:
+    """The widened rescue's line, or None when it has nothing new to say.
+
+    The gate is a set difference, not a count: the top exact-name match has to
+    live in a file the grep did *not* return. See :func:`_rescue`.
+    """
+    if not rows:
+        return None
+    rows = _rescue_rank(rows, {v.lower() for v in _name_variants(clean)})
+    first = rows[0]
+    if (first[2] or "") in matched:
+        # The agent already has this file. Nothing new to say.
+        return None
+    line = f":{first[3]}" if first[3] else ""
+    return (
+        f"[repowise] `{pattern}` matched {len(matched)} "
+        f"file{'s' if len(matched) != 1 else ''}, but not {first[2]}{line}, "
+        f"where indexed {first[1]} `{first[0]}` is defined."
+    )
 
 
 def _rrf(legs: list[list[str]]) -> dict[str, float]:
