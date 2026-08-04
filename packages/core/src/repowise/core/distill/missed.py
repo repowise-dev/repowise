@@ -7,6 +7,11 @@ each command with the same router the engine uses, and estimates the tokens
 a filter would have saved using that filter's conservative measured floor
 (the per-fixture savings floors asserted in CI, not the medians).
 
+"Not routed" is decided on the *output*, not the command. The rewrite hook
+swaps the command via PreToolUse ``updatedInput``, which changes what runs
+and not what the transcript stored, so a rewritten call still looks raw
+here; only the omission marker distill leaves behind tells them apart.
+
 Read-only and best-effort by contract: malformed lines, unreadable files, or
 an absent transcript directory produce an empty report, never an error — this
 runs inside ``repowise saved`` and a dashboard endpoint, neither of which may
@@ -23,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.distill.budget import estimate_tokens
+from repowise.core.distill.markers import MARKER_RE
 from repowise.core.distill.router import normalize_command, select_filter
 from repowise.core.sessions import ClaudeCodeAdapter, Event, transcript_dir_for
 
@@ -167,6 +173,16 @@ def _collect_result(
 
     output = _result_text(result.payload)
     if not output:
+        return
+    if MARKER_RE.search(output):
+        # The command text is not evidence that distill did not run. The
+        # rewrite hook replaces the command through PreToolUse
+        # ``updatedInput``, which changes what executes and not what the
+        # transcript recorded, so a rewritten call is indistinguishable from
+        # a raw one on the command alone. The output is where the difference
+        # shows: an omission marker means distill produced this, and
+        # counting it as forgone would bill a saving that was already
+        # banked in the ledger.
         return
     chosen = select_filter(command, output)
     if chosen is None:
