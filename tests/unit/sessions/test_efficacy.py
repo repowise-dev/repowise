@@ -37,6 +37,16 @@ RESCUE = (
     "[repowise] No literal match for `parseYaml`. Closest indexed symbol: "
     "function `parse_yaml` in pkg/core/loader.py:12"
 )
+TRIAGE_V2 = (
+    "[repowise] 40+ matches for `parse_yaml` across 12 files. Most likely relevant, "
+    "ranked over the files your search matched:\n"
+    "  pkg/core/loader.py  (9 matches)\n"
+    "  pkg/core/schema.py  (2 matches)"
+)
+RESCUE_WIDE = (
+    "[repowise] `parse_yaml` matched 3 files, but not pkg/core/loader.py:12, "
+    "where indexed function `parseYaml` is defined."
+)
 FIXES = "[repowise] pkg/core/loader.py has been bug-fixed 9x in the last 6 months, last 3 days ago."
 REREAD = (
     "[repowise] You already read pkg/core/thing.py this session and it is unchanged — "
@@ -58,6 +68,8 @@ def test_parses_each_surface_with_its_target():
         (NUDGE, "read", "skeleton_nudge", "pkg/core/thing.py"),
         (TRIAGE, "search", "triage", "pkg/core/loader.py"),
         (RESCUE, "search", "rescue", "pkg/core/loader.py"),
+        (TRIAGE_V2, "search", "triage", "pkg/core/loader.py"),
+        (RESCUE_WIDE, "search", "rescue_wide", "pkg/core/loader.py"),
         (FIXES, "fix_history", "edit_notice", "pkg/core/loader.py"),
         (REREAD, "read", "reread", "pkg/core/thing.py"),
     ):
@@ -79,6 +91,27 @@ def test_triage_keeps_its_ranked_file_list_in_order():
     (firing,) = parse_emission(TRIAGE)
     assert firing.targets == ["pkg/core/loader.py", "pkg/core/schema.py"]
     assert firing.pattern == "parse_yaml"
+
+
+def test_the_retired_triage_header_still_parses():
+    """`hook backfill` replays transcripts written before the item-9 rewrite."""
+    (firing,) = parse_emission(TRIAGE)
+    assert (firing.surface, firing.category) == ("search", "triage")
+
+
+def test_new_triage_header_keeps_its_ranked_list_and_match_counts():
+    (firing,) = parse_emission(TRIAGE_V2)
+    assert firing.targets == ["pkg/core/loader.py", "pkg/core/schema.py"]
+    assert firing.pattern == "parse_yaml"
+
+
+def test_widened_rescue_is_scored_apart_from_the_zero_result_one():
+    """Same emitter, different population; pooling would move rescue's 44%."""
+    (firing,) = parse_emission(RESCUE_WIDE)
+    assert firing.category == "rescue_wide"
+    assert firing.targets == ["pkg/core/loader.py", "parseYaml"]
+    classify(firing, [_use("Read", file_path="pkg/core/loader.py")])
+    assert firing.acted is True
 
 
 def test_digest_paths_are_normalized_from_windows_spelling():

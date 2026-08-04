@@ -33,10 +33,18 @@ read          skeleton_served n/a — the hook already did it (see below)
 read          stale_read      n/a — a warning, not a pointer
 search        triage          a named file is touched
 search        rescue          the named file or symbol is touched
+search        rescue_wide     same, scored apart (see below)
 search        digest          a file the digest ranked is touched
 search        digest_served   n/a, the hook already did it (see below)
 fix_history   edit_notice     a test is run, or the file's history is inspected
 ============= =============== ==================================================
+
+``rescue_wide`` is the same emitter under a different precondition (grep
+returned a few results and the best indexed symbol is in a file none of them
+name), and it is a **separate category** on purpose. ``rescue``'s 44% is the
+highest action rate in the system and it was measured on the zero-result
+population only; pooling a new population under the same key would move that
+number without anything having changed about the surface it describes.
 
 A ranged Read after a skeleton nudge is deliberately **not** acting: reading a
 range of a file you just read in full is ordinary edit-prep and cannot be
@@ -177,6 +185,24 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ),
     (
         "search",
+        "rescue_wide",
+        re.compile(
+            r"^\[repowise\] `(?P<pattern>[^`]+)` matched \d+ files?, but not "
+            r"(?P<target>[^\s:]+)(?::\d+)?, where indexed \S+ `(?P<symbol>[^`]+)`"
+        ),
+    ),
+    (
+        "search",
+        "triage",
+        re.compile(
+            r"^\[repowise\] \d+\+ matches for `(?P<pattern>[^`]+)` across \d+ files\. "
+            r"Most likely relevant"
+        ),
+    ),
+    # The pre-#1292 triage header. Kept so `hook backfill` still settles the
+    # 111 firings already in the corpus; nothing new lands here.
+    (
+        "search",
         "triage",
         re.compile(r"^\[repowise\] \d+\+ matches for `(?P<pattern>[^`]+)`\. Top files by"),
     ),
@@ -306,6 +332,7 @@ def classify(firing: Firing, following: list[tuple[str, str]]) -> Firing:
         ("read", "skeleton_nudge"): _acted_skeleton,
         ("search", "triage"): _acted_target,
         ("search", "rescue"): _acted_rescue,
+        ("search", "rescue_wide"): _acted_rescue,
         ("search", "digest"): _acted_target,
         ("fix_history", "edit_notice"): _acted_fix_history,
     }.get((firing.surface, firing.category))

@@ -25,6 +25,14 @@ from repowise.cli.commands.augment_cmd import (
     _search_result_count,
     _targets_single_non_code_file,
 )
+from repowise.cli.commands.augment_cmd.search import (
+    _coverage_order,
+    _matched_files,
+    _pattern_terms,
+    _rescue,
+    _rrf,
+    _triage,
+)
 
 # ---------------------------------------------------------------------------
 # Grep/Glob tool_response fixtures — captured from real Claude Code
@@ -345,16 +353,66 @@ class TestDecisionTree:
             enrich.assert_not_called()
 
     def test_skip_when_outside_repowise_repo(self, tmp_path) -> None:
-        # No .repowise dir: silently skip without invoking the enrich path.
+        """No .repowise dir: silently skip without invoking the enrich path.
+
+        ``_find_repo_root`` is stubbed rather than relied on. A ``tmp_path``
+        cwd is not in fact outside a repo under pytest: the suite patches
+        ``HOME``, so ``_find_repo_root``'s "skip the user-level ``~/.repowise``"
+        guard no longer recognises the real home and the walk resolves to it.
+        Before the widened rescue this test passed anyway, on the focused-set
+        skip below rather than on the branch it names.
+        """
         with patch.object(augment_cmd.search, "_search_enrich") as enrich:
-            assert _call("Grep", "auth", "src/a.py:1: hit", tmp_path) is None
+            with patch.object(augment_cmd.search, "_find_repo_root", return_value=None):
+                assert _call("Grep", "auth", "src/a.py:1: hit", tmp_path) is None
             enrich.assert_not_called()
 
-    def test_skip_on_focused_result_set(self, repowise_cwd) -> None:
-        """1–14 lines = focused: agent has what it wanted, hook stays silent."""
+    def test_focused_result_set_reaches_the_widened_rescue(self, repowise_cwd) -> None:
+        """1–14 lines: the set-difference rescue gets a look (plan item 10).
+
+        It is still usually silent, since the gate is inside ``_rescue`` and
+        needs an exact symbol match in a file the grep did *not* return, but the
+        mode is no longer skipped before the query.
+        """
+        output = "\n".join(f"src/file{i}.py:1: hit" for i in range(5))
+        sentinel = object()
+        with (
+            patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich,
+            patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]),
+        ):
+            _call("Grep", "parse_yaml", output, repowise_cwd)
+        args = enrich.call_args_list[0].args
+        assert args[2] == "rescue_wide"
+        # ...and it is handed the files grep actually matched, which is the
+        # only thing the gate can be computed against.
+        assert set(args[4]) == {f"src/file{i}.py" for i in range(5)}
+
+    @pytest.mark.parametrize("pattern", ["coverage", "score", "provider", "layer_id"])
+    def test_single_token_patterns_never_reach_the_widened_rescue(
+        self, repowise_cwd, pattern: str
+    ) -> None:
+        """Every false positive in the transcript replay had this shape.
+
+        "A symbol by that name is defined elsewhere" is true of half the repo
+        for a bare `coverage` or `score`. The guard is also what keeps the
+        query off the common path: it runs before any wiki lookup.
+        """
         output = "\n".join(f"src/file{i}.py:1: hit" for i in range(5))
         with patch.object(augment_cmd.search, "_search_enrich") as enrich:
-            assert _call("Grep", "auth", output, repowise_cwd) is None
+            assert _call("Grep", pattern, output, repowise_cwd) is None
+            enrich.assert_not_called()
+
+    def test_focused_result_set_stays_silent_without_parseable_files(
+        self, repowise_cwd
+    ) -> None:
+        """A result set whose files can't be read means no gate, so no rescue.
+
+        The pattern clears the single-token guard on purpose, so this pins the
+        parse gate rather than passing on the cheaper one above it.
+        """
+        output = "\n".join(f"unstructured line {i}" for i in range(5))
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+            assert _call("Grep", "parse_yaml", output, repowise_cwd) is None
             enrich.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -383,16 +441,24 @@ class TestDecisionTree:
             assert mode == "rescue"
 
     def test_no_rescue_for_successful_files_mode_grep(self, repowise_cwd) -> None:
-        """The live bug: files_with_matches results must never read as zero."""
-        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
-            result = _handle_search_post(
+        """The live bug: files_with_matches results must never read as zero.
+
+        Two matched files is a focused set, so this now reaches the *widened*
+        rescue. What must never happen is the zero-result ``rescue``, whose
+        text claims there was no literal match at all.
+        """
+        sentinel = object()
+        with (
+            patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich,
+            patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]),
+        ):
+            _handle_search_post(
                 tool_name="Grep",
                 tool_input={"pattern": "distill_savings"},
                 tool_output=GREP_FILES_MODE,
                 cwd=str(repowise_cwd),
             )
-            assert not result
-            enrich.assert_not_called()
+        assert enrich.call_args_list[0].args[2] == "rescue_wide"
 
     @pytest.mark.parametrize(
         "tool_output",
@@ -486,15 +552,18 @@ class TestFloodDigest:
             assert out == sentinel
             assert enrich.called
 
-    def test_unparseable_flood_falls_through(self, repowise_cwd) -> None:
-        """Glob-style bare path lists can't be grouped — triage handles them."""
+    def test_unparseable_flood_stays_silent(self, repowise_cwd) -> None:
+        """No parseable files means no honest triage (plan item 8).
+
+        This used to fall through to a triage that ranked index candidates
+        with no reference to the grep output, which is precisely how it could
+        name a file the search had not matched. With nothing to rank, the
+        hook says nothing.
+        """
         big = "\n".join(f"line {i} of something unstructured" for i in range(60))
-        sentinel = "triaged"
-        with patch.object(augment_cmd.search, "_search_enrich", return_value=sentinel) as enrich:
-            with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
-                out = _call("Grep", "auth", big, repowise_cwd)
-            assert out == sentinel
-            assert enrich.called
+        with patch.object(augment_cmd.search, "_search_enrich") as enrich:
+            assert _call("Grep", "auth", big, repowise_cwd) is None
+            enrich.assert_not_called()
 
     def test_top_files_listed_first(self, repowise_cwd) -> None:
         flood = "\n".join(
@@ -506,3 +575,172 @@ class TestFloodDigest:
         assert out is not None
         file_lines = [ln for ln in out.splitlines() if "matches)" in ln]
         assert file_lines[0].strip().startswith("src/hot.py")
+
+
+# ---------------------------------------------------------------------------
+# Item 8/9/10: ranking over the grep's real results
+# ---------------------------------------------------------------------------
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeSession:
+    """Returns canned row sets in call order; records the statements it saw."""
+
+    def __init__(self, *row_sets):
+        self._queue = list(row_sets)
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        return _FakeResult(self._queue.pop(0) if self._queue else [])
+
+
+class TestMatchedFiles:
+    """What the hook believes the search actually returned."""
+
+    def test_content_mode_gives_per_file_counts(self, repowise_cwd) -> None:
+        text = "src/a.py:1:x\nsrc/a.py:9:x\nsrc/b.py:3:x"
+        assert _matched_files(repowise_cwd, GREP_CONTENT_MODE, text) == {
+            "src/a.py": 2,
+            "src/b.py": 1,
+        }
+
+    def test_filenames_are_the_fallback_not_the_first_look(self, repowise_cwd) -> None:
+        """Content mode carries ``filenames`` too; the counts must win."""
+        payload = {"mode": "content", "filenames": ["src/z.py"], "content": ""}
+        text = "src/a.py:1:x\nsrc/a.py:2:x"
+        assert _matched_files(repowise_cwd, payload, text) == {"src/a.py": 2}
+
+    def test_files_with_matches_uses_filenames(self, repowise_cwd) -> None:
+        matched = _matched_files(repowise_cwd, GREP_FILES_MODE, "")
+        assert matched == {
+            "packages/web/src/lib/api/costs.ts": 1,
+            "packages/web/src/app/repos/[id]/costs/page.tsx": 1,
+        }
+
+    def test_absolute_paths_become_node_ids(self, repowise_cwd) -> None:
+        text = f"{repowise_cwd.as_posix()}/src/a.py:1:x"
+        assert _matched_files(repowise_cwd, {}, text) == {"src/a.py": 1}
+
+    def test_unreadable_output_is_none_not_empty(self, repowise_cwd) -> None:
+        """None means "unknowable" and must not read as "nothing matched"."""
+        assert _matched_files(repowise_cwd, {}, "some prose\nmore prose") is None
+
+
+class TestPatternTerms:
+    def test_splits_snake_and_camel(self) -> None:
+        assert _pattern_terms("record_saving") == ["record", "saving"]
+        assert _pattern_terms("recordSaving") == ["record", "saving"]
+
+    def test_drops_short_tokens_and_dedups(self) -> None:
+        assert _pattern_terms("db_id_handler_handler") == ["handler"]
+
+    def test_empty_pattern_has_no_terms(self) -> None:
+        assert _pattern_terms("()") == []
+
+
+class TestCoverageOrder:
+    def test_symbol_names_and_paths_both_count(self) -> None:
+        order = _coverage_order(
+            "record_saving",
+            ["src/misc.py", "src/savings.py", "src/ledger.py"],
+            {"src/ledger.py": ["record_saving"]},
+        )
+        # Full coverage from the symbol name beats half from the path, and
+        # the file covering neither term is absent rather than ranked last.
+        assert order == ["src/ledger.py", "src/savings.py"]
+
+    def test_no_terms_gives_an_empty_leg(self) -> None:
+        assert _coverage_order("[]", ["src/a.py"], {}) == []
+
+
+class TestRRF:
+    def test_agreement_across_legs_wins(self) -> None:
+        scores = _rrf([["a", "b"], ["b", "a"], ["b"]])
+        assert scores["b"] > scores["a"]
+
+    def test_absent_from_every_leg_is_absent(self) -> None:
+        assert "c" not in _rrf([["a"], ["b"]])
+
+
+class TestTriageRanksRealMatches:
+    async def test_only_matched_files_are_named(self) -> None:
+        matched = {"src/a.py": 3, "src/b.py": 1}
+        session = _FakeSession(
+            # WikiSymbol rows: (file_path, name)
+            [("src/b.py", "parse_yaml")],
+            # GraphNode rows: (node_id, pagerank). The index also knows an
+            # unmatched hub, which must never reach the output.
+            [("src/a.py", 0.9), ("src/b.py", 0.1)],
+        )
+        out = await _triage(session, 1, "parse_yaml", "parse_yaml", 40, matched)
+        assert out is not None
+        named = [ln.strip().split()[0] for ln in out.splitlines()[1:]]
+        assert set(named) <= set(matched)
+
+    async def test_coverage_lifts_the_definition_over_the_hub(self) -> None:
+        """Item 9: query-aware ranking beats bare PageRank.
+
+        ``src/hub.py`` has more matches and far more centrality; ``src/b.py``
+        is the only file whose symbol name covers the query. Two legs to one
+        is what RRF is for.
+        """
+        matched = {"src/hub.py": 30, "src/b.py": 2}
+        session = _FakeSession(
+            [("src/b.py", "parse_yaml")],
+            [("src/hub.py", 0.9), ("src/b.py", 0.01)],
+        )
+        out = await _triage(session, 1, "parse_yaml", "parse_yaml", 40, matched)
+        assert out.splitlines()[1].strip().startswith("src/b.py")
+
+    async def test_single_matched_file_is_not_worth_a_ranking(self) -> None:
+        session = _FakeSession([("src/a.py", "x")], [("src/a.py", 0.5)])
+        assert await _triage(session, 1, "x", "x", 40, {"src/a.py": 20}) is None
+
+    async def test_silent_when_the_index_knows_none_of_them(self) -> None:
+        session = _FakeSession([], [])
+        matched = {"src/a.py": 3, "src/b.py": 1}
+        assert await _triage(session, 1, "auth", "auth", 40, matched) is None
+
+    async def test_header_states_the_population(self) -> None:
+        matched = {"src/a.py": 3, "src/b.py": 1}
+        session = _FakeSession([], [("src/a.py", 0.9), ("src/b.py", 0.1)])
+        out = await _triage(session, 1, "auth", "auth", 40, matched)
+        assert out.splitlines()[0] == (
+            "[repowise] 40+ matches for `auth` across 2 files. "
+            "Most likely relevant, ranked over the files your search matched:"
+        )
+
+
+class TestWidenedRescueGate:
+    """Item 10: fire only on a file the grep did not return."""
+
+    async def test_silent_when_the_symbol_is_in_a_matched_file(self) -> None:
+        session = _FakeSession([("parse_yaml", "function", "src/a.py", 10)])
+        out = await _rescue(
+            session, None, 1, "parse_yaml", "parse_yaml", {"src/a.py": 3, "src/b.py": 1}
+        )
+        assert out is None
+
+    async def test_fires_on_a_file_outside_the_result_set(self) -> None:
+        session = _FakeSession([("parseYaml", "function", "src/other.py", 10)])
+        out = await _rescue(
+            session, None, 1, "parse_yaml", "parse_yaml", {"src/a.py": 3, "src/b.py": 1}
+        )
+        assert out == (
+            "[repowise] `parse_yaml` matched 2 files, but not src/other.py:10, "
+            "where indexed function `parseYaml` is defined."
+        )
+
+    async def test_no_fts_fallback_when_the_grep_found_things(self) -> None:
+        """A wiki page suggestion is not new information against real hits."""
+        session = _FakeSession([])
+        out = await _rescue(session, None, 1, "parse_yaml", "parse_yaml", {"src/a.py": 3})
+        assert out is None

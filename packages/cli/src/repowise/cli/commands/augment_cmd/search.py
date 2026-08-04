@@ -1,4 +1,23 @@
-"""PostToolUse Grep/Glob smart enrichment: rescue, triage, flood digest."""
+"""PostToolUse Grep/Glob smart enrichment: rescue, triage, flood digest.
+
+Every surface here answers a question **about the agent's own results**, so
+each one starts by reading them: :func:`_matched_files` parses the grep output
+into ``node id -> match count`` and nothing downstream may speak without it.
+That is the correction plan items 8 and 10 exist for. Triage used to build its
+candidates from a ``WikiSymbol`` ILIKE and rank them by PageRank without ever
+looking at the output, which let a confident three-line answer name a file the
+search had not matched; rescue used to be reachable only at exactly zero
+results, which is the cheapest possible proxy for "the agent is missing
+something".
+
+The digest is the exception and stays index-free by design: it summarizes the
+flood rather than reasoning about it, so it works on an unindexed repo.
+
+Rescue, triage and the appended digest are **advisory**: they add context
+next to the tool output, they do not replace it. They therefore spend tokens
+and are not billed to the savings ledger; only the *served* digest
+(:mod:`search_digest`) replaces bytes and records a saving.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +39,19 @@ from ._shared import HookResult, _extract_output_text, _find_repo_root
 _TRIAGE_THRESHOLD = 15  # grep result lines before we surface a ranking
 _TRIAGE_TOP_N = 3
 _RESCUE_TOP_N = 2
+# Exact-name rows the widened rescue fetches before ranking. Its gate asks
+# about the *top* match's file, so an arbitrary two-of-many would make the
+# answer depend on row order; this is small enough to stay one indexed lookup
+# and large enough that the ranking, not the LIMIT, picks the winner.
+_RESCUE_EXACT_FETCH = 8
+# Files the triage ranker considers. Ranking is over the grep's own matches,
+# so this only bites on floods wider than 200 files, where the tail is taken
+# by match count, the one signal available before any index lookup.
+_TRIAGE_MAX_CANDIDATES = 200
+# Reciprocal Rank Fusion constant, k=60 from the original RRF paper. Same
+# value as ``_fused_retrieve`` in the MCP search tool, which fuses the same
+# way over a different set of legs.
+_RRF_K = 60
 _DIGEST_THRESHOLD = 50  # grep result lines before the full compact digest
 _DIGEST_TOP_FILES = 10
 
@@ -83,12 +115,37 @@ def _handle_search_post(
         mode = "rescue"
     elif result_count >= _TRIAGE_THRESHOLD:
         mode = "triage"
-    else:
+    elif _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
+        # Same two guards as the zero-result rescue, for the same reasons.
         return HookResult()
+    elif len(_pattern_terms(pattern)) < 2:
+        # A third guard the zero-result rescue does not need. Replayed over
+        # this machine's real greps, every false positive the widened rescue
+        # produced came from a single-token pattern (`coverage`, `score`,
+        # `provider`) where "a symbol by that name is defined elsewhere" is
+        # true of half the repo and interesting nowhere. Under zero results
+        # even a generic name is the only lead going; under real results it
+        # competes with evidence. Free to check, and it runs before the
+        # query, so it also keeps the cost off the common path.
+        return HookResult()
+    else:
+        mode = "rescue_wide"
+
+    # Both surviving modes are answers *about the agent's own results*, so
+    # neither may run without them. Triage ranks the matched files and rescue
+    # fires only on a file that is absent from them; a mode that cannot see
+    # the result set has no honest question to answer and stays silent.
+    matched = None
+    if mode != "rescue":
+        matched = _matched_files(repo_path, tool_output, output_text)
+        if not matched:
+            return HookResult()
 
     import asyncio
 
-    enrichment = asyncio.run(_search_enrich(repo_path, pattern, mode, result_count))
+    enrichment = asyncio.run(
+        _search_enrich(repo_path, pattern, mode, result_count, matched)
+    )
     if enrichment:
         _log_search_firing(repo_path, session_id, mode, enrichment)
     return HookResult(context=enrichment or None)
@@ -248,6 +305,57 @@ def _grep_flood_digest(repo_path: Path, output_text: str) -> str | None:
     return f"[repowise] Search flood — compact digest (files ordered by {order_note}):\n{digest}"
 
 
+def _as_node_ids(repo_path: Path, paths: list[str]) -> dict[str, str]:
+    """Map each grep-spelled path to its graph-node id, keeping the original.
+
+    Grep output paths may be absolute or OS-native; graph node ids and
+    ``WikiSymbol.file_path`` are repo-relative POSIX. Every index lookup in
+    this module goes through here so the two spellings only have to be
+    reconciled once.
+    """
+    normalized: dict[str, str] = {}
+    repo_posix = repo_path.as_posix().rstrip("/") + "/"
+    for p in paths:
+        norm = p.replace("\\", "/").removeprefix("./")
+        if norm.startswith(repo_posix):
+            norm = norm[len(repo_posix) :]
+        normalized[norm] = p
+    return normalized
+
+
+def _matched_files(repo_path: Path, tool_output: object, output_text: str) -> dict[str, int] | None:
+    """Files the search actually matched, as node id → match count.
+
+    ``None`` means "unknowable", which is different from "none matched": a
+    single-file context grep (``-C``/``-A``/``-B``) is rendered with no path
+    prefix and a ``files_with_matches`` payload carries no line data, so the
+    two shapes have to be read differently and a third shape has to be
+    refused outright rather than guessed at.
+
+    This is the whole point of items 8 and 10: everything downstream ranks or
+    gates against the agent's *real* results instead of against the index's
+    opinion of what the pattern means.
+    """
+    from repowise.core.distill.filters.search_results import group_search_matches
+
+    groups = group_search_matches(output_text)
+    if groups:
+        ids = _as_node_ids(repo_path, list(groups))
+        return {node_id: len(groups[original]) for node_id, original in ids.items()}
+
+    # ``filenames`` rides along on content-mode payloads too, so it is the
+    # fallback rather than the first look: parsing the matches keeps the
+    # per-file counts, and this branch is what serves the modes that have no
+    # match text at all (``files_with_matches``, Glob) plus the context greps
+    # the parser declines. No counts here, so one apiece leaves the grep leg
+    # in ripgrep's own order, which is the only evidence that shape carries.
+    filenames = tool_output.get("filenames") if isinstance(tool_output, dict) else None
+    if not isinstance(filenames, list):
+        return None
+    names = [f for f in filenames if isinstance(f, str)]
+    return dict.fromkeys(_as_node_ids(repo_path, names), 1) or None
+
+
 async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | None:
     """Order *paths* by indexed PageRank, or None when the graph can't help."""
     db_path = repo_path / ".repowise" / "wiki.db"
@@ -264,15 +372,7 @@ async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] |
     from repowise.core.persistence.crud import get_repository_by_path
     from repowise.core.persistence.database import resolve_db_url
 
-    # Grep output paths may be absolute or OS-native; graph node ids are
-    # repo-relative POSIX. Normalize both ways and keep the original spelling.
-    normalized: dict[str, str] = {}
-    repo_posix = repo_path.as_posix().rstrip("/") + "/"
-    for p in paths:
-        norm = p.replace("\\", "/").removeprefix("./")
-        if norm.startswith(repo_posix):
-            norm = norm[len(repo_posix) :]
-        normalized[norm] = p
+    normalized = _as_node_ids(repo_path, paths)
 
     engine = create_engine(resolve_db_url(repo_path))
     try:
@@ -473,6 +573,7 @@ async def _search_enrich(
     pattern: str,
     mode: str,
     result_count: int,
+    matched: dict[str, int] | None = None,
 ) -> str | None:
     """Run the rescue or triage query against the wiki and format output."""
     import re
@@ -505,8 +606,10 @@ async def _search_enrich(
 
             if mode == "rescue":
                 return await _rescue(session, engine, repo_id, pattern, clean)
-            if mode == "triage":
-                return await _triage(session, repo_id, pattern, clean, result_count)
+            if mode == "rescue_wide" and matched:
+                return await _rescue(session, engine, repo_id, pattern, clean, matched)
+            if mode == "triage" and matched:
+                return await _triage(session, repo_id, pattern, clean, result_count, matched)
             return None
     finally:
         await engine.dispose()
@@ -518,6 +621,7 @@ async def _rescue(
     repo_id: int,
     pattern: str,
     clean: str,
+    matched: dict[str, int] | None = None,
 ) -> str | None:
     """Zero-result rescue: grep missed but the wiki has a semantic hit.
 
@@ -532,6 +636,21 @@ async def _rescue(
       3. Skip — if neither signal hits, we have nothing useful to add.
 
     Output is a single line so it can't be confused with a real result.
+
+    Passing *matched* runs the **widened** variant (plan item 10): the grep
+    returned a handful of results rather than none, and the rescue is allowed
+    to speak only when the best symbol hit lives in a file that is **not**
+    among them. This is a set difference, deliberately not a count threshold.
+    Rescue's 44% action rate is the highest in the system and it comes from
+    firing only when it has genuinely new information; a count threshold
+    ("few results, so say something") would turn it into a general suggester
+    and spend that rate. Two extra narrowings hold the same bar:
+
+    * only an **exact** name-variant match qualifies. Under a real result set
+      a fuzzy neighbour is a guess competing against evidence the agent
+      already has, where under zero results it was the only candidate going.
+    * **no FTS fallback.** "The wiki suggests this page" answers a question
+      the agent is no longer asking once grep has handed it real files.
     """
     from sqlalchemy import or_, select
 
@@ -548,13 +667,24 @@ async def _rescue(
     # Build a small set of token variants. Cheap; helps catch case-style
     # drift without a heavy similarity index.
     variants = _name_variants(clean)
-    like_clauses = [
-        WikiSymbol.name.ilike(f"%{escape_like(v)}%", escape=LIKE_ESCAPE) for v in variants
-    ]
+    lowered = {v.lower() for v in variants}
+    if matched is None:
+        name_clause = or_(
+            *[
+                WikiSymbol.name.ilike(f"%{escape_like(v)}%", escape=LIKE_ESCAPE)
+                for v in variants
+            ]
+        )
+    else:
+        # Exactness enforced in SQL, not by filtering the fetched page. The
+        # substring query is unordered under a LIMIT, so an exact match can
+        # sit well outside the first two rows, and post-filtering them would
+        # have made the widened rescue almost never fire, silently.
+        name_clause = WikiSymbol.name.in_(sorted(variants))
     sym_stmt = (
         select(WikiSymbol.name, WikiSymbol.kind, WikiSymbol.file_path, WikiSymbol.start_line)
-        .where(WikiSymbol.repository_id == repo_id, or_(*like_clauses))
-        .limit(_RESCUE_TOP_N)
+        .where(WikiSymbol.repository_id == repo_id, name_clause)
+        .limit(_RESCUE_TOP_N if matched is None else _RESCUE_EXACT_FETCH)
     )
     rows = (await session.execute(sym_stmt)).all()
     if rows:
@@ -562,12 +692,20 @@ async def _rescue(
         # specific). All ties broken by file path lex order for stability.
         def _rank(row):
             name = (row[0] or "").lower()
-            exact = name in {v.lower() for v in variants}
-            return (not exact, len(name), row[2] or "")
+            return (name not in lowered, len(name), row[2] or "")
 
         rows = sorted(rows, key=_rank)[:_RESCUE_TOP_N]
         first = rows[0]
         line = f":{first[3]}" if first[3] else ""
+        if matched is not None:
+            if (first[2] or "") in matched:
+                # The agent already has this file. Nothing new to say.
+                return None
+            return (
+                f"[repowise] `{pattern}` matched {len(matched)} "
+                f"file{'s' if len(matched) != 1 else ''}, but not {first[2]}{line}, "
+                f"where indexed {first[1]} `{first[0]}` is defined."
+            )
         extras = ""
         if len(rows) > 1:
             extras = f" (+{len(rows) - 1} more)"
@@ -575,6 +713,9 @@ async def _rescue(
             f"[repowise] No literal match for `{pattern}`. Closest indexed symbol: "
             f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
         )
+
+    if matched is not None:
+        return None
 
     # Fall back to FTS on wiki content. Only return if the FTS row actually
     # points at a code page (file/module/api), not a generic doc page.
@@ -608,68 +749,165 @@ async def _triage(
     pattern: str,
     clean: str,
     result_count: int,
+    matched: dict[str, int],
 ) -> str | None:
-    """Big-result triage: surface top files by PageRank.
+    """Big-result triage: rank the files the search matched, best first.
 
-    The grep result set has too many lines for the agent to scan
-    efficiently. Without overriding the agent's literal results, we
-    point at the top _TRIAGE_TOP_N files (by structural centrality)
-    that contain the pattern in either symbol or path.
+    *matched* is the grep's own output, parsed (see :func:`_matched_files`),
+    and it is the whole candidate set. The previous version built candidates
+    from a ``WikiSymbol`` ILIKE plus a path ILIKE and ranked those by bare
+    PageRank, never reading the grep output at all, so a confident,
+    well-formatted answer could name a file the agent's search had not
+    matched. The index now orders the agent's results; it no longer proposes
+    its own.
 
-    Output is one line plus an enumerated list. Three lines max.
+    Three ranked lists are fused by Reciprocal Rank Fusion (``1/(rank + k)``,
+    k=60), the same arithmetic ``_fused_retrieve`` uses in the MCP search
+    tool. RRF is pure rank arithmetic, so it ports into a hook unchanged,
+    unlike the embedding leg it fuses there, which needs a network call and is
+    out of scope for a hook by the phase-3 retrieval ceiling.
+
+      * **grep evidence**: every matched file, by match count. The only leg
+        that is not an opinion, and the only one that is always populated.
+      * **name coverage**: the fraction of the pattern's subtokens present
+        in a file's path or in the names of its matching indexed symbols.
+        Formula ported from ``_rerank_by_coverage`` in the MCP answer
+        pipeline (see :func:`_coverage_order`). This is what makes the
+        ranking query-aware rather than a fixed importance order: it is the
+        leg that separates the file that *defines* the thing from the twenty
+        that merely mention it.
+      * **PageRank**: structural centrality, the previous sole signal, kept
+        as a tiebreak-weight leg rather than as the verdict.
+
+    A file present in two legs beats a file present in one, which is exactly
+    the property that makes RRF the right fusion here.
+
+    Output is one header line plus at most :data:`_TRIAGE_TOP_N` files.
     """
     from sqlalchemy import select
 
     from repowise.core.persistence import GraphNode, WikiSymbol
     from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 
-    if not clean:
+    if not clean or len(matched) < 2:
+        # One matched file needs no ranking; the agent is already looking at
+        # it. Emitting there would be pure cost.
         return None
 
-    # Files that contain a symbol whose name matches, or whose own path
-    # matches. Either way we can rank by PageRank from graph_nodes.
-    sym_files_stmt = (
-        select(WikiSymbol.file_path)
-        .where(
-            WikiSymbol.repository_id == repo_id,
-            WikiSymbol.name.ilike(f"%{escape_like(clean)}%", escape=LIKE_ESCAPE),
-        )
-        .distinct()
-        .limit(50)
-    )
-    sym_files = {r[0] for r in (await session.execute(sym_files_stmt)).all() if r[0]}
+    # Widest floods first-cut by match count. See _TRIAGE_MAX_CANDIDATES.
+    paths = sorted(matched, key=lambda p: (-matched[p], p))[:_TRIAGE_MAX_CANDIDATES]
 
-    path_stmt = (
-        select(GraphNode.node_id)
-        .where(
-            GraphNode.repository_id == repo_id,
-            GraphNode.node_type == "file",
-            GraphNode.node_id.ilike(f"%{escape_like(clean)}%", escape=LIKE_ESCAPE),
-        )
-        .limit(50)
+    sym_stmt = select(WikiSymbol.file_path, WikiSymbol.name).where(
+        WikiSymbol.repository_id == repo_id,
+        WikiSymbol.file_path.in_(paths),
+        WikiSymbol.name.ilike(f"%{escape_like(clean)}%", escape=LIKE_ESCAPE),
     )
-    path_files = {r[0] for r in (await session.execute(path_stmt)).all() if r[0]}
-
-    candidates = sym_files | path_files
-    if not candidates:
-        return None
+    symbol_names: dict[str, list[str]] = {}
+    for file_path, name in (await session.execute(sym_stmt)).all():
+        if file_path and name:
+            symbol_names.setdefault(file_path, []).append(name)
 
     pr_stmt = select(GraphNode.node_id, GraphNode.pagerank).where(
         GraphNode.repository_id == repo_id,
         GraphNode.node_type == "file",
-        GraphNode.node_id.in_(candidates),
+        GraphNode.node_id.in_(paths),
     )
-    pr_rows = (await session.execute(pr_stmt)).all()
-    if not pr_rows:
+    pagerank = {
+        node_id: pr or 0.0
+        for node_id, pr in (await session.execute(pr_stmt)).all()
+        if node_id
+    }
+    if not symbol_names and not pagerank:
+        # The index knows nothing about any matched file. Re-listing the
+        # grep's own top files back at it is not worth the tokens.
         return None
 
-    ranked = sorted(pr_rows, key=lambda r: r[1] or 0.0, reverse=True)[:_TRIAGE_TOP_N]
-    if not ranked:
-        return None
+    legs = [
+        paths,
+        _coverage_order(pattern, paths, symbol_names),
+        sorted(
+            (p for p in paths if p in pagerank),
+            key=lambda p: (-pagerank[p], p),
+        ),
+    ]
+    fused = _rrf(legs)
+    ranked = sorted(paths, key=lambda p: (-fused.get(p, 0.0), p))[:_TRIAGE_TOP_N]
 
-    header = f"[repowise] {result_count}+ matches for `{pattern}`. Top files by graph centrality:"
-    lines = [header] + [f"  {row[0]}" for row in ranked]
+    header = (
+        f"[repowise] {result_count}+ matches for `{pattern}` across {len(matched)} "
+        f"files. Most likely relevant, ranked over the files your search matched:"
+    )
+    lines = [header] + [f"  {p}  ({matched[p]} matches)" for p in ranked]
     return "\n".join(lines)
+
+
+def _rrf(legs: list[list[str]]) -> dict[str, float]:
+    """Reciprocal Rank Fusion over ranked lists: ``sum(1/(rank + k))``.
+
+    Ported verbatim in behaviour from ``_fused_retrieve``; no score scaling,
+    because nothing downstream compares these numbers against a tuned
+    threshold; they only order three files.
+    """
+    scores: dict[str, float] = {}
+    for leg in legs:
+        for rank, key in enumerate(leg):
+            scores[key] = scores.get(key, 0.0) + 1.0 / (rank + _RRF_K)
+    return scores
+
+
+def _coverage_order(
+    pattern: str, paths: list[str], symbol_names: dict[str, list[str]]
+) -> list[str]:
+    """Matched files ordered by how much of *pattern* their names cover.
+
+    Term coverage, ported from ``_rerank_by_coverage`` in
+    ``tool_answer/retrieval.py``: the fraction of the query's distinct terms
+    present in the candidate's text. What did not port is that function's
+    ``raw * (FLOOR + (1-FLOOR)*coverage)`` blend. The floor exists to keep a
+    BM25 score dominant while coverage modulates it, and there is no BM25
+    score on this path. Here coverage produces a *rank*, and RRF does the
+    blending the floor was standing in for.
+
+    Nor does the stopword list port: it lives in the MCP answer pipeline, and
+    importing that package into a hook would pull the server stack in at hook
+    startup for a set of English words a grep pattern does not contain.
+
+    Files covering nothing are dropped rather than ranked last: an empty leg
+    is an honest "no signal", where a full one would inject noise into the
+    fusion.
+    """
+    terms = _pattern_terms(pattern)
+    if not terms:
+        return []
+    scored: list[tuple[float, str]] = []
+    for p in paths:
+        haystack = " ".join([p, *symbol_names.get(p, [])]).lower()
+        coverage = sum(1 for t in terms if t in haystack) / len(terms)
+        if coverage:
+            scored.append((coverage, p))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [p for _, p in scored]
+
+
+def _pattern_terms(pattern: str) -> list[str]:
+    """Distinct content subtokens of a search pattern, lowercased.
+
+    Splits on non-word characters *and* on snake/camel boundaries, so
+    ``record_saving`` covers ``record`` and ``saving`` independently and a
+    file named ``savings.py`` scores against the half it actually carries.
+    Terms shorter than three characters are dropped as noise, matching
+    ``_question_terms``.
+    """
+    import re
+
+    parts = re.split(r"[^\w]+", pattern)
+    terms: list[str] = []
+    for part in parts:
+        for token in re.split(r"_+|(?<=[a-z0-9])(?=[A-Z])", part):
+            token = token.lower()
+            if len(token) >= 3 and token not in terms:
+                terms.append(token)
+    return terms
 
 
 def _name_variants(token: str) -> list[str]:
