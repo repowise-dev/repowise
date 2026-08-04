@@ -567,6 +567,7 @@ measured field and are on the benchmarks page.
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
+| **Precision at that budget** *(measured)* | 0.580 | ✅ **0.636**, a shorter list |
 | Defect-prediction AUC, published and reproducible | ✅ 0.74 over 21 repos | ✅ Code Red study |
 | Git intelligence (hotspots, ownership, co-change) | ✅ | ✅ |
 | Pre-merge change-risk scoring | ✅ 0-10 + directives | ✅ |
@@ -581,7 +582,9 @@ measured field and are on the benchmarks page.
 | Local dashboard | ✅ | ✅ |
 
 CodeScene is the only other vendor in this category with a published empirical
-defect study, which is why it is the one we ran head to head against.
+defect study, which is why it is the one we ran head to head against. It flags
+about 27 files where we flag 132, so if you want a short list to action rather
+than the ranking that catches the most defects, its threshold is the better fit.
 
 ### Documentation generators
 

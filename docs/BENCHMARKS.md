@@ -202,14 +202,26 @@ PROMISE/jEdit, a dataset it never saw, it holds at 0.76 to 0.78.
 in this category with a published empirical defect study. Both tools scored the
 same 2,770 files at the same leakage-free commit against the same labels:
 
-| Paired test | repowise | CodeScene |
-|---|---:|---:|
-| Recall at a 20%-of-lines review budget | **0.173** | 0.074 |
-| Effort-aware ranking (Popt) | **0.607** | 0.462 |
-| Defect density, size-normalized (Alert:Healthy) | **2.18x** | 0.56x |
+| Paired test | repowise | CodeScene | |
+|---|---:|---:|---|
+| Recall at a 20%-of-lines review budget | **0.173** | 0.074 | p = 0.003 |
+| Effort-aware ranking (Popt) | **0.607** | 0.462 | p = 0.003 |
+| Defect density, size-normalized (Alert:Healthy) | **2.18x** | 0.56x | p = 0.003 |
+| Discrimination (ROC AUC) | 0.731 | 0.705 | p = 0.054, marginal |
+| Precision at a 20%-of-lines review budget | 0.580 | **0.636** | p = 0.64, a tie |
 
 Ranking by repowise health surfaces **2.3x the defects under a fixed review
 budget**, at Popt +0.144 and recall +0.098, both p = 0.003, paired.
+
+**Where CodeScene is ahead, and why it is a real choice.** Its nominal precision
+lead is not statistically significant, but the behaviour behind it is worth
+having: CodeScene flags about **27 files** where we flag **132**. That is a more
+conservative threshold, trading recall for a short list a team will actually work
+through. If what you want is a handful of files to fix this quarter rather than
+the ranking that catches the most defects, that operating point is the better
+one, and it is a deliberate design choice rather than a weaker model. Our AUC
+edge is also **marginal**, not significant at 0.05, and we would rather say so
+than round it up.
 
 Reports:
 **[BENCHMARK\_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)** ·
