@@ -13,8 +13,11 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
+from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
+    _DEFINES_MAX_FILES,
+    _DEFINES_PER_CANDIDATE,
     _ENRICH_TOP_N_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _HOMONYM_UNION_BODY_MAX_LINES,
@@ -572,6 +575,111 @@ async def _concept_anchor_hits(
     target["_concept_rationale"] = winner
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits
+
+
+# Definition kinds worth naming in `defines`, best first. A file is
+# characterised by what it declares, so a class outranks a bare function and
+# both outrank a variable. Kinds absent from this map are not emitted at all:
+# imports and re-exports would fill the budget with names that answer nothing.
+_DEFINE_KIND_RANK = {
+    "class": 0,
+    "interface": 1,
+    "struct": 1,
+    "enum": 1,
+    "type": 2,
+    "function": 3,
+    "method": 4,
+    "constant": 5,
+}
+
+
+async def _hydrate_candidate_defines(
+    session,
+    repo_id: str,
+    hits: list[dict],
+    question_ids: set[str] | None = None,
+) -> None:
+    """Mutate *hits* in place: attach ``_defines`` to the candidate-pool files.
+
+    ``candidates`` names the files retrieval ranked and, before this, said
+    nothing about any of them. An agent handed ``django/shortcuts.py`` and
+    nothing else has exactly one move available, which is to go and Grep it; the
+    Layer B taxonomy judged 89% of post-answer searches to be that move. Naming
+    the definitions a file contains turns "search this file" into "read this
+    line", and often answers a where-is-it question outright.
+
+    Deliberately cheap and deliberately shallow:
+
+    * **One batched query**, on ``(repository_id, file_path)`` which the
+      ``uq_wiki_symbol`` index already covers, over at most
+      ``_DEFINES_MAX_FILES`` paths. No live file reads, no bounds verification.
+    * **Names and start lines only.** No signature, no docstring, no body. Those
+      already have homes (``retrieval[].key_symbols``, ``symbol_bodies``) and
+      this block must not compete with them for the payload's byte budget.
+    * **Line numbers are index-recorded, not verified.** Unlike ``get_symbol``,
+      nothing here checks the stored bounds against the live file. They are a
+      navigation hint; the serializer's field documentation says so.
+
+    Ordering within a file: question-named symbols first (they are what the
+    agent came for), then by declaration kind, then by position. Dunders and
+    private names are dropped unless the question named them.
+    """
+    qids = {q.lower() for q in (question_ids or set())}
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for h in hits:
+        p = hit_file_path(h)
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        paths.append(p)
+        if len(paths) >= _DEFINES_MAX_FILES:
+            break
+    if not paths:
+        return
+
+    res = await session.execute(
+        select(
+            WikiSymbol.file_path,
+            WikiSymbol.name,
+            WikiSymbol.kind,
+            WikiSymbol.start_line,
+        ).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.file_path.in_(paths),
+        )
+    )
+
+    by_file: dict[str, list[tuple[int, int, str, int]]] = {}
+    for file_path, name, kind, start_line in res.all():
+        rank = _DEFINE_KIND_RANK.get((kind or "").lower())
+        if rank is None or not name:
+            continue
+        matched = name.lower() in qids
+        if not matched and name.startswith("_"):
+            continue
+        by_file.setdefault(file_path, []).append(
+            (0 if matched else 1, rank, name, start_line or 0)
+        )
+
+    for path, rows in by_file.items():
+        rows.sort(key=lambda r: (r[0], r[1], r[3]))
+        picked: list[tuple[str, int]] = []
+        taken: set[str] = set()
+        for _m, _r, name, start in rows:
+            if name in taken:
+                continue
+            taken.add(name)
+            picked.append((name, start))
+            if len(picked) >= _DEFINES_PER_CANDIDATE:
+                break
+        by_file[path] = picked  # type: ignore[assignment]
+
+    for h in hits:
+        p = hit_file_path(h)
+        if p and by_file.get(p):
+            h["_defines"] = by_file[p]
 
 
 async def _hydrate_symbols_for_hits(

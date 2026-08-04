@@ -92,3 +92,70 @@ def test_an_unhydrated_hit_is_kept_rather_than_dropped():
     would lose a real file over a join that did not land.
     """
     assert serialize_candidates([_hit("a.py")]) == [{"path": "a.py"}]
+
+
+# --- `defines`: what each named file actually contains ----------------------
+#
+# Measured on the 25 flow questions: a get_answer response served 499 paths and
+# 65 of them carried any content at all. The Layer B taxonomy judged 89% of the
+# agent's post-answer searches as EXPAND, taking a name we served and going to
+# fetch the substance we did not attach. `defines` is that substance, at names
+# and line numbers only.
+
+
+def _hit_d(path, defines, symbols=None):
+    h = _hit(path, symbols)
+    h["_defines"] = defines
+    return h
+
+
+def test_defines_names_what_the_file_declares():
+    out = serialize_candidates([_hit_d("shortcuts.py", [("resolve_url", 146), ("redirect", 20)])])
+    assert out == [{"path": "shortcuts.py", "defines": "resolve_url:146, redirect:20"}]
+
+
+def test_a_hit_without_defines_is_unchanged():
+    """The pre-change shape survives exactly where nothing was hydrated."""
+    assert serialize_candidates([_hit("a.py")]) == [{"path": "a.py"}]
+
+
+def test_defines_never_changes_which_paths_are_served_or_their_order():
+    """HARD CONSTRAINT: Layer A Coverage scores WHICH files come back.
+
+    Two gate fixes (#1284, #1289) bought +0.216 File Coverage and 10-of-10
+    ceiling recovery on the dev half, in this same tool. `defines` is attached
+    to entries the existing loop already built, so it cannot add, drop or
+    reorder a path -- and this asserts that on the same pool twice rather than
+    trusting the argument. An end-to-end version of the same assertion runs over
+    1,392 real candidate paths in
+    `50-results/payload-substance/scripts/assert_same_retrieval.py`.
+    """
+    bare = [_hit("a.py", [{"start_line": 3, "end_line": 9}]), _hit("b.py"), _hit("a.py::X")]
+    enriched = [
+        _hit_d("a.py", [("f", 3)], [{"start_line": 3, "end_line": 9}]),
+        _hit_d("b.py", [("g", 1), ("h", 2)]),
+        _hit_d("a.py::X", [("X", 3)]),
+    ]
+    got = serialize_candidates(enriched)
+    stripped = [{k: v for k, v in e.items() if k != "defines"} for e in got]
+    assert stripped == serialize_candidates(bare)
+
+
+def test_the_char_budget_is_spent_in_rank_order_and_truncates_nothing():
+    """Size discipline, and the failure mode it must not have.
+
+    Our payload is already the larger context (13,958 chars against a bare
+    agent's 12,735) and scores lower, so this block is hard-capped. The cap
+    drops whole `defines` values off the tail, best-ranked file first served; it
+    never truncates one mid-string, because a half-written `name:li` is a symbol
+    that does not exist. And a dropped `defines` must still leave its path.
+    """
+    big = [("s" * 40 + str(i), i) for i in range(6)]
+    out = serialize_candidates([_hit_d(f"f{i}.py", big) for i in range(30)], limit=20)
+
+    assert [e["path"] for e in out] == [f"f{i}.py" for i in range(20)]
+    assert out[0].get("defines"), "the best-ranked candidate must always be described"
+    assert not out[-1].get("defines"), "the budget must run out before the tail"
+    for e in out:
+        if e.get("defines"):
+            assert all(":" in pair for pair in e["defines"].split(", "))

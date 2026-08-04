@@ -44,6 +44,30 @@ _INLINE_BODY_MAX_SYMBOLS = 2
 # body of ~99% of symbols in one shot; the rest carry a continuation token.
 _INLINE_BODY_MAX_LINES = 120
 
+# `candidates[].defines` — what each ranked file actually contains.
+#
+# `candidates` names up to 20 files and, until now, carried nothing about any of
+# them beyond an optional line span. Measured on the 25 flow questions, 434 of
+# the 499 paths a get_answer response served carried no content at all, and the
+# Layer B taxonomy judged 89% of the agent's post-answer searches as EXPAND: it
+# took a name we served and went to fetch the substance we did not attach. A
+# file named without its definitions is a Grep the agent has to run.
+#
+# This is bounded hard rather than generously, because the same measurements say
+# our payload is ALREADY the larger context (13,958 chars against a bare agent's
+# 12,735) and scores lower. The goal is substance per served path, not more
+# chars: names and line numbers, no signatures, no docstrings, no bodies.
+#
+# `_DEFINES_CHAR_BUDGET` is the ceiling for the whole block in one response and
+# is spent in retrieval-rank order, so the best-ranked file is the one that
+# always gets described. `_DEFINES_PER_CANDIDATE` stops a 200-symbol module from
+# consuming the budget before the second candidate is reached.
+_DEFINES_PER_CANDIDATE = 6
+_DEFINES_CHAR_BUDGET = 1500
+# Files whose symbols get looked up at all. Matches _CANDIDATE_LIMIT: querying
+# beyond what `candidates` can emit is wasted work.
+_DEFINES_MAX_FILES = 20
+
 # Synthesis-body depth for the top question-relevant symbols. The default
 # _MATCHED_SYMBOL_SOURCE_LINES (40) excerpt cuts a docstring-heavy definition
 # off before its answer-bearing logic reaches the LLM, so synthesis hedges
@@ -328,7 +352,11 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # answer-grounding earns high on a non-dominant retrieval. Cached pre-v11 rows
 # carry the old body-dump / dominance-only grade and must bypass so the
 # recalibrated confidence reaches callers.
-_ANSWER_SCHEMA_VERSION = 11
+# v12: `candidates[].defines` — each ranked file now names the definitions it
+# contains. Cached pre-v12 rows carry the bare {path, lines} shape, which is the
+# named-but-not-carried payload this version exists to replace, so they must
+# bypass rather than serve the old block back.
+_ANSWER_SCHEMA_VERSION = 12
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary

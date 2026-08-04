@@ -21,6 +21,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
     _COVERAGE_FLOOR,
+    _DEFINES_CHAR_BUDGET,
     _DOMAIN_PENALTY,
     _GATED_EXCERPT_CHARS,
     _PAGE_EXCERPT_HITS,
@@ -65,9 +66,24 @@ def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> 
     like a path" heuristic says yes and the agent that opens it gets an error.
     Scoring impact is about zero, measured; it is wrong on the same argument
     A14 was, which is that this field has one meaning and it is not "page id".
+
+    ``defines`` carries what the file declares, as ``name:line`` pairs, when
+    ``_hydrate_candidate_defines`` resolved any. That is the difference between
+    a path the agent has to Grep and a line it can read: 434 of the 499 paths a
+    get_answer response served on the 25 flow questions carried no content
+    whatsoever, and the Layer B taxonomy judged 89% of the agent's post-answer
+    searches to be exactly that expansion. **Line numbers here are as indexed
+    and are not verified against the live file** (unlike ``get_symbol``); they
+    are navigation, not a citation.
+
+    **Which paths are emitted, and in what order, is not affected by any of
+    this.** ``defines`` is attached to entries the existing loop already built,
+    so an added or exhausted budget can never add, drop or reorder a path.
     """
     out: list[dict] = []
     seen: set[str] = set()
+    # Spent in rank order, so the best-ranked file is the one always described.
+    budget = _DEFINES_CHAR_BUDGET
     for h in hits:
         path = hit_file_path(h)
         if not path or path in seen:
@@ -79,6 +95,11 @@ def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> 
         ends = [s["end_line"] for s in symbols if s.get("end_line")]
         if starts and ends:
             entry["lines"] = f"{min(starts)}-{max(ends)}"
+        if budget > 0 and h.get("_defines"):
+            defines = ", ".join(f"{name}:{line}" for name, line in h["_defines"])
+            if len(defines) <= budget:
+                entry["defines"] = defines
+                budget -= len(defines)
         out.append(entry)
         if len(out) >= limit:
             break

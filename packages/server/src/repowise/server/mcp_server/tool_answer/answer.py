@@ -152,6 +152,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _concept_anchor_hits,
     _extract_question_identifiers,
     _extract_value_answer,
+    _hydrate_candidate_defines,
     _hydrate_symbols_for_hits,
     _read_symbol_source,
     build_homonym_union_bodies,
@@ -944,6 +945,15 @@ async def get_answer(
             async with get_session(ctx.session_factory) as session:
                 await _hydrate_symbols_for_hits(
                     session, repo_id, hits, ctx, question_ids=question_ids
+                )
+                # And the shortlist BELOW the synthesis cap: `candidates` names
+                # those files and, until now, said nothing about any of them.
+                # Runs here, sharing the open session, and against
+                # `resolved_pool` rather than `hits` because the whole point is
+                # the files the cap discarded. Suppressed with the block above:
+                # a missing `_defines` costs a `defines` key, never an answer.
+                await _hydrate_candidate_defines(
+                    session, repo_id, resolved_pool, question_ids=question_ids
                 )
 
     # --- Qualified-miss guard ----------------------------------------------
