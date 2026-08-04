@@ -591,6 +591,30 @@ def test_a_chapter_takes_its_casing_only_from_a_deliberate_spelling():
     assert {g.key: g.display for g in retitle_chapters(groups)}["p/core"] == "Core Overview"
 
 
+def test_a_chapter_does_not_become_a_case_variant_of_a_leaf():
+    """"UI Overview" over "Ui Overview" is one thing written twice.
+
+    The chapter borrows its casing from its children and the leaf derives its
+    own from a path, so the two arrive spelled differently and an exact-match
+    uniqueness check lets both through.
+    """
+    groups = [
+        _module_group("packages/ui/src", files=(), chapter=True, display=""),
+        _module_group(
+            "packages/ui/src/overview", files=("packages/ui/src/overview/a.ts",),
+            chapter=False, display="Ui Overview",
+        ),
+        _module_group(
+            "packages/ui/src/zoom", files=("packages/ui/src/zoom/b.ts",),
+            chapter=False, display="Zoom UI Canvas",
+        ),
+    ]
+
+    titles = [g.display for g in retitle_chapters(groups)]
+
+    assert len({t.lower() for t in titles}) == len(titles), titles
+
+
 def test_a_chapter_is_named_from_the_children_the_tree_puts_under_it():
     """Nearest chapter, not nearest directory — chapters nest.
 

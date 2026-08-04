@@ -310,25 +310,30 @@ def disambiguate_titles(
     renaming it. Passing the settled titles in *titled* instead would let this
     rename them — and a caller that then keeps only its own slice silently
     discards those renames, leaving the collision it asked to resolve.
+
+    Case is not a difference. "UI Overview" over "Ui Overview" is two rows a
+    reader reads as one thing written twice, which is the whole condition this
+    function exists to remove, and it is the reading the planner's own
+    disambiguation has always taken.
     """
     order = sorted(range(len(titled)), key=lambda i: titled[i][1])
     out = list(titled)
-    used: set[str] = set(reserved or ())
+    used: set[str] = {t.lower() for t in (reserved or ())}
     for i in order:
         title, target = titled[i]
-        if title not in used:
-            used.add(title)
+        if title.lower() not in used:
+            used.add(title.lower())
             out[i] = (title, target)
             continue
         segments = [s for s in target.split("/") if s]
         candidate = title
         for extra in reversed(segments[:-2] or segments[:-1]):
             candidate = f"{_humanise(extra)} {title}"
-            if candidate not in used:
+            if candidate.lower() not in used:
                 break
-        if candidate in used:
+        if candidate.lower() in used:
             candidate = f"{title} ({target})"
-        used.add(candidate)
+        used.add(candidate.lower())
         out[i] = (candidate, target)
     return [t for t, _ in out]
 
