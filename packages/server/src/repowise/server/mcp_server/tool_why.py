@@ -17,6 +17,7 @@ from repowise.core.persistence.models import (
     GitMetadata,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
@@ -157,9 +158,53 @@ async def _why_health_dashboard(repo: str | None) -> dict:
         }
 
 
+# --- Path-mode cap and projection -------------------------------------------
+#
+# Path mode used to return every governing record whole: on ``persist.py`` that
+# was 15 records inlining 241 file paths between them, plus an origin story
+# carrying full commit bodies — 81 854 chars, which the MCP host rejects
+# outright (see ``_budget.budgeter``: over the cap is an isError, not a
+# truncation). The mode that matters most, "what governs this file right before
+# I edit it", hard-failed on exactly the bug-magnet files it exists for.
+#
+# So: rank, project, then enforce. The caps below are the projection; the
+# budget pass after them is the guarantee, since no fixed cap can bound a
+# response whose fields are free text.
+
+#: Governing records kept, best-first. Past ~8 the tail is review-queue noise.
+_MAX_PATH_DECISIONS = 8
+
+#: Paths kept per record. The array answers "how wide is this decision", which
+#: a head plus a total answers as well as 241 paths do.
+_MAX_AFFECTED_FILES = 10
+
+#: Commit *bodies* are the weight in an origin story: the subject is already
+#: capped at 200 chars at ingest, but ``body`` is kept up to 1 KB per
+#: significant commit (``git_indexer/file_history.py``) and up to 10 of those
+#: ride along in ``key_commits``. An origin story reads the intent, not the
+#: whole message.
+_MAX_COMMIT_TEXT_CHARS = 320
+
+#: Headroom left under the budget for ``OmissionCollector.attach``, which adds
+#: ``omission_marker`` + ``_meta.omitted`` *after* the last size check.
+_COLLECTOR_HEADROOM_CHARS = 600
+
+#: Sort order for governing records: what governs beats what was proposed
+#: beats what is retired; then confidence; then freshness.
+_PATH_STATUS_ORDER = {"active": 0, "proposed": 1, "deprecated": 2, "superseded": 3}
+
+
+def _path_decision_sort_key(d: Any) -> tuple[int, float, float]:
+    return (
+        _PATH_STATUS_ORDER.get(d.status, 4),
+        -(d.confidence or 0.0),
+        d.staleness_score or 0.0,
+    )
+
+
 def _governing_decision_entry(d: Any, affected_files: list, lineage: list[dict]) -> dict:
     """Serialize a decision that governs a path, including its lineage chain."""
-    return {
+    entry = {
         "id": d.id,
         "title": d.title,
         "status": d.status,
@@ -168,12 +213,100 @@ def _governing_decision_entry(d: Any, affected_files: list, lineage: list[dict])
         "rationale": d.rationale,
         "alternatives": json.loads(d.alternatives_json),
         "consequences": json.loads(d.consequences_json),
-        "affected_files": affected_files,
+        "affected_files": affected_files[:_MAX_AFFECTED_FILES],
         "source": d.source,
         "confidence": d.confidence,
         "staleness_score": d.staleness_score,
         "lineage": lineage if len(lineage) > 1 else [],
     }
+    if len(affected_files) > _MAX_AFFECTED_FILES:
+        entry["affected_files_total"] = len(affected_files)
+    return entry
+
+
+def _trim_commit_text(origin_story: dict) -> None:
+    """Cap commit prose in place, wherever the origin story inlines it.
+
+    ``message`` and ``body`` both, because which one carries the weight depends
+    on the repo: a squash-merge repo puts the whole rationale in ``body`` and
+    the ingest keeps it up to 1 KB, while ``message`` is already capped at 200.
+    Capping both means this does not quietly become a no-op if that changes.
+    """
+
+    def _trim(commits: Any) -> None:
+        if not isinstance(commits, list):
+            return
+        for c in commits:
+            if not isinstance(c, dict):
+                continue
+            for field in ("message", "body"):
+                text = c.get(field)
+                if isinstance(text, str) and len(text) > _MAX_COMMIT_TEXT_CHARS:
+                    c[field] = text[:_MAX_COMMIT_TEXT_CHARS] + "…"
+
+    _trim(origin_story.get("key_commits"))
+    for linked in origin_story.get("linked_decisions") or []:
+        if isinstance(linked, dict):
+            _trim(linked.get("evidence_commits"))
+
+
+def _fit_path_response(result_data: dict, repo_root: Any) -> dict:
+    """Shrink a path response until it fits the transport budget.
+
+    The projection above bounds the structured fields; this bounds the free
+    text ones, which no fixed cap can — a single record's ``rationale`` is
+    unbounded, and the ungoverned-file branch returns git archaeology instead
+    of decisions and so is not capped by any of them.
+
+    Stages, cheapest loss first:
+
+    1. Drop ``origin_story.linked_decisions``, which re-inlines each record's
+       title, rationale and matched commits — all of it already in
+       ``decisions``.
+    2. Drop governing records from the tail, all the way to none if it comes
+       to that. They are sorted best-first, so the tail is review-queue noise,
+       and an empty list plus a marker beats a rejected response.
+    3. Drop the fallback blocks the ungoverned branch adds
+       (``code_rationale``, then ``git_archaeology``), then ``origin_story``
+       whole. What survives — mode, path, alignment, ``_meta`` — is bounded.
+
+    Every drop goes to the omission store, so the agent gets a
+    ``[repowise#<ref>]`` marker it can expand rather than a silently shortened
+    response. Call after ``_meta`` is set: the collector writes into it.
+    """
+    # Reserved so the marker the collector appends after the last check cannot
+    # itself push the response back over the host cap.
+    budget = effective_char_budget() - _COLLECTOR_HEADROOM_CHARS
+
+    def _over() -> bool:
+        return len(json.dumps(result_data, separators=(",", ":"), default=str)) > budget
+
+    if not _over():
+        return result_data
+
+    collector = OmissionCollector("get_why", repo_root=repo_root)
+
+    def _drop_block(key: str, container: dict) -> None:
+        if _over() and container.get(key):
+            collector.add(key, container.pop(key))
+            result_data["truncated"] = True
+
+    origin_story = result_data.get("origin_story")
+    if isinstance(origin_story, dict):
+        _drop_block("linked_decisions", origin_story)
+
+    decisions: list = result_data.get("decisions") or []
+    while decisions and _over():
+        dropped = decisions.pop()
+        collector.add(f"dropped governing decision {dropped.get('title', '')}", dropped)
+        result_data["truncated"] = True
+        result_data.setdefault("dropped_decisions", []).append(dropped.get("id", ""))
+
+    for key in ("code_rationale", "git_archaeology", "origin_story"):
+        _drop_block(key, result_data)
+
+    collector.attach(result_data)
+    return result_data
 
 
 async def _why_path(query: str, repo: str | None) -> dict:
@@ -209,24 +342,52 @@ async def _why_path(query: str, repo: str | None) -> dict:
 
         from repowise.core.persistence.decision_graph import build_lineage_chain
 
+        matched = [
+            d
+            for d in all_decisions
+            if query in json.loads(d.affected_files_json)
+            or query in json.loads(d.affected_modules_json)
+        ]
+        # Rank before capping, so the 8 that survive are the 8 that govern —
+        # not whichever 8 the table scan happened to yield first.
+        matched.sort(key=_path_decision_sort_key)
         governing = []
-        for d in all_decisions:
-            affected_files = json.loads(d.affected_files_json)
-            affected_modules = json.loads(d.affected_modules_json)
-            if query not in affected_files and query not in affected_modules:
-                continue
+        for d in matched[:_MAX_PATH_DECISIONS]:
             # Walk supersedes/refines back to roots so the answer is a
             # lineage chain (sessions → JWT → OAuth2), not a flat list.
             lineage = await build_lineage_chain(session, d.id)
-            governing.append(_governing_decision_entry(d, affected_files, lineage))
+            governing.append(
+                _governing_decision_entry(d, json.loads(d.affected_files_json), lineage)
+            )
+
+        origin_story = _build_origin_story(query, git_meta, governing)
+        _trim_commit_text(origin_story)
 
         result_data: dict[str, Any] = {
             "mode": "path",
             "path": query,
             "decisions": governing,
-            "origin_story": _build_origin_story(query, git_meta, governing),
-            "alignment": _compute_alignment(query, governing, all_decisions),
+            "origin_story": origin_story,
+            # Alignment is scored over every matching record, not just the
+            # ones that survived the cap — it is a coverage number, and
+            # capping its input would make a well-governed hotspot look thin.
+            # It reads only status/staleness/title, so the cheap projection is
+            # the whole of what it needs.
+            "alignment": _compute_alignment(
+                query,
+                [
+                    {
+                        "title": d.title,
+                        "status": d.status,
+                        "staleness_score": d.staleness_score,
+                    }
+                    for d in matched
+                ],
+                all_decisions,
+            ),
         }
+        if len(matched) > _MAX_PATH_DECISIONS:
+            result_data["decisions_total"] = len(matched)
 
         # --- Fallback: git archaeology when no decisions found ---
         if not governing:
@@ -243,7 +404,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
                 result_data["code_rationale"] = rationale
 
         result_data["_meta"] = _build_meta(repository=repository)
-        return result_data
+        return _fit_path_response(result_data, ctx.path)
 
 
 # Stop words removed before keyword matching for better signal.

@@ -553,7 +553,10 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
             author = (
                 origin.get("primary_author", "unknown") if origin.get("available") else "unknown"
             )
-            return f"{len(decisions)} decision(s), alignment: {score}, author: {author}"
+            # ``decisions`` is capped by the path-mode projection; report what
+            # governs the file, not how many survived the cap.
+            total = result.get("decisions_total", len(decisions))
+            return f"{total} decision(s), alignment: {score}, author: {author}"
         decisions = result.get("decisions", [])
         return f"Found {len(decisions)} decision(s)"
 
