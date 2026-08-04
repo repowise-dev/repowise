@@ -8,8 +8,8 @@ import pytest
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _no_telemetry_network():
-    """Guarantee no test emits core-layer telemetry over the network.
+def _no_telemetry_network(tmp_path_factory: pytest.TempPathFactory):
+    """Guarantee no test emits telemetry over the network or into real state.
 
     The MCP instrument seam emits an ``mcp_tool_call`` event via the core
     emitter's ``_post``; a test that drives the real wrapper with consent
@@ -17,9 +17,13 @@ def _no_telemetry_network():
     sink to a no-op. Tests that assert emit behaviour re-patch it at function
     scope and still never touch the network.
 
-    The CLI's ``command_run`` path is intentionally left alone: its tests patch
-    ``PlatformClient.post`` at the class level, so patching the ``default_client``
-    instance here would shadow those patches.
+    The CLI's ``command_run`` path is not patched here — its tests patch
+    ``PlatformClient.post`` at the class level, so patching the
+    ``default_client`` instance would shadow those patches. Its delivery is
+    already off under pytest (``emitter._under_test``); what this fixture adds
+    is redirecting the event spool, so a test that records an event cannot
+    leave it queued in the real ``~/.repowise`` for a later real invocation to
+    deliver.
     """
     from _pytest.monkeypatch import MonkeyPatch
 
@@ -28,6 +32,13 @@ def _no_telemetry_network():
         from repowise.core.platform import telemetry as _core_telemetry
 
         mp.setattr(_core_telemetry, "_post", lambda envelope: None, raising=False)
+    except Exception:
+        pass
+    try:
+        from repowise.cli.platform.telemetry import spool as _cli_spool
+
+        spool_path = tmp_path_factory.mktemp("telemetry") / _cli_spool.SPOOL_FILENAME
+        mp.setattr(_cli_spool, "_path", lambda: spool_path)
     except Exception:
         pass
     yield

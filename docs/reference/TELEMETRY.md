@@ -123,6 +123,18 @@ username, or any machine identifier, so it cannot be reversed to a person. It
 only lets us count distinct installs. Delete the file and a new, unrelated id
 is generated; nothing links the two.
 
+## When events are sent
+
+A command never waits on the network to record an event. It appends the
+envelope to `~/.repowise/telemetry-spool.jsonl` and, on exit, starts a small
+detached process that sends what is queued and removes the file. So the send
+costs you nothing in command time, and you can read the queued file to see
+exactly what is about to leave your machine.
+
+If the send fails the queued events are discarded, not retried. Disabling
+telemetry also discards anything still queued, so a disable is never followed
+by one last batch.
+
 ## Verify it yourself
 
 Run any command with `REPOWISE_TELEMETRY_DEBUG=1` to print the exact payload to
