@@ -272,11 +272,15 @@ def test_numbering_is_dropped_rather_than_guessed_when_it_cannot_reconcile() -> 
 
 
 def test_the_omission_store_path_matches_distills(repo: Path) -> None:
-    """The path is spelled out to dodge a 250ms structlog import; keep it true."""
-    from repowise.cli.commands.augment_cmd import read_skeleton
+    """The path is spelled out to dodge a 250ms structlog import; keep it true.
+
+    Lives in ``_shared`` now that both replacing surfaces bill savings through
+    the same two writers: one copy of the literal, one guard over it.
+    """
+    from repowise.cli.commands.augment_cmd import _shared
     from repowise.core.distill.store import OMISSIONS_DB_FILENAME, OMISSIONS_DIRNAME
 
-    source = Path(read_skeleton.__file__).read_text(encoding="utf-8")
+    source = Path(_shared.__file__).read_text(encoding="utf-8")
     assert f'".repowise" / "{OMISSIONS_DIRNAME}" / "{OMISSIONS_DB_FILENAME}"' in source
 
 

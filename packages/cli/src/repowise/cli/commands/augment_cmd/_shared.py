@@ -122,6 +122,152 @@ def _extract_output_text(tool_output: object) -> str:
     return ""
 
 
+#: Hard ceiling on an ``updatedToolOutput`` string. Undocumented but observed;
+#: a replacement that does not fit is skipped rather than cut, because the
+#: elision markers that make an omission recoverable live at the end.
+MAX_OUTPUT_CHARS = 10_000
+
+
+def hook_flag_enabled(repo_path: Path, flag: str) -> bool:
+    """True when ``hooks.<flag>`` is on for this repo. Fails closed.
+
+    Every hook surface that *replaces* a tool result is opt-in behind one of
+    these, and they are all written by the single init consent (see
+    :func:`repowise.cli.helpers.save_hook_surface_enabled`). The env override
+    is ``REPOWISE_HOOK_<FLAG>``, upper-cased, for a one-session A/B.
+
+    Deliberately not :func:`repowise.core.repo_config.load_repo_config`: that
+    import is not free and this runs before the gates that would justify it.
+    Same open-plus-lazy-yaml shape as ``rewrite_hook._load_commands_config``,
+    with the opposite default: that one fails open because distilling is on by
+    default, these fail closed because replacing a tool result is not.
+    """
+    import os
+
+    override = os.environ.get(f"REPOWISE_HOOK_{flag.upper()}")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
+    try:
+        text = (repo_path / ".repowise" / "config.yaml").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError: a config with a latin-1 byte in
+        # it means "cannot tell", which for an opt-in means no.
+        return False
+    # Substring pre-check before the yaml import: a repo that has a config but
+    # not this key is the common case, and it should not pay ~70ms to learn so.
+    # The parse below is still what decides; this only rules out.
+    if flag not in text:
+        return False
+    try:
+        import yaml
+
+        data = yaml.safe_load(text) or {}
+        hooks = data.get("hooks")
+        return bool(isinstance(hooks, dict) and hooks.get(flag) is True)
+    except Exception:
+        return False
+
+
+#: The counterfactual's own table. Deliberately *not* the ``savings`` ledger:
+#: every row there is an event that happened, and ``repowise saved`` sums them
+#: into a headline figure that is already published. A forgone saving did not
+#: happen, and adding it to that sum would inflate a real number with a
+#: hypothetical one, the precise misreading the caveat exists to prevent.
+_FORGONE_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS forgone_savings ("
+    "created_at REAL NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL, "
+    "raw_tokens INTEGER NOT NULL, distilled_tokens INTEGER NOT NULL)"
+)
+
+
+def _omission_db(repo_path: Path) -> Path | None:
+    """The omission store, or None when this repo has not opted into one.
+
+    Path spelled out rather than imported: the constants live in
+    ``distill.store``, which imports structlog: 250ms to learn that a repo
+    without an omission store has no omission store. Kept in sync by
+    ``test_the_omission_store_path_matches_distills``.
+    """
+    db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+    return db_path if db_path.exists() else None
+
+
+def record_saving(
+    repo_path: Path,
+    *,
+    source: str,
+    filter_name: str,
+    command: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> None:
+    """Bill one replacement to the savings ledger so ``repowise saved`` sees it.
+
+    Never creates the omission store: its absence means this repo has not
+    opted into distill bookkeeping, and a hook is not the place to decide
+    otherwise. Any failure is swallowed, because accounting must not cost the agent an
+    enrichment that is already computed.
+    """
+    db_path = _omission_db(repo_path)
+    if db_path is None:
+        return
+    try:
+        import sqlite3
+
+        from repowise.core.distill.tracking import record_saving as _record
+
+        con = sqlite3.connect(str(db_path), timeout=2)
+        try:
+            _record(
+                con,
+                filter_name=filter_name,
+                source=source,
+                command=command,
+                raw_tokens=raw_tokens,
+                distilled_tokens=distilled_tokens,
+            )
+        finally:
+            con.close()
+    except Exception:
+        return
+
+
+def record_forgone(
+    repo_path: Path,
+    *,
+    source: str,
+    path: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> None:
+    """Record a saving this repo *would* have made, had the surface been on.
+
+    Same never-create-the-store rule as :func:`record_saving`, into the
+    separate ``forgone_savings`` table so a hypothetical can never be summed
+    into the published figure.
+    """
+    db_path = _omission_db(repo_path)
+    if db_path is None:
+        return
+    try:
+        import sqlite3
+
+        con = sqlite3.connect(str(db_path), timeout=2)
+        try:
+            con.execute(_FORGONE_TABLE_SQL)
+            con.execute(
+                "INSERT INTO forgone_savings "
+                "(created_at, source, path, raw_tokens, distilled_tokens) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (time.time(), source, path, raw_tokens, distilled_tokens),
+            )
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        return
+
+
 def _relativize(file_path: str, repo_path: Path) -> str | None:
     """Repo-relative POSIX path for *file_path*, or None when outside it."""
     try:

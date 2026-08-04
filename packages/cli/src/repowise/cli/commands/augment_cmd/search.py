@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._shared import _extract_output_text, _find_repo_root
+from ._shared import HookResult, _extract_output_text, _find_repo_root
 
 # NOTE: repowise.core.persistence.sql is imported inside _rescue/_triage, not
 # here. At module scope it costs ~790ms on every single hook invocation — it
@@ -30,18 +30,19 @@ def _handle_search_post(
     tool_output: object,
     cwd: str,
     session_id: str = "",
-) -> str | None:
+    client: str | None = None,
+) -> HookResult:
     """Decide whether to enrich a Grep/Glob result and how."""
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
-        return None
+        return HookResult()
 
     result_count = _search_result_count(tool_output)
     if result_count is None:
         # Unknown/unextractable response shape. Skipping is the only safe
         # answer — treating it as zero results would fire a "no match"
         # rescue under a Grep that actually succeeded.
-        return None
+        return HookResult()
     output_text = _extract_output_text(tool_output)
 
     # A genuine flood gets a compact per-file digest regardless of what the
@@ -49,18 +50,26 @@ def _handle_search_post(
     if result_count >= _DIGEST_THRESHOLD:
         digest = _grep_flood_digest(repo_path, output_text)
         if digest:
-            _log_search_firing(repo_path, session_id, "digest", digest)
-            return digest
-        # Unparseable output (e.g. Glob path lists): fall through to triage.
+            return _digest_result(
+                repo_path,
+                tool_input,
+                tool_output,
+                output_text,
+                digest,
+                session_id,
+                client=client,
+            )
+        # Unparseable output (e.g. Glob path lists, or a single-file context
+        # grep, see search_digest): fall through to triage.
 
     pattern = tool_input.get("pattern")
     if not isinstance(pattern, str) or not pattern.strip():
-        return None
+        return HookResult()
 
     # Path-style lookups don't benefit from semantic enrichment — the agent
     # is reading literal locations, not exploring a concept.
     if _looks_like_path_lookup(pattern):
-        return None
+        return HookResult()
 
     # Decision tree. The skip case is the most common — that's by design.
     if result_count == 0:
@@ -70,19 +79,109 @@ def _handle_search_post(
         # scoped to one non-code file is a config-key check, not a symbol
         # hunt — the wiki has nothing useful to add to either.
         if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
-            return None
+            return HookResult()
         mode = "rescue"
     elif result_count >= _TRIAGE_THRESHOLD:
         mode = "triage"
     else:
-        return None
+        return HookResult()
 
     import asyncio
 
     enrichment = asyncio.run(_search_enrich(repo_path, pattern, mode, result_count))
     if enrichment:
         _log_search_firing(repo_path, session_id, mode, enrichment)
-    return enrichment
+    return HookResult(context=enrichment or None)
+
+
+def _digest_result(
+    repo_path: Path,
+    tool_input: dict,
+    tool_output: object,
+    output_text: str,
+    digest: str,
+    session_id: str,
+    *,
+    client: str | None,
+) -> HookResult:
+    """Serve the digest in place of the flood, or append it as before.
+
+    Two ledger categories on purpose. A *served* digest and an *appended* one
+    are different products. One costs the agent tokens to gain a ranking, the
+    other saves them, and pooling both under ``digest`` would average a cost
+    and a saving into a number that describes neither. ``digest_served`` is
+    scored as no-action-expected for the same structural reason
+    ``skeleton_served`` is: its text leaves as ``updatedToolOutput`` and never
+    appears in the transcript the classifier reads.
+    """
+    replacement, forgone = _digest_replacement(
+        repo_path, tool_input, tool_output, output_text, digest, client=client
+    )
+    if replacement is not None:
+        _log_search_firing(repo_path, session_id, "digest_served", replacement.text)
+        from .search_digest import record_saving
+
+        return HookResult(
+            replacement=replacement.payload,
+            on_emitted=lambda: record_saving(repo_path, replacement),
+        )
+
+    _log_search_firing(repo_path, session_id, "digest", digest)
+    if forgone is not None:
+        from .search_digest import record_forgone
+
+        return HookResult(
+            context=digest,
+            on_emitted=lambda: record_forgone(repo_path, forgone),
+        )
+    return HookResult(context=digest)
+
+
+def _digest_replacement(
+    repo_path: Path,
+    tool_input: dict,
+    tool_output: object,
+    output_text: str,
+    digest: str,
+    *,
+    client: str | None,
+):
+    """``(replacement, forgone)`` for this flood; at most one set. Never raises.
+
+    The two legs share every gate but the flag, on purpose: a counterfactual
+    computed under looser conditions than the thing it stands in for would be
+    measuring a different feature. So a repo with the surface off still learns
+    what it would have saved, and one whose client cannot honour a replacement
+    is told nothing, because for that client there was nothing to forgo.
+    """
+    try:
+        from .read_skeleton import supports_updated_output
+        from .search_digest import (
+            as_grep_output,
+            digest_replacement,
+            enabled,
+            replaces_tool_output,
+        )
+
+        if not supports_updated_output() or not replaces_tool_output(client):
+            return None, None
+        pattern = tool_input.get("pattern") if isinstance(tool_input, dict) else None
+        candidate = digest_replacement(
+            pattern if isinstance(pattern, str) else "", output_text, digest
+        )
+        if candidate is None:
+            return None, None
+        if not enabled(repo_path):
+            return None, candidate
+        candidate.payload = as_grep_output(tool_output, candidate.text)
+        if candidate.payload is None:
+            # Not a shape we can legally replace (files_with_matches, Glob).
+            # The digest still appends, and nothing was forgone: with the flag
+            # on we would have reached exactly here.
+            return None, None
+        return candidate, None
+    except Exception:
+        return None, None
 
 
 def _log_search_firing(

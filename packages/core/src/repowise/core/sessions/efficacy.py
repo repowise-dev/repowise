@@ -34,6 +34,7 @@ read          stale_read      n/a — a warning, not a pointer
 search        triage          a named file is touched
 search        rescue          the named file or symbol is touched
 search        digest          a file the digest ranked is touched
+search        digest_served   n/a, the hook already did it (see below)
 fix_history   edit_notice     a test is run, or the file's history is inspected
 ============= =============== ==================================================
 
@@ -42,13 +43,15 @@ range of a file you just read in full is ordinary edit-prep and cannot be
 attributed to the nudge. It is tracked separately as
 :data:`AMBIGUOUS` evidence so the generous bound stays reportable.
 
-The skeleton *replacement* rows (``skeleton_served`` and its two recovery
-categories) are structurally unlike the rest: their text goes out as
+The *replacement* rows (``skeleton_served`` and its two recovery categories,
+and ``digest_served``) are structurally unlike the rest: their text goes out as
 ``updatedToolOutput``, so it never appears as a transcript
 ``hook_additional_context`` line and this module's pattern pass will never
 see it. That is fine and deliberate — the hook writes those rows directly and
 Gate A is a ratio of row counts, not a question about what the agent did
-next. There is no action to look for, because the hook took it.
+next. There is no action to look for, because the hook took it. What those
+surfaces return is measured in the savings ledger instead, not as an adoption
+rate.
 
 Surfaces with no recommended action (``stale_read``) and surfaces that emit
 nothing at all (``read_enrich``'s read-after-served KPI) are never marked
@@ -97,6 +100,11 @@ NO_ACTION_EXPECTED = frozenset(
         ("read", "skeleton_served"),
         ("read", "skeleton_recovered_full"),
         ("read", "skeleton_ranged"),
+        # A *served* flood digest, for the same structural reason: it leaves as
+        # updatedToolOutput, so the pattern pass below can never see it. The
+        # appended ``search``/``digest`` rows are still scored normally, and the
+        # two are kept apart so a cost and a saving are never averaged.
+        ("search", "digest_served"),
     }
 )
 

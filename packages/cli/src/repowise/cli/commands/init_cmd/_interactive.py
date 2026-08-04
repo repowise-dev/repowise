@@ -81,13 +81,16 @@ def offer_distill_rewrite_hook(
             "recognized command; set `permission: ask` in .repowise/config.yaml to "
             "approve each one. Raw output stays recoverable via `repowise expand`.[/dim]"
         )
-        # Named here because a yes turns it on. The question stays one question
-        # — this is the same consent, and the thing being consented to is
-        # "hooks may compact what your agent sees", not two separate features.
+        # Named here because a yes turns them on. The question stays one
+        # question: this is the same consent, and the thing being consented to
+        # is "hooks may compact what your agent sees", not three features.
+        # Every surface a yes covers has to be named, or it is not consent.
         console_obj.print(
-            "  [dim]Also serves an unbounded Read of a large indexed file as its "
-            "skeleton, with every elided span line-numbered so the agent can read "
-            "any of it back. Toggle later with `repowise hook read-skeleton`.[/dim]"
+            "  [dim]Also shrinks two big tool results, both reversible: a "
+            "whole-file Read comes back as a skeleton, and a grep matching many "
+            "files comes back as a per-file summary. Each names the line numbers "
+            "to get the rest. Toggle later: `repowise hook read-skeleton`, "
+            "`repowise hook search-digest`.[/dim]"
         )
         try:
             flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)
@@ -121,29 +124,33 @@ def _record_distill_verdict(
 ) -> None:
     """Persist the hook-intervention verdict for every repo in this run.
 
-    Two keys, one answer. ``distill.commands.enabled`` gates rewriting a Bash
-    command into ``repowise distill``; ``hooks.read_skeleton`` gates serving an
-    unbounded Read of a large indexed file as its skeleton. Both are the same
-    consent — "repowise's hooks may intervene in my agent's tool calls" — and
-    the one the user was asked is the broader of the two, so a second prompt
-    would be asking permission we already have.
+    Several keys, one answer. ``distill.commands.enabled`` gates rewriting a
+    Bash command into ``repowise distill``; ``hooks.read_skeleton`` gates
+    serving an unbounded Read of a large indexed file as its skeleton;
+    ``hooks.search_digest`` gates serving a multi-file grep flood as its
+    compact digest. All are the same consent, "repowise's hooks may intervene
+    in my agent's tool calls", and the one the user was asked is the broadest
+    of them, so a second prompt would be asking permission we already have.
 
     Read-skeleton shipped with no code path that wrote its key at all, which
     left it reachable only by hand-editing YAML. That is not a discovery
     problem: its gate needs 50 firings across 10 sessions to decide whether it
     stays, and a feature nobody can turn on returns zero of them and settles
-    nothing.
+    nothing. Every replacing surface added since rides this same verdict for
+    that reason.
     """
 
     from repowise.cli.helpers import (
+        HOOK_REPLACEMENT_SURFACES,
         save_distill_commands_enabled,
-        save_hook_read_skeleton_enabled,
+        save_hook_surface_enabled,
     )
 
     for repo_path in repo_paths:
         try:
             save_distill_commands_enabled(repo_path, enabled=enabled)
-            save_hook_read_skeleton_enabled(repo_path, enabled=enabled)
+            for surface in HOOK_REPLACEMENT_SURFACES:
+                save_hook_surface_enabled(repo_path, surface, enabled=enabled)
         except Exception as exc:  # init must not crash on a config write
             console_obj.print(
                 f"  [yellow]Could not record hook verdict for {repo_path.name}: {exc}[/yellow]"

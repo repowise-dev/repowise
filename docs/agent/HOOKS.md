@@ -122,6 +122,25 @@ what it depends on, and that it is a hotspot, without a separate MCP call:
     Git: HOTSPOT, bus-factor=1, owner=RaghavChamadiya
 ```
 
+**Search-flood digests.** A grep that returns 50+ matches also gets a compact
+per-file digest: every matched file with its match count and two anchor line
+numbers, ranked by graph centrality when the index can rank them, and an explicit
+`(N more files, M matches)` tail for anything past the top ten.
+
+With `hooks.search_digest: true` in `.repowise/config.yaml`, written by the same
+yes/no as the rewrite hook, and toggled afterwards with `repowise hook
+search-digest install | uninstall | status`, that digest *replaces* the raw
+match list rather than riding alongside it. Re-run the search scoped to a file it
+names, or read those lines directly, to see any match in full. Savings appear in
+`repowise saved` under the `search_digest` filter, and a repo with it off still
+gets the counterfactual number.
+
+Two cases are deliberately left alone. A **single-file context grep** (`-C`,
+`-A`, `-B`) is never digested: that context is exactly what the agent asked for,
+and Claude Code renders those results without a path prefix, so they are not
+parsed as a multi-file flood in the first place. And `files_with_matches` results
+carry no match text to replace: the file list is already a digest.
+
 **Git/edit freshness.** After a successful `git commit`, `merge`, `rebase`,
 `cherry-pick`, or `pull`, repowise compares `HEAD` against the last indexed commit
 in `.repowise/state.json` and, if the wiki is behind, reminds the agent to run
@@ -146,9 +165,7 @@ filter. In a repo that has it off, the same Reads are still *measured*, and
 `repowise saved` reports what they would have saved — a number about size only,
 never about whether the agent could work from a skeleton.
 
-This is the only hook that replaces a tool result rather than adding to it, which
-is why it ships opt-in and why the skeleton always says what it removed. One
-consequence is worth knowing: a Read the agent saw only as a skeleton still
+One consequence is worth knowing: a Read the agent saw only as a skeleton still
 satisfies Claude Code's read-before-edit precondition, so an `Edit` (especially
 with `replace_all`) or a `Write` could touch bodies it never saw. Editing such a
 file raises a one-line warning, once per file, until the file is read in full.

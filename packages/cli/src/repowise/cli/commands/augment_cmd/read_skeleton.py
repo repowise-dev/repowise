@@ -41,6 +41,10 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ._shared import MAX_OUTPUT_CHARS, hook_flag_enabled
+from ._shared import record_forgone as _record_forgone
+from ._shared import record_saving as _record_saving
+
 if TYPE_CHECKING:  # pragma: no cover - the hook path imports these lazily
     from repowise.core.distill.skeleton import SkeletonResult, SkeletonSymbol
 
@@ -49,10 +53,10 @@ if TYPE_CHECKING:  # pragma: no cover - the hook path imports these lazily
 #: fall back to the nudge (see :func:`supports_updated_output`).
 _MIN_CLIENT_VERSION = (2, 1, 218)
 
-#: Hard ceiling on the replacement string. Undocumented but observed; a
-#: skeleton that does not fit is skipped rather than cut, because the tail
-#: elision markers are what make the omission recoverable.
-_MAX_OUTPUT_CHARS = 10_000
+#: Hard ceiling on the replacement string; shared with every other replacing
+#: surface. A skeleton that does not fit is skipped rather than cut, because
+#: the tail elision markers are what make the omission recoverable.
+_MAX_OUTPUT_CHARS = MAX_OUTPUT_CHARS
 
 #: Savings-ledger identity, so ``repowise saved`` can name this surface.
 _SAVINGS_SOURCE = "hook-read"
@@ -93,34 +97,11 @@ class Replacement:
 def enabled(repo_path: Path) -> bool:
     """True when this repo opted into read replacement. Fails closed.
 
-    Deliberately not :func:`repowise.core.repo_config.load_repo_config`: that
-    import is not free and this runs before the gates that would justify it.
-    Same open-plus-lazy-yaml shape as ``rewrite_hook._load_commands_config``,
-    with the opposite default — that one fails open because distilling is on
-    by default, this one fails closed because replacing a Read is not.
+    Thin alias over the shared reader so the two replacing surfaces cannot
+    drift on how they read their flag. See :func:`_shared.hook_flag_enabled`
+    for the fail-closed rationale and the env override.
     """
-    override = os.environ.get("REPOWISE_HOOK_READ_SKELETON")
-    if override is not None:
-        return override.strip().lower() in ("1", "true", "yes", "on")
-    try:
-        text = (repo_path / ".repowise" / "config.yaml").read_text(encoding="utf-8")
-    except (OSError, ValueError):
-        # ValueError covers UnicodeDecodeError: a config with a latin-1 byte
-        # in it means "cannot tell", which for an opt-in means no.
-        return False
-    # Substring pre-check before the yaml import: a repo that has a config but
-    # not this key is the common case, and it should not pay ~70ms to learn so.
-    # The parse below is still what decides — this only rules out.
-    if _CONFIG_FLAG not in text:
-        return False
-    try:
-        import yaml
-
-        data = yaml.safe_load(text) or {}
-        hooks = data.get("hooks")
-        return bool(isinstance(hooks, dict) and hooks.get(_CONFIG_FLAG) is True)
-    except Exception:
-        return False
+    return hook_flag_enabled(repo_path, _CONFIG_FLAG)
 
 
 def supports_updated_output() -> bool:
@@ -361,81 +342,24 @@ def _indexed_symbols(db_path: Path, rel: str) -> list[SkeletonSymbol]:
 # ---------------------------------------------------------------------------
 
 
-#: The counterfactual's own table. Deliberately *not* the ``savings`` ledger:
-#: every row there is an event that happened, and ``repowise saved`` sums them
-#: into a headline figure that is already published. A forgone saving did not
-#: happen, and adding it to that sum would inflate a real number with a
-#: hypothetical one — the precise misreading the caveat exists to prevent.
-_FORGONE_TABLE_SQL = (
-    "CREATE TABLE IF NOT EXISTS forgone_savings ("
-    "created_at REAL NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL, "
-    "raw_tokens INTEGER NOT NULL, distilled_tokens INTEGER NOT NULL)"
-)
-
-
 def record_forgone(repo_path: Path, replacement: Replacement) -> None:
-    """Record a saving this repo *would* have made, had the feature been on.
-
-    Same never-create-the-store rule as :func:`record_saving`, and the same
-    reason for spelling the path out rather than importing it.
-    """
-    db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
-    if not db_path.exists():
-        return
-    try:
-        import time
-
-        con = sqlite3.connect(str(db_path), timeout=2)
-        try:
-            con.execute(_FORGONE_TABLE_SQL)
-            con.execute(
-                "INSERT INTO forgone_savings "
-                "(created_at, source, path, raw_tokens, distilled_tokens) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    time.time(),
-                    _SAVINGS_SOURCE,
-                    replacement.rel,
-                    replacement.full_tokens,
-                    replacement.skeleton_tokens,
-                ),
-            )
-            con.commit()
-        finally:
-            con.close()
-    except Exception:
-        return
+    """Record a saving this repo *would* have made, had the feature been on."""
+    _record_forgone(
+        repo_path,
+        source=_SAVINGS_SOURCE,
+        path=replacement.rel,
+        raw_tokens=replacement.full_tokens,
+        distilled_tokens=replacement.skeleton_tokens,
+    )
 
 
 def record_saving(repo_path: Path, replacement: Replacement) -> None:
-    """Bill this replacement to the savings ledger so ``repowise saved`` sees it.
-
-    Never creates the omission store: its absence means this repo has not
-    opted into distill bookkeeping, and a hook is not the place to decide
-    otherwise. Any failure is swallowed — accounting must not cost the agent
-    an enrichment that is already computed.
-    """
-    # Path spelled out rather than imported: the constants live in
-    # distill.store, which imports structlog — 250ms to learn that a repo
-    # without an omission store has no omission store. Kept in sync by
-    # test_the_omission_store_path_matches_distills.
-    db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
-    if not db_path.exists():
-        return
-    try:
-        from repowise.core.distill.tracking import record_saving as _record
-
-        con = sqlite3.connect(str(db_path), timeout=2)
-        try:
-            _record(
-                con,
-                filter_name=_SAVINGS_FILTER,
-                source=_SAVINGS_SOURCE,
-                command=replacement.rel,
-                raw_tokens=replacement.full_tokens,
-                distilled_tokens=replacement.skeleton_tokens,
-            )
-        finally:
-            con.close()
-    except Exception:
-        return
+    """Bill this replacement to the savings ledger so ``repowise saved`` sees it."""
+    _record_saving(
+        repo_path,
+        source=_SAVINGS_SOURCE,
+        filter_name=_SAVINGS_FILTER,
+        command=replacement.rel,
+        raw_tokens=replacement.full_tokens,
+        distilled_tokens=replacement.skeleton_tokens,
+    )

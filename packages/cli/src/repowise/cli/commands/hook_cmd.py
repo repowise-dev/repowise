@@ -413,7 +413,22 @@ def _set_read_skeleton(
     path: str | None, workspace: bool, no_workspace: bool, *, enabled: bool
 ) -> None:
     """Write ``hooks.read_skeleton`` for the target repo or workspace."""
-    from repowise.cli.helpers import save_hook_read_skeleton_enabled
+    _set_hook_surface(
+        path, workspace, no_workspace, surface="read_skeleton", label="Skeleton-served Reads", enabled=enabled
+    )
+
+
+def _set_hook_surface(
+    path: str | None,
+    workspace: bool,
+    no_workspace: bool,
+    *,
+    surface: str,
+    label: str,
+    enabled: bool,
+) -> None:
+    """Write ``hooks.<surface>`` for the target repo or workspace."""
+    from repowise.cli.helpers import save_hook_surface_enabled
 
     target = _hook_target(path, workspace, no_workspace)
     word = "[green]on[/green]" if enabled else "[yellow]off[/yellow]"
@@ -421,8 +436,8 @@ def _set_read_skeleton(
     for repo_path in _target_repo_paths(target):
         if not (repo_path / ".repowise").is_dir():
             continue
-        save_hook_read_skeleton_enabled(repo_path, enabled=enabled)
-        console.print(f"  Skeleton-served Reads: {word} ({repo_path})")
+        save_hook_surface_enabled(repo_path, surface, enabled=enabled)
+        console.print(f"  {label}: {word} ({repo_path})")
         touched += 1
     if not touched:
         console.print("  [yellow]No indexed repo here — run `repowise init` first.[/yellow]")
@@ -444,6 +459,68 @@ def read_skeleton_status(path: str | None, workspace: bool, no_workspace: bool) 
         if not on:
             # The counterfactual is the whole point of measuring while off:
             # a repo that declined can still see what declining costs it.
+            console.print(
+                "      [dim]`repowise saved` shows what this would have saved "
+                "if it were on.[/dim]"
+            )
+
+
+@hook_group.group("search-digest")
+def search_digest_group() -> None:
+    """Manage digest-served searches (Claude Code).
+
+    A grep that floods across many files comes back as a compact per-file
+    digest: every file named with its match count and anchor line numbers,
+    and the dropped tail counted, instead of the raw match list. Re-run the
+    search scoped to a file to see its matches in full.
+
+    Single-file context greps (`-C`/`-A`/`-B`) are never touched: that context
+    is what the agent asked for.
+
+    Like `read-skeleton`, there is no hook to install. This moves the per-repo
+    verdict `hooks.search_digest`, which `repowise init` writes from the same
+    answer as the rewrite hook.
+    """
+
+
+@search_digest_group.command("install")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def search_digest_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Serve multi-file grep floods as digests in this repo."""
+    _set_hook_surface(
+        path, workspace, no_workspace,
+        surface="search_digest", label="Digest-served searches", enabled=True,
+    )
+
+
+@search_digest_group.command("uninstall")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def search_digest_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Stop replacing search floods in this repo; the digest goes back to riding alongside."""
+    _set_hook_surface(
+        path, workspace, no_workspace,
+        surface="search_digest", label="Digest-served searches", enabled=False,
+    )
+
+
+@search_digest_group.command("status")
+@click.argument("path", required=False, default=None)
+@click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
+def search_digest_status(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Report whether search floods are being served as digests."""
+    from repowise.cli.commands.augment_cmd.search_digest import enabled as search_digest_enabled
+
+    target = _hook_target(path, workspace, no_workspace)
+    for repo_path in _target_repo_paths(target):
+        on = search_digest_enabled(repo_path)
+        icon = "[green]✓[/green]" if on else "[dim]✗[/dim]"
+        console.print(f"  {icon} digest-served searches: {'on' if on else 'off'} ({repo_path})")
+        if not on:
             console.print(
                 "      [dim]`repowise saved` shows what this would have saved "
                 "if it were on.[/dim]"

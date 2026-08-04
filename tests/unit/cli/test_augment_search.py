@@ -310,12 +310,19 @@ def repowise_cwd(tmp_path):
 
 
 def _call(tool_name, pattern, output_text, cwd):
+    """The appended-context leg of the handler, as a plain string or None.
+
+    ``_handle_search_post`` returns a ``HookResult`` since the flood digest can
+    replace the tool output; every test below this line is about what the hook
+    *says*, so they read the context field and the replacement leg gets its own
+    class.
+    """
     return _handle_search_post(
         tool_name=tool_name,
         tool_input={"pattern": pattern},
         tool_output={"output": output_text},
         cwd=str(cwd),
-    )
+    ).context
 
 
 class TestDecisionTree:
@@ -332,7 +339,7 @@ class TestDecisionTree:
                     tool_input={"pattern": ""},
                     tool_output={"output": "anything"},
                     cwd=str(repowise_cwd),
-                )
+                ).context
                 is None
             )
             enrich.assert_not_called()
@@ -384,7 +391,7 @@ class TestDecisionTree:
                 tool_output=GREP_FILES_MODE,
                 cwd=str(repowise_cwd),
             )
-            assert result is None
+            assert not result
             enrich.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -404,7 +411,7 @@ class TestDecisionTree:
                 tool_output=tool_output,
                 cwd=str(repowise_cwd),
             )
-            assert result is None
+            assert not result
             enrich.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -425,7 +432,7 @@ class TestDecisionTree:
                 tool_output=GREP_FILES_MODE_ZERO,
                 cwd=str(repowise_cwd),
             )
-            assert result is None
+            assert not result
             enrich.assert_not_called()
 
     def test_triage_mode_on_flood(self, repowise_cwd) -> None:

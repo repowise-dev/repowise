@@ -10,6 +10,11 @@ returns *nothing* most of the time, and only speaks up when there is
 asymmetric, durable value:
 
   PostToolUse → Grep / Glob
+    * Flood digest: a multi-file grep flood is served as a compact
+      per-file digest via updatedToolOutput, with match counts and anchor
+      line numbers per file, with the dropped tail named. Opt-in
+      (hooks.search_digest), default off, Claude Code only. Falls back
+      to appending the same digest beside the flood, as it always did.
     * Zero-result rescue: grep returned 0 hits but the wiki has a
       semantic match (FTS on docs, fuzzy symbol match, decision record
       mention). Surfaces the closest hit so the agent doesn't burn
@@ -40,8 +45,7 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
     * Skeleton replacement: an unbounded Read of a large indexed file is
       served as its skeleton via updatedToolOutput, elision markers and
       1-indexed line ranges intact, once per file per session. Opt-in
-      (hooks.read_skeleton), default off. This is the only handler that
-      changes what a tool returned rather than adding to it.
+      (hooks.read_skeleton), default off.
     * Skeleton nudge: the fallback when the replacement does not apply —
       a one-line pointer at get_context(include=["skeleton"]) with a cheap
       bounds-arithmetic estimate.
@@ -289,9 +293,10 @@ def _handle_post_tool_use(
 ) -> HookResult:
     """Dispatch PostToolUse events from Claude or Codex.
 
-    Every branch but Read yields plain additional context, so they keep
-    returning ``str | None`` and :func:`as_result` lifts them here — the
-    two-field shape exists in one place rather than in eight.
+    Read and Grep/Glob can replace the tool result, so they return a
+    :class:`HookResult` themselves; every other branch yields plain additional
+    context and keeps returning ``str | None``, which :func:`as_result` lifts
+    here, so the two-field shape exists in one place rather than in eight.
     """
     # The edit-tool freshness notice is a Codex-only lifecycle hook, gated on
     # the Codex client so the widened Claude matcher (Read|Edit|Write) can't
@@ -314,8 +319,10 @@ def _handle_post_tool_use(
         # stdout/stderr response shape as Bash — one handler covers both.
         return as_result(_handle_bash_post(tool_input, tool_output, cwd))
     if tool_name in ("Grep", "Glob"):
-        return as_result(
-            _handle_search_post(tool_name, tool_input, tool_output, cwd, session_id)
+        # ``client`` reaches this one because the flood digest can *replace*
+        # the tool output, and only Claude Code's protocol can honour that.
+        return _handle_search_post(
+            tool_name, tool_input, tool_output, cwd, session_id, client=client
         )
     if tool_name.startswith("mcp__") and "repowise" in tool_name.lower():
         # Served-content bookkeeping for the read-after-served KPI. Never
