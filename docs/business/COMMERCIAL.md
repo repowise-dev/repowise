@@ -51,10 +51,11 @@ All of the following ship in `pip install repowise` today, free for internal use
   alerts).
 - **Ten task-shaped MCP tools** — `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
-  `get_dead_code`, `get_health`. Benchmarked at **−36 % cost / −49 % tool calls**
-  on `pallets/flask`
-  and **−29 % cost / −70 % tool calls** on `scikit-learn` versus a strong baseline
-  agent, at parity answer quality — see [repowise-bench](https://github.com/repowise-dev/repowise-bench).
+  `get_dead_code`, `get_health`. Benchmarked at **−33.5 % cost per question**
+  against a bare agent, cheaper on 13 of 15 questions (n=15, p=0.007), and
+  **−49 % to −70 % tool calls** across paired runs on `pallets/flask` and
+  `scikit-learn`. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for the sample
+  sizes, the tests, and the runs where the cost saving did not replicate.
 - **Multi-repo workspace intelligence** — cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and

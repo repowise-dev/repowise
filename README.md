@@ -34,7 +34,8 @@
   <a href="#past-one-repo">Workspaces</a> ·
   <a href="#quickstart-under-5-minutes-no-api-key">Quickstart</a> ·
   <a href="#the-ten-mcp-tools">MCP tools</a> ·
-  <a href="#how-it-compares">Comparison</a> ·
+  <a href="#measured-against-the-field">Benchmarks</a> ·
+  <a href="#how-it-compares-on-capability">Comparison</a> ·
   <a href="#for-teams--enterprises">Teams</a>
 </sub></p>
 
@@ -507,7 +508,29 @@ opt-in tools, and the full reference: **[docs/agent/MCP_TOOLS.md →](docs/agent
 
 ---
 
-## How it compares
+## Measured against the field
+
+Three numbers, each with its sample size and its test. The tools here are the
+open-source agent-context tools we ran head to head, and the full page carries
+the rows we lose beside the rows we win.
+
+- **Finds the right files.** 0.746 file coverage against CodeGraph's 0.610 on a
+  sealed 42-instance split evaluated once, while serving 8.1 files against 14.0.
+  Deterministic grading, no LLM judge. *n=42, sign test p=0.021.*
+- **Cheaper in a real agent loop.** -33.5% cost per question against a bare
+  agent, cheaper on 13 of 15 questions. *n=15, p=0.007.*
+- **Agents actually call it.** Adopted in 15 of 15 cells, against CodeGraph 13,
+  Serena 4, Graphify 3, and code-review-graph 0 with 30 tools advertised.
+
+**[The full results, the methodology, and the rows we lose →](docs/BENCHMARKS.md)**
+
+---
+
+## How it compares on capability
+
+This table is about what each tool does. For measured head-to-head numbers
+against the open-source agent-context tools, see
+**[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**.
 
 | | repowise | Google Code Wiki | DeepWiki | Swimm | CodeScene |
 |---|---|---|---|---|---|
