@@ -29,12 +29,25 @@ from repowise.core.distill.markers import render_marker
 from repowise.core.distill.router import select_filter
 from repowise.core.distill.store import OmissionStore
 
-__all__ = ["MIN_SAVED_TOKENS", "DistillResult", "distill_output"]
+__all__ = [
+    "HOST_OUTPUT_CAP_CHARS",
+    "MIN_SAVED_TOKENS",
+    "DistillResult",
+    "distill_output",
+]
 
 logger = structlog.get_logger(__name__)
 
 #: Distillation must save at least this many tokens to be worth a marker.
 MIN_SAVED_TOKENS = 40
+
+#: How much of one command's output an agent host actually delivers. Claude
+#: Code truncates a Bash/PowerShell tool result at 30,000 characters, so
+#: everything past this was never going to reach the model and distilling it
+#: away saves nothing. Applied to every source, including ``cli``: a human at
+#: a real terminal has no such cap, so this undersells for them, and the
+#: ledger is meant to be a floor rather than a best case.
+HOST_OUTPUT_CAP_CHARS = 30_000
 
 
 @dataclass(frozen=True)
@@ -68,7 +81,13 @@ def distill_output(
     When *store* is None one is opened at the default sidecar location for
     *store_start* (default: cwd) and closed before returning.
     """
-    raw_tokens = estimate_tokens(output)
+    stored_tokens = estimate_tokens(output)
+    # The saving is what the agent would otherwise have *received*, which is
+    # not the whole of a large output: the host truncates a tool result long
+    # before the model sees it, so bytes past the cap were never going to
+    # cost anything and cannot be claimed. Measured on this repo's ledger,
+    # one row was inflated ~5,859 tokens this way.
+    raw_tokens = estimate_tokens(output[:HOST_OUTPUT_CAP_CHARS])
     raw = DistillResult(
         text=output,
         distilled=False,
@@ -104,10 +123,12 @@ def distill_output(
         ref = store.put(
             output,
             source=f"{source}:{chosen.name}",
-            original_tokens=raw_tokens,
+            # The artifact's own size, uncapped: `repowise expand` restores
+            # all of it, so this is not a savings claim and must not be one.
+            original_tokens=stored_tokens,
             kept_tokens=kept_tokens,
         )
-        marker = render_marker(ref, omitted_lines, max(0, raw_tokens - kept_tokens))
+        marker = render_marker(ref, omitted_lines, max(0, stored_tokens - kept_tokens))
         text = kept.rstrip("\n") + "\n\n" + marker + "\n"
         distilled_tokens = estimate_tokens(text)
         # Net-positive guarantee, marker included.

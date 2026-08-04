@@ -162,6 +162,7 @@ def saved_command(
         f"tokens are chars/4 estimates)[/dim]"
     )
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
+    _print_mcp_truncation_line(db_path, since_ts)
     _print_missed_summary_line(start, missed_days)
     _print_reread_summary_line(start, missed_days)
     _print_forgone_read_skeleton_line(start, db_path, since_ts)
@@ -189,6 +190,49 @@ _FORGONE_SURFACES = (
         "repowise hook search-digest install",
     ),
 )
+
+
+def _print_mcp_truncation_line(db_path: Path, since_ts: float | None) -> None:
+    """MCP savings the table above structurally cannot show.
+
+    Two MCP signals exist. Counterfactual rows (``source='mcp:<tool>'`` in
+    ``savings``) are already in the table, because they went through
+    ``record_saving`` like everything else. Truncation drops are not: a tool
+    with no counterfactual estimator writes only to ``omissions``, never
+    calls ``record_saving``, and so is invisible to ``savings_summary`` --
+    real savings that happened, sitting one table over.
+
+    They are printed rather than folded into the footer because the table's
+    columns are raw/distilled pairs and a drop has no raw counterpart to
+    put in them. ``mcp_savings_summary`` merges with counterfactual
+    precedence, so taking only the ``truncation`` rows adds each tool once.
+    """
+    import sqlite3
+
+    from repowise.core.distill import tracking
+
+    try:
+        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
+        try:
+            summary = tracking.mcp_savings_summary(con, since=since_ts)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return  # no such table: this repo has never served MCP, not an error
+
+    rows = [r for r in summary["per_tool"] if r["kind"] == "truncation"]
+    if not rows:
+        return
+    tokens = sum(r["tokens"] for r in rows)
+    events = sum(r["events"] for r in rows)
+    tools = ", ".join(r["tool"] for r in rows[:3])
+    if len(rows) > 3:
+        tools += f", +{len(rows) - 3} more"
+    console.print(
+        f"  [dim]Not counted above:[/dim] [green]{tokens:,}[/green] tokens dropped past "
+        f"the response budget by {events:,} MCP call(s) ([dim]{tools}[/dim]) - tools with "
+        "no counterfactual estimator yet, so only the truncation is measurable."
+    )
 
 
 def _print_forgone_read_skeleton_line(start: Path, db_path: Path, since_ts: float | None) -> None:
