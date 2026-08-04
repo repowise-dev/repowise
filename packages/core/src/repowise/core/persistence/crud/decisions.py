@@ -563,6 +563,104 @@ async def reconcile_source_ranks(session: AsyncSession) -> int:
     return len(moved)
 
 
+#: Prefix ``detect_supersessions_and_conflicts`` stamps on every edge it writes
+#: (``auto-detected: <signal> (sim=0.81)``). It is the only marker that
+#: separates a machine retirement from a human one, so the repair below keys on
+#: it rather than on "has a supersedes edge".
+_AUTO_EDGE_EVIDENCE_PREFIX = "auto-detected:"
+
+
+async def unretire_auto_superseded(session: AsyncSession) -> int:
+    """Undo retirements made by the semantic supersession detector (3B).
+
+    That detector scoped a conflict by cosine similarity and matched unrelated
+    records; it is now off (``SEMANTIC_SUPERSESSION_ENABLED``). Turning it off
+    only stops the *next* bad retirement — the rows it already flipped stay
+    ``superseded``, which is a protected status, so re-extraction will never
+    walk one back and a store would go on reporting a quarter of its corpus as
+    retired-by-nothing. This is the other half of the same change.
+
+    A row is repaired only when all three hold: status ``superseded``,
+    ``superseded_by`` set, and an ``auto-detected:`` supersedes edge from that
+    same successor. ``run_update_evolution`` sets the status without the
+    pairing, the CLI's ``decision deprecate`` writes ``deprecated``, and
+    ``upsert_decision_edge`` has no caller outside 3B — so nothing else in the
+    codebase produces all three.
+
+    One case is knowingly in range: a human can set both fields through
+    ``PATCH /api/repos/{id}/decisions/{id}``, and if they did so by accepting
+    one of this detector's own proposals in the UI, the auto edge is still
+    there and the row is restored to ``proposed``. Accepted rather than
+    guarded: the retirement they confirmed rests on the same bad match as the
+    74, ``proposed`` keeps the record readable, and ``decision confirm`` or the
+    same PATCH puts it back in one step. The inverse — leaving a wrongly
+    retired record hidden because a human once clicked through — is not
+    recoverable at all.
+
+    Restored to ``proposed``, not ``active``: the flip overwrote the previous
+    status without recording it, and 3B fired on both. ``proposed`` is the
+    lower claim of the two and is recoverable by ``decision confirm``; guessing
+    ``active`` would mint governance a human never granted.
+
+    The edges go too — both kinds it wrote. They are the same artifact from the
+    same detector: ``supersedes`` is what ``build_lineage_chain`` walks, so
+    leaving those would hand ``get_why`` a lineage that still presents the
+    un-retired record as replaced, and ``conflicts_with`` is what the health
+    dashboard counts as a governance smell.
+
+    Not repo-scoped, like ``reconcile_source_ranks``: a workspace store holds
+    several repositories and the detector ran over all of them.
+
+    Idempotent — once repaired the edges are gone, so the next scan matches
+    nothing. Returns the number of records restored.
+    """
+    auto_edges = (
+        (
+            await session.execute(
+                select(DecisionEdge).where(
+                    DecisionEdge.kind.in_(("supersedes", "conflicts_with")),
+                    DecisionEdge.evidence.startswith(_AUTO_EDGE_EVIDENCE_PREFIX),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not auto_edges:
+        return 0
+
+    successors_by_target: dict[str, set[str]] = {}
+    for edge in auto_edges:
+        if edge.kind == "supersedes":
+            successors_by_target.setdefault(edge.dst_decision_id, set()).add(edge.src_decision_id)
+
+    now = _now_utc()
+    restored = 0
+    for target_id, successor_ids in successors_by_target.items():
+        rec = await session.get(DecisionRecord, target_id)
+        if rec is None or rec.status != "superseded" or rec.superseded_by is None:
+            continue
+        if rec.superseded_by not in successor_ids:
+            # Retired by something else. Leave the *status* alone — the edge
+            # still goes, below, because it is this detector's noise either way.
+            continue
+        rec.status = "proposed"
+        rec.superseded_by = None
+        rec.updated_at = now
+        restored += 1
+
+    for edge in auto_edges:
+        await session.delete(edge)
+    await session.flush()
+
+    structlog.get_logger(__name__).info(
+        "decisions.auto_supersessions_reverted",
+        records_restored=restored,
+        edges_deleted=len(auto_edges),
+    )
+    return restored
+
+
 async def list_decision_evidence(
     session: AsyncSession,
     decision_id: str,

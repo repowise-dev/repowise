@@ -126,9 +126,14 @@ sources raise confidence rather than overwrite each other.
 
 Decisions form a **graph**: typed edges (`supersedes` / `refines` /
 `relates_to` / `conflicts_with`) let `get_why()` answer *"why is auth structured
-this way?"* with a lineage chain (sessions -> JWT -> OAuth2), auto-detect when a
-new commit reverses an old decision, and flag two active decisions that
-contradict each other.
+this way?"* with a lineage chain (sessions -> JWT -> OAuth2). **No edges are
+written today**: the only detector that produced them scoped a conflict by
+similarity, which does not scope, so it is off and the edges it wrote have been
+removed (see `docs/layers/DECISIONS.md`). Lineage stays empty until a
+structural detector replaces it. Retirement itself still works — the
+diff-driven pass on `repowise update` marks a decision a new commit reversed,
+and `repowise decision deprecate --superseded-by` records the successor on the
+record.
 
 These structured records surface everywhere your agent already looks:
 `get_why()` for the full archaeology, governing decisions in `get_context()`, a

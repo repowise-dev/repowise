@@ -1162,6 +1162,24 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             if harvested:
                 decision_dicts.extend(harvested)
 
+    # Restore records the semantic supersession detector retired before it was
+    # turned off. ``superseded`` is a protected status, so nothing else will
+    # ever walk these back, and a store that only stops retiring is still a
+    # store with a quarter of its corpus hidden. Runs whether or not this run
+    # produced decisions.
+    #
+    # BEFORE the purge below, not after: restoring puts a row back at
+    # ``proposed``, which is exactly what the purge deletes. Un-retire first and
+    # a run ends in one consistent state — good records visible, retired-source
+    # records gone. The other order leaves a restored changelog row alive for
+    # one run and silently deletes it on the next.
+    try:
+        from repowise.core.persistence.crud import unretire_auto_superseded
+
+        await unretire_auto_superseded(session)
+    except Exception as _unretire_err:
+        logger.debug("decision_unretire_skipped", error=str(_unretire_err))
+
     # One-shot drain of proposals left by retired extraction sources; without
     # this, DBs indexed before a removal keep a flooded review queue forever
     # (#751 for code_comment). Confirmed/dismissed rows are kept.

@@ -583,13 +583,26 @@ async def _persist_full_update_async(
             # Decision records: new markers + harvested decisions, supersession
             # detection, staleness recompute.
             try:
-                # One-shot drain of proposals from the removed code_comment
-                # harvest (#751). Confirmed/dismissed rows are kept.
+                # The same three store repairs the full-index path runs, in the
+                # same order (see ``pipeline/persist.py``). They live here too
+                # because a user whose workflow is ``repowise update`` never
+                # takes that path, and every one of them is a repair the store
+                # cannot make for itself: ``superseded`` and the retired-source
+                # backlog both survive re-extraction, and ``source_rank`` is a
+                # value copied into rows rather than derived on read.
+                from repowise.core.analysis.decision_provenance import RETIRED_SOURCES
                 from repowise.core.persistence.crud import (
                     purge_proposed_decisions_by_source,
+                    reconcile_source_ranks,
+                    unretire_auto_superseded,
                 )
 
-                await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
+                # Before the purge: restoring lands a row at ``proposed``,
+                # which is what the purge deletes.
+                await unretire_auto_superseded(session)
+                for _retired in RETIRED_SOURCES:
+                    await purge_proposed_decisions_by_source(session, repo_id, _retired)
+                await reconcile_source_ranks(session)
 
                 decision_dicts: list[dict] = []
                 if new_decision_markers:

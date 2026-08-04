@@ -254,8 +254,10 @@ concentrated. Useful before a reorg, and before assuming a file has an owner.
 
 **Answers:** why is this code shaped this way?
 
-Architectural decisions with their evidence drawer, supersession lineage, and a
-decision graph. Decisions are mined from history and PR discussion and can be
+Architectural decisions with their evidence drawer and a decision graph.
+(Supersession lineage renders empty for now — the detector that produced those
+edges is off, see `docs/layers/DECISIONS.md`.) Decisions are mined from history
+and PR discussion and can be
 confirmed, edited, or added by hand. This is the view that keeps a "we already
 tried that" answer from being lost.
 

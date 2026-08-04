@@ -49,6 +49,7 @@ logger = structlog.get_logger(__name__)
 __all__ = [
     "EVOLUTION_SIGNALS",
     "RELATED_TAU",
+    "SEMANTIC_SUPERSESSION_ENABLED",
     "SUPERSEDE_AUTOFLIP_CONFIDENCE",
     "contradicts",
     "detect_supersessions_and_conflicts",
@@ -73,6 +74,26 @@ RELATED_TAU = 0.6
 # auto-flipped to ``superseded`` when confidence clears this bar. Conservative
 # by design — everything below stays a reviewable proposal.
 SUPERSEDE_AUTOFLIP_CONFIDENCE = 0.85
+
+# 3B is OFF. It scoped a conflict by *similarity*, and similarity cannot scope:
+# in a corpus of same-repo PR descriptions cosine 0.81 is the baseline, not
+# topical agreement, so the contradiction heuristic fired between unrelated
+# records that merely shared two engineering tokens and a reversal verb. On this
+# repo it produced 267 edges (one record superseded by 18 others — real
+# supersession is a chain, 18-in is noise) and auto-retired 74 records, 25% of
+# the store, correct ones included.
+#
+# It stays as code rather than a deletion because the *shape* is right and
+# Phase 2 re-enables it structurally: a conflict must require intersecting node
+# sets — two records that touch the same code — and similarity may then rank
+# those candidates but never scope them. The 3B tests flip it to True to
+# exercise the machinery; flipping it in a real run does not work, because both
+# persist paths run ``unretire_auto_superseded`` ahead of the detector and the
+# next run reverts whatever the previous one wrote.
+#
+# ``run_update_evolution`` (3C) is a different mechanism — diff-driven, per
+# changed file, with an LLM verdict — and is not gated by this flag.
+SEMANTIC_SUPERSESSION_ENABLED = False
 
 # ---------------------------------------------------------------------------
 # Evolution signals (Pass-1 pattern scan) + contradiction heuristics
@@ -315,8 +336,14 @@ async def detect_supersessions_and_conflicts(
     supplied, is a gated tiebreaker for pairs the heuristic misses.
 
     Returns ``{"supersedes": n, "conflicts": n, "flipped": n}``.
+
+    No-op while :data:`SEMANTIC_SUPERSESSION_ENABLED` is False — see the note
+    on that constant. Gated here rather than at the two call sites so one
+    switch covers every caller, present and future.
     """
     summary = {"supersedes": 0, "conflicts": 0, "flipped": 0}
+    if not SEMANTIC_SUPERSESSION_ENABLED:
+        return summary
     if not touched_ids or vector_store is None:
         return summary
 

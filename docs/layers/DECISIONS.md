@@ -129,17 +129,31 @@ Decisions are not a flat list. Typed edges connect them:
 
 | Edge | Meaning |
 |------|---------|
-| `supersedes` | The newer decision replaces the older one. Above 0.85 supersession confidence the older record auto-flips to `superseded`; below that it is recorded as a reviewable proposal instead. |
+| `supersedes` | The newer decision replaces the older one, and the older record flips to `superseded`. |
 | `refines` | Narrows or extends a decision without reversing it. |
 | `relates_to` | Same topic, no ordering claim. |
 | `conflicts_with` | Two *active* decisions contradict each other. A governance smell, surfaced in `decision health` and in the code-health layer. |
 
-Detection is deterministic first. Two decisions have to share a topic (at least
+**Automatic detection of these two edges is currently off.** It scoped a
+conflict by embedding similarity: two decisions had to share a topic (at least
 two shared content tokens after stopword removal) and then either straddle an
 opposing verb pair (`adopt` / `use` / `introduce` against `drop` / `remove` /
 `deprecate` / `revert`) or carry a reversal signal ("replace", "migrate",
-"switch to", "no longer", "in favor of"). An LLM tiebreaker only runs on the
-pairs the heuristic cannot call.
+"switch to", "no longer", "in favor of"), with an LLM tiebreaker on the pairs
+the heuristic could not call. In practice similarity does not scope: among
+descriptions drawn from one repository, a cosine of 0.81 is the baseline rather
+than evidence of a shared topic, so the check fired between unrelated records
+and retired records that were correct. It returns when a conflict is scoped
+structurally — by two decisions touching the same code — with similarity used
+only to rank the candidates that test finds.
+
+It was the only writer of these edges, so **no edges exist while it is off** and
+lineage is empty. Two things still work: the diff-driven evolution pass on
+`repowise update` marks a decision that a new commit reversed, and `repowise
+decision deprecate --superseded-by ID` records the successor on the record
+itself (the `superseded_by` column, not an edge). Records the detector retired
+before it was turned off are restored to `proposed` on the next `init` or
+`update`, and its edges are deleted in the same pass.
 
 `supersedes` and `refines` chain into a **lineage**, so `get_why` can answer
 "why is auth structured this way?" with `sessions -> JWT -> OAuth2` rather than
