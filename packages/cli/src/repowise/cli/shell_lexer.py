@@ -30,6 +30,7 @@ __all__ = [
     "Pipeline",
     "Token",
     "analyze_pipeline",
+    "is_plain_stdin_filter",
     "render",
     "tokenize",
 ]
@@ -241,6 +242,22 @@ def _disqualifies_final_stage(tool: str, args: list[str]) -> bool:
         if "f" in _short_cluster(arg):
             return True
     return False
+
+
+def is_plain_stdin_filter(words: list[str]) -> bool:
+    """True if *words* is a one-shot stdin filter safe to end a stage.
+
+    The same test ``analyze_pipeline`` applies to a final stage, exposed for
+    callers that walk a multi-stage chain themselves and so never build a
+    :class:`Pipeline`. Sharing it matters: the disqualifiers are subtle
+    (``grep -f`` reads a pattern file, ``tail -F`` never closes the pipe),
+    and a caller re-deriving them from ``SAFE_FINAL_TOOLS`` alone gets them
+    wrong.
+    """
+    if not words:
+        return False
+    tool = _basename(words[0])
+    return tool in SAFE_FINAL_TOOLS and not _disqualifies_final_stage(tool, words[1:])
 
 
 def analyze_pipeline(command: str) -> Pipeline | None:
