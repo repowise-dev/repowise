@@ -641,7 +641,7 @@ repowise decision health [PATH]         # health dashboard
 | Flag | Description |
 |------|-------------|
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `all` |
-| `--source` | `git_archaeology`, `inline_marker`, `readme_mining`, `cli`, `all` |
+| `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |
 

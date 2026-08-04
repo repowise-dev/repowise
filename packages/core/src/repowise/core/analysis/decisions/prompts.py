@@ -85,29 +85,6 @@ Return a JSON array of decisions:
 Only extract explicit decisions. Return [] if none found.
 """
 
-CHANGELOG_MINING_PROMPT = """\
-These are CHANGELOG entries from sections that usually record deliberate \
-changes (Changed / Removed / Deprecated). Extract any that represent an \
-architectural decision (a technology/pattern change, a removal, a deprecation \
-with a reason).
-
-{entries_block}
-
-Return a JSON array of decisions:
-{{
-  "title": "short title",
-  "context": "what prompted it (only if stated)",
-  "decision": "what was changed/removed/deprecated",
-  "rationale": "why (only if stated — do not invent)",
-  "alternatives": [],
-  "consequences": [],
-  "tags": [],
-  "source_quote": "the exact changelog line this came from"
-}}
-
-Skip pure feature additions and trivial fixes. Return [] if none qualify.
-"""
-
 PR_BODY_MINING_PROMPT = """\
 These are squash-merge / PR commit bodies. Extract any architectural decision \
 described in them (technology choices, migrations, structural changes, things \

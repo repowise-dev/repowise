@@ -215,7 +215,7 @@ C_BLOCK_EXTS: frozenset[str] = frozenset(
 # The set of extensions this module can mine — anything we know a comment
 # syntax for. Markdown / RST / plain text are deliberately excluded: their
 # prose is full of causal words ("because") that are not code rationale, and
-# README / docs already feed the readme_mining source.
+# README / docs are not mined for decisions any more (readme_mining retired).
 CODE_EXTENSIONS: frozenset[str] = frozenset(LINE_PREFIXES) | C_BLOCK_EXTS
 
 # ---------------------------------------------------------------------------

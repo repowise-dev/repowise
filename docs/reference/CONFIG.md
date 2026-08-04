@@ -317,8 +317,7 @@ decisions:
     comment: false          # LLM comment archaeology (top central files)
     # inline_marker: false  # WHY:/DECISION: markers
     # git_archaeology: false
-    # readme_mining: false
-    # adr: false
+      # adr: false
     # changelog: false
     # pr: false
 ```

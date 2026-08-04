@@ -790,7 +790,7 @@ class DecisionRecord(Base):
     # Provenance
     source: Mapped[str] = mapped_column(
         String(32), nullable=False, default="cli"
-    )  # git_archaeology | inline_marker | readme_mining | cli
+    )  # git_archaeology | inline_marker | adr | pr | comment | session | cli
     evidence_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)

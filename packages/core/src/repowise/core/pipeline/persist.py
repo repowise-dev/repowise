@@ -1162,13 +1162,15 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             if harvested:
                 decision_dicts.extend(harvested)
 
-    # One-shot drain of proposals from the removed code_comment harvest;
-    # without this, DBs indexed before its removal keep a flooded review
-    # queue forever (#751). Confirmed/dismissed rows are kept.
+    # One-shot drain of proposals left by retired extraction sources; without
+    # this, DBs indexed before a removal keep a flooded review queue forever
+    # (#751 for code_comment). Confirmed/dismissed rows are kept.
     try:
+        from repowise.core.analysis.decision_provenance import RETIRED_SOURCES
         from repowise.core.persistence.crud import purge_proposed_decisions_by_source
 
-        await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
+        for _retired in RETIRED_SOURCES:
+            await purge_proposed_decisions_by_source(session, repo_id, _retired)
     except Exception as _purge_err:
         logger.debug("decision_purge_skipped", error=str(_purge_err))
 

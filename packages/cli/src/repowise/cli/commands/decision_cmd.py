@@ -15,6 +15,13 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
+from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
+
+#: The ladder's real sources plus the no-filter sentinel. Derived, because the
+#: hand-written copy had drifted: it offered ``readme_mining`` (since retired)
+#: while omitting ``session``, the source carrying a user's own words and the
+#: one you would most want to filter for.
+_SOURCE_CHOICES: tuple[str, ...] = (*LISTABLE_SOURCES, "all")
 
 
 def _resolve_decision_repo(path: str | None):
@@ -157,7 +164,7 @@ def decision_add(path: str | None) -> None:
 )
 @click.option(
     "--source",
-    type=click.Choice(["git_archaeology", "inline_marker", "readme_mining", "cli", "all"]),
+    type=click.Choice(_SOURCE_CHOICES),
     default="all",
 )
 @click.option("--proposed", is_flag=True, default=False, help="Show only proposed decisions.")

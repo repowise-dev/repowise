@@ -17,7 +17,10 @@ from __future__ import annotations
 import re
 
 __all__ = [
+    "LISTABLE_SOURCES",
     "MAX_SOURCE_RANK",
+    "PLACEHOLDER_SOURCES",
+    "RETIRED_SOURCES",
     "SOURCE_RANK",
     "compute_confidence",
     "normalize_text",
@@ -55,10 +58,10 @@ SOURCE_RANK: dict[str, int] = {
     "pr": 7,  # PR / squash-merge body
     "commit": 6,  # individual commit message
     "git_archaeology": 6,  # alias for commit-mined decisions
-    "changelog": 5,  # keep-a-changelog Changed/Removed/Deprecated
+    "changelog": 5,  # legacy rows from the removed changelog miner
     "inline_marker": 4,  # # WHY: / # DECISION: code markers
     "comment": 3,  # LLM-curated rationale prose on high-centrality code
-    "readme_mining": 3,  # implicit decisions in README/docs prose
+    "readme_mining": 3,  # legacy rows from the removed README/docs miner
     "code_comment": 2,  # legacy rows from the removed comment harvest (#751)
     "test_name": 2,  # placeholder — behaviour asserted by a test name
     "inferred": 1,  # placeholder — purely inferred, no verbatim source
@@ -66,6 +69,28 @@ SOURCE_RANK: dict[str, int] = {
 }
 
 MAX_SOURCE_RANK: int = max(SOURCE_RANK.values())
+
+#: Sources that no longer extract, newest last. Their names stay in
+#: ``SOURCE_RANK`` so rows written before each removal still rank instead of
+#: falling to the unknown-source floor, but no extractor produces them and the
+#: persist path drains whatever they left ``proposed``. One list, because the
+#: purge, the ranking annotations and the extractor's own docs all have to agree
+#: about which sources are gone; three hand-maintained copies is how the #751
+#: drain ended up being the only one anybody remembered to wire.
+RETIRED_SOURCES: tuple[str, ...] = ("code_comment", "readme_mining", "changelog")
+
+#: Rungs defined ahead of the extractor that fills them, so the ladder's values
+#: stay stable across phases. No row in any store carries these, which is why
+#: anything offering the user a list of sources has to leave them out.
+PLACEHOLDER_SOURCES: tuple[str, ...] = ("test_name", "inferred")
+
+#: Sources a stored record can actually carry: the ladder minus the retired and
+#: the not-yet-real. Derived, because the hand-written copy behind
+#: ``decision list --source`` had drifted into offering a retired source while
+#: omitting ``session``.
+LISTABLE_SOURCES: tuple[str, ...] = tuple(
+    sorted(name for name in SOURCE_RANK if name not in (*RETIRED_SOURCES, *PLACEHOLDER_SOURCES))
+)
 
 # Rank at/below which the only evidence is a heuristic rationale-comment harvest
 # (``code_comment`` and the placeholder ``test_name``/``inferred`` tiers). A

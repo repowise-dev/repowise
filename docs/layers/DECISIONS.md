@@ -56,8 +56,6 @@ it is the only one that needs a provider.
 | Inline markers | `inline_marker` | `# WHY:` / `# DECISION:` / `# TRADEOFF:` / `# ADR:` / `# RATIONALE:` / `# REJECTED:` | Any comment syntax (`#`, `//`, `--`, `/*`, `*`). Up to 5 continuation lines, plus 20 lines of surrounding context. Fenced code blocks in Markdown are skipped. |
 | Git archaeology | `git_archaeology` | Commit messages | Gated on 19 decision verbs (migrate, switch to, replace, adopt, deprecate, drop, rewrite, split, revert, and the rest). |
 | PR bodies | `pr` | Squash-merge and PR commit bodies | A body only qualifies when it looks like a PR description (`## Why`, `## Motivation`, `## Context`, `Closes #`, `Before:` / `After:`). Up to 25 bodies. |
-| CHANGELOG | `changelog` | `CHANGELOG` / `HISTORY` / `NEWS` / `CHANGES` / release notes | keep-a-changelog `Changed` / `Removed` / `Deprecated` / `Security` sections only. `Added` is deliberately excluded: a new feature is rarely a structural decision. Up to 15 versions. |
-| README and docs | `readme_mining` | README and docs prose | Implicit decisions stated in prose. |
 | Code comments | `comment` | Block comments and docstrings on high-centrality files | Bounded to 30 nodes, and to prose carrying a rationale cue ("because", "instead of", "rather than", "trade-off", "we chose", "deliberately"). Centrality-bounded on purpose: comment archaeology across a whole repo is noise. |
 | Doc generation | `llm_inferred` | The wiki generation pass | The page generator proposes decisions it inferred while writing a page. Every field must survive the grounding gate below. |
 
@@ -74,9 +72,7 @@ decisions:
     comment: false          # skip comment archaeology
     # inline_marker: false
     # git_archaeology: false
-    # readme_mining: false
     # adr: false
-    # changelog: false
     # pr: false
 ```
 
@@ -112,9 +108,13 @@ confidence = 0.4 + 0.5 * (best_source_rank / 9)
            x verification penalty
 ```
 
-The rank ladder is `cli` 9, `adr` 8, `session` and `pr` 7, `commit` and
-`git_archaeology` 6, `changelog` 5, `inline_marker` 4, `comment` and
-`readme_mining` 3, and the heuristic tiers below that. The result is clamped to
+The rank ladder is `cli` 9, `session` 8, `adr` and `pr` 7, `commit` and
+`git_archaeology` 6, `inline_marker` 4, `comment` 3, and the heuristic tiers
+below that. `session` sits above `adr` because a transcript carries what a person
+actually said while deciding, and a document is someone's later write-up of it;
+with the order reversed the write-up overwrote the words. Retired sources keep
+their rungs (`changelog` 5, `readme_mining` 3) so rows written before their
+removal still rank instead of dropping to the unknown-source floor. The result is clamped to
 `[0, 0.99]`: nothing is ever certain.
 
 **Sources corroborate, they do not overwrite.** The same decision found in an ADR
@@ -244,7 +244,7 @@ the primary repo. Decision ids accept an 8-character prefix.
 | Flag | Values |
 |------|--------|
 | `--status` | `proposed`, `active`, `deprecated`, `superseded`, `dismissed`, `all` (default) |
-| `--source` | `git_archaeology`, `inline_marker`, `readme_mining`, `cli`, `all` (default) |
+| `--source` | any source in the rank ladder except the retired ones, plus `all` (default) |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only records with staleness at or above 0.5 |
 
