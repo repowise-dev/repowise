@@ -514,9 +514,11 @@ Three numbers, each with its sample size and its test. The tools here are the
 open-source agent-context tools we ran head to head, and the full page carries
 the rows we lose beside the rows we win.
 
-- **Finds the right files.** 0.746 file coverage against CodeGraph's 0.610 on a
-  sealed 42-instance split evaluated once, while serving 8.1 files against 14.0.
-  Deterministic grading, no LLM judge. *n=42, sign test p=0.021.*
+- **Finds the right files.** 0.876 file coverage against CodeGraph's 0.610 on a
+  **sealed** 42-instance split, held out from every improvement round. 19 wins,
+  1 loss per instance. Deterministic grading, no LLM judge. *n=42, sign test
+  p=0.00004.* The tuned half improved **less** than the held-out half did, which
+  is the check that says we did not fit the benchmark.
 - **Cheaper in a real agent loop.** -33.5% cost per question against a bare
   agent, cheaper on 13 of 15 questions. *n=15, p=0.007.*
 - **Agents actually call it.** Adopted in 15 of 15 cells, against CodeGraph 13,
@@ -543,7 +545,7 @@ agent over MCP.
 | Self-hostable, open source | ✅ AGPL-3.0 | ✅ | ✅ | ❌ cloud only |
 | Private repo, no cloud | ✅ | ✅ | ✅ | ❌ OSS forks only |
 | MCP tools served | 10 | 1 | 29 | 3 |
-| **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42)* | ✅ **0.746** | 0.610 | not in this run | not measured |
+| **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.876** | 0.610 | not in this run | not measured |
 | **The agent actually calls it** *([measured](docs/BENCHMARKS.md#3-whether-agents-call-the-tools-at-all), n=15)* | ✅ **15/15** | 13/15 | 4/15 | not measured |
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |

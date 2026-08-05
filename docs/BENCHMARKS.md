@@ -20,7 +20,7 @@ overlap on different layers, and this table says exactly which.
 
 | Layer | Measured against | Result |
 |---|---|---|
-| Finding the right files | CodeGraph, Graphify, code-review-graph | [§1](#1-finding-the-right-files) **we win**, n=42, p=0.021 |
+| Finding the right files | CodeGraph, Graphify, code-review-graph | [§1](#1-finding-the-right-files) **we win**, n=42 held out, p=0.00004 |
 | Cost in a real agent loop | CodeGraph, Serena, Graphify, code-review-graph, bare agent | [§2](#2-cost-in-a-real-agent-loop) **we win**, n=15, p=0.007 |
 | Whether agents call the tools at all | same five | [§3](#3-whether-agents-call-the-tools-at-all) **we win**, 15/15 |
 | Command-output compression | no comparable tool in the field | [§4](#4-command-output-compression) |
@@ -43,30 +43,85 @@ number**, which makes it the most reproducible result on the page. ContextBench
 ships gold file spans; a tool either returns them or it does not.
 
 The 112 instances were split into a 70-instance development half and a
-42-instance sealed half, **pinned by instance id before any tuning work started**.
-The sealed half was evaluated once, at publication. That protocol is the whole
-reason the number below is worth reading.
+42-instance **sealed** half, **pinned by instance id before any tuning work
+started**. All improvement work uses the development half. **Every number in the
+table below is from the sealed half**, which is the whole reason it is worth
+reading.
+
+### The numbers, on the 42 sealed instances
 
 | Tool | File coverage | n | Precision | Files served |
 |---|---:|---:|---:|---:|
-| **repowise** (`search_codebase`) | **0.746** | 42 | **0.168** | **8.1** |
+| **repowise** (`get_answer`) | **0.876** | 42 | 0.087 | 19.2 |
+| **repowise** (`search_codebase`) | **0.742** | 42 | **0.168** | **8.2** |
 | CodeGraph | 0.610 | 42 | 0.093 | 14.0 |
-| repowise (`get_answer`) | 0.597 | 40 | 0.113 | 12.1 |
 | Graphify | 0.546 | 42 | 0.033 | 34.5 |
 | code-review-graph | 0.445 | 42 | 0.240 | 5.4 |
 
-We find more of the right files while serving **fewer files overall**, which is
-the combination that matters for an agent paying by the token. Head to head
-against CodeGraph per instance: **13 wins, 3 losses, 26 ties, sign test
+Head to head per instance against CodeGraph: `get_answer` **19 wins, 1 loss, 22
+ties, sign test p = 0.00004**. `search_codebase` **13 wins, 3 losses, 26 ties,
 p = 0.021**.
 
-**Our synthesis tool ties CodeGraph.** `get_answer` scores 0.597 on the same
-sealed half, an honest tie (11-10-19, p = 1.000). Anyone reading the table would
-spot it, so we would rather say it: the retrieval win belongs to
-`search_codebase`, and `get_answer` is where our own next round of work is aimed.
+**These are two different tools with two different profiles, and we would rather
+say so than average them into one claim.** `get_answer` finds the most, from a
+list of ~19 files. `search_codebase` finds fewer but is the most efficient per
+file served: **0.742 from 8.2 files**, better coverage-per-file than anything
+else in the table. If you are paying by the token, that is the row to read.
+
+### Why this changed, and the honest disclosure that goes with it
+
+The `get_answer` row was **0.597** in the previous version of this page, an
+honest tie with CodeGraph, and we published it as a loss. Two fixes then landed
+([#1284](https://github.com/repowise-dev/repowise/pull/1284),
+[#1289](https://github.com/repowise-dev/repowise/pull/1289)): four early-return
+paths were discarding the ranked candidate pool they had already computed. The
+diagnosis and both fixes were developed **entirely on the development half.**
+
+**So the sealed half was evaluated twice: once at first publication, and once
+after those two fixes shipped.** It was not re-run to chase a number, no change
+was made in response to what it said, and this sentence exists because "evaluated
+once" was the previous claim on this page and it is no longer true.
+
+### The check that matters more than the headline
+
+If we had tuned against the benchmark, the development half would flatter us and
+the sealed half would not. It does not happen:
+
+| | development half (n=70) | **sealed half (n=42)** |
+|---|---:|---:|
+| `get_answer`, before | 0.513 | 0.597 |
+| `get_answer`, after | 0.810 | **0.876** |
+| **improvement** | **+0.297** | **+0.273** |
+| instances regressed | 1 | **0** |
+
+The two halves agree to within 0.024, and **the held-out half improved slightly
+less than the tuned one, not more**, which is the direction you would want.
+
+Two further controls, both of which we ran because they could have embarrassed
+us. **CodeGraph scores 0.6093 on the development half and 0.6095 on the sealed
+half**, so the two halves are equally hard and neither is a soft set. And
+`search_codebase`, which neither fix touches, moved **0.000 across all 70**
+development instances and 0.746 to 0.742 on the sealed half. An untouched arm
+that stayed still is what says the change came from the fixes and not from drift
+in the index, the embedder or the grader.
+
+**We do not quote a pooled 112-instance figure.** It would be 0.835, which is
+both lower than the sealed result and less meaningful, because it averages the
+set the work was built on into the set it was not.
+
+### What it cost to produce
+
+Every arm builds its **own** index of **every** instance's repository at that
+instance's own `base_commit`. Nothing is shared between arms, nothing is cached
+across instances, and a stale checkout is a wrong answer rather than a fast one.
+Across the rung-8 matrix that is **748 index builds and roughly 78 machine-hours
+of indexing for 1,129 graded (instance, arm) cells.** Grading is deterministic
+and no LLM judge is involved anywhere in this section.
 
 This is retrieval, not task success. It says we find the right files, not that an
 agent using us writes better code.
+
+Measured on repowise at commit `081a59fa` (between v0.37.0 and v0.38.0).
 
 Raw data and harness:
 **[bakeoff\_2026\_08/rung8](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung8)**
@@ -278,7 +333,12 @@ Beyond the ones stated in each section:
   every model's training data.
 - **§1's development half is not a headline.** Pooling the development and sealed
   halves gives a stronger p, and we do not quote it, because the development half
-  is the set the work was built against.
+  is the set the work was built against. The development numbers appear in §1
+  only as the overfitting check, never as the result.
+- **§1's sealed half has now been evaluated twice**, once at first publication and
+  once after #1284 and #1289 shipped. Stated in §1 rather than left for a reader
+  to discover. A third evaluation would need a reason better than a number we
+  did not like.
 
 ## Method and provenance
 
