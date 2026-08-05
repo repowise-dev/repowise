@@ -199,6 +199,7 @@ async def run_pipeline(
     on_page_ready: Any | None = None,
     resume_controller: ResumeController | None = None,
     coverage_report_paths: list[Path] | None = None,
+    derive_environment_facts: bool = False,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -237,6 +238,14 @@ async def run_pipeline(
         Optional ``GenerationConfig`` used for page generation. When omitted,
         generation uses repo-local config such as ``reasoning`` from
         ``.repowise/config.yaml`` and ``REPOWISE_REASONING``.
+
+    derive_environment_facts:
+        Derive the structural facts that describe the *machine* this index runs
+        on (currently whether the tree is formatter-clean, which costs one
+        subprocess). Off by default and set only by the local ``init`` command:
+        a hosted or CI indexer would otherwise measure its own container and
+        store the answer as a fact about the user's repository. The facts read
+        off the walk itself are unconditional and unaffected by this flag.
 
     Returns
     -------
@@ -303,6 +312,7 @@ async def run_pipeline(
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             progress=progress,
+            derive_environment_facts=derive_environment_facts,
         )
 
     # Resume fast-path: when a prior run already persisted the INDEX phase
@@ -331,6 +341,7 @@ async def run_pipeline(
                 skip_tests=skip_tests,
                 skip_infra=skip_infra,
                 progress=progress,
+                derive_environment_facts=derive_environment_facts,
             )
             traversal_stats = None
             git_metadata_list = list(git_meta_map.values())

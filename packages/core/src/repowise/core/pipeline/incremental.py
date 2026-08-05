@@ -92,6 +92,16 @@ def build_repo_graph(
     file_infos = [fi for fi in maybe_infos if fi is not None]
     repo_structure = traverser.get_repo_structure(file_infos)
 
+    # Structural episodes, minus the formatter check: this path is the hot one
+    # (every update, plus the config-triggered re-score), so it derives only
+    # what the walk has already paid for and never spawns a subprocess.
+    try:
+        from repowise.core.precedent.structural import record_structural_episodes
+
+        record_structural_episodes(repo_path, traverser, allow_formatter_check=False)
+    except Exception:
+        pass
+
     # Thread-pool source reads + content-hash parse cache split, shared with
     # the init parse phase: only changed files need a tree-sitter parse.
     # Cache failures degrade to all-miss (full parse), as before.

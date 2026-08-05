@@ -22,6 +22,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import pathspec
 import structlog
@@ -62,9 +63,22 @@ class TraversalStats:
     skipped_submodule: int = 0
     skipped_nested_repo: int = 0
     lang_counts: dict[str, int] = field(default_factory=dict)
+    nested_repo_paths: list[str] = field(default_factory=list)
+    """Repo-relative paths of the nested git repos behind ``skipped_nested_repo``.
+
+    The counter alone cannot say *which* directories are separate checkouts,
+    which is what makes the fact actionable ("run git from inside them"). Capped
+    at :data:`_MAX_NESTED_REPO_PATHS` — a memory bound on a pathological tree,
+    not a threshold: the count stays exact either way.
+    """
+    nested_repo_paths_truncated: bool = False
+    """True once the cap above dropped a name, so a reader can say "at least"."""
 
 
 log = structlog.get_logger(__name__)
+
+#: Cap on the nested-repo names retained in :class:`TraversalStats`.
+_MAX_NESTED_REPO_PATHS = 50
 
 # ---------------------------------------------------------------------------
 # Blocklists
@@ -275,10 +289,13 @@ class FileTraverser:
         # module (``repowise-augment = "repowise.cli.augment_hook:main"``)
         # has no in-repo importer, so without this it reads as unreachable
         # unless its filename happens to match an entry-stem heuristic.
-        self._console_script_modules = _collect_console_script_modules(
+        console_scripts = _collect_console_scripts(
             self.repo_root,
             prune_nested_git=not (include_submodules or include_nested_repos),
         )
+        self._console_script_names = console_scripts.names
+        self._console_script_modules = console_scripts.modules
+        self._distributions = console_scripts.distributions
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
         log.info(
@@ -414,6 +431,10 @@ class FileTraverser:
         # to the gitignore/exclude checks below).
         if not self._include_nested_repos and not is_submodule and _is_nested_git_repo(abs_path):
             self.stats.skipped_nested_repo += 1
+            if len(self.stats.nested_repo_paths) < _MAX_NESTED_REPO_PATHS:
+                self.stats.nested_repo_paths.append(rel_str)
+            else:
+                self.stats.nested_repo_paths_truncated = True
             log.debug("Skipping nested git repo", path=rel_str)
             return True
         if self._gitignore.match_file(rel_str + "/"):
@@ -668,28 +689,46 @@ def _stem_is_entry_point(abs_path: Path) -> bool:
     return stem in _ENTRY_POINT_STEMS
 
 
-def _collect_console_script_modules(
+class ConsoleScriptTables(NamedTuple):
+    """What one pass over the repo's ``pyproject.toml`` files yields."""
+
+    names: frozenset[str]
+    """Launcher names an installer drops in the environment's script dir."""
+    modules: frozenset[str]
+    """Dotted module targets, used for entry-point detection."""
+    distributions: frozenset[str]
+    """``[project].name`` values — the distributions this repo installs as."""
+
+
+def _collect_console_scripts(
     repo_root: Path, *, prune_nested_git: bool = True
-) -> frozenset[str]:
-    """Dotted-module targets declared in pyproject console-script tables.
+) -> ConsoleScriptTables:
+    """Console-script names, module targets and distribution names.
 
     Reads ``[project.scripts]``, ``[project.gui-scripts]``, and every
     ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
     repo. Values look like ``"repowise.cli.augment_hook:main"`` — the part
-    before the colon names the module a console launcher imports at runtime.
+    before the colon names the module a console launcher imports at runtime;
+    the key is the launcher an installer drops in the environment's script
+    directory, and ``[project].name`` is the distribution it installs as.
+    All three come out of the same read: entry-point detection wants the
+    modules, shadowed-launcher detection wants the names and needs the
+    distribution to tell this repo's editable install from a dependency's.
     Best-effort: unparsable files are skipped.
     """
     import tomllib
 
     from repowise.core.fs_walk import iter_glob
 
+    names: set[str] = set()
     modules: set[str] = set()
+    distributions: set[str] = set()
     try:
         config_files = list(
             iter_glob(repo_root, ("pyproject.toml",), prune_nested_git=prune_nested_git)
         )
     except OSError:
-        return frozenset()
+        return ConsoleScriptTables(frozenset(), frozenset(), frozenset())
     for config_file in config_files:
         try:
             data = tomllib.loads(config_file.read_text(encoding="utf-8"))
@@ -698,19 +737,29 @@ def _collect_console_script_modules(
         project = data.get("project")
         if not isinstance(project, dict):
             continue
-        groups = [project.get("scripts"), project.get("gui-scripts")]
+        dist = project.get("name")
+        if isinstance(dist, str) and dist.strip():
+            distributions.add(dist.strip())
+        # Only [project.scripts] / [project.gui-scripts] produce a launcher on
+        # PATH; other entry-point groups are plugin registrations, so their
+        # keys are collected as modules only.
+        launcher_groups = [project.get("scripts"), project.get("gui-scripts")]
+        groups = list(launcher_groups)
         entry_points = project.get("entry-points")
         if isinstance(entry_points, dict):
             groups.extend(entry_points.values())
         for group in groups:
             if not isinstance(group, dict):
                 continue
-            for target in group.values():
+            is_launcher = any(group is g for g in launcher_groups)
+            for name, target in group.items():
+                if is_launcher and isinstance(name, str) and name.strip():
+                    names.add(name.strip())
                 if isinstance(target, str):
                     module = target.split(":", 1)[0].strip()
                     if module:
                         modules.add(module)
-    return frozenset(modules)
+    return ConsoleScriptTables(frozenset(names), frozenset(modules), frozenset(distributions))
 
 
 def _is_console_script_target(rel_path: str, modules: frozenset[str]) -> bool:

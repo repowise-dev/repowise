@@ -332,6 +332,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     ),
                     progress=callback,
                     existing_kg_fingerprint=_prev_kg_fp,
+                    derive_environment_facts=True,
                 )
             )
         repo_phase_timings: dict[str, float] = callback.timings

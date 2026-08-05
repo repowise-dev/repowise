@@ -1293,6 +1293,9 @@ def init_command(
                     coverage_report_paths=(
                         [Path(p) for p in coverage_report] if coverage_report else None
                     ),
+                    # Local `init` is the one place a fact about this machine's
+                    # environment is a fact about the user's environment.
+                    derive_environment_facts=True,
                 )
             finally:
                 if engine is not None:
