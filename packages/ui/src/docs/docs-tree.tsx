@@ -41,7 +41,11 @@ const layerDirKey = (layerId: string) => `${LAYER_DIR_PREFIX}${layerId}`;
 const UNLAYERED_MODULES_KEY = "@group:unlayered-modules";
 // Tree expansion survives reloads (per-browser, not per-repo — paths rarely
 // collide across repos and the fallback is just the default expansion).
-const EXPANDED_DIRS_KEY = "repowise:docs-tree-expanded";
+//
+// Versioned because the saved set is unioned with the defaults rather than
+// replacing them: a reader whose browser recorded the old every-rung expansion
+// would carry it forward and never see the outline the defaults now describe.
+const EXPANDED_DIRS_KEY = "repowise:docs-tree-expanded:v2";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,10 +59,6 @@ interface TreeNode {
   children: TreeNode[];
   /** Dotted outline number from the stored tree ("2.4.1"), when the page has one. */
   section?: string;
-  /** Where the row's "see the picture" link goes, for rows that have one. */
-  href?: string;
-  /** What that link is for, read out to a screen reader. */
-  hrefLabel?: string;
 }
 
 interface DocsTreeProps {
@@ -66,15 +66,6 @@ interface DocsTreeProps {
   selectedPageId: string | null;
   onSelectPage: (page: DocPageSummary) => void;
   className?: string;
-  /**
-   * The host's knowledge-graph route, linked from every layer row.
-   *
-   * A layer is a grouping of the knowledge graph, and the graph is where its
-   * diagram is drawn and explorable — the tree only lists what is in the layer.
-   * Optional because the route is the host's to name, and a host that has no
-   * such view simply gets a row with no link rather than a dead one.
-   */
-  knowledgeGraphHref?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +350,16 @@ const CONCEPT_CONTENT_TYPES = new Set([
 const hidesTreeIcon = (page?: DocPageSummary): boolean =>
   page ? CONCEPT_CONTENT_TYPES.has(page.page_type) : false;
 
+// The same rule, for the outline rows that have no page behind them: a layer,
+// the no-layer bucket, a by-type bucket. They were the one place a folder glyph
+// still survived on the spine, and a column of them down the top rung is the
+// texture the rule above exists to remove. The file corpus keeps its folder —
+// there the glyph is what says "this row is not part of the outline".
+const isOutlineGroupRow = (path: string): boolean =>
+  path.startsWith(LAYER_DIR_PREFIX) ||
+  path.startsWith(TYPE_GROUP_PREFIX) ||
+  path === UNLAYERED_MODULES_KEY;
+
 // The single bottom folder holding every deterministic page. Namespaced like
 // the other synthetic keys so it can never collide with a real page id.
 const AUTO_ROOT_KEY = "@group:auto-documented";
@@ -417,10 +418,7 @@ function reportLayerGrouping(
   }
 }
 
-function buildStoredTree(
-  pages: DocPageSummary[],
-  knowledgeGraphHref?: string,
-): TreeNode[] {
+function buildStoredTree(pages: DocPageSummary[]): TreeNode[] {
   // A tombstoned page documents a file that no longer exists. It keeps its row
   // and its content, but the tree deliberately has no place for it, so it must
   // be excluded here rather than treated as an unplaced page.
@@ -520,27 +518,12 @@ function buildStoredTree(
         .filter((child) => !unlayered.has(child.id))
         .map((child) => toNode(child, root)),
     );
-    // The file corpus sits directly after the orientation chapters, ahead of
-    // the layers. It is the largest thing in the wiki by a wide margin and the
-    // thing most readers arrive wanting, so it cannot be the last row of a list
-    // whose length grows with the repository — one layer opened and it is off
-    // the screen. Collapsed, so it costs a single row to keep it in reach.
-    if (referenceFolder) top.push(referenceFolder);
     for (const group of grouping.groups) {
       top.push({
         name: group.label,
         path: layerDirKey(group.id),
         isDir: true,
         children: group.pages.map((child) => toNode(child, root)),
-        // The tree can only list what a layer holds. The picture of it — which
-        // layer sits on which, and what crosses between them — is the
-        // knowledge graph, so the row carries a way there.
-        ...(knowledgeGraphHref
-          ? {
-              href: knowledgeGraphHref,
-              hrefLabel: `Show ${group.label} in the knowledge graph`,
-            }
-          : {}),
       });
     }
     // After the real layers, and named for what it is rather than as if it
@@ -586,11 +569,12 @@ function buildStoredTree(
     });
   }
 
-  // A store with no concept root has no orientation to sit behind, so the
-  // folder falls to the bottom rather than opening the tree with it.
-  if (referenceFolder && !top.includes(referenceFolder)) {
-    top.push(referenceFolder);
-  }
+  // The file corpus closes the tree, below every group above it and collapsed.
+  // It is the largest thing in the wiki by a wide margin, and a row whose count
+  // runs to four digits sitting mid-outline reads as the point of the sidebar
+  // rather than as the reference it is. One row at the bottom keeps it in reach
+  // without letting it set the shape of what a reader meets first.
+  if (referenceFolder) top.push(referenceFolder);
 
   return top;
 }
@@ -752,7 +736,7 @@ function TreeItem({
             pageType={node.page.page_type}
             className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]"
           />
-        ) : isExpanded ? (
+        ) : isOutlineGroupRow(node.path) ? null : isExpanded ? (
           <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] opacity-70" />
         ) : (
           <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
@@ -778,24 +762,7 @@ function TreeItem({
 
     return (
       <div>
-        {node.href ? (
-          // The row itself expands; the trailing link leaves for the graph.
-          // Two separate targets rather than one that guesses which was meant,
-          // and an anchor rather than a button so it can be opened in a tab.
-          <div className="flex items-center">
-            {row}
-            <a
-              href={node.href}
-              aria-label={node.hrefLabel}
-              title={node.hrefLabel}
-              className="shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-accent-primary)]"
-            >
-              <Network className="h-3.5 w-3.5" />
-            </a>
-          </div>
-        ) : (
-          row
-        )}
+        {row}
 
         {isExpanded && hasChildren && (
           <div>
@@ -915,6 +882,23 @@ function RowMarkers({
 // Main DocsTree component
 // ---------------------------------------------------------------------------
 
+/** Keys of every dir on the way down to the row holding `pageId`, root first.
+ *  Empty when the page is not in this tree, or is on the top rung already. */
+function ancestorDirs(nodes: TreeNode[], pageId: string): string[] {
+  const trail: string[] = [];
+  function walk(list: TreeNode[]): boolean {
+    for (const node of list) {
+      if (node.page?.id === pageId) return true;
+      if (!node.children.length) continue;
+      trail.push(node.path);
+      if (walk(node.children)) return true;
+      trail.pop();
+    }
+    return false;
+  }
+  return walk(nodes) ? [...trail] : [];
+}
+
 type ViewMode = "domain" | "folder";
 
 export function DocsTree({
@@ -922,7 +906,6 @@ export function DocsTree({
   selectedPageId,
   onSelectPage,
   className,
-  knowledgeGraphHref,
 }: DocsTreeProps) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
@@ -930,37 +913,41 @@ export function DocsTree({
   // Default to the semantic "By domain" spine — overview/architecture/modules
   // first, filesystem second. The folder view is a toggle for power users.
   const [viewMode, setViewMode] = useState<ViewMode>("domain");
+  // Built before the expansion state because the defaults are read off the
+  // tree's own top rung rather than guessed from the flat page list.
+  const tree = useMemo(
+    () => (viewMode === "domain" ? buildStoredTree(pages) : buildTree(pages)),
+    [pages, viewMode],
+  );
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
-    // Auto-expand first two levels, the Onboarding folder, and the by-type
-    // buckets that hold pages the stored tree does not reach (on a store whose
-    // tree has not been built yet, those buckets are the whole tree, so
-    // leaving them collapsed would show almost nothing). Then ADD any
-    // previously expanded dirs from localStorage. Union (not replace) — the
-    // key is shared across repos, so a stale saved set must never collapse
-    // another repo's default-open rows.
+    // The Onboarding folder, the by-type buckets that hold pages the stored
+    // tree does not reach (on a store whose tree has not been built yet those
+    // buckets are the whole tree, so leaving them shut would show almost
+    // nothing), and the top rung below. Then ADD any previously expanded dirs
+    // from localStorage. Union (not replace) — the key is shared across repos,
+    // so a stale saved set must never collapse another repo's default-open rows.
     const dirs = new Set<string>(STRAY_GROUP_KEYS);
     dirs.add(ONBOARDING_DIR_KEY);
-    // Domain view: everything starts shut — the layer rows, concept pages, the
-    // bottom Auto-documented folder, and the file directories inside it — so
-    // the first screen is the shape of the repository rather than its contents.
+    // One rung, and only one. Every group on the top rung opens, so the first
+    // screen is a table of contents — the layers named, with what each holds
+    // listed under it — rather than a column of shut rows that says nothing
+    // until it is clicked.
     //
-    // The layers used to open on load, on the reasoning that a shut one hides
-    // the outline under it. That reasoning inverted once the layers became
-    // grouping rows over every module: opening them all put roughly ninety
-    // near-identically-named module rows on the first screen, which buries the
-    // layer names, the orientation chapters and the file corpus alike. A closed
-    // layer costs one click; an open one costs a reader the whole first screen.
+    // Nothing below that rung opens with it. A chapter that parents its own
+    // sub-chapters used to expand too, wherever it sat, and the outline came
+    // out four rungs deep on load: the indentation stopped carrying rank and
+    // the tree read as a filesystem. Shut, a chapter costs one click and its
+    // parent's list stays readable. This is also what the old layers-shut
+    // default was protecting against — roughly ninety module rows on the first
+    // screen — and the rung limit protects against it without hiding the
+    // outline to do so.
     //
-    // A concept page that parents other concept pages still opens, so a stored
-    // wiki that predates the grouping rows — where the modules hang off a page
-    // per layer — reads the same as it always did.
-    const hasSpineChild = new Set(
-      pages
-        .filter((p) => SPINE_TYPES.has(p.page_type) && p.parent_page_id)
-        .map((p) => p.parent_page_id as string),
-    );
-    for (const page of pages) {
-      if (hasSpineChild.has(page.id) && SPINE_TYPES.has(page.page_type)) dirs.add(page.id);
+    // Two exclusions, both rows that are a bucket rather than a section: the
+    // file corpus, which runs to thousands of rows, and the no-layer leftovers.
+    for (const node of tree) {
+      if (!node.isDir) continue;
+      if (node.path === AUTO_ROOT_KEY || node.path === UNLAYERED_MODULES_KEY) continue;
+      dirs.add(node.path);
     }
     if (typeof window !== "undefined") {
       try {
@@ -982,6 +969,21 @@ export function DocsTree({
       // Quota/SSR — persistence is best-effort.
     }
   }, [expandedDirs]);
+  // Reveal whatever is being read. Only the top rung opens by default, so a
+  // page reached by any route other than clicking its own row — a deep link, a
+  // "related pages" link, the command palette — would otherwise be selected
+  // inside a shut chapter with nothing in the tree to show where it sits.
+  useEffect(() => {
+    if (!selectedPageId) return;
+    const ancestors = ancestorDirs(tree, selectedPageId);
+    if (!ancestors.length) return;
+    setExpandedDirs((prev) => {
+      if (ancestors.every((p) => prev.has(p))) return prev;
+      const next = new Set(prev);
+      for (const p of ancestors) next.add(p);
+      return next;
+    });
+  }, [selectedPageId, tree]);
   // Filters are a power-user affordance — start hidden so the panel opens
   // calm; the funnel button shows a count when any filter is active.
   const [showFilters, setShowFilters] = useState(false);
@@ -989,13 +991,6 @@ export function DocsTree({
   // (or filtering by status) is how a reader audits staleness across the tree.
   const [showFreshness, setShowFreshness] = useState(false);
 
-  const tree = useMemo(
-    () =>
-      viewMode === "domain"
-        ? buildStoredTree(pages, knowledgeGraphHref)
-        : buildTree(pages),
-    [pages, viewMode, knowledgeGraphHref],
-  );
   // Numbering is decided on what actually renders, after filtering, so the
   // visible run stays contiguous even when a filter hides a numbered row.
   const filteredTree = useMemo(

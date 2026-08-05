@@ -255,9 +255,6 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       ) : (
         <DocsTree
           pages={pages}
-          // Where a layer row sends a reader after the picture rather than the
-          // list: the graph draws the layers and what crosses between them.
-          knowledgeGraphHref={`/repos/${repoId}/knowledge-graph`}
           // The id, not the fetched page: the row should highlight on click,
           // not once its body has come back.
           selectedPageId={selectedPageId}
