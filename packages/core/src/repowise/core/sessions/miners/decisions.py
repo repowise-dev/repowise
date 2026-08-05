@@ -61,6 +61,7 @@ from repowise.core.analysis.decisions.provenance import (
     verify_quote,
 )
 from repowise.core.analysis.decisions.rationale_comments import CAUSAL_MARKERS
+from repowise.core.analysis.decisions.scope import resolve_module_nodes
 from repowise.core.distill.corrections import command_anchor
 from repowise.core.sessions import INTENT_TURNS, Event, get_adapter
 from repowise.core.sessions.cursor import iter_new_events
@@ -549,7 +550,7 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
     structured = row["structured"]
     status = "active" if row["first_promotion"] else "proposed"
     files = _relative_files(structured.get("affected_files") or row["files"], repo_root)
-    modules = sorted({f.rsplit("/", 1)[0] for f in files if "/" in f})
+    modules = resolve_module_nodes(files)
     confidence = compute_confidence(
         rank_for_source("session"),
         row["observations"],
@@ -582,9 +583,6 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
 #: had time to react (or end) before "no contradiction" reads as "followed".
 INJECTION_EVAL_MIN_AGE_SECONDS = 3600.0
 
-#: Staleness levels mirroring run_update_evolution's amended/reaffirmed moves.
-_CONTRADICTED_STALENESS = 0.6
-_FOLLOWED_STALENESS = 0.2
 
 
 async def apply_injection_feedback(
@@ -600,9 +598,11 @@ async def apply_injection_feedback(
     sidecar's ``injections`` table), check the same session's mined user
     corrections: a correction that contradicts the shown decision (the
     :func:`~repowise.core.analysis.decisions.evolution.contradicts` heuristic)
-    marks it contradicted and bumps staleness so the evolution machinery
-    surfaces the drift; otherwise the guidance counts as followed and
-    staleness relaxes, the same reaffirm move ``run_update_evolution`` makes.
+    marks it contradicted; otherwise the guidance counts as followed. The
+    verdict is stored on the injection row and nowhere else: it used to also
+    clamp the decision's ``staleness_score``, which is now a measured fact
+    about whether the governed files moved, and a per-machine session verdict
+    may not overwrite a value the dashboard and hosted both read.
 
     Deliberately binary for v1 (followed / contradicted); the
     followed-vs-ignored split and relevance decay are the validation-gated
@@ -666,20 +666,10 @@ async def apply_injection_feedback(
                 verdict="contradicted" if verdicts.get(decision_id) else "followed",
             )
 
-        from datetime import UTC, datetime
-
-        for decision_id, contradicted in verdicts.items():
-            rec = records[decision_id]
-            if contradicted:
-                rec.staleness_score = max(rec.staleness_score, _CONTRADICTED_STALENESS)
-                summary["contradicted"] += 1
-            else:
-                rec.staleness_score = min(rec.staleness_score, _FOLLOWED_STALENESS)
-                summary["followed"] += 1
-            rec.updated_at = datetime.now(UTC)
+        for contradicted in verdicts.values():
+            summary["contradicted" if contradicted else "followed"] += 1
 
         store.commit()
-        await db_session.flush()
     finally:
         store.close()
 

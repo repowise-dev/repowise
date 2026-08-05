@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
@@ -16,6 +17,7 @@ from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
 )
+from repowise.core.precedent.currency import describe_decision_currency
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
@@ -352,13 +354,26 @@ async def _why_path(query: str, repo: str | None) -> dict:
         # not whichever 8 the table scan happened to yield first.
         matched.sort(key=_path_decision_sort_key)
         governing = []
-        for d in matched[:_MAX_PATH_DECISIONS]:
+        for rank, d in enumerate(matched[:_MAX_PATH_DECISIONS]):
             # Walk supersedes/refines back to roots so the answer is a
             # lineage chain (sessions → JWT → OAuth2), not a flat list.
             lineage = await build_lineage_chain(session, d.id)
-            governing.append(
-                _governing_decision_entry(d, json.loads(d.affected_files_json), lineage)
-            )
+            entry = _governing_decision_entry(d, json.loads(d.affected_files_json), lineage)
+            # Ask git whether the top record still holds — and only the top
+            # one. The query is ~60 ms, which is affordable once inside an MCP
+            # call and is not affordable eight times; the record ranked first
+            # is the one a reader acts on. Everything below it keeps the
+            # stored proportion, which needed no subprocess to compute.
+            if rank == 0:
+                sentence = await asyncio.to_thread(
+                    describe_decision_currency,
+                    ctx.path,
+                    created_at=d.created_at,
+                    nodes=json.loads(d.affected_files_json or "[]"),
+                )
+                if sentence:
+                    entry["still_true"] = sentence
+            governing.append(entry)
 
         origin_story = _build_origin_story(query, git_meta, governing)
         _trim_commit_text(origin_story)

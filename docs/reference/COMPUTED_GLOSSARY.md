@@ -211,12 +211,12 @@ workspace overlays, MCP responses, and CLI output.
 | Decision source | Provenance of a record. | `DecisionRecord.source` | `inline_marker`, `git_archaeology`, `readme_mining`, `cli` |
 | Decision confidence | Source-specific extraction confidence. | `DecisionExtractor` | `0.95` inline LLM, `0.70` git signal, `0.60` README mining, `1.0` manual |
 | Affected files | Files linked to a decision from graph neighbors, commit files, or manual input. | `DecisionExtractor` | `["src/auth.py", "src/session.py"]` |
-| Affected modules | Top-level modules inferred from affected files or text. | `_infer_modules()` | `["src", "packages"]` |
+| Affected modules | Directories the affected files live in, deduped and capped; for records that name no file, the deepest directories mentioned in the decision text. | `resolve_module_nodes()` and `_infer_modules_from_text()` | `["packages/core/src/repowise/core/pipeline", "tests/unit/pipeline"]` |
 | Decision tags | Topic labels inferred from keywords or LLM output. | `_infer_tags()` and prompts | `auth`, `database`, `api`, `security`, `testing` |
 | Decision status | Lifecycle state. | `DecisionRecord.status` | `proposed`, `active`, `deprecated`, `superseded` |
-| Decision staleness score | 0 to 1 score indicating code has moved since a decision. | `DecisionExtractor.compute_staleness()` and `crud.recompute_decision_staleness()` | `0.63` |
-| Conflict boost | Staleness increase when newer commit messages contain contradiction signals and overlap decision text. | `compute_staleness()` | `+0.3` for "migrate away" touching the same concept |
-| Decision health summary | Counts and lists for stale, proposed, and ungoverned hotspots. | `get_decision_health_summary()` and server/CLI routes | `{active: 10, stale: 2, proposed: 3}` |
+| Decision staleness score | Fraction of a decision's affected files committed to since the decision was recorded. A file the repository does not track counts as changed. 0 for a decision naming no file, since the question cannot be asked of it. | `DecisionExtractor.compute_staleness()` and `crud.recompute_decision_staleness()` | `0.25` when 1 of 4 governed files has moved |
+| Decision still-true sentence | Read-time answer from `git rev-list` on whether a decision's files changed since it was made. Served where a subprocess is affordable (`get_why` path mode, `repowise decision show`), never on a hook or update path; absent when git cannot decide. | `precedent.currency.describe_decision_currency()` | `nothing in the 3 files it governs has changed since 2026-05-02` |
+| Decision health summary | Counts and lists for stale, proposed, unscoped, and ungoverned hotspots. | `get_decision_health_summary()` and server/CLI routes | `{active: 10, stale: 2, unscoped: 6, proposed: 3}` |
 | Ungoverned hotspot | Hot file without related architectural decision coverage. | Decision health computation | `src/payments/processor.py` |
 
 ## Security Findings

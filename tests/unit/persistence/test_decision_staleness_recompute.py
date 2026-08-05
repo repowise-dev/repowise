@@ -119,3 +119,55 @@ async def test_file_the_index_has_never_seen_still_scores_stale(session):
     rec = await session.get(DecisionRecord, "d1")
     assert updated == 1
     assert rec.staleness_score == pytest.approx(1.0)
+
+
+# -- module-linkage backfill --------------------------------------------------
+#
+# The rows a user already has carry the first-path-segment scope, which in a
+# packages/ layout is `packages` or `tests` for nearly every record. This is
+# the named migration for them: re-derived in the repair pass that already
+# runs on every update, not in a data migration that would have to agree with
+# the runtime path forever.
+
+
+async def test_existing_rows_have_their_module_scope_re_derived(session):
+    import json
+
+    rec = await _add_decision(session, files=["packages/core/src/pipeline/persist.py"], staleness=0.0)
+    rec.affected_modules_json = json.dumps(["packages"])  # the pre-change shape
+    await session.flush()
+    await _add_git_metadata(session, "packages/core/src/pipeline/persist.py", days_ago=60, commits=1)
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    rec = await session.get(DecisionRecord, "d1")
+    assert json.loads(rec.affected_modules_json) == ["packages/core/src/pipeline"]
+
+
+async def test_backfill_is_not_reported_as_a_rescore(session):
+    """The count callers print is "N decisions rescored"; a silent repair is not one."""
+    import json
+
+    rec = await _add_decision(session, files=["a/b/c.py"], staleness=0.0)
+    rec.affected_modules_json = json.dumps(["a"])
+    await session.flush()
+    await _add_git_metadata(session, "a/b/c.py", days_ago=60, commits=1)
+
+    updated = await recompute_decision_staleness(session, _REPO_ID, {})
+
+    assert updated == 0
+    rec = await session.get(DecisionRecord, "d1")
+    assert json.loads(rec.affected_modules_json) == ["a/b"]
+
+
+async def test_a_record_naming_no_file_keeps_its_scope_rather_than_inventing_one(session):
+    import json
+
+    rec = await _add_decision(session, files=[], staleness=0.0)
+    rec.affected_modules_json = json.dumps(["packages"])
+    await session.flush()
+
+    await recompute_decision_staleness(session, _REPO_ID, {})
+
+    rec = await session.get(DecisionRecord, "d1")
+    assert json.loads(rec.affected_modules_json) == ["packages"]

@@ -94,15 +94,21 @@ async def test_uncontradicted_injection_counts_as_followed(session, tmp_path):
     summary = await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
 
     assert summary == {"followed": 1, "contradicted": 0}
+    # The verdict lands on the injection ledger and nowhere else. It used to
+    # also relax the record's staleness, which is now a measured fact about
+    # whether the governed files moved — a per-machine session verdict may not
+    # overwrite a value the dashboard and hosted both read.
     rec = await session.get(DecisionRecord, "d1")
-    assert rec.staleness_score == pytest.approx(0.2)
+    assert rec.staleness_score == pytest.approx(0.5)
 
     # Judged once: a second pass finds nothing unevaluated.
     again = await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
     assert again == {"followed": 0, "contradicted": 0}
 
 
-async def test_contradicting_correction_bumps_staleness(session, tmp_path):
+async def test_contradicting_correction_is_recorded_without_touching_staleness(
+    session, tmp_path
+):
     session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
     await _add_decision(session, "d1", staleness=0.1)
     _record_injection(tmp_path, "sess-1", "d1", _OLD_ENOUGH)
@@ -113,8 +119,10 @@ async def test_contradicting_correction_bumps_staleness(session, tmp_path):
     summary = await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
 
     assert summary == {"followed": 0, "contradicted": 1}
+    # Contradiction is a judgement about the record; staleness is a fact about
+    # the code. The first no longer writes the second.
     rec = await session.get(DecisionRecord, "d1")
-    assert rec.staleness_score == pytest.approx(0.6)
+    assert rec.staleness_score == pytest.approx(0.1)
 
 
 async def test_unrelated_correction_still_counts_as_followed(session, tmp_path):

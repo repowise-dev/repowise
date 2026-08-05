@@ -16,6 +16,7 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
+from repowise.core.precedent.currency import describe_decision_currency
 
 #: The ladder's real sources plus the no-filter sentinel. Derived, because the
 #: hand-written copy had drifted: it offered ``readme_mining`` (since retired)
@@ -295,8 +296,19 @@ def decision_show(decision_id: str, path: str | None) -> None:
         f"[bold]{rec.title}[/bold]",
         f"Status: {rec.status}  |  Source: {rec.source}  |  Confidence: {rec.confidence:.0%}",
         f"Staleness: {rec.staleness_score:.2f}",
-        "",
     ]
+    # The stored score is a proportion; this is the fact behind it, asked of
+    # git at read time. `show` is one record on demand, which is exactly where
+    # a subprocess is affordable — nothing on the hook or update path may do
+    # this. None means git could not decide, and then we say nothing.
+    currency = describe_decision_currency(
+        repo_path,
+        created_at=rec.created_at,
+        nodes=json.loads(rec.affected_files_json or "[]"),
+    )
+    if currency:
+        lines.append(f"[dim]{currency}[/dim]")
+    lines.append("")
     if rec.context:
         lines.append(f"[cyan]Context:[/cyan] {rec.context}")
     if rec.decision:
@@ -512,6 +524,11 @@ def decision_health(path: str | None) -> None:
     stats_table.add_row("Active decisions", str(summary.get("active", 0)))
     stats_table.add_row("Proposed (needs review)", f"[yellow]{summary.get('proposed', 0)}[/yellow]")
     stats_table.add_row("Stale decisions", f"[red]{summary.get('stale', 0)}[/red]")
+    unscoped = summary.get("unscoped", 0)
+    if unscoped:
+        # Not folded into "stale": these were never checked, which is a
+        # different thing from checked and found to have drifted.
+        stats_table.add_row("Unscoped (cannot be checked)", f"[yellow]{unscoped}[/yellow]")
     stats_table.add_row("Deprecated", str(summary.get("deprecated", 0)))
     console.print(stats_table)
 

@@ -32,10 +32,10 @@ import asyncio
 import json
 import logging
 import re
-import subprocess
 import time
 from pathlib import Path
 
+from repowise.core.precedent.currency import commits_since
 from repowise.core.precedent.store import EpisodeStore, default_store_path
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 
@@ -310,29 +310,11 @@ def _commits_since(root: Path, birth_commit: str, nodes: list[str]) -> int | Non
 
     The one sanctioned read-time computation in this path, and it is bounded:
     a single plumbing call with a hard timeout, measured at 55-66 ms against
-    get_answer's multi-second synthesis. A budget that quietly produces a
-    partial count is worse than no answer, so every failure mode returns None
-    and the caller decides what silence means.
+    get_answer's multi-second synthesis. The call itself lives in
+    :mod:`repowise.core.precedent.currency`, shared with the decision layer,
+    which asks the same question from a date instead of a birth commit.
     """
-    cmd = ["git", "rev-list", "--count", f"{birth_commit}..HEAD"]
-    if nodes:
-        cmd += ["--", *nodes]
-    try:
-        completed = subprocess.run(
-            cmd,
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_S,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if completed.returncode != 0:
-        return None
-    try:
-        return int(completed.stdout.strip())
-    except ValueError:
-        return None
+    return commits_since(root, since_commit=birth_commit, nodes=nodes, timeout=_GIT_TIMEOUT_S)
 
 
 def _recorded_on(birth_at: float) -> str:

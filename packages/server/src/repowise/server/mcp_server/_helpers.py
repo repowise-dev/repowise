@@ -387,7 +387,6 @@ def _sibling_coverage(file_path: str, governing: list[dict], all_decisions: list
 
     for d in all_decisions:
         affected = json.loads(d.affected_files_json)
-        json.loads(d.affected_modules_json)
         for af in affected:
             af_dir = "/".join(af.split("/")[:-1])
             if af_dir == dir_path and af != file_path:
