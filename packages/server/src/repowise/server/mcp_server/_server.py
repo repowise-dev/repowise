@@ -479,7 +479,14 @@ async def _lifespan(server: FastMCP):
     )
 
     _state._fts = FullTextSearch(engine)
-    await _state._fts.ensure_index()
+    try:
+        await _state._fts.ensure_index()
+    except Exception:
+        # Every tool this server exposes was unreachable when this raised
+        # (issue #1309), including the ones that never touch the index. The
+        # instance is kept: its search still runs against whatever shape the
+        # index is in, and the vector arm answers alongside it.
+        _log.warning("repowise MCP: full-text index unavailable", exc_info=True)
 
     # Seed InMemory placeholder so tools that don't need vector search
     # can start immediately, before the background load completes.

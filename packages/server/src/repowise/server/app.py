@@ -185,9 +185,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("stale_job_reset_failed", extra={"error": str(exc)})
 
-    # Full-text search
+    # Full-text search. A failure here used to abort startup, so a store whose
+    # index could not be upgraded served no documentation at all (issue #1309):
+    # the wiki, the graph and the health pages were all unreachable over a
+    # search index. Keyword search degrades to whatever shape the index is
+    # already in, or to the vector arm alone; everything else keeps working.
     fts = FullTextSearch(engine)
-    await fts.ensure_index()
+    try:
+        await fts.ensure_index()
+    except Exception as exc:
+        logger.warning("fts_ensure_index_failed", extra={"error": str(exc)})
 
     # Reuse the repo-local LanceDB index written by CLI init/update. A fresh
     # in-memory store is used only when this database cannot be associated with

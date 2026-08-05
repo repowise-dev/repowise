@@ -496,7 +496,31 @@ def _run_repo_checks(
             # Repair FTS: re-index missing pages, delete orphaned
             if missing_from_fts or orphaned_fts:
                 fts = FullTextSearch(engine)
-                await fts.ensure_index()
+                try:
+                    await fts.ensure_index()
+                except Exception as exc:
+                    # The schema upgrade is not what was asked for, and it must
+                    # not take the repair down with it. It used to: the upgrade
+                    # refused on a drifted store and the error it raised told
+                    # the user to run this very command (issue #1309), so the
+                    # only command that could fix the drift was the one the
+                    # drift killed. Both repairs below work on either column
+                    # set, so say what failed and carry on.
+                    console.print(
+                        f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]"
+                    )
+                # Orphans first, deliberately. Deleting one needs nothing but
+                # its page_id, so it works on any column set this class has
+                # ever written — including the one an upgrade just failed to
+                # leave behind. Re-indexing a missing page writes every column
+                # and would raise there, taking the repair that *can* run down
+                # with it.
+                if orphaned_fts:
+                    # One transaction for the lot. Per-id deletes cost a write
+                    # lock each, and the store that needs this most is the one
+                    # with thousands of them.
+                    await fts.delete_many(list(orphaned_fts))
+                    repaired += len(orphaned_fts)
                 if missing_from_fts:
                     # Fetch full page data for missing pages
                     async with get_session(sf) as session:
@@ -519,9 +543,6 @@ def _run_repo_checks(
                                 target_path=page.target_path,
                             )
                             repaired += 1
-                for pid in orphaned_fts:
-                    await fts.delete(pid)
-                    repaired += 1
 
             # Repair vector store: re-embed missing pages, delete orphaned
             lance_dir = repowise_dir / "lancedb"

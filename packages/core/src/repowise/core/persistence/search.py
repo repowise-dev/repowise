@@ -62,6 +62,17 @@ PAGE_FTS_DDL = (
     "USING fts5(page_id UNINDEXED, title, content, summary, target_path)"
 )
 
+# An indexed row whose page is gone from ``wiki_pages``. Counting and deleting
+# share the predicate so the number reported is exactly the number removed.
+# ``NOT EXISTS`` rather than ``NOT IN``: the subquery's column is a primary key
+# and can never be NULL today, but ``NOT IN`` returns no rows at all the day one
+# is, which would turn this into a silent no-op instead of a visible failure.
+_ORPHAN_PREDICATE = (
+    "NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.id = page_fts.page_id)"
+)
+_ORPHAN_COUNT_SQL = f"SELECT count(*) FROM page_fts WHERE {_ORPHAN_PREDICATE}"
+_ORPHAN_DELETE_SQL = f"DELETE FROM page_fts WHERE {_ORPHAN_PREDICATE}"
+
 # The text PostgreSQL indexes and searches. The GIN index built by the Alembic
 # migration uses this exact expression: any drift between the two silently
 # drops the index from the query plan, leaving a sequential scan that still
@@ -330,6 +341,7 @@ class FullTextSearch:
             async with self._engine.begin() as conn:
                 await conn.execute(text(PAGE_FTS_DDL))
             await self._upgrade_sqlite_schema()
+            await self.prune_orphans()
         elif self._dialect == "postgresql":
             async with self._engine.begin() as conn:
                 await conn.execute(
@@ -366,22 +378,53 @@ class FullTextSearch:
                     f"expected {list(PAGE_FTS_COLUMNS)!r}"
                 )
 
+            if not await self._page_table_exists(conn):
+                # The refill has nothing to read. Leaving the old index in
+                # place is the only move that keeps search answering, and it
+                # must not raise: every command opens the store through here,
+                # so an exception would take the whole CLI down over an index
+                # that is still perfectly usable on its old shape.
+                _log.warning(
+                    "page_fts is on an older column set but wiki_pages is missing; "
+                    "leaving the index alone"
+                )
+                return
+
             indexed_rows = await conn.execute(text("SELECT count(*) FROM page_fts"))
             indexed_count = int(indexed_rows.scalar() or 0)
             page_rows = await conn.execute(text("SELECT count(*) FROM wiki_pages"))
             page_count = int(page_rows.scalar() or 0)
+            orphan_count = await self._count_orphans(conn)
 
-        # The rebuild is a delete followed by a refill from a different table.
-        # If that table cannot account for what is already indexed, the two
-        # halves of the store have drifted and refilling would delete
-        # searchable pages outright. An index on the old shape still answers
-        # queries, so leaving it alone is strictly the safer failure.
-        if indexed_count > page_count:
-            raise RuntimeError(
-                f"Refusing to rebuild page_fts: {indexed_count} indexed rows but only "
-                f"{page_count} rows in wiki_pages to refill them from. The full-text "
-                f"index and the page table have drifted apart; repair the store "
-                f"(repowise doctor --repair) before upgrading it."
+        # The rebuild is a delete followed by a refill from a different table,
+        # so an index holding more rows than ``wiki_pages`` used to be refused
+        # here on the theory that refilling would delete searchable pages.
+        # It does not. Every excess row is a row whose ``page_id`` has no page
+        # behind it: the page was swept from SQL and the FTS delete that should
+        # have followed never ran, because it runs after the commit, outside
+        # the transaction, on a best-effort path (issue #1309). A hit on one of
+        # those answers in full and then 404s when the reader opens it, so
+        # dropping it is the repair, not the damage.
+        #
+        # What the refusal actually cost was every command: ``serve``,
+        # ``doctor --repair`` and the MCP server all open the store through
+        # ``ensure_index``, so the error told the user to run the one command
+        # it had already killed. Rebuild, and say what was discarded.
+        if orphan_count:
+            _log.warning(
+                "Dropping %d orphaned page_fts row(s) with no wiki_pages row behind "
+                "them while rebuilding the index",
+                orphan_count,
+            )
+        elif indexed_count > page_count:
+            # Excess the orphan scan cannot explain: duplicate rows for pages
+            # that do exist. The refill writes one row per page and fixes it,
+            # but it is worth a line — nothing in normal operation writes two.
+            _log.warning(
+                "page_fts holds %d rows for %d pages with no orphans among them; "
+                "the rebuild will collapse the duplicates",
+                indexed_count,
+                page_count,
             )
 
         _log.info(
@@ -407,6 +450,66 @@ class FullTextSearch:
             # Nothing in the statement above should be able to drop a row, so
             # a mismatch means the page table moved underneath the rebuild.
             _log.warning("page_fts rebuild wrote %d rows for %d pages", refilled, page_count)
+
+    @staticmethod
+    async def _page_table_exists(conn) -> bool:
+        """Whether ``wiki_pages`` is present on this connection."""
+        row = await conn.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wiki_pages'")
+        )
+        return row.scalar() is not None
+
+    @staticmethod
+    async def _count_orphans(conn) -> int:
+        """How many indexed rows name a page ``wiki_pages`` no longer has."""
+        row = await conn.execute(text(_ORPHAN_COUNT_SQL))
+        return int(row.scalar() or 0)
+
+    async def prune_orphans(self) -> int:
+        """Delete indexed rows whose page is gone. Returns how many went.
+
+        Six places delete pages from SQL and then delete their FTS rows
+        afterwards: the two writes cannot share a transaction, because on
+        SQLite the index lives in the same file as the session and writing to
+        it while the session holds the write lock raises "database is locked".
+        So the SQL delete is durable and the FTS delete is best-effort, and
+        anything that ends the process in between — a Ctrl-C, a crash, a lock
+        that did not clear — leaves a row indexed forever. Nothing reconciled
+        them, so the residue only ever grew; issue #1309 is a store that
+        reached 113 indexed rows against 24 pages that way.
+
+        An orphan is not inert. Search hydrates a hit's title and snippet from
+        the FTS row itself, so an orphan answers a query in full and 404s when
+        the reader clicks it, while holding a slot a live page wanted.
+
+        Called from :meth:`ensure_index`, which every command runs on the way
+        in, so an interrupted sweep heals on the next command instead of
+        becoming permanent. The scan is read-only and the write transaction is
+        opened only when there is something to delete: the common case is no
+        orphans, and taking the write lock to discover that would put every
+        command in the way of every other one.
+        """
+        if self._dialect != "sqlite":
+            # The GIN index is an expression over ``wiki_pages`` itself. It
+            # cannot hold a row the table does not, so there is nothing to
+            # prune and no scan worth paying for.
+            return 0
+
+        async with self._engine.connect() as conn:
+            if not await self._page_table_exists(conn):
+                return 0
+            orphans = await self._count_orphans(conn)
+        if not orphans:
+            return 0
+
+        async with self._engine.begin() as conn:
+            await conn.execute(text(_ORPHAN_DELETE_SQL))
+        _log.warning(
+            "Pruned %d orphaned page_fts row(s): indexed pages that are no longer in "
+            "wiki_pages, left behind by a sweep whose index delete did not complete",
+            orphans,
+        )
+        return orphans
 
     async def index(
         self,

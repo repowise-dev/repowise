@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.38.1] — 2026-08-05
+
+### Fixed
+- **A store upgraded from 0.37.0 no longer refuses to open.** 0.38.0 widened `page_fts` from three columns to five, and FTS5 cannot be altered, so the index is dropped and refilled from `wiki_pages` the first time an upgraded install opens the store. That rebuild refused whenever the index held more rows than `wiki_pages` could account for, and the error it raised told the reader to run `repowise doctor --repair` — which opens the store the same way, hit the same refusal, and died before repairing anything. `serve` and the MCP server died there too, so a search index took the entire wiki down with it. The excess rows are orphans: pages swept from SQL whose index delete never ran, because it runs after the commit, outside the transaction, on a best-effort path, and nothing ever reconciled them. An orphan answers a query in full and 404s when the reader opens it, so the rebuild discards it and reports the count rather than refusing. (#1309)
+- **An interrupted sweep heals itself.** `ensure_index` prunes orphaned index rows on every open, which is the only thing that ever reconciled the two halves of the store; the residue could otherwise only grow. The scan is read-only and takes the write lock only when there is something to delete.
+- **`doctor --repair` finishes what it was called for.** A failing full-text schema upgrade is reported and stepped over instead of aborting the repair, and orphans are deleted in one transaction rather than one per id.
+- **`serve` and the MCP server start on a store whose index cannot be prepared,** falling back to whatever shape the index is in plus the vector arm, with a warning. Every other surface — the wiki, the graph, code health — was unreachable over a keyword index.
+
+---
+
 ## [0.38.0] — 2026-08-04
 
 Four new languages, an orientation set rebuilt around what a reader actually needs, and a wiki that draws on the repository's own vocabulary instead of writing generic prose about it. Svelte and Vue reach the Full tier through a byte-preserving projection into TypeScript; HTML lands at the import tier; reStructuredText documents are read as reStructuredText rather than silently yielding nothing. Onboarding is six pages now, ending in a glossary built entirely from mined terms, and a directory that heads a subsystem gets a chapter even when it also holds files of its own. Full-text search was rebuilt on both backends after the query shape turned out to match 65% of the corpus on a median question. The agent hooks got measurement first and then acted on it: the Grep flood is replaced by its digest instead of ranked next to it, triage ranks the files the search actually matched, and the three hot index lookups dropped an ORM import that cost a second per hook fire.
