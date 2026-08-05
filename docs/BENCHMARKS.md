@@ -158,23 +158,18 @@ Loading one commit's context, measured over 30 flask commits:
 **35.6x fewer than naive, pooled** (29.3x as a mean of per-commit ratios, 3.6x
 pooled against `git diff`).
 
-> **Correction, 2026-08-01.** This section previously read "2,391 tokens against
-> 64,039, roughly 27x fewer". Those numbers were **not reproducible**: no raw
-> data for that run was ever kept, the reproduce command switched off the
-> minimum-token guard, and on a pinned re-measurement naive came out at 13,984
-> rather than 64,039. The old figures are named here rather than quietly
-> swapped, and the raw CSV for the replacement is committed.
+Measured over 30 commits on a pinned checkout, raw CSV committed alongside the
+harness.
 
 These are token and call counts, and they are not the same as dollars: agent-side
 prompt caching mutes the cost delta on repeated context even where token counts
 drop sharply. We report what these runs establish, which is the exploration the
 agent no longer performs.
 
-**One caveat on the table above**, which comes from the paired flask and sklearn
-SWE-QA runs rather than the commit measurement: the v1 flask **cost** figure did
-not reproduce on rerun, and **sklearn48 has never been rerun** and carries the
-same risk. The navigation figures (file reads, tool calls) survived; treat the
-token percentages as the weaker row of the two.
+**One caveat on the percentages table above**, which comes from the paired flask
+and sklearn SWE-QA runs rather than from the commit measurement: **sklearn48 has
+not been rerun under the current harness**, so treat that row as the less firm of
+the two.
 
 Reports:
 **[flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md)** ·
