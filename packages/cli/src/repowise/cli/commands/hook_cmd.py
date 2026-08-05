@@ -562,6 +562,7 @@ def hook_stats(path: str | None, as_json: bool) -> None:
         session_totals = store.session_duration_totals()
         runs = store.hook_run_totals()
         by_tool = store.hook_run_by_tool()
+        feedback = store.decision_feedback_totals()
     finally:
         store.close()
     if not rows:
@@ -569,7 +570,9 @@ def hook_stats(path: str | None, as_json: bool) -> None:
         return
 
     if as_json:
-        console.print_json(json_mod.dumps({"surfaces": rows, "runs": by_tool}))
+        console.print_json(
+            json_mod.dumps({"surfaces": rows, "runs": by_tool, "decision_feedback": feedback})
+        )
         return
 
     from rich.table import Table
@@ -614,6 +617,27 @@ def hook_stats(path: str | None, as_json: bool) -> None:
         "  [dim]rate is over classified firings only; 'n/a' marks a notice with no "
         "action to take, and read/reread counts as respected-not-re-offended.[/dim]"
     )
+
+    # The decision surface's own verdict, which the acted-on rate above cannot
+    # carry: an injected decision is judged by whether the session went on to
+    # contradict it, not by whether a tool call followed it.
+    if any(feedback.values()):
+        judged = feedback["followed"] + feedback["contradicted"]
+        parts = [
+            f"[green]{feedback['followed']} followed[/green]",
+            f"[yellow]{feedback['contradicted']} contradicted[/yellow]",
+        ]
+        if feedback["pending"]:
+            parts.append(f"[dim]{feedback['pending']} awaiting the next update[/dim]")
+        if feedback["no_verdict"]:
+            parts.append(f"[dim]{feedback['no_verdict']} settled without a verdict[/dim]")
+        console.print(f"  injected decisions: {', '.join(parts)}")
+        if judged:
+            pct = 100.0 * feedback["followed"] / judged
+            console.print(
+                f"  [dim]{pct:.0f}% of judged injections were followed; "
+                "contradicted ones bump the record's staleness.[/dim]"
+            )
 
     if session_totals:
         session_totals.sort()

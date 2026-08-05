@@ -22,6 +22,7 @@ Markers found in file: {file_path}
 
 For each marker, return a JSON object:
 {{
+  "marker_line": the line number of the marker this decision came from,
   "title": "short title of the decision",
   "context": "what situation forced this",
   "decision": "what was chosen",

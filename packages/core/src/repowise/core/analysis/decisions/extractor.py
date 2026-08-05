@@ -78,6 +78,25 @@ def _truncate_title(text: str, limit: int) -> str:
     return window[:cut].rstrip() + "…"
 
 
+def _coerce_line(value: object) -> int | None:
+    """Read an LLM-reported line number, or ``None`` if it isn't one.
+
+    Models answer ``12``, ``"12"`` and ``"line 12"`` interchangeably; anything
+    that isn't a positive integer is no attribution at all and must not be
+    guessed at.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        digits = re.search(r"\d+", value)
+        if digits:
+            line = int(digits.group())
+            return line if line > 0 else None
+    return None
+
+
 def _as_aware_utc(value: datetime) -> datetime:
     """Return ``value`` as a timezone-aware UTC datetime.
 
@@ -427,23 +446,35 @@ class DecisionExtractor:
             # Get 1-hop graph neighbors for affected_files
             affected = self._get_neighbors(file_path)
 
-            # The concatenated marker contexts are the verbatim source span the
-            # substring gate verifies the structured decision against.
-            marker_source_text = "\n".join(m.get("context", "") for m in markers)
+            markers_by_line = {m["line"]: m for m in markers}
 
             if self._provider:
                 # Use LLM to structure markers
                 try:
                     llm_decisions = await self._structure_markers_via_llm(file_path, markers)
                     for d in llm_decisions:
+                        # Attribute the decision to the one marker it was drawn
+                        # from (the prompt asks for `marker_line`, which the
+                        # parser lands in `evidence_line`). Joining every
+                        # marker's context into one span and handing it to all
+                        # of them let the substring gate stamp a decision
+                        # `exact` against a *different* marker's text, and put
+                        # marker 1's line number on marker 3's decision. A
+                        # decision we cannot attribute gets no source span at
+                        # all: the gate then leaves it `unverified`, which is
+                        # the honest verdict, rather than verifying it against
+                        # a neighbour.
+                        marker = markers_by_line.get(d.evidence_line)
+                        if marker is None and len(markers) == 1:
+                            marker = markers[0]  # unambiguous without the hint
                         d.evidence_file = file_path
-                        d.evidence_line = markers[0]["line"] if markers else None
+                        d.evidence_line = marker["line"] if marker else None
                         d.affected_files = list({file_path} | set(affected))
                         d.affected_modules = self._infer_modules(d.affected_files)
                         d.source = "inline_marker"
                         d.status = "active"
                         d.confidence = 0.95
-                        d.source_text = marker_source_text
+                        d.source_text = marker.get("context", "") if marker else ""
                     decisions.extend(llm_decisions)
                 except Exception:
                     logger.warning(
@@ -1535,6 +1566,10 @@ class DecisionExtractor:
                     consequences=item.get("consequences", []),
                     tags=item.get("tags", []),
                     evidence_commits=[item["commit_sha"]] if "commit_sha" in item else [],
+                    # Which marker this came from, for the inline-marker miner's
+                    # per-marker attribution. Absent (and left None) for every
+                    # other prompt — they scope by sha or by file instead.
+                    evidence_line=_coerce_line(item.get("marker_line")),
                     source_quote=item.get("source_quote", ""),
                 )
             )

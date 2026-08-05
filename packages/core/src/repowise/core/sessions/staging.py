@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS injections (
     chars INTEGER NOT NULL DEFAULT 0,
     duration_ms INTEGER NOT NULL DEFAULT 0,
     acted INTEGER NOT NULL DEFAULT 0,
+    verdict TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_pending ON raw_candidates(structured_key)
@@ -111,6 +112,10 @@ INJECTIONS_LEDGER_COLUMNS = (
     # :mod:`repowise.core.sessions.efficacy` for how both are filled in.
     ("duration_ms", "INTEGER NOT NULL DEFAULT 0"),
     ("acted", "INTEGER NOT NULL DEFAULT 0"),
+    # How a decision injection was judged: 'followed' | 'contradicted', or ''
+    # for a row judged on some other surface, not yet judged, or evaluated
+    # before this column existed. See :meth:`decision_feedback_totals`.
+    ("verdict", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -545,11 +550,47 @@ class SessionStagingStore:
             for r in rows
         ]
 
-    def mark_injection_evaluated(self, session_id: str, decision_id: str) -> None:
+    def mark_injection_evaluated(
+        self, session_id: str, decision_id: str, *, verdict: str = ""
+    ) -> None:
+        """Settle one injection row, recording *verdict* when there is one.
+
+        A row judged with no verdict (the decision record is gone, so there is
+        nothing to judge against) is still marked evaluated so it is not
+        re-examined forever — it just doesn't count towards either side.
+        """
         self._conn.execute(
-            "UPDATE injections SET evaluated = 1 WHERE session_id = ? AND decision_id = ?",
-            (session_id, decision_id),
+            "UPDATE injections SET evaluated = 1, verdict = ? "
+            "WHERE session_id = ? AND decision_id = ?",
+            (verdict, session_id, decision_id),
         )
+
+    def decision_feedback_totals(self) -> dict[str, int]:
+        """Counts of decision injections by followed-vs-contradicted verdict.
+
+        Covers :data:`DECISION_SURFACES` only — the surfaces whose rows are
+        judged against the decision records rather than by the transcript
+        classifier. ``pending`` is rows awaiting the next update's judgement;
+        ``no_verdict`` is rows already settled without one — a drained orphan
+        (the decision record was gone), or a row judged before this column
+        existed. Neither is recoverable, so both are reported rather than
+        quietly folded into one of the two real verdicts.
+        """
+        placeholders = ",".join("?" * len(self.DECISION_SURFACES))
+        rows = self._conn.execute(
+            "SELECT verdict, evaluated, COUNT(*) FROM injections "
+            f"WHERE surface IN ({placeholders}) GROUP BY verdict, evaluated",
+            self.DECISION_SURFACES,
+        ).fetchall()
+        totals = {"followed": 0, "contradicted": 0, "pending": 0, "no_verdict": 0}
+        for verdict, evaluated, count in rows:
+            if verdict in ("followed", "contradicted"):
+                totals[verdict] += count
+            elif evaluated:
+                totals["no_verdict"] += count
+            else:
+                totals["pending"] += count
+        return totals
 
     def correction_quotes(self, session_id: str) -> list[str]:
         """Verbatim user-correction quotes mined from one session's transcript."""

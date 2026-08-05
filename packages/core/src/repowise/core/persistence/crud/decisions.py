@@ -1013,6 +1013,47 @@ async def purge_proposed_decisions_by_source(
     return len(ids)
 
 
+async def _fill_git_meta_gaps(
+    session: AsyncSession,
+    repository_id: str,
+    git_meta_map: dict[str, dict],
+    wanted: set[str],
+) -> dict[str, dict]:
+    """``git_meta_map`` widened with persisted rows for the *wanted* paths.
+
+    The caller's map is one run's git metadata, and on an incremental update
+    that is only the files that changed in it. Staleness scoring reads a path
+    with no entry as a file that is gone and scores it 1.00, so every decision
+    over an untouched file went maximally stale for not having been touched.
+    The persisted rows cover every file the index has seen, which is the set
+    that answers "is this file still here"; a path missing from those too is
+    genuinely untracked and still scores 1.00. The run's own entries win —
+    they are this run's fresher numbers for the files it re-read.
+    """
+    missing = wanted - git_meta_map.keys()
+    if not missing:
+        return git_meta_map
+
+    filled: dict[str, dict] = {}
+    # Chunked so the IN clause stays under SQLite's bind-parameter ceiling.
+    batch = sorted(missing)
+    for start in range(0, len(batch), 500):
+        rows = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.file_path.in_(batch[start : start + 500]),
+            )
+        )
+        for row in rows.scalars().all():
+            filled[row.file_path] = {
+                col.name: getattr(row, col.name)
+                for col in row.__table__.columns
+                if col.name not in ("id", "repository_id")
+            }
+    filled.update(git_meta_map)
+    return filled
+
+
 async def recompute_decision_staleness(
     session: AsyncSession,
     repository_id: str,
@@ -1027,10 +1068,25 @@ async def recompute_decision_staleness(
     )
     decisions = list(result.scalars().all())
 
+    affected_by_id: dict[str, list[str]] = {}
+    for dec in decisions:
+        affected = json.loads(dec.affected_files_json)
+        if affected:
+            affected_by_id[dec.id] = affected
+    if not affected_by_id:
+        return 0
+
+    git_meta_map = await _fill_git_meta_gaps(
+        session,
+        repository_id,
+        git_meta_map,
+        {fp for paths in affected_by_id.values() for fp in paths},
+    )
+
     now = _now_utc()
     updated = 0
     for dec in decisions:
-        affected = json.loads(dec.affected_files_json)
+        affected = affected_by_id.get(dec.id)
         if not affected:
             continue
 

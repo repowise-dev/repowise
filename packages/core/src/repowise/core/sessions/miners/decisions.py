@@ -651,6 +651,7 @@ async def apply_injection_feedback(
 
         quotes_by_session: dict[str, list[str]] = {}
         verdicts: dict[str, bool] = {}  # decision_id -> contradicted anywhere
+        judged: list[tuple[str, str]] = []  # (session_id, decision_id) settled here
         for inj in injections:
             rec = records.get(inj["decision_id"])
             if rec is None:
@@ -666,7 +667,19 @@ async def apply_injection_feedback(
                 contradicts(decision_text, quote)[0] for quote in quotes_by_session[session_id]
             )
             verdicts[rec.id] = verdicts.get(rec.id, False) or contradicted
-            store.mark_injection_evaluated(session_id, inj["decision_id"])
+            judged.append((session_id, inj["decision_id"]))
+
+        # Settle the ledger after the aggregation, not during it: the verdict
+        # is per decision across every session that saw it, so a row's own
+        # judgement is not final until the last of them has been read. Storing
+        # it is what lets `repowise hook stats` report the split — until now
+        # the numbers existed only in one update run's console output.
+        for session_id, decision_id in judged:
+            store.mark_injection_evaluated(
+                session_id,
+                decision_id,
+                verdict="contradicted" if verdicts.get(decision_id) else "followed",
+            )
 
         from datetime import UTC, datetime
 

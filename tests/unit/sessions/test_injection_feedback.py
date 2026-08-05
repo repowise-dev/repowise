@@ -153,6 +153,47 @@ async def test_vanished_decision_row_is_drained_not_retried(session, tmp_path):
         assert store.unevaluated_injections(before=_NOW) == []
 
 
+async def test_verdicts_are_kept_on_the_ledger_for_hook_stats(session, tmp_path):
+    """The followed/contradicted split survives the run that computed it.
+
+    Without a stored verdict the numbers existed only in one `update
+    --verbose` line, so `repowise hook stats` — where someone goes to ask
+    whether the layer works — had nothing to report.
+    """
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await _add_decision(session, "d1", staleness=0.5)
+    await _add_decision(session, "d2", staleness=0.5)
+    _record_injection(tmp_path, "sess-1", "d1", _OLD_ENOUGH)
+    _record_injection(tmp_path, "sess-2", "d2", _OLD_ENOUGH)
+    _record_injection(tmp_path, "sess-3", "d1", _NOW - 60)  # too recent to judge
+    _stage_correction(
+        tmp_path, "sess-1", "no, stop using JWT tokens for service auth, revert to sessions"
+    )
+
+    await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        assert store.decision_feedback_totals() == {
+            "followed": 1,
+            "contradicted": 1,
+            "pending": 1,
+            "no_verdict": 0,
+        }
+
+
+async def test_drained_orphan_is_counted_as_neither_side(session, tmp_path):
+    session.add(Repository(id=_REPO_ID, name="r", local_path=str(tmp_path)))
+    await session.flush()
+    _record_injection(tmp_path, "sess-1", "gone", _OLD_ENOUGH)
+
+    await apply_injection_feedback(session, _REPO_ID, tmp_path, now=_NOW)
+
+    with SessionStagingStore(default_store_path(tmp_path)) as store:
+        totals = store.decision_feedback_totals()
+    assert totals["no_verdict"] == 1
+    assert totals["followed"] == totals["contradicted"] == 0
+
+
 def test_hook_written_injections_table_is_schema_compatible(tmp_path):
     """The hook's raw CREATE TABLE and the staging schema must agree."""
     from repowise.cli.commands.augment_cmd.decision_inject import _record_injections

@@ -693,6 +693,7 @@ _INJECTIONS_TABLE_SQL = (
     "chars INTEGER NOT NULL DEFAULT 0, "
     "duration_ms INTEGER NOT NULL DEFAULT 0, "
     "acted INTEGER NOT NULL DEFAULT 0, "
+    "verdict TEXT NOT NULL DEFAULT '', "
     "PRIMARY KEY (session_id, decision_id))"
 )
 
@@ -704,6 +705,7 @@ _LEDGER_COLUMNS = (
     ("chars", "INTEGER NOT NULL DEFAULT 0"),
     ("duration_ms", "INTEGER NOT NULL DEFAULT 0"),
     ("acted", "INTEGER NOT NULL DEFAULT 0"),
+    ("verdict", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
