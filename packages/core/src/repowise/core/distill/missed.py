@@ -30,9 +30,9 @@ from typing import Any
 from repowise.core.distill.budget import estimate_tokens
 from repowise.core.distill.markers import MARKER_RE
 from repowise.core.distill.router import normalize_command, select_filter
-from repowise.core.sessions import ClaudeCodeAdapter, Event, transcript_dir_for
+from repowise.core.sessions import INTENT_SHELL_CALLS, Event, HarnessAdapter, get_adapter
 
-__all__ = ["scan_missed_savings", "transcript_dir_for"]
+__all__ = ["scan_missed_savings"]
 
 #: Default scan window, in days.
 DEFAULT_WINDOW_DAYS = 7.0
@@ -64,8 +64,6 @@ RATIO_FLOOR: dict[str, float] = {
 _MIN_EST_TOKENS = 40
 
 _SHELL_TOOLS = ("Bash", "PowerShell")
-
-_ADAPTER = ClaudeCodeAdapter()
 
 
 def empty_report(days: float = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
@@ -102,20 +100,21 @@ def scan_missed_savings(
 def _scan(
     repo_root: Path, days: float, now: float | None, projects_root: Path | None
 ) -> dict[str, Any]:
-    transcripts = transcript_dir_for(repo_root, projects_root)
+    adapter = get_adapter()
     report = empty_report(days)
-    if not transcripts.is_dir():
+    transcripts = adapter.discover(repo_root, projects_root=projects_root)
+    if not transcripts:
         return report
 
     cutoff = (now if now is not None else time.time()) - days * 86400.0
     repo_prefix = str(repo_root).lower().rstrip("\\/")
     per_filter: dict[str, dict[str, int]] = {}
 
-    for path in sorted(transcripts.glob("*.jsonl")):
+    for path in transcripts:
         try:
             if path.stat().st_mtime < cutoff:
                 continue  # untouched since the window opened
-            _scan_file(path, cutoff, repo_prefix, per_filter)
+            _scan_file(adapter, path, cutoff, repo_prefix, per_filter)
         except OSError:
             continue
 
@@ -129,17 +128,17 @@ def _scan(
     return report
 
 
-def _prefilter(raw: str) -> bool:
-    """Only shell tool_use lines and result lines are worth parsing."""
-    return ('"tool_use"' in raw and '"command"' in raw) or '"toolUseResult"' in raw
-
-
 def _scan_file(
-    path: Path, cutoff: float, repo_prefix: str, per_filter: dict[str, dict[str, int]]
+    adapter: HarnessAdapter,
+    path: Path,
+    cutoff: float,
+    repo_prefix: str,
+    per_filter: dict[str, dict[str, int]],
 ) -> None:
     #: tool_use id -> command, for shell calls that passed every command gate.
     pending: dict[str, str] = {}
-    for event in _ADAPTER.iter_events(path, prefilter=_prefilter):
+    prefilter = adapter.prefilter(INTENT_SHELL_CALLS)
+    for event in adapter.iter_events(path, prefilter=prefilter):
         if event.kind == "assistant" and event.tool_uses:
             _collect_tool_use(event, cutoff, repo_prefix, pending)
         elif pending and event.tool_results:

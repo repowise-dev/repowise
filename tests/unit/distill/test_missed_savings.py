@@ -18,11 +18,8 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands.saved_cmd import saved_command
-from repowise.core.distill.missed import (
-    RATIO_FLOOR,
-    scan_missed_savings,
-    transcript_dir_for,
-)
+from repowise.core.distill.missed import RATIO_FLOOR, scan_missed_savings
+from repowise.core.sessions import transcript_dir_for
 
 NOW = time.time()
 
@@ -222,8 +219,10 @@ def test_saved_missed_empty_report_message(tmp_path: Path, monkeypatch) -> None:
 
 def test_saved_missed_table(repo: Path, projects: Path, monkeypatch) -> None:
     _write_session(projects, repo, _tool_pair("pytest -q", PYTEST_OUT, cwd=str(repo)))
+    # The CLI has no --projects-root, so redirect discovery at the adapter:
+    # ClaudeCodeAdapter.discover reads this as a module global.
     monkeypatch.setattr(
-        "repowise.core.distill.missed.transcript_dir_for",
+        "repowise.core.sessions.adapters.claude_code.transcript_dir_for",
         lambda root, projects_root=None: transcript_dir_for(root, projects),
     )
     result = CliRunner().invoke(saved_command, ["--missed", str(repo)])

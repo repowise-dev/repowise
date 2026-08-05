@@ -11,12 +11,27 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 #: Claude Code injects this text into the conversation when the user
 #: interrupts a running turn; it is the strongest pushback signal a
 #: transcript carries.
 INTERRUPT_MARKER = "[Request interrupted by user"
+
+
+def parse_timestamp(value: Any) -> float | None:
+    """Epoch seconds from an ISO-8601 transcript timestamp, or None.
+
+    Lives here rather than in an adapter because ISO-8601 is not a property
+    of any one harness; adapters and consumers both read it.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 @dataclass(slots=True)

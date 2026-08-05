@@ -18,8 +18,8 @@ from click.testing import CliRunner
 
 from repowise.cli.commands.saved_cmd import saved_command
 from repowise.core.distill.budget import estimate_tokens
-from repowise.core.distill.missed import transcript_dir_for
 from repowise.core.distill.missed_mcp import REREAD_FLOOR, scan_missed_mcp_savings
+from repowise.core.sessions import transcript_dir_for
 
 NOW = time.time()
 
@@ -295,8 +295,10 @@ def test_saved_missed_shows_reread_table(repo: Path, projects: Path, monkeypatch
         f, BIG_CONTENT, cwd=str(repo), block_id="r2"
     )
     _write_session(projects, repo, entries)
+    # The CLI has no --projects-root, so redirect discovery at the adapter:
+    # ClaudeCodeAdapter.discover reads this as a module global.
     monkeypatch.setattr(
-        "repowise.core.distill.missed_mcp.transcript_dir_for",
+        "repowise.core.sessions.adapters.claude_code.transcript_dir_for",
         lambda root, projects_root=None: transcript_dir_for(root, projects),
     )
     result = CliRunner().invoke(saved_command, ["--missed", str(repo)])

@@ -526,7 +526,7 @@ def _tool_uses(line: str, index: int) -> list[tuple[int, str, str]]:
 
 
 def _parse_ts(value: Any) -> float | None:
-    from repowise.core.sessions.adapters.claude_code import parse_timestamp
+    from repowise.core.sessions.events import parse_timestamp
 
     return parse_timestamp(value)
 

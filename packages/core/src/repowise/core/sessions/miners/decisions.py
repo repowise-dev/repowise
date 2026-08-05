@@ -62,7 +62,7 @@ from repowise.core.analysis.decisions.provenance import (
 )
 from repowise.core.analysis.decisions.rationale_comments import CAUSAL_MARKERS
 from repowise.core.distill.corrections import command_anchor
-from repowise.core.sessions import ClaudeCodeAdapter, Event
+from repowise.core.sessions import INTENT_TURNS, Event, get_adapter
 from repowise.core.sessions.cursor import iter_new_events
 from repowise.core.sessions.staging import SessionStagingStore
 
@@ -420,21 +420,6 @@ guidance, questions, or venting. Return a JSON array; [] if none qualify.
 MAX_STRUCTURED_PER_UPDATE = 60
 _LLM_CHUNK = 12
 
-# This miner needs user prose, assistant prose, tool uses, and results; in
-# Claude Code all of them are "user"/"assistant" entries. Both compact and
-# spaced JSON spellings are matched; what this skips is the fat non-dialog
-# lines (file-history snapshots, queue operations, system hooks).
-_PREFILTER_TOKENS = (
-    '"type":"user"',
-    '"type": "user"',
-    '"type":"assistant"',
-    '"type": "assistant"',
-)
-
-
-def _prefilter(raw: str) -> bool:
-    return any(tok in raw for tok in _PREFILTER_TOKENS)
-
 
 def session_mining_enabled(repo_config: dict[str, Any] | None) -> bool:
     """Resolve the ``decisions.session_mining`` config gate (default on)."""
@@ -722,7 +707,10 @@ async def mine_session_decisions(
     """
     repo_root = Path(repo_path).resolve()
     repo_prefix = str(repo_root).lower().rstrip("\\/")
-    adapter = ClaudeCodeAdapter()
+    adapter = get_adapter()
+    # This miner needs user prose, assistant prose, tool uses and results:
+    # everything the conversation carries, minus the fat non-dialog lines.
+    prefilter = adapter.prefilter(INTENT_TURNS)
 
     store = SessionStagingStore.open_default(repo_root)
     try:
@@ -730,7 +718,7 @@ async def mine_session_decisions(
         staged = 0
         for path in adapter.discover(repo_root, projects_root=projects_root):
             try:
-                events = iter_new_events(adapter, path, store.cursors, prefilter=_prefilter)
+                events = iter_new_events(adapter, path, store.cursors, prefilter=prefilter)
                 for candidate in mine_events(events, repo_prefix):
                     if store.add_raw(
                         hash_=candidate.hash,

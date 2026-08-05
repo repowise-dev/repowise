@@ -38,7 +38,7 @@ from typing import Any
 import structlog
 
 from repowise.core.ids import file_path_of
-from repowise.core.sessions import ClaudeCodeAdapter, Event
+from repowise.core.sessions import INTENT_TURNS, Event, HarnessAdapter, get_adapter
 
 logger = structlog.get_logger(__name__)
 
@@ -59,15 +59,6 @@ _SEARCH_TOOL = "search_codebase"
 #: Per-call caps so one wide answer/search can't dominate a module's tally.
 _MAX_ANSWER_FILES = 5
 _MAX_SEARCH_FILES = 10
-
-#: Only these transcript lines can carry a question or its result; skipping the
-#: rest keeps the full-history sweep cheap.
-_PREFILTER_TOKENS = (
-    '"type":"user"',
-    '"type": "user"',
-    '"type":"assistant"',
-    '"type": "assistant"',
-)
 
 
 def faq_weighting_enabled(repo_config: dict[str, Any] | None) -> bool:
@@ -213,20 +204,16 @@ def mine_events_demand(events: Iterable[Event], repo_prefix: str) -> Counter:
     return demand
 
 
-def _prefilter(raw: str) -> bool:
-    return any(tok in raw for tok in _PREFILTER_TOKENS)
-
-
 def aggregate_file_demand(
     repo_path: Path | str,
     *,
-    adapter: ClaudeCodeAdapter | None = None,
+    adapter: HarnessAdapter | None = None,
     projects_root: Path | None = None,
     repo_config: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     """Per-file question demand for *repo_path* from its transcript history.
 
-    Full best-effort sweep over the repo's Claude Code transcripts. Returns
+    Full best-effort sweep over the repo's agent transcripts. Returns
     ``{repo_relative_path: question_count}``; an empty dict when FAQ weighting
     is disabled, no transcripts exist, or anything goes wrong (the planner then
     falls back to its uniform behaviour). Never raises.
@@ -235,18 +222,27 @@ def aggregate_file_demand(
         return {}
     repo_root = Path(repo_path).resolve()
     repo_prefix = str(repo_root).lower().rstrip("\\/")
-    adapter = adapter or ClaudeCodeAdapter()
 
     demand: Counter = Counter()
     try:
+        adapter = adapter or get_adapter()
+        # Only dialog lines can carry a question or its result; skipping the
+        # rest keeps the full-history sweep cheap.
+        prefilter = adapter.prefilter(INTENT_TURNS)
         transcripts = adapter.discover(repo_root, projects_root=projects_root)
-    except OSError:
+    except Exception:
+        # Never raises, by contract: the planner falls back to uniform
+        # budgets. Broad on purpose now that the adapter is substitutable —
+        # a second harness's discovery may fail in ways OSError does not name.
         return {}
 
+    # The handle stays here: this sweep reads whole history in binary and
+    # decodes per line, rather than driving from a path like the other two.
     for path in transcripts:
         try:
             with path.open("rb") as fh:
-                events = _iter_events(adapter, fh)
+                lines = (raw.decode("utf-8", errors="replace") for raw in fh)
+                events = adapter.events_from_lines(lines, prefilter=prefilter, path=path)
                 demand.update(mine_events_demand(events, repo_prefix))
         except OSError:
             continue
@@ -259,17 +255,6 @@ def aggregate_file_demand(
             total_questions=sum(demand.values()),
         )
     return dict(demand)
-
-
-def _iter_events(adapter: ClaudeCodeAdapter, fh: Iterable[bytes]) -> Iterable[Event]:
-    """Normalized events from prefiltered transcript lines."""
-    for raw in fh:
-        line = raw.decode("utf-8", errors="replace")
-        if not _prefilter(line):
-            continue
-        event = adapter.normalize(line)
-        if event is not None:
-            yield event
 
 
 def demand_summary_line(file_demand: dict[str, int]) -> str | None:
