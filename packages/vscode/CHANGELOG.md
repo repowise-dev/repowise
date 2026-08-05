@@ -15,15 +15,26 @@ itself. Everything below is visible in the editor.
 
 ### Docs
 
-- The tree opens on the shape of the repository rather than its contents. Layers
-  used to expand by default, which put roughly ninety module rows on the first
-  screen once layers grouped every module in the repo. They start closed now, so
-  the first thing you see is the set of layers, the orientation chapters and the
-  way into the file corpus.
-- The file corpus sits above the layer outline instead of under it, an unclaimed
-  module no longer poses as a layer, and a top-level row shows its count only
-  when the number is meaningful.
-- Modules group under the layer their members belong to.
+- The tree reads as a table of contents rather than a directory listing. Every
+  group on the top rung opens on load and nothing below it does, so the first
+  screen is the outline: the layers, the orientation chapters and the way into
+  the file corpus. Expanding every rung used to put roughly ninety module rows
+  in front of you once layers grouped every module in the repo; limiting the
+  depth holds that back without hiding the outline to do it.
+- The file corpus closes the tree, still collapsed. It is a reference rather
+  than a section, and its row count was setting the shape of what you met first.
+- Selecting a page opens the chapters above it, so a deep link no longer
+  highlights a row inside a collapsed parent.
+- Outline group rows drop their folder glyph and their trailing graph link. Rows
+  with no page behind them were the one place the no-icons rule never reached.
+- An unclaimed module no longer poses as a layer, a top-level row shows its
+  count only when the number is meaningful, and modules group under the layer
+  their members belong to.
+- Diagrams scale to the column they are read in. They rendered at natural size
+  inside a scroll box, so an architecture map arrived clipped mid-subgraph with
+  two scrollbars over it. Width only, never enlarged past 1:1, and the height is
+  reserved so a fitted diagram does not sit in a pool of empty space. Maximize
+  still pans and zooms for the dense ones.
 - The docs page no longer loads every page's body to draw the tree. On a large
   repository that was several sequential round trips and tens of megabytes of
   text the tree never renders.
