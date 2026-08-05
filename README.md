@@ -43,9 +43,12 @@
 
 ### Your AI agent burns most of its budget rediscovering your codebase. Index it once, and it never has to again.
 
-### up to −96% tokens to load context&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−70% tool calls
+### −97% tokens to load a commit's context
 
-<sub>Paired runs, same model, same harness, with and without repowise ([the numbers, and what they do not show →](docs/BENCHMARKS.md)).<br />
+<sub>13,984 tokens of raw file reads become 393, measured over 30 commits, raw CSV published.
+We are also the only tool in this category that publishes what that is worth inside a real
+agent loop, where the honest number is −16% of the agent's own output tokens (n=15, p=0.035)
+and the only significant result in the field. <a href="docs/BENCHMARKS.md"><strong>See how the others did →</strong></a><br />
 Free and self-hosted, runs on your machine, and the first index needs no API key.</sub>
 
 <picture>
@@ -82,9 +85,10 @@ built around **tasks**: pass several targets in one call, get complete context b
 repository, no API key and nothing uploaded.</sub>
 
 Because the exploration work is already done, that phase mostly disappears. Loading
-one commit's context through `get_context` costs **2,391 tokens instead of 64,039**
-raw. On a long multi-step investigation that compounds to **−41% of the context
-re-read across the whole session**.
+one commit's context through `get_context` costs **393 tokens instead of 13,984**
+raw, 35.6x fewer. In a measured agent loop the saving is more modest and more
+honest: **-15.9% of the agent's own output tokens**, and it grows with how much
+of the codebase the task touches.
 
 **And it arrives without being asked.** Optional [hooks](docs/agent/HOOKS.md) push
 context into the session at the moment it matters: the governing architectural
@@ -519,8 +523,9 @@ the rows we lose beside the rows we win.
   1 loss per instance. Deterministic grading, no LLM judge. *n=42, sign test
   p=0.00004.* CodeGraph scores the same on both halves to three decimals, so
   neither half is the easy one.
-- **Cheaper in a real agent loop.** -33.5% cost per question against a bare
-  agent, cheaper on 13 of 15 questions. *n=15, p=0.007.*
+- **Less work in a real agent loop.** -15.9% output tokens against a bare agent,
+  leaner on 12 of 15 questions, and the only tool in the field to reach
+  significance. *n=15, sign test p=0.035.*
 - **Agents actually call it.** Adopted in 15 of 15 cells, against CodeGraph 13,
   Serena 4, Graphify 3, and code-review-graph 0 with 30 tools advertised.
 
@@ -546,7 +551,7 @@ agent over MCP.
 | Private repo, no cloud | ✅ | ✅ | ✅ | ❌ OSS forks only |
 | MCP tools served | 10 | 1 | 29 | 3 |
 | **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.876** | 0.610 | not in this run | not measured |
-| **The agent actually calls it** *([measured](docs/BENCHMARKS.md#3-whether-agents-call-the-tools-at-all), n=15)* | ✅ **15/15** | 13/15 | 4/15 | not measured |
+| **The agent actually calls it** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=15)* | ✅ **15/15** | 13/15 | 4/15 | not measured |
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
