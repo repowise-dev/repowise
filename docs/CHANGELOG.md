@@ -9,13 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.38.1] — 2026-08-05
+## [0.39.0] — 2026-08-05
+
+A small release. `get_answer` stops handing back bare file paths, the docs sidebar reads as an outline instead of a directory listing, and a store upgraded from 0.37.0 opens again instead of taking the whole wiki down with its search index.
+
+### Added
+- **`get_answer` names what each candidate file defines,** not just its path. Of 499 paths served across the 25 flow questions, 65 carried any content at all, and 89% of the agent's post-answer searches were the same shape: take a name the payload gave, go fetch the substance it did not attach. Each candidate now carries its declarations as `name:line` pairs, question-named symbols first, imports and private names dropped. Substance per served path goes from 0.130 to 0.864, for 10% of the response and no change to which paths are served or in what order. (#1306)
+
+### Changed
+- **The docs sidebar reads as a table of contents.** Every group on the top rung opens on load and nothing below it does, so a chapter that parents sub-chapters no longer expands wherever it sits and makes the tree read as a filesystem. The four-digit file corpus closes the tree instead of fronting it, selecting a page opens the chapters above it, and outline rows drop the folder glyph the no-icons rule had never reached. (#1312)
+- **Mermaid diagrams scale to the column they are read in.** They rendered at natural size inside a scroll box, so the architecture map arrived clipped mid-subgraph behind two scrollbars. Width only, never above 1:1, with the scaled height reserved so a fitted diagram does not sit in a pool of empty space. Maximize still pans and zooms for the dense ones. (#1312)
 
 ### Fixed
 - **A store upgraded from 0.37.0 no longer refuses to open.** 0.38.0 widened `page_fts` from three columns to five, and FTS5 cannot be altered, so the index is dropped and refilled from `wiki_pages` the first time an upgraded install opens the store. That rebuild refused whenever the index held more rows than `wiki_pages` could account for, and the error it raised told the reader to run `repowise doctor --repair` — which opens the store the same way, hit the same refusal, and died before repairing anything. `serve` and the MCP server died there too, so a search index took the entire wiki down with it. The excess rows are orphans: pages swept from SQL whose index delete never ran, because it runs after the commit, outside the transaction, on a best-effort path, and nothing ever reconciled them. An orphan answers a query in full and 404s when the reader opens it, so the rebuild discards it and reports the count rather than refusing. (#1309)
 - **An interrupted sweep heals itself.** `ensure_index` prunes orphaned index rows on every open, which is the only thing that ever reconciled the two halves of the store; the residue could otherwise only grow. The scan is read-only and takes the write lock only when there is something to delete.
 - **`doctor --repair` finishes what it was called for.** A failing full-text schema upgrade is reported and stepped over instead of aborting the repair, and orphans are deleted in one transaction rather than one per id.
 - **`serve` and the MCP server start on a store whose index cannot be prepared,** falling back to whatever shape the index is in plus the vector arm, with a warning. Every other surface — the wiki, the graph, code health — was unreachable over a keyword index.
+
+### Documentation
+- **The benchmarks are rescored on the sealed half** after the retrieval gate fixes, and the token-efficiency figures are refreshed. The agent-loop result is reported as its own number rather than folded into the payload one, which measured a different thing. (#1307, #1308, #1310)
+
+### Dependencies
+- aiohttp 3.14.1 → 3.14.3, cryptography 48.0.1 → 50.0.0, gitpython 3.1.55 → 3.1.58, postcss 8.5.22 → 8.5.25, and the dev-only undici 7.28.0 → 7.29.0 and fast-uri 3.1.4 → 3.1.5. Clears the open security advisories against the tree. The cryptography floor moves rather than only its ceiling, so a fresh install of the published wheel cannot resolve back into the vulnerable range. (#1313)
 
 ---
 
