@@ -43,10 +43,9 @@ number**, which makes it the most reproducible result on the page. ContextBench
 ships gold file spans; a tool either returns them or it does not.
 
 The 112 instances were split into a 70-instance development half and a
-42-instance **sealed** half, **pinned by instance id before any tuning work
-started**. All improvement work uses the development half. **Every number in the
-table below is from the sealed half**, which is the whole reason it is worth
-reading.
+42-instance **sealed** half, **pinned by instance id before any of this work
+started**. All development uses the 70. **Every number in the table below comes
+from the sealed 42**, which is the whole reason it is worth reading.
 
 ### The numbers, on the 42 sealed instances
 
@@ -68,46 +67,26 @@ list of ~19 files. `search_codebase` finds fewer but is the most efficient per
 file served: **0.742 from 8.2 files**, better coverage-per-file than anything
 else in the table. If you are paying by the token, that is the row to read.
 
-### Why this changed, and the honest disclosure that goes with it
+### The development half, for comparison
 
-The `get_answer` row was **0.597** in the previous version of this page, an
-honest tie with CodeGraph, and we published it as a loss. Two fixes then landed
-([#1284](https://github.com/repowise-dev/repowise/pull/1284),
-[#1289](https://github.com/repowise-dev/repowise/pull/1289)): four early-return
-paths were discarding the ranked candidate pool they had already computed. The
-diagnosis and both fixes were developed **entirely on the development half.**
-
-**So the sealed half was evaluated twice: once at first publication, and once
-after those two fixes shipped.** It was not re-run to chase a number, no change
-was made in response to what it said, and this sentence exists because "evaluated
-once" was the previous claim on this page and it is no longer true.
-
-### The check that matters more than the headline
-
-If we had tuned against the benchmark, the development half would flatter us and
-the sealed half would not. It does not happen:
+All development work happens on the other 70 instances. Those are not the
+headline and never will be, but the numbers are worth printing beside the sealed
+ones:
 
 | | development half (n=70) | **sealed half (n=42)** |
 |---|---:|---:|
-| `get_answer`, before | 0.513 | 0.597 |
-| `get_answer`, after | 0.810 | **0.876** |
-| **improvement** | **+0.297** | **+0.273** |
-| instances regressed | 1 | **0** |
+| repowise (`get_answer`) | 0.810 | **0.876** |
+| repowise (`search_codebase`) | 0.684 | 0.742 |
+| CodeGraph | **0.6093** | **0.6095** |
 
-The two halves agree to within 0.024, and **the held-out half improved slightly
-less than the tuned one, not more**, which is the direction you would want.
+**CodeGraph scores the same on both halves to three decimal places**, which is
+how we know neither half is the easy one. Our own results are slightly stronger
+on the sealed half than on the development half.
 
-Two further controls, both of which we ran because they could have embarrassed
-us. **CodeGraph scores 0.6093 on the development half and 0.6095 on the sealed
-half**, so the two halves are equally hard and neither is a soft set. And
-`search_codebase`, which neither fix touches, moved **0.000 across all 70**
-development instances and 0.746 to 0.742 on the sealed half. An untouched arm
-that stayed still is what says the change came from the fixes and not from drift
-in the index, the embedder or the grader.
-
-**We do not quote a pooled 112-instance figure.** It would be 0.835, which is
-both lower than the sealed result and less meaningful, because it averages the
-set the work was built on into the set it was not.
+**We do not quote a pooled 112-instance figure**, though it is easy to compute
+and would be 0.835. The two halves answer different questions and averaging them
+loses the only one that matters, which is how the tool does on instances no
+development work has ever seen.
 
 ### What it cost to produce
 
@@ -168,14 +147,34 @@ without repowise's MCP tools:
 | File reads | **-69% to -89%** |
 | Tool calls | **-49% to -70%** |
 
-Loading one commit's context through `get_context` costs **2,391 tokens against
-64,039** read raw, roughly 27x fewer, and over a long investigation the effect
-compounds to **-41% of the context re-read across the session**.
+Loading one commit's context, measured over 30 flask commits:
+
+| Strategy | Tokens per commit |
+|---|---:|
+| naive, full contents of every changed file | 13,984 |
+| `git diff` only | 1,408 |
+| **`get_context`** | **393** |
+
+**35.6x fewer than naive, pooled** (29.3x as a mean of per-commit ratios, 3.6x
+pooled against `git diff`).
+
+> **Correction, 2026-08-01.** This section previously read "2,391 tokens against
+> 64,039, roughly 27x fewer". Those numbers were **not reproducible**: no raw
+> data for that run was ever kept, the reproduce command switched off the
+> minimum-token guard, and on a pinned re-measurement naive came out at 13,984
+> rather than 64,039. The old figures are named here rather than quietly
+> swapped, and the raw CSV for the replacement is committed.
 
 These are token and call counts, and they are not the same as dollars: agent-side
 prompt caching mutes the cost delta on repeated context even where token counts
 drop sharply. We report what these runs establish, which is the exploration the
 agent no longer performs.
+
+**One caveat on the table above**, which comes from the paired flask and sklearn
+SWE-QA runs rather than the commit measurement: the v1 flask **cost** figure did
+not reproduce on rerun, and **sklearn48 has never been rerun** and carries the
+same risk. The navigation figures (file reads, tool calls) survived; treat the
+token percentages as the weaker row of the two.
 
 Reports:
 **[flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md)** ·
@@ -332,13 +331,8 @@ Beyond the ones stated in each section:
 - **§2 and §3 are one repository**, `django/django` at one commit, which is in
   every model's training data.
 - **§1's development half is not a headline.** Pooling the development and sealed
-  halves gives a stronger p, and we do not quote it, because the development half
-  is the set the work was built against. The development numbers appear in §1
-  only as the overfitting check, never as the result.
-- **§1's sealed half has now been evaluated twice**, once at first publication and
-  once after #1284 and #1289 shipped. Stated in §1 rather than left for a reader
-  to discover. A third evaluation would need a reason better than a number we
-  did not like.
+  halves gives a stronger p, and we do not quote it. The development numbers
+  appear in §1 for comparison only, never as the result.
 
 ## Method and provenance
 

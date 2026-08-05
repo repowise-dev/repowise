@@ -517,8 +517,8 @@ the rows we lose beside the rows we win.
 - **Finds the right files.** 0.876 file coverage against CodeGraph's 0.610 on a
   **sealed** 42-instance split, held out from every improvement round. 19 wins,
   1 loss per instance. Deterministic grading, no LLM judge. *n=42, sign test
-  p=0.00004.* The tuned half improved **less** than the held-out half did, which
-  is the check that says we did not fit the benchmark.
+  p=0.00004.* CodeGraph scores the same on both halves to three decimals, so
+  neither half is the easy one.
 - **Cheaper in a real agent loop.** -33.5% cost per question against a bare
   agent, cheaper on 13 of 15 questions. *n=15, p=0.007.*
 - **Agents actually call it.** Adopted in 15 of 15 cells, against CodeGraph 13,
