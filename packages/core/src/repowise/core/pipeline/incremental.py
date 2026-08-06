@@ -586,6 +586,8 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         # the repo's excludes an update would store events for files a full
         # index never sees, and they would never age out.
         exclude_patterns=cfg.get("exclude_patterns"),
+        # Git episodes ride the same capture and inherit those excludes.
+        record_episodes=True,
     )
     newest = await get_latest_commit_committed_at(session, repo_id)
     since_ts: int | None = None

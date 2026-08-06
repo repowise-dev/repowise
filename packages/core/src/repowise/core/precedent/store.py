@@ -80,6 +80,12 @@ class Episode:
     identity, so re-deriving the same fact updates a row instead of adding
     one. ``nodes`` is the repo-relative file set the claim is bound to — the
     scope a later staleness query asks git about.
+
+    ``birth_at`` is normally left unset and stamped by the store at first
+    write, which is right for a fact derived from the checkout: it was first
+    observed when it was first derived. An episode whose birth is a matter of
+    record rather than of observation — a commit, which happened at a time the
+    walk can read — passes its own.
     """
 
     tier: str
@@ -89,6 +95,7 @@ class Episode:
     evidence: str
     nodes: tuple[str, ...] = field(default_factory=tuple)
     birth_commit: str | None = None
+    birth_at: float | None = None
 
     @property
     def id(self) -> str:
@@ -154,38 +161,8 @@ class EpisodeStore:
         if not kinds:
             return 0
         stamp = time.time() if now is None else now
-        rows = [
-            (
-                ep.id,
-                ep.tier,
-                ep.kind,
-                ep.subject,
-                ep.body,
-                ep.evidence,
-                json.dumps(list(ep.nodes)),
-                ep.birth_commit,
-                stamp,
-                stamp,
-            )
-            for ep in episodes
-        ]
         with self._conn:  # one transaction: never half-replaced
-            if rows:
-                self._conn.executemany(
-                    """
-                    INSERT INTO episodes
-                        (id, tier, kind, subject, body, evidence, nodes,
-                         birth_commit, birth_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        body = excluded.body,
-                        evidence = excluded.evidence,
-                        nodes = excluded.nodes,
-                        birth_commit = excluded.birth_commit,
-                        last_seen_at = excluded.last_seen_at
-                    """,
-                    rows,
-                )
+            self._upsert(episodes, stamp)
             placeholders = ",".join("?" * len(kinds))
             cur = self._conn.execute(
                 f"DELETE FROM episodes WHERE tier = ? AND kind IN ({placeholders}) "
@@ -196,29 +173,152 @@ class EpisodeStore:
         self.prune(now=stamp)
         return retired
 
+    def append_tier(
+        self,
+        *,
+        tier: str,
+        episodes: Iterable[Episode],
+        oldest_birth_at: float | None = None,
+        now: float | None = None,
+    ) -> int:
+        """Add to *tier* without replacing what is already in it.
+
+        The writer for a tier whose members accumulate. :meth:`replace_kinds`
+        makes a kind say exactly what a run derived, which is right for facts
+        re-derived whole every index; it is wrong here, because an incremental
+        run sees only the commits it has never seen before and its sweep would
+        delete every episode written by the runs before it.
+
+        Three things, one transaction:
+
+        * *episodes* are upserted, so a re-derived member keeps its birth;
+        * rows born before *oldest_birth_at* are dropped, which is how the
+          tier stays bounded by the window it is derived from rather than by
+          the TTL;
+        * and then, **only then**, every row in *tier* is marked re-observed,
+          because the pass that found these members looked at the whole window
+          and the TTL is over ``last_seen_at``. Without it a tier whose window
+          is wider than the TTL loses live episodes between full indexes.
+
+        *oldest_birth_at* being ``None`` says the caller cannot vouch for a
+        trailing edge, and it suppresses the touch as well as the drop. The two
+        belong together: a run that observed nothing must not claim to have
+        re-observed the tier, or the TTL is answered by a pass that looked at
+        no history and rows outlive every bound the store has.
+
+        Returns rows dropped for falling out of the window.
+        """
+        stamp = time.time() if now is None else now
+        with self._conn:
+            self._upsert(episodes, stamp)
+            dropped = 0
+            if oldest_birth_at is not None:
+                cur = self._conn.execute(
+                    "DELETE FROM episodes WHERE tier = ? AND birth_at < ?",
+                    (tier, oldest_birth_at),
+                )
+                dropped = cur.rowcount or 0
+                self._conn.execute(
+                    "UPDATE episodes SET last_seen_at = ? WHERE tier = ?", (stamp, tier)
+                )
+        self.prune(now=stamp)
+        return dropped
+
+    def _upsert(self, episodes: Iterable[Episode], stamp: float) -> None:
+        """Insert or refresh *episodes*. Caller owns the transaction.
+
+        ``birth_at`` is deliberately absent from the conflict clause: a claim
+        that still holds keeps the birth it was first written with, which is
+        what separates an episode from a value recomputed every index.
+        """
+        rows = [
+            (
+                ep.id,
+                ep.tier,
+                ep.kind,
+                ep.subject,
+                ep.body,
+                ep.evidence,
+                json.dumps(list(ep.nodes)),
+                ep.birth_commit,
+                stamp if ep.birth_at is None else ep.birth_at,
+                stamp,
+            )
+            for ep in episodes
+        ]
+        if not rows:
+            return
+        self._conn.executemany(
+            """
+            INSERT INTO episodes
+                (id, tier, kind, subject, body, evidence, nodes,
+                 birth_commit, birth_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                body = excluded.body,
+                evidence = excluded.evidence,
+                nodes = excluded.nodes,
+                birth_commit = excluded.birth_commit,
+                last_seen_at = excluded.last_seen_at
+            """,
+            rows,
+        )
+
     def prune(self, *, now: float | None = None) -> None:
-        """Drop rows past TTL, then oldest-seen until under the row cap.
+        """Drop rows past TTL, then trim each tier to the row cap.
 
         *now* is the write's own stamp when pruning follows a write: reading
         the wall clock instead would make a row written microseconds earlier
         older than the cutoff it is measured against.
+
+        **The cap is per tier, not per store.** One tier accumulates members
+        (a repository's history) while another holds a handful of facts
+        re-derived every index — and the structural handful is the only supply
+        a first-ever index of a history-less repository has. Under a shared cap
+        the accumulating tier evicts the cold-start one, and does so first:
+        structural facts are derived in the traverse phase, so a later
+        tier-wide write leaves them with the oldest ``last_seen_at`` in the
+        store and puts them at the front of the deletion queue.
         """
         cutoff = (time.time() if now is None else now) - self.ttl_days * 86400
         with self._conn:
             self._conn.execute("DELETE FROM episodes WHERE last_seen_at < ?", (cutoff,))
-            while True:
-                (rows,) = self._conn.execute("SELECT COUNT(*) FROM episodes").fetchone()
-                # Never evict the last row: it may be the one just written.
-                if rows <= max(self.max_rows, 1) or rows <= 1:
-                    break
-                self._conn.execute(
-                    """
-                    DELETE FROM episodes WHERE id IN (
-                        SELECT id FROM episodes ORDER BY last_seen_at ASC
-                        LIMIT MIN(64, (SELECT COUNT(*) - 1 FROM episodes))
-                    )
-                    """
+            tiers = [row[0] for row in self._conn.execute("SELECT DISTINCT tier FROM episodes")]
+            for tier in tiers:
+                self._trim_tier(tier)
+
+    def _trim_tier(self, tier: str) -> None:
+        """Evict *tier*'s least current rows until it is under the cap.
+
+        The ordering carries a tie-break for a reason: :meth:`append_tier`
+        stamps a whole tier with one ``last_seen_at``, so within it the primary
+        key is a total tie and SQLite would fall back to insertion order — the
+        walk's order, newest commit first. That evicts the most recent history
+        from a layer whose whole subject is recent history. ``birth_at``
+        settles it the right way round.
+        """
+        cap = max(self.max_rows, 1)
+        while True:
+            (rows,) = self._conn.execute(
+                "SELECT COUNT(*) FROM episodes WHERE tier = ?", (tier,)
+            ).fetchone()
+            # Never evict the last row: it may be the one just written.
+            if rows <= cap or rows <= 1:
+                return
+            # The excess, not the whole tier minus one: batching by the latter
+            # overshoots the cap by up to a batch on the way down, and empties
+            # the tier outright when the cap is small.
+            batch = min(64, rows - cap, rows - 1)
+            self._conn.execute(
+                """
+                DELETE FROM episodes WHERE id IN (
+                    SELECT id FROM episodes WHERE tier = ?
+                    ORDER BY last_seen_at ASC, birth_at ASC
+                    LIMIT ?
                 )
+                """,
+                (tier, batch),
+            )
 
     # -- reads -------------------------------------------------------------
 

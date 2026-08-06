@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 from repowise.core.precedent.currency import commits_since
-from repowise.core.precedent.store import EpisodeStore, default_store_path
+from repowise.core.precedent.store import TIER_STRUCTURAL, EpisodeStore, default_store_path
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 
 _log = logging.getLogger(__name__)
@@ -49,10 +49,18 @@ _MAX_EPISODES = 1
 #: stays recoverable via ``repowise expand`` rather than vanishing.
 _MAX_BODY_CHARS = 600
 
-#: How many scoped candidates are tested for staleness before giving up. Each
-#: test may cost one git query, so this is what keeps the sanctioned read-time
-#: exception bounded no matter how large the store grows.
+#: How many node-scoped candidates are tested for staleness before giving up.
+#: Each test may cost one git query, so this is what keeps the sanctioned
+#: read-time exception bounded no matter how large the store grows. One
+#: repo-wide candidate may follow them (see :func:`_candidate_window`), so the
+#: ceiling on git queries per call is this plus one.
 _MAX_SCOPED_CANDIDATES = 4
+
+#: Tiers whose episodes are re-derived whole on every index, and for which a
+#: refreshed ``last_seen_at`` is therefore proof of currency. A tier that
+#: *accumulates* members has no such proof: re-observing that a commit happened
+#: says nothing about whether the files it changed have moved since.
+_RE_DERIVED_TIERS = frozenset({TIER_STRUCTURAL})
 
 #: Room the block needs before it is worth attaching at all.
 _BLOCK_OVERHEAD_CHARS = 400
@@ -165,7 +173,7 @@ def _attach(
     # falls through to the next rather than silencing a still-true one below
     # it, but only _MAX_EPISODES are ever emitted.
     emitted = 0
-    for row, matched in scoped[:_MAX_SCOPED_CANDIDATES]:
+    for row, matched in _candidate_window(scoped):
         if emitted >= _MAX_EPISODES:
             break
         verdict = _still_true(row, root=root)
@@ -173,6 +181,38 @@ def _attach(
             continue  # precondition 2 failed outright — say nothing
         if _emit(payload, row, matched=matched, verdict=verdict, repo_root=root):
             emitted += 1
+
+
+def _candidate_window(scoped: list[tuple[dict, list[str]]]) -> list[tuple[dict, list[str]]]:
+    """The candidates staleness is tested on: bounded, and never one-sided.
+
+    Ranking puts path matches above subject matches, which is right. But a
+    node-scoped episode is *suppressed outright* when anything has touched its
+    files since, while a repo-wide one is served with its age labelled. A store
+    holding hundreds of the former and a handful of the latter would therefore
+    fill the whole window with candidates that can only fall through, and the
+    surface would go silent on a repository that had more history rather than
+    less.
+
+    So the best repo-wide candidate is **appended** when the window would
+    otherwise hold none. Appended rather than substituted, and the difference
+    is the whole point: a repo-wide verdict never suppresses, so putting one
+    in the last slot would not fall back to it, it would pre-empt the
+    node-scoped candidate standing there — trading a git-verified "nothing in
+    its scope has changed" for an unchecked claim about the whole tree, which
+    is backwards on a surface whose bar is precision at the acting stage.
+
+    It costs one more possible git query in the worst case, and that is the
+    honest price of a fifth candidate rather than something to hide by
+    dropping the fourth.
+    """
+    window = scoped[:_MAX_SCOPED_CANDIDATES]
+    if any(not matched for _row, matched in window):
+        return window
+    repo_wide = next(((row, matched) for row, matched in scoped if not matched), None)
+    if repo_wide is None:
+        return window
+    return [*window, repo_wide]
 
 
 # -- precondition 1: scope ---------------------------------------------------
@@ -254,9 +294,12 @@ def _still_true(row: dict, *, root: Path) -> str | None:
 
     Three cases, and the third is the one worth reading.
 
-    *Re-observed.* Every index refreshes ``last_seen_at`` for a fact that still
-    holds, so a stamp later than ``birth_at`` is proof of currency that costs
-    no git call at all.
+    *Re-observed.* Every index re-derives a structural fact that still holds,
+    so a stamp later than ``birth_at`` is proof of currency that costs no git
+    call at all. It proves nothing for a tier whose members accumulate: a git
+    episode is born at its commit and re-observed by every later index, so the
+    shortcut would fire always and the real question below would never be
+    asked. Hence :data:`_RE_DERIVED_TIERS`.
 
     *Node-scoped.* ``git rev-list --count <birth>..HEAD -- <nodes>`` is the
     real question, and zero is a real answer. Anything else — including a git
@@ -277,7 +320,7 @@ def _still_true(row: dict, *, root: Path) -> str | None:
     birth_at = row.get("birth_at") or 0.0
     last_seen = row.get("last_seen_at") or 0.0
     recorded = _recorded_on(birth_at)
-    if last_seen > birth_at:
+    if last_seen > birth_at and row.get("tier") in _RE_DERIVED_TIERS:
         return f"re-observed by a later index (recorded {recorded})"
 
     birth_commit = row.get("birth_commit")

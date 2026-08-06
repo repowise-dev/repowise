@@ -20,12 +20,16 @@ import time
 import pytest
 
 from repowise.core.precedent.store import (
+    TIER_GIT,
     TIER_STRUCTURAL,
     Episode,
     EpisodeStore,
     default_store_path,
 )
-from repowise.server.mcp_server.tool_answer.episodes import attach_episode_sync
+from repowise.server.mcp_server.tool_answer.episodes import (
+    _MAX_SCOPED_CANDIDATES,
+    attach_episode_sync,
+)
 
 FORMATTER_ANSWER = (
     "**Yes — run `ruff format` before committing.** This repo defines a "
@@ -232,8 +236,12 @@ def test_a_node_scoped_episode_is_suppressed_once_its_scope_changes(repo):
     assert run(copy.deepcopy(asked), repo, question="where are routers registered") == asked
 
 
-def test_a_re_observed_episode_needs_no_git_query(repo):
-    """``last_seen_at > birth_at`` is proof of currency that costs nothing."""
+def test_a_re_observed_episode_needs_no_git_query(repo, git_calls):
+    """``last_seen_at > birth_at`` is proof of currency that costs nothing.
+
+    Only for a tier re-derived whole on every index, which is what makes the
+    stamp mean anything; the git tier has its own case below.
+    """
     now = time.time()
     _write(repo, formatter_episode(_head(repo)), born=now, seen=now + 60)
 
@@ -242,6 +250,7 @@ def test_a_re_observed_episode_needs_no_git_query(repo):
     assert got["episodes"][0]["still_true"] == (
         f"re-observed by a later index (recorded {time.strftime('%Y-%m-%d', time.gmtime(now))})"
     )
+    assert git_calls == []
 
 
 def test_without_git_a_repo_wide_fact_is_served_and_a_scoped_one_is_not(tmp_path):
@@ -341,6 +350,168 @@ def test_a_subject_matches_as_a_phrase_not_a_substring(repo):
     got = run(copy.deepcopy(before), repo, question="what is ruff formatting")
 
     assert got == before
+
+
+# -- more than one tier ------------------------------------------------------
+
+
+def _git_episode(subject: str, *, birth_commit: str, nodes: tuple[str, ...]) -> Episode:
+    return Episode(
+        tier=TIER_GIT,
+        kind="code_fix",
+        subject=subject,
+        body=f"fix: something in {nodes[0]}",
+        evidence=f"commit {subject[:12]}, changed 1 file together",
+        nodes=nodes,
+        birth_commit=birth_commit,
+    )
+
+
+def test_a_git_episode_does_not_take_the_re_observed_shortcut(repo):
+    """Re-observing that a commit happened proves nothing about the code since.
+
+    A structural fact is re-derived whole on every index, so a refreshed stamp
+    means it still holds. A git episode is born at its commit and re-observed
+    by every later index, so the same stamp is guaranteed and would silently
+    replace the only question worth asking.
+    """
+    born_at = _head(repo)
+    now = time.time()
+    _write(repo, _git_episode(born_at, birth_commit=born_at, nodes=("app.py",)), born=now, seen=now + 60)
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "touch app")
+
+    before = payload(answer="It is handled in app.py.", citations=["app.py"])
+
+    assert run(copy.deepcopy(before), repo, question="where is it handled") == before
+
+
+def test_a_git_episode_whose_scope_has_not_moved_is_served(repo):
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add app")
+    born_at = _head(repo)
+    _write(repo, _git_episode(born_at, birth_commit=born_at, nodes=("app.py",)), born=time.time())
+
+    got = run(
+        payload(answer="It is handled in app.py.", citations=["app.py"]),
+        repo,
+        question="where is it handled",
+    )
+
+    assert got["episodes"][0]["tier"] == TIER_GIT
+    assert got["episodes"][0]["scope"] == ["app.py"]
+    assert "nothing in its scope has changed" in got["episodes"][0]["still_true"]
+
+
+@pytest.fixture
+def git_calls(monkeypatch):
+    """Count the sanctioned read-time git queries one attach makes."""
+    from repowise.server.mcp_server.tool_answer import episodes as mod
+
+    calls: list[tuple] = []
+    real = mod.commits_since
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "commits_since", counted)
+    return calls
+
+
+def test_a_still_true_scoped_episode_outranks_the_repo_wide_fallback(repo, git_calls):
+    """The reserved slot follows the scoped candidates; it does not replace one.
+
+    A repo-wide verdict never suppresses, so putting one *in* the last slot
+    would pre-empt whatever stood there rather than fall back to it — trading
+    a git-verified "nothing in its scope has changed" for an unchecked claim
+    about the whole tree.
+    """
+    (repo / "stable.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add stable")
+    born_at = _head(repo)
+
+    _write(repo, formatter_episode(born_at), born=time.time())
+    with EpisodeStore(default_store_path(repo)) as store:
+        store.append_tier(
+            tier=TIER_GIT,
+            episodes=[
+                # Longer subjects rank above the short one, so the still-true
+                # episode sits in the last scoped slot.
+                *(
+                    _git_episode(f"{i}" * 40, birth_commit=born_at, nodes=("Makefile",))
+                    for i in range(3)
+                ),
+                _git_episode("aa", birth_commit=born_at, nodes=("stable.py",)),
+            ],
+        )
+    (repo / "Makefile").write_text("format:\n\truff format .\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add makefile")
+
+    got = run(
+        payload(citations=["Makefile", "stable.py"], fallback_targets=[]),
+        repo,
+        question="should I run ruff format before committing",
+    )
+
+    assert got["episodes"][0]["kind"] == "code_fix"
+    assert got["episodes"][0]["scope"] == ["stable.py"]
+    assert "nothing in its scope has changed" in got["episodes"][0]["still_true"]
+
+
+def test_the_git_query_stays_bounded_however_large_the_store_gets(repo, git_calls):
+    """The ceiling is the scoped window plus the one repo-wide fallback."""
+    born_at = _head(repo)
+    _write(repo, formatter_episode(born_at), born=time.time())
+    with EpisodeStore(default_store_path(repo)) as store:
+        store.append_tier(
+            tier=TIER_GIT,
+            episodes=[
+                _git_episode(f"{i}" * 40, birth_commit=born_at, nodes=("Makefile",))
+                for i in range(20)
+            ],
+        )
+    (repo / "Makefile").write_text("format:\n\truff format .\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add makefile")
+
+    run(payload(), repo)
+
+    assert len(git_calls) == _MAX_SCOPED_CANDIDATES + 1
+
+
+def test_a_crowd_of_stale_git_episodes_does_not_starve_the_repo_wide_one(repo):
+    """Ranking must not become one-sided as a store accumulates history.
+
+    Path matches outrank subject matches, which is right, but a node-scoped
+    episode is suppressed outright once its files move while a repo-wide one is
+    served with its age labelled. Without a reserved slot, a repository with
+    more history would go silent where one with less does not.
+    """
+    born_at = _head(repo)
+    _write(repo, formatter_episode(born_at), born=time.time())
+    # Through the real writer: they share one kind, so a kind-scoped replace
+    # would leave only the last of them and the crowd would never form.
+    with EpisodeStore(default_store_path(repo)) as store:
+        store.append_tier(
+            tier=TIER_GIT,
+            episodes=[
+                _git_episode(f"{i}" * 40, birth_commit=born_at, nodes=("Makefile",))
+                for i in range(6)
+            ],
+        )
+    # Every git episode's scope has moved, so none of them can be vouched for.
+    (repo / "Makefile").write_text("format:\n\truff format .\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add makefile")
+
+    got = run(payload(), repo)
+
+    assert got["episodes"][0]["kind"] == "formatter_drift"
 
 
 # -- budget ------------------------------------------------------------------
