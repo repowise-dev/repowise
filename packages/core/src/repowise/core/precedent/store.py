@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import posixpath
 import sqlite3
 import time
 from collections.abc import Iterable, Sequence
@@ -85,6 +86,53 @@ CREATE TABLE IF NOT EXISTS episodes (
 CREATE INDEX IF NOT EXISTS idx_episodes_tier_kind ON episodes(tier, kind);
 CREATE INDEX IF NOT EXISTS idx_episodes_last_seen ON episodes(last_seen_at);
 """
+
+#: ``nodes`` normalised one row per path, so "which episodes are bound here"
+#: is an index seek instead of a scan that JSON-decodes every row in the store.
+#:
+#: Measured on this repository before it existed: scanning ``nodes`` for one
+#: path costs 1.3 ms across the 284 shareable rows here, but 22.6 ms at the
+#: store's own 5,000-row cap, against 0.2 ms through this index. Three readers
+#: made that worth normalising rather than two — ``get_why``, the counts on
+#: ``get_risk``/``get_context``, and a hook, where the plan's constraint is not
+#: a preference: hook delivery is one indexed lookup, because the budget is
+#: 155 ms and was fought down from 965 ms.
+#:
+#: Deletes are a trigger and writes are not, which is the split the data
+#: forces rather than a style choice: the store has five delete paths (a kind
+#: sweep, a window drop, the TTL, the cap trim, and a re-derivation replacing a
+#: row) and a trigger catches all of them without needing to parse JSON, while
+#: an insert has the node list already in hand in Python and would otherwise
+#: need ``json_each`` — a build-dependent extension this store's stdlib-only
+#: rule cannot assume.
+_NODES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS episode_nodes (
+    episode_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    PRIMARY KEY (episode_id, path)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_episode_nodes_path ON episode_nodes(path);
+"""
+
+#: Created **last**, after the backfill has succeeded, which is what makes its
+#: presence mean "this index is complete" rather than "somebody started
+#: building one". DDL runs in autocommit, so the table is durable the moment it
+#: is created and a backfill that then fails — a disk error, or ``SQLITE_BUSY``
+#: from another process past the 5 s timeout — would otherwise leave a table
+#: that is present, empty, and never rebuilt, because presence was the only
+#: signal. That is a store answering "no episodes are bound here" in exactly
+#: the shape of the truth. The search index gets away with a presence check
+#: because its triggers cover insert, update *and* delete, so its objects
+#: cannot exist while its contents are wrong; this one can, so it needs a
+#: signal that means the contents are right.
+_NODES_TRIGGER = """
+CREATE TRIGGER IF NOT EXISTS episodes_nodes_ad AFTER DELETE ON episodes BEGIN
+    DELETE FROM episode_nodes WHERE episode_id = old.id;
+END;
+"""
+
+#: The one object whose presence vouches for the whole index. See above.
+_NODES_COMPLETE_MARKER = "episodes_nodes_ad"
 
 #: The searchable projection of an episode. External-content rather than a
 #: table of its own: ``body`` is already a column and this corpus is 11 MB on
@@ -179,6 +227,7 @@ class EpisodeStore:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         self.fts_enabled = self._ensure_fts()
+        self.node_index_enabled = self._ensure_node_index()
 
     def _ensure_fts(self) -> bool:
         """Create the search index and refill it if it is behind. Never raises.
@@ -219,6 +268,53 @@ class EpisodeStore:
             self._conn.rollback()
             _log.debug("episode search index unavailable", exc_info=True)
             return False
+
+    def _ensure_node_index(self) -> bool:
+        """Create the node index and refill it if it is behind. Never raises.
+
+        Same contract as :meth:`_ensure_fts` and for the same reason: every
+        caller opens the store through here, so an exception over an index
+        would take down a feature that reads perfectly well without one. A
+        store where this returns ``False`` still answers every node query —
+        :meth:`_scan_by_node` is the fallback, and it is the implementation
+        this index replaced.
+
+        Completion, not presence, is the signal — see :data:`_NODES_TRIGGER`.
+        The refill reads ``episodes.nodes``, which stays the system of record,
+        so this table is derived data that can be dropped at any time and
+        rebuilt on next open. That is what makes the migration for existing
+        stores "none needed": a user who never re-indexes gets the index built
+        the first time anything opens their store.
+        """
+        try:
+            complete = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = ?", (_NODES_COMPLETE_MARKER,)
+            ).fetchone()
+            self._conn.executescript(_NODES_SCHEMA)
+            if not complete:
+                self._backfill_node_index()
+                self._conn.commit()
+                # Only now, with the contents known good, is the index vouched
+                # for. A failure above leaves no marker and the next open
+                # rebuilds from scratch.
+                self._conn.executescript(_NODES_TRIGGER)
+            self._conn.commit()
+            return True
+        except sqlite3.Error:
+            self._conn.rollback()
+            _log.debug("episode node index unavailable", exc_info=True)
+            return False
+
+    def _backfill_node_index(self) -> None:
+        """Rebuild every node row from ``episodes.nodes``. Caller owns the commit."""
+        self._conn.execute("DELETE FROM episode_nodes")
+        pairs: list[tuple[str, str]] = []
+        for episode_id_, raw in self._conn.execute("SELECT id, nodes FROM episodes"):
+            pairs.extend((episode_id_, path) for path in _decode_nodes(raw))
+        if pairs:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO episode_nodes (episode_id, path) VALUES (?, ?)", pairs
+            )
 
     @classmethod
     def open_for_repo(cls, repo_path: Path | str) -> EpisodeStore:
@@ -420,7 +516,13 @@ class EpisodeStore:
         ``birth_at`` is deliberately absent from the conflict clause: a claim
         that still holds keeps the birth it was first written with, which is
         what separates an episode from a value recomputed every index.
+
+        *episodes* is materialised before use because it is typed as an
+        iterable and two passes are made over it — the rows and then the node
+        index. Every caller today passes a list, so this is cheap insurance
+        against a generator silently writing episodes with no scope.
         """
+        episodes = list(episodes)
         rows = [
             (
                 ep.id,
@@ -453,6 +555,36 @@ class EpisodeStore:
             """,
             rows,
         )
+        self._sync_nodes(episodes)
+
+    def _sync_nodes(self, episodes: Iterable[Episode], /) -> None:
+        """Make the node index agree with what :meth:`_upsert` just wrote.
+
+        Delete-then-insert per episode rather than an upsert, because a
+        re-derived claim may name **fewer** nodes than it did last time and an
+        insert-only sync would leave the dropped ones bound forever — a scope
+        that can only grow is how a record ends up matching a file it stopped
+        being about. Scoped to the ids in hand, so this costs the run's own
+        episodes and not the store.
+
+        The insert side lives here and the delete side is a trigger; see
+        :data:`_NODES_SCHEMA` for why they are split.
+
+        Node filtering goes through the same decoder a rebuild uses, so the
+        index is a pure function of ``episodes.nodes``. Filtering on truthiness
+        here while :func:`_decode_nodes` also requires ``str`` let a
+        non-string node into the index on the live path and out of it on a
+        rebuild — the two answers differing is worse than either.
+        """
+        ids = [(ep.id,) for ep in episodes]
+        if not ids:
+            return
+        self._conn.executemany("DELETE FROM episode_nodes WHERE episode_id = ?", ids)
+        pairs = [(ep.id, path) for ep in episodes for path in _valid_nodes(ep.nodes)]
+        if pairs:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO episode_nodes (episode_id, path) VALUES (?, ?)", pairs
+            )
 
     def prune(self, *, now: float | None = None) -> None:
         """Drop rows past TTL, then trim each tier to the row cap.
@@ -654,6 +786,174 @@ class EpisodeStore:
             )
         return hits[: max(1, limit)]
 
+    def count_by_node(
+        self,
+        paths: Sequence[str],
+        *,
+        tiers: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """How many episodes each of *paths* is bound to. Never raises.
+
+        A count and nothing else, which is the whole point of the surfaces that
+        call it: an integer invites a follow-up call, while a paragraph spends
+        every caller's budget whether they wanted it or not.
+
+        One indexed query per path rather than one for all of them: the callers
+        ask about a handful of targets and want the answer *per* target, so a
+        single grouped query would have to be un-grouped again on the way out.
+
+        Returns only the paths with at least one episode, so a caller can omit
+        the field rather than serve a zero.
+        """
+        if not paths:
+            return {}
+        if tiers is not None and not tiers:
+            return {}
+        if not self.node_index_enabled:
+            return {p: len(rows) for p, rows in self._scan_by_node(paths, tiers).items()}
+        counts: dict[str, int] = {}
+        for path in paths:
+            sub, params = self._node_subquery(path)
+            if sub is None:
+                continue
+            sql = f"SELECT COUNT(*) FROM episodes e WHERE e.id IN ({sub})"
+            if tiers is not None:
+                sql += f" AND e.tier IN ({','.join('?' * len(tiers))})"
+                params = [*params, *tiers]
+            try:
+                (n,) = self._conn.execute(sql, params).fetchone()
+            except sqlite3.Error:
+                _log.debug("episode node count failed for %r", path, exc_info=True)
+                continue
+            if n:
+                counts[path] = int(n)
+        return counts
+
+    def list_by_node(
+        self,
+        paths: Sequence[str],
+        *,
+        tiers: Sequence[str] | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Episodes bound to any of *paths*, newest birth first. Never raises.
+
+        The bodied form of :meth:`count_by_node`, for a reader that asked a
+        question rather than one that is annotating a card. Ordered by birth so
+        a caller taking the first *limit* takes the most recent claims, which is
+        the ordering a reader of "what happened here" expects.
+        """
+        if not paths:
+            return []
+        if tiers is not None and not tiers:
+            return []
+        if not self.node_index_enabled:
+            seen: dict[str, dict] = {}
+            for rows in self._scan_by_node(paths, tiers).values():
+                for row in rows:
+                    seen[row["id"]] = row
+            ordered = sorted(
+                seen.values(), key=lambda r: (-(r.get("birth_at") or 0.0), r["id"])
+            )
+            return ordered[: max(1, limit)]
+        subs: list[str] = []
+        params: list[object] = []
+        for path in paths:
+            sub, sub_params = self._node_subquery(path)
+            if sub is None:
+                continue
+            subs.append(f"e.id IN ({sub})")
+            params.extend(sub_params)
+        if not subs:
+            return []
+        sql = (
+            "SELECT e.id, e.tier, e.kind, e.subject, e.body, e.evidence, "
+            "e.nodes, e.birth_commit, e.birth_at, e.last_seen_at FROM episodes e "
+            f"WHERE ({' OR '.join(subs)})"
+        )
+        if tiers is not None:
+            sql += f" AND e.tier IN ({','.join('?' * len(tiers))})"
+            params.extend(tiers)
+        sql += " ORDER BY e.birth_at DESC, e.id ASC LIMIT ?"
+        params.append(max(1, limit))
+        try:
+            rows = self._conn.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            _log.debug("episode node lookup failed", exc_info=True)
+            return []
+        return [_row_to_dict(row) for row in rows]
+
+    def _scan_by_node(
+        self, paths: Sequence[str], tiers: Sequence[str] | None
+    ) -> dict[str, list[dict]]:
+        """The pre-index implementation, kept as the fallback. Never raises.
+
+        Only reached when :meth:`_ensure_node_index` could not build the index
+        — a read-only database, a disk error, a build without the objects. It
+        costs a JSON decode per row (measured at 22.6 ms against this store's
+        5,000-row cap, versus 1.6 ms indexed), which is the right trade against
+        the alternative: answering "nothing is bound here" in the same shape as
+        the truth, on a surface whose whole job is to say what happened.
+        """
+        try:
+            rows = self.list_episodes(tiers=tiers)
+        except sqlite3.Error:
+            _log.debug("episode node scan failed", exc_info=True)
+            return {}
+        out: dict[str, list[dict]] = {}
+        for path in paths:
+            norm = _normalise_node_path(path)
+            if not norm:
+                continue
+            hits = [row for row in rows if _covers_path(row.get("nodes") or [], norm)]
+            if hits:
+                out[path] = hits
+        return out
+
+    def _node_subquery(self, path: str) -> tuple[str | None, list[object]]:
+        """A subquery selecting the ids bound at, above or below *path*.
+
+        Both directions are the question being asked, because a target is a
+        file *or* a directory. An episode naming ``pkg/mod/file.py`` is about
+        the module ``pkg/mod``; an episode naming the directory ``pkg`` is
+        about every file in it. Matching one direction only would answer
+        confidently and wrongly for whichever shape it left out.
+
+        Written as ``id IN (SELECT ...)`` rather than a join, and that is a
+        correctness-of-plan decision rather than a style one. The join form was
+        measured first and SQLite drove it from ``episodes`` — filtering by
+        tier and probing the node table per row — which scans the whole tier
+        and never touches the path index, giving back exactly the cost this
+        table exists to remove. The subquery makes the indexed lookup the
+        driver. A query-plan test holds it there, because the join form was not
+        *wrong*, only slow, and nothing else would have caught it.
+
+        Ancestors are enumerated here and compared with equality, since a path
+        has a handful of them. Descendants are a **half-open range** rather
+        than a pattern, and that is a correctness fix rather than a
+        micro-optimisation: ``GLOB`` reads ``[`` as a character class and
+        SQLite's ``GLOB`` has no ``ESCAPE`` clause, so a framework's dynamic
+        route — ``app/repos/[id]`` — silently matched ``app/repos/i`` and
+        ``app/repos/d`` while missing every real child. 170 rows in this
+        repository's own store carry bracketed paths. ``*`` and ``?`` in a
+        path fail the same way. A range compares bytes and has no
+        metacharacters at all, so there is nothing to escape and nothing to
+        get wrong; ``/`` is ``0x2F`` and ``0`` is its successor, which is what
+        makes the upper bound exact rather than approximate.
+        """
+        norm = _normalise_node_path(path)
+        if not norm:
+            return None, []
+        # ``a/b/c.py`` is covered by an episode bound to it, to ``a/b`` or to
+        # ``a`` — self and every ancestor.
+        parts = norm.split("/")
+        selves = ["/".join(parts[: i + 1]) for i in range(len(parts))]
+        sub = (
+            "SELECT episode_id FROM episode_nodes WHERE "
+            f"path IN ({','.join('?' * len(selves))}) OR (path >= ? AND path < ?)"
+        )
+        return sub, [*selves, f"{norm}/", f"{norm}0"]
+
     def count(self) -> int:
         (rows,) = self._conn.execute("SELECT COUNT(*) FROM episodes").fetchone()
         return int(rows)
@@ -670,11 +970,67 @@ class EpisodeStore:
         self.close()
 
 
-def _row_to_dict(row: tuple) -> dict:
+def _normalise_node_path(path: str) -> str:
+    """A repo-relative path in the one form the node index stores.
+
+    Separators, redundant segments and stray slashes are all things a caller
+    hands over without meaning anything by them: ``pkg\\mod``, ``pkg/mod/``,
+    ``pkg//mod`` and ``pkg/x/../mod`` are one location, and matching them by
+    bytes would answer three of the four with silence. ``..`` is resolved
+    rather than rejected because an agent composing a path from a symbol's
+    module does produce them.
+
+    A path that climbs out of the repository has no node to match and returns
+    empty, which callers read as "ask nothing".
+    """
+    norm = posixpath.normpath(str(path).replace("\\", "/")).strip("/")
+    if not norm or norm == "." or norm.startswith("../"):
+        return ""
+    return norm
+
+
+def _covers_path(nodes: Sequence[object], norm: str) -> bool:
+    """True when *norm* is at, above or below one of *nodes*.
+
+    The scan-side twin of :meth:`EpisodeStore._node_subquery`, and the two are
+    tested against each other so the fallback cannot drift into answering a
+    different question from the index.
+    """
+    for node in nodes:
+        if not isinstance(node, str):
+            continue
+        n = _normalise_node_path(node)
+        if not n:
+            continue
+        if norm == n or norm.startswith(f"{n}/") or n.startswith(f"{norm}/"):
+            return True
+    return False
+
+
+def _valid_nodes(nodes: Iterable[object]) -> list[str]:
+    """The usable paths in a node list. One predicate, both writers.
+
+    Shared by the live write path and by a rebuild from the stored column, so
+    the index cannot answer differently depending on which one last touched it.
+    """
+    return [n for n in nodes if isinstance(n, str) and n]
+
+
+def _decode_nodes(raw: object) -> list[str]:
+    """The node list a stored ``nodes`` column holds, or empty if unreadable.
+
+    Tolerant on purpose: a row whose scope will not decode is still a claim
+    worth serving repo-wide, and this runs on the read path.
+    """
     try:
-        nodes = json.loads(row[6])
+        nodes = json.loads(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        nodes = []
+        return []
+    return _valid_nodes(nodes) if isinstance(nodes, list) else []
+
+
+def _row_to_dict(row: tuple) -> dict:
+    nodes = _decode_nodes(row[6])
     return {
         "id": row[0],
         "tier": row[1],

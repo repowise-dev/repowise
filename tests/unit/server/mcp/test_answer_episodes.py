@@ -408,8 +408,13 @@ def test_a_git_episode_whose_scope_has_not_moved_is_served(repo):
 
 @pytest.fixture
 def git_calls(monkeypatch):
-    """Count the sanctioned read-time git queries one attach makes."""
-    from repowise.server.mcp_server.tool_answer import episodes as mod
+    """Count the sanctioned read-time git queries one attach makes.
+
+    Patched on the shared episode-reading module rather than on this tool: the
+    currency verdict is one implementation serving every reader, so this is
+    where the query is made from.
+    """
+    from repowise.server.mcp_server import _episodes as mod
 
     calls: list[tuple] = []
     real = mod.commits_since

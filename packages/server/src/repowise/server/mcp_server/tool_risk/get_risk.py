@@ -14,6 +14,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -54,6 +55,12 @@ async def get_risk(
     ranges are numbered on its own parent commit, so read them as "mostly here"
     rather than exact. Nothing here names the commit that introduced a bug.
     global_hotspots ranks the same way: fix history first, churn as fallback.
+
+    episodes counts the dated records bound to a target — what happened here
+    and why, with a commit or a filesystem fact as evidence. It appears only
+    when there is at least one, and get_why serves the bodies. A directory
+    target aggregates everything beneath it, so the numbers compare within a
+    kind of target and not across kinds.
 
     Args:
         targets: file paths to assess.
@@ -178,6 +185,12 @@ async def get_risk(
     # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
     # health tables. Conservative: missing data → no field, never invented.
     await _enrich_health(results, ctx, repo_id)
+
+    # ---- Precedent enrichment ----------------------------------------------
+    # One integer per target: how many dated episodes are bound here. A number
+    # invites a follow-up get_why; a paragraph would spend the budget of every
+    # caller that only wanted the risk card. Absent rather than zero.
+    await asyncio.to_thread(_enrich_episodes, results, ctx.path)
 
     response: dict = {
         "targets": {r["target"]: r for r in results},

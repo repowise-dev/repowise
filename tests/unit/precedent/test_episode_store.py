@@ -782,3 +782,412 @@ class TestSearch:
             rows = {r["subject"]: r for r in store.list_episodes(tier=TIER_TRANSCRIPT)}
             assert SOURCE_GONE_NOTE not in rows["two"]["evidence"]
             assert rows["two"]["evidence"] == "e"
+
+
+def _bound(
+    subject: str,
+    nodes: tuple[str, ...],
+    *,
+    tier: str = TIER_GIT,
+    birth_at: float = 1000.0,
+) -> Episode:
+    return Episode(
+        tier=tier,
+        kind="code_fix",
+        subject=subject,
+        body="b",
+        evidence="e",
+        nodes=nodes,
+        birth_commit="a" * 40,
+        birth_at=birth_at,
+    )
+
+
+class TestNodeLookup:
+    """``count_by_node`` / ``list_by_node`` — the scope question, indexed."""
+
+    def test_an_episode_is_found_by_the_file_it_names(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod/file.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["pkg/mod/file.py"]) == {"pkg/mod/file.py": 1}
+
+    def test_a_directory_target_finds_the_episodes_beneath_it(self, tmp_path: Path) -> None:
+        """A module target is a real target, and the files under it are its episodes."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[_bound("s1", ("pkg/mod/a.py",)), _bound("s2", ("pkg/mod/b.py",))],
+                oldest_birth_at=None,
+            )
+            assert store.count_by_node(["pkg/mod"]) == {"pkg/mod": 2}
+
+    def test_a_file_target_finds_the_episode_bound_to_its_directory(self, tmp_path: Path) -> None:
+        """The other direction: a claim about a directory is a claim about its files."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["pkg/mod/file.py"]) == {"pkg/mod/file.py": 1}
+
+    def test_a_sibling_prefix_is_not_a_match(self, tmp_path: Path) -> None:
+        """``pkg/mod2`` starts with ``pkg/mod`` as a string and is a different directory."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod2/file.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["pkg/mod"]) == {}
+
+    def test_an_episode_naming_a_path_twice_counts_once(self, tmp_path: Path) -> None:
+        """Self and ancestor both match; the caller asked how many episodes, not nodes."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[_bound("s1", ("pkg/mod", "pkg/mod/file.py"))],
+                oldest_birth_at=None,
+            )
+            assert store.count_by_node(["pkg/mod/file.py"]) == {"pkg/mod/file.py": 1}
+
+    def test_a_path_with_no_episodes_is_absent_rather_than_zero(self, tmp_path: Path) -> None:
+        """So a caller can omit the field instead of serving a zero."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod/a.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["other/file.py"]) == {}
+
+    def test_windows_separators_are_normalised(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod/file.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["pkg\\mod\\file.py"]) == {"pkg\\mod\\file.py": 1}
+
+    def test_the_tier_allowlist_is_honoured(self, tmp_path: Path) -> None:
+        """A transcript episode is per-machine and must not reach a shareable reader."""
+        with _store(tmp_path) as store:
+            store.accumulate_tier(
+                tier=TIER_TRANSCRIPT,
+                kind="session",
+                episodes=[
+                    Episode(
+                        tier=TIER_TRANSCRIPT,
+                        kind="session",
+                        subject="s",
+                        body="b",
+                        evidence="e",
+                        nodes=("pkg/mod/file.py",),
+                    )
+                ],
+                present_subjects=["s"],
+            )
+            assert store.count_by_node(["pkg/mod/file.py"]) == {"pkg/mod/file.py": 1}
+            assert store.count_by_node(["pkg/mod/file.py"], tiers=SHAREABLE_TIERS) == {}
+
+    def test_an_empty_allowlist_selects_nothing(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod/a.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["pkg/mod/a.py"], tiers=[]) == {}
+            assert store.list_by_node(["pkg/mod/a.py"], tiers=[]) == []
+
+    def test_no_paths_asks_nothing(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            assert store.count_by_node([]) == {}
+            assert store.list_by_node([]) == []
+
+    def test_list_by_node_returns_newest_births_first(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[
+                    _bound("old", ("pkg/a.py",), birth_at=1000.0),
+                    _bound("new", ("pkg/a.py",), birth_at=2000.0),
+                ],
+                oldest_birth_at=None,
+            )
+            rows = store.list_by_node(["pkg/a.py"])
+            assert [r["subject"] for r in rows] == ["new", "old"]
+
+    def test_list_by_node_honours_its_limit(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[_bound(f"s{i}", ("pkg/a.py",), birth_at=1000.0 + i) for i in range(5)],
+                oldest_birth_at=None,
+            )
+            assert len(store.list_by_node(["pkg/a.py"], limit=2)) == 2
+
+    def test_an_episode_matching_two_targets_is_listed_once(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[_bound("s1", ("pkg/a.py", "pkg/b.py"))],
+                oldest_birth_at=None,
+            )
+            assert len(store.list_by_node(["pkg/a.py", "pkg/b.py"])) == 1
+
+
+class TestNodeIndexMaintenance:
+    """The index is derived data and must never disagree with ``episodes.nodes``."""
+
+    def test_a_re_derived_episode_loses_the_nodes_it_stopped_naming(self, tmp_path: Path) -> None:
+        """A scope that can only grow is how a claim ends up matching a file it left."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[_bound("s1", ("pkg/a.py", "pkg/b.py"))],
+                oldest_birth_at=None,
+            )
+            assert store.count_by_node(["pkg/b.py"]) == {"pkg/b.py": 1}
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/a.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["pkg/a.py"]) == {"pkg/a.py": 1}
+            assert store.count_by_node(["pkg/b.py"]) == {}
+
+    def test_a_deleted_episode_takes_its_nodes_with_it(self, tmp_path: Path) -> None:
+        """Every delete path goes through the trigger, including the kind sweep."""
+        with _store(tmp_path) as store:
+            store.replace_kinds(
+                tier=TIER_STRUCTURAL,
+                kinds=["nested_repos"],
+                episodes=[_episode()],
+                now=1000.0,
+            )
+            assert store.count_by_node(["backend"]) == {"backend": 1}
+            store.replace_kinds(
+                tier=TIER_STRUCTURAL, kinds=["nested_repos"], episodes=[], now=2000.0
+            )
+            assert store.count_by_node(["backend"]) == {}
+            (orphans,) = store._conn.execute("SELECT COUNT(*) FROM episode_nodes").fetchone()
+            assert orphans == 0
+
+    def test_the_ttl_sweep_leaves_no_orphan_nodes(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[_bound("s1", ("pkg/a.py",))],
+                oldest_birth_at=None,
+                now=1000.0,
+            )
+            store.prune(now=1000.0 + store.ttl_days * 86400 * 2)
+            (orphans,) = store._conn.execute("SELECT COUNT(*) FROM episode_nodes").fetchone()
+            assert orphans == 0
+
+    def test_a_store_written_before_the_index_backfills_on_open(self, tmp_path: Path) -> None:
+        """Existing stores need no migration: the rows are the system of record."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/a.py",))], oldest_birth_at=None
+            )
+            db_path = store.db_path
+            # Drop the index the way a store written before it would not have had it.
+            store._conn.executescript("DROP TRIGGER episodes_nodes_ad; DROP TABLE episode_nodes;")
+            store._conn.commit()
+
+        with EpisodeStore(db_path) as reopened:
+            assert reopened.node_index_enabled
+            assert reopened.count_by_node(["pkg/a.py"]) == {"pkg/a.py": 1}
+
+    def test_a_generator_of_episodes_still_gets_its_nodes_indexed(self, tmp_path: Path) -> None:
+        """``_upsert`` makes two passes; a lazy caller must not silently lose scope."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=(e for e in [_bound("s1", ("pkg/a.py",))]),
+                oldest_birth_at=None,
+            )
+            assert store.count_by_node(["pkg/a.py"]) == {"pkg/a.py": 1}
+
+
+class TestNodeLookupStaysIndexed:
+    """The plan, not the clock: a busy machine cannot make this pass or fail."""
+
+    def test_the_lookup_uses_the_path_index_in_both_directions(self, tmp_path: Path) -> None:
+        """The join form measured 14x slower because SQLite drove it from ``episodes``.
+
+        It was not wrong, only slow, so nothing but the plan would have caught
+        it. Both the self/ancestor equality and the descendant ``GLOB`` must
+        resolve through ``idx_episode_nodes_path``.
+        """
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod/a.py",))], oldest_birth_at=None
+            )
+            sub, params = store._node_subquery("pkg/mod/a.py")
+            plan = "\n".join(
+                str(row[-1])
+                for row in store._conn.execute(
+                    f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM episodes e WHERE e.id IN ({sub})",
+                    params,
+                )
+            )
+            assert "idx_episode_nodes_path" in plan
+            assert "SCAN episode_nodes" not in plan
+            # The GLOB half is rewritten into a range scan over the same index.
+            assert "path>? AND path<?" in plan
+
+
+class TestPatternCharactersInPaths:
+    """Paths are data, not patterns, and a framework's routes prove it."""
+
+    def test_a_bracketed_directory_matches_its_own_children(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[
+                    _bound("s1", ("src/app/[repo]/page.tsx",)),
+                    _bound("s2", ("src/app/[repo]/layout.tsx",)),
+                ],
+                oldest_birth_at=None,
+            )
+            assert store.count_by_node(["src/app/[repo]"]) == {"src/app/[repo]": 2}
+            assert len(store.list_by_node(["src/app/[repo]"])) == 2
+
+    def test_a_bracket_is_not_a_character_class(self, tmp_path: Path) -> None:
+        """``[repo]`` read as a pattern matches ``r``, ``e``, ``p`` and ``o``."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[
+                    _bound("s1", ("src/app/r/unrelated.tsx",)),
+                    _bound("s2", ("src/app/e/other.tsx",)),
+                ],
+                oldest_birth_at=None,
+            )
+            assert store.count_by_node(["src/app/[repo]"]) == {}
+
+    def test_star_and_question_marks_are_literal(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("docs/aXb/deep.md",))],
+                oldest_birth_at=None,
+            )
+            assert store.count_by_node(["docs/a?b"]) == {}
+            assert store.count_by_node(["docs/a*b"]) == {}
+
+
+class TestPathNormalisation:
+    """One location written four ways is one location."""
+
+    @pytest.mark.parametrize(
+        "target",
+        ["pkg/mod/a.py", "pkg\\mod\\a.py", "pkg//mod/a.py", "pkg/mod/../mod/a.py",
+         "./pkg/mod/a.py", "/pkg/mod/a.py"],
+    )
+    def test_equivalent_spellings_all_match(self, tmp_path: Path, target: str) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/mod/a.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node([target]) == {target: 1}
+
+    def test_a_path_climbing_out_of_the_repo_asks_nothing(self, tmp_path: Path) -> None:
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/a.py",))], oldest_birth_at=None
+            )
+            assert store.count_by_node(["../escape"]) == {}
+            assert store.count_by_node([""]) == {}
+
+
+class TestNodeIndexRecovery:
+    """The index is derived data; a failed build must not become permanent."""
+
+    def test_an_interrupted_build_is_rebuilt_on_the_next_open(self, tmp_path: Path) -> None:
+        """DDL is autocommit, so the table outlives a backfill that fails.
+
+        Presence alone would then read as "complete" forever, and the store
+        would answer "nothing is bound here" in the shape of the truth. The
+        trigger is created last, so its presence is what vouches for the rest.
+        """
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT, episodes=[_bound("s1", ("pkg/a.py",))], oldest_birth_at=None
+            )
+            db_path = store.db_path
+            # Exactly the state an interrupted build leaves behind.
+            store._conn.executescript(
+                "DROP TRIGGER episodes_nodes_ad; DELETE FROM episode_nodes;"
+            )
+            store._conn.commit()
+
+        with EpisodeStore(db_path) as reopened:
+            assert reopened.count_by_node(["pkg/a.py"]) == {"pkg/a.py": 1}
+
+    def test_a_store_that_cannot_build_the_index_still_answers(self, tmp_path: Path) -> None:
+        """A wrong "no history" is worse than a slow right one."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[_bound("s1", ("pkg/a.py",)), _bound("s2", ("pkg/sub/b.py",))],
+                oldest_birth_at=None,
+            )
+            store._conn.executescript(
+                "DROP TRIGGER episodes_nodes_ad; DROP TABLE episode_nodes;"
+            )
+            store._conn.commit()
+            store.node_index_enabled = False
+
+            assert store.count_by_node(["pkg/a.py"]) == {"pkg/a.py": 1}
+            assert store.count_by_node(["pkg"]) == {"pkg": 2}
+            assert store.count_by_node(["nope"]) == {}
+            assert store.count_by_node(["pkg"], tiers=SHAREABLE_TIERS) == {"pkg": 2}
+            assert len(store.list_by_node(["pkg"])) == 2
+
+    @pytest.mark.parametrize(
+        "target",
+        ["pkg/a.py", "pkg", "pkg/sub", "pkg/sub/b.py", "other", "src/app/[repo]",
+         "pkg\\a.py", "pkg/x/../a.py"],
+    )
+    def test_the_fallback_answers_what_the_index_answers(
+        self, tmp_path: Path, target: str
+    ) -> None:
+        """Two implementations of one question is one too many unless they agree."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[
+                    _bound("s1", ("pkg/a.py",)),
+                    _bound("s2", ("pkg/sub/b.py",)),
+                    _bound("s3", ("src/app/[repo]/page.tsx",)),
+                    _bound("s4", ("pkg",)),
+                ],
+                oldest_birth_at=None,
+            )
+            indexed = store.count_by_node([target]).get(target, 0)
+            scanned = len(store._scan_by_node([target], None).get(target, []))
+            assert indexed == scanned
+
+    def test_a_non_string_node_is_filtered_the_same_way_by_both_writers(
+        self, tmp_path: Path
+    ) -> None:
+        """Or a rebuild silently answers differently from the live path."""
+        with _store(tmp_path) as store:
+            store.append_tier(
+                tier=TIER_GIT,
+                episodes=[
+                    Episode(
+                        tier=TIER_GIT,
+                        kind="code_fix",
+                        subject="s1",
+                        body="b",
+                        evidence="e",
+                        nodes=(123, "pkg/a.py"),  # type: ignore[arg-type]
+                        birth_commit="a" * 40,
+                        birth_at=1000.0,
+                    )
+                ],
+                oldest_birth_at=None,
+            )
+            live = store.count_by_node(["pkg/a.py"])
+            store._backfill_node_index()
+            store._conn.commit()
+            assert store.count_by_node(["pkg/a.py"]) == live
+            (rows,) = store._conn.execute(
+                "SELECT COUNT(*) FROM episode_nodes WHERE path = '123'"
+            ).fetchone()
+            assert rows == 0
