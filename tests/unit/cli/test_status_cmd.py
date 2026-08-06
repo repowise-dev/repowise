@@ -1,8 +1,6 @@
 """Tests for status_cmd edge cases."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from repowise.cli.commands.status_cmd import _query_health_line
 
 
