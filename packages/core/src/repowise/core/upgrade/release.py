@@ -124,7 +124,8 @@ def check_latest_version_cached(
     latest, error = _read_cached_latest(ttl_hours)
     if latest is _MISS:
         latest, error = fetch_latest_version(timeout=timeout)
-        _write_cached_latest(latest, error)
+        if latest is not None:
+            _write_cached_latest(latest, error)
     update_available = is_newer_version(latest, current_version) if latest else None
     return ReleaseCheck(
         current_version=current_version,
