@@ -466,7 +466,7 @@ def _log_read_firing(
     if not session_id:
         return
     from ._shared import _ledger_key
-    from .decision_inject import _claim_ledger
+    from .ledger import _claim_ledger
 
     _claim_ledger(
         repo_path,

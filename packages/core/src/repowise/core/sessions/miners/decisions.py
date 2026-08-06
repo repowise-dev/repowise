@@ -93,8 +93,24 @@ __all__ = [
 # session of memory; a false one pollutes the record for every future session.
 # ---------------------------------------------------------------------------
 
-#: A user message opening with one of these reads as pushback on what the
-#: agent just did or proposed. Matched at the start of the message only.
+#: A sentence opening with one of these reads as pushback on what the agent
+#: just did or proposed. Matched at the start of any *sentence*, not only at
+#: the start of the message: measured over this machine's 436 transcripts,
+#: requiring the whole message to open with a lead finds 62 corrections while
+#: the same list at sentence start finds 249, and the gap is not noise. Over
+#: the two days before this was written the message-start form found **zero**
+#: while pushback language stayed at its long-run density (19.3% of messages
+#: contain a lead somewhere, against 20.1% before), because a correction
+#: increasingly arrives as one sentence inside a longer brief rather than as
+#: a short reply that opens with it. A gate that only sees the short reply
+#: reports "no corrections" for a corpus full of them, which is worse than
+#: reporting none: :func:`apply_injection_feedback` reads silence here as
+#: "followed".
+#:
+#: ``actually`` is deliberately absent. It is the one lead that does not
+#: survive the move — at message start it read as a reversal, but mid-message
+#: half its hits are narrative ("actually produces.", "actually does now.")
+#: rather than pushback, and 11 corpus hits do not pay for that.
 PUSHBACK_LEADS: tuple[str, ...] = (
     "no,",
     "no.",
@@ -114,8 +130,6 @@ PUSHBACK_LEADS: tuple[str, ...] = (
     "revert",
     "instead",
     "never ",
-    "actually,",
-    "actually ",
 )
 
 #: A sentence needs one of these to read as a choice being made (paired with
@@ -175,7 +189,31 @@ class SessionCandidate:
 
     @property
     def hash(self) -> str:
-        """Content identity for staging dedup (kind + normalized quotes)."""
+        """Content identity for staging dedup (kind + normalized quotes).
+
+        Deliberately session-independent: ``add_raw`` is INSERT OR IGNORE on
+        this, so one quote is structured by the LLM once however many sessions
+        produced it.
+
+        **Known ceiling, and it arrived with sentence-level corrections.**
+        ``raw_candidates`` keeps one ``session_id`` per hash — the first — so a
+        repeated correction is bound to the session that said it first and
+        :meth:`~SessionStagingStore.correction_quotes` returns nothing for the
+        rest. Whole-message quotes almost never repeated, so this cost nothing
+        before; sentence quotes do repeat, and they repeat precisely on the
+        standing rules ("No em dashes.", "Do NOT branch off stale local main.")
+        that are the most likely to contradict an injected decision. Measured
+        over 436 transcripts: 14 of 249 corrections dropped, 5 of 185 sessions
+        losing their only one, and it is a **ratchet** — :meth:`prune` only
+        drops rows that were never structured, so one structured correction
+        blocks that sentence for every future session. It fails safe rather
+        than wrong — those sessions become unjudgeable rather than falsely
+        "followed" — which is why this is a note and not a fix, and why
+        :meth:`~SessionStagingStore.retire_unjudgeable_verdicts` runs once
+        rather than perpetually. The upgrade is a raw-to-session association rather
+        than a session-scoped hash: the ``decisions`` table already carries a
+        ``sessions`` list for the promoted row, and the raw row wants the same.
+        """
         norm = " ".join(" ".join(q.lower().split()) for q in self.quotes)
         return hashlib.sha256(f"{self.kind}|{norm}".encode()).hexdigest()[:16]
 
@@ -198,15 +236,46 @@ def _interrupt_guidance(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _correction_quote(event: Event) -> str | None:
-    """The verbatim correction text, or None when the gate does not fire."""
+def _pushback_sentences(text: str) -> list[str]:
+    """Sentences that open with a pushback lead, verbatim, capped at two.
+
+    Scans sentences rather than the message so a correction buried in a longer
+    brief still counts — see :data:`PUSHBACK_LEADS` for the measurement that
+    forced this. Returns the sentences alone, not the message around them,
+    which is also what the one consumer wants: :func:`apply_injection_feedback`
+    feeds these to ``contradicts()`` against a single decision statement, and a
+    600-character brief with one contradicting clause in it is a worse input
+    to that comparison than the clause.
+
+    **Two rather than one, and the second is not a bonus.** Of the messages
+    this gate newly catches, 89 of 221 carry more than one lead sentence, and
+    the gate's precision is roughly 75% — the residue is declarative rather
+    than directive ("No releases yet.", "No prose job has ever run in
+    production."), which no cheap rule separates from the directive form it is
+    identical to ("No Claude attribution in commits.", "No em dashes."). A
+    lead-list narrow enough to exclude the first excludes the second: dropping
+    bare "no" mid-message costs 119 of 398 sentences and takes the standing
+    rules with it. So the residue is accepted and the *first-match* rule is
+    what gets fixed — taking one sentence would let a declarative opener
+    discard the real correction behind it, which the whole-message quote never
+    did.
+    """
+    out: list[str] = []
+    for sentence in _SENTENCE_SPLIT_RE.split(text):
+        sentence = sentence.strip()
+        if len(sentence) >= 12 and sentence.lower().startswith(PUSHBACK_LEADS):
+            out.append(_clip(sentence))
+            if len(out) == _MAX_QUOTES_PER_EVENT:
+                break
+    return out
+
+
+def _correction_quotes(event: Event) -> list[str]:
+    """The verbatim correction text, or empty when the gate does not fire."""
     if event.interrupted:
         guidance = _interrupt_guidance(event.text)
-        return _clip(guidance) if len(guidance) >= 8 else None
-    low = event.text.strip().lower()
-    if len(low) >= 12 and low.startswith(PUSHBACK_LEADS):
-        return _clip(event.text)
-    return None
+        return [_clip(guidance)] if len(guidance) >= 8 else []
+    return _pushback_sentences(event.text)
 
 
 def _choice_sentences(text: str) -> list[str]:
@@ -346,18 +415,23 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
             continue
 
         if is_prose_user_text(event):
-            quote = _correction_quote(event)
-            if quote is not None:
+            quotes = _correction_quotes(event)
+            if quotes:
                 _add(
                     SessionCandidate(
                         kind="user_correction",
-                        quotes=[quote],
+                        quotes=quotes,
                         files=list(dict.fromkeys(trailing_files)),
                         session_id=event.session_id,
                         ts=event.ts,
                     )
                 )
-                continue
+                # Deliberately falls through to the choice gate rather than
+                # skipping it. Skipping was harmless while a correction was a
+                # short reply that was *only* a correction; now that one lead
+                # sentence inside a long brief fires this gate, a `continue`
+                # silently costs the brief its explicit choices — measured at
+                # 22 candidates over this corpus.
 
         # Explicit choices: user prose or main-thread assistant prose.
         if event.text and not event.is_meta and not event.is_compact_summary:
@@ -589,10 +663,24 @@ async def apply_injection_feedback(
     about whether the governed files moved, and a per-machine session verdict
     may not overwrite a value the dashboard and hosted both read.
 
+    **A decision no session could have contradicted is not "followed".**
+    "Followed" was the else branch of the contradiction test, so a corpus in
+    which the two halves never meet reported a perfect score from an
+    instrument that had no opportunity to fire. Measured on this machine
+    before the change: 100 followed, 0 contradicted, and *zero* of those 100
+    rows came from a session holding any mined correction at all. Those rows
+    are now settled with no verdict — the ``no_verdict`` bucket
+    :meth:`~SessionStagingStore.decision_feedback_totals` already reports —
+    so the followed rate is computed over injections that were genuinely
+    judgeable. It reads as a much smaller number, and that is the point.
+
     Deliberately binary for v1 (followed / contradicted); the
     followed-vs-ignored split and relevance decay are the validation-gated
     backlog item that rides on this data. Returns
-    ``{"followed": n, "contradicted": n}``.
+    ``{"followed": n, "contradicted": n, "unjudgeable": n}``, counted over
+    **ledger rows** so it reconciles with
+    :meth:`~SessionStagingStore.decision_feedback_totals` rather than
+    disagreeing with it by a factor of however many sessions saw a decision.
     """
     import time
 
@@ -602,10 +690,25 @@ async def apply_injection_feedback(
     from repowise.core.persistence.models import DecisionRecord
 
     ts = now if now is not None else time.time()
-    summary = {"followed": 0, "contradicted": 0}
+    summary = {"followed": 0, "contradicted": 0, "unjudgeable": 0}
 
     store = SessionStagingStore.open_default(Path(repo_path).resolve())
     try:
+        # Before judging anything new, retire the verdicts an older version
+        # awarded for free. Those rows are already evaluated, so this pass
+        # would never reach them otherwise and the reported rate would stay
+        # pinned at whatever the else branch produced.
+        retired = store.retire_unjudgeable_verdicts()
+        # Commit even when nothing matched, because what is being persisted is
+        # the "already repaired" mark, not the rows. Without this the mark is
+        # rolled back by the early return below on any store with nothing to
+        # judge, and the repair re-arms itself — so 90 days later, once
+        # RAW_TTL_DAYS has pruned the corrections, it would fire on verdicts
+        # that were earned. That is the exact decay the one-shot prevents.
+        store.commit()
+        if retired:
+            logger.info("session_mining.injection_verdicts_retired", rows=retired)
+
         injections = store.unevaluated_injections(before=ts - INJECTION_EVAL_MIN_AGE_SECONDS)
         if not injections:
             return summary
@@ -621,7 +724,13 @@ async def apply_injection_feedback(
 
         quotes_by_session: dict[str, list[str]] = {}
         verdicts: dict[str, bool] = {}  # decision_id -> contradicted anywhere
-        judged: list[tuple[str, str]] = []  # (session_id, decision_id) settled here
+        #: (session_id, decision_id, this session had a correction to test it
+        #: against) for every row settled here. Judgeability is per *row*, not
+        #: per decision, because the totals count rows: one session that
+        #: happened to hold a correction would otherwise hand a free verdict
+        #: to every other session the same decision was shown to, which is the
+        #: bug this whole change is about, one level up.
+        judged: list[tuple[str, str, bool]] = []
         for inj in injections:
             rec = records.get(inj["decision_id"])
             if rec is None:
@@ -632,33 +741,41 @@ async def apply_injection_feedback(
             session_id = inj["session_id"]
             if session_id not in quotes_by_session:
                 quotes_by_session[session_id] = store.correction_quotes(session_id)
+            quotes = quotes_by_session[session_id]
             decision_text = f"{rec.title}. {rec.decision}"
-            contradicted = any(
-                contradicts(decision_text, quote)[0] for quote in quotes_by_session[session_id]
-            )
+            contradicted = any(contradicts(decision_text, quote)[0] for quote in quotes)
             verdicts[rec.id] = verdicts.get(rec.id, False) or contradicted
-            judged.append((session_id, inj["decision_id"]))
+            judged.append((session_id, inj["decision_id"], bool(quotes)))
 
         # Settle the ledger after the aggregation, not during it: the verdict
-        # is per decision across every session that saw it, so a row's own
-        # judgement is not final until the last of them has been read. Storing
-        # it is what lets `repowise hook stats` report the split — until now
-        # the numbers existed only in one update run's console output.
-        for session_id, decision_id in judged:
+        # *value* is per decision across every session that saw it, so a row's
+        # own judgement is not final until the last of them has been read.
+        # Whether a row gets that value at all is per row, and the two are
+        # different questions — a decision contradicted in one session says
+        # nothing about a session that mined no correction at all. Storing it
+        # is what lets `repowise hook stats` report the split — until now the
+        # numbers existed only in one update run's console output.
+        for session_id, decision_id, judgeable in judged:
+            if not judgeable:
+                # Settled, so it is not re-read every update, but with no
+                # verdict: this session mined nothing that could have
+                # disagreed, so neither verdict is a claim the data supports.
+                store.mark_injection_evaluated(session_id, decision_id)
+                summary["unjudgeable"] += 1
+                continue
+            contradicted = bool(verdicts.get(decision_id))
             store.mark_injection_evaluated(
                 session_id,
                 decision_id,
-                verdict="contradicted" if verdicts.get(decision_id) else "followed",
+                verdict="contradicted" if contradicted else "followed",
             )
-
-        for contradicted in verdicts.values():
             summary["contradicted" if contradicted else "followed"] += 1
 
         store.commit()
     finally:
         store.close()
 
-    if summary["followed"] or summary["contradicted"]:
+    if any(summary.values()):
         logger.info("session_mining.injection_feedback", **summary)
     return summary
 

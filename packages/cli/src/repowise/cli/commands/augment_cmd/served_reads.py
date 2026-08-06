@@ -27,7 +27,6 @@ import json
 from pathlib import Path
 
 from ._shared import _find_repo_root, _relativize
-from .decision_inject import _claim_ledger
 
 _SERVED_COVERAGE = 0.8  # served share of a Read window that counts as covered
 _MAX_SERVED_FILES = 50  # served-range bookkeeping caps (state-file hygiene)
@@ -65,6 +64,8 @@ def _log_read_after_served(
         return
     start, end = window
     if _served_covers(repo_path, session_id, rel, start, end):
+        from .ledger import _claim_ledger
+
         _claim_ledger(
             repo_path,
             session_id,

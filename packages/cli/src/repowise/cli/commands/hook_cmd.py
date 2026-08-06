@@ -630,13 +630,17 @@ def hook_stats(path: str | None, as_json: bool) -> None:
         if feedback["pending"]:
             parts.append(f"[dim]{feedback['pending']} awaiting the next update[/dim]")
         if feedback["no_verdict"]:
-            parts.append(f"[dim]{feedback['no_verdict']} settled without a verdict[/dim]")
+            parts.append(
+                f"[dim]{feedback['no_verdict']} unjudged, mostly for want of "
+                "anything to judge them against[/dim]"
+            )
         console.print(f"  injected decisions: {', '.join(parts)}")
         if judged:
             pct = 100.0 * feedback["followed"] / judged
             console.print(
-                f"  [dim]{pct:.0f}% of judged injections were followed; "
-                "contradicted ones bump the record's staleness.[/dim]"
+                f"  [dim]{pct:.0f}% of judged injections were followed. Judged means the "
+                "session mined a correction that could have disagreed; the rest are "
+                "counted nowhere.[/dim]"
             )
 
     if session_totals:

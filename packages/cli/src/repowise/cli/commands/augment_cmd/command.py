@@ -187,7 +187,7 @@ def _count_run(cwd: str, session_id: str, event: str, tool: str, *, emitted: boo
         return
     try:
         from ._shared import _find_repo_root
-        from .decision_inject import _record_hook_run
+        from .ledger import _record_hook_run
 
         repo_path = _find_repo_root(Path(cwd))
         if repo_path is not None:
