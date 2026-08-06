@@ -36,7 +36,12 @@ import time
 from pathlib import Path
 
 from repowise.core.precedent.currency import commits_since
-from repowise.core.precedent.store import TIER_STRUCTURAL, EpisodeStore, default_store_path
+from repowise.core.precedent.store import (
+    SHAREABLE_TIERS,
+    TIER_STRUCTURAL,
+    EpisodeStore,
+    default_store_path,
+)
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 
 _log = logging.getLogger(__name__)
@@ -61,6 +66,24 @@ _MAX_SCOPED_CANDIDATES = 4
 #: *accumulates* members has no such proof: re-observing that a commit happened
 #: says nothing about whether the files it changed have moved since.
 _RE_DERIVED_TIERS = frozenset({TIER_STRUCTURAL})
+
+#: The tiers this guard is willing to put in front of a reader, named rather
+#: than inherited from whatever the store happens to hold.
+#:
+#: An unnamed default is how the store's second tier reached this surface last
+#: time, and reproducing it with the third showed why that is not survivable
+#: here: with 56 of this repository's 426 sessions recorded, the guard went
+#: **silent on its own reproduction** and served a session instead. Two things
+#: compound. A session touches far more files than a fix commit, so it outranks
+#: one on the window's specificity sort; and it has no birth commit, so
+#: :func:`_still_true` never reaches the git query and can never suppress it.
+#: It wins the window and holds it.
+#:
+#: The harmlessness bar for a surfaced episode is absolute and is unmeasured
+#: for the transcript tier, which is also per-machine — two people asking one
+#: question of one repository would get different answers. Until that has been
+#: measured, this stays a shareable-tiers allowlist.
+_SERVED_TIERS = SHAREABLE_TIERS
 
 #: Room the block needs before it is worth attaching at all.
 _BLOCK_OVERHEAD_CHARS = 400
@@ -143,7 +166,7 @@ def _attach(
 
     try:
         with EpisodeStore(store_path) as store:
-            rows = store.list_episodes()
+            rows = store.list_episodes(tiers=_SERVED_TIERS)
     except Exception:
         _log.warning("episode store read failed", exc_info=True)
         return

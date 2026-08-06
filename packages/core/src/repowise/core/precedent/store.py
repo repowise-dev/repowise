@@ -34,6 +34,13 @@ TIER_STRUCTURAL = "structural"
 TIER_GIT = "git"
 TIER_TRANSCRIPT = "transcript"
 
+#: The tiers that describe the repository rather than the machine, and so may
+#: be served to somebody who did not derive them. A reader that would put an
+#: episode in front of a user asks for these by name: two people asking one
+#: question of one repository must get one answer, and a transcript episode
+#: exists only on the laptop that recorded it.
+SHAREABLE_TIERS = (TIER_STRUCTURAL, TIER_GIT)
+
 #: Rows not re-observed for this long are dropped. Every index refreshes
 #: ``last_seen_at`` for a fact that still holds, so this evicts only episodes
 #: whose repository has stopped being indexed — never a live one. (Contrast
@@ -42,6 +49,9 @@ TIER_TRANSCRIPT = "transcript"
 DEFAULT_TTL_DAYS = 90.0
 #: Row-count cap; oldest-seen rows pruned first when exceeded.
 DEFAULT_MAX_ROWS = 5000
+#: Bound on one ``IN`` list, so a large membership set stays one statement per
+#: chunk rather than one variable past whatever SQLite was compiled with.
+_IN_CHUNK = 500
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes (
@@ -224,6 +234,60 @@ class EpisodeStore:
         self.prune(now=stamp)
         return dropped
 
+    def sync_tier(
+        self,
+        *,
+        tier: str,
+        kind: str,
+        episodes: Iterable[Episode],
+        present_subjects: Sequence[str],
+        now: float | None = None,
+    ) -> int:
+        """Accumulate into *tier*, bounded by what still exists.
+
+        The third lifecycle, and the reason it is not one of the other two:
+
+        * :meth:`replace_kinds` says *this run derived the whole kind*, which
+          is false here — a run reads only the transcript bytes appended since
+          the last one, so a sweep would delete every session it did not
+          revisit;
+        * :meth:`append_tier` says *this run covered a window and everything in
+          it is re-observed*, which is also false — the pass has no window, and
+          nothing about reading today's session says last March's still exists.
+
+        What is true, and true of no other tier, is that this one's membership
+        can be **enumerated without being read**: the sources are files on
+        disk, so a run knows which episodes still have something behind them
+        for the cost of the directory listing it already did. That is the
+        vouch. *present_subjects* are marked re-observed whether or not they
+        were read this run — which is what stops a live episode dying of the
+        TTL simply because its session ended — and the rest of *kind* is
+        dropped, because its source is gone rather than merely quiet.
+
+        Returns rows dropped for having no source left.
+        """
+        stamp = time.time() if now is None else now
+        ids = [episode_id(tier, kind, s) for s in present_subjects]
+        with self._conn:  # one transaction: never half-synced
+            self._upsert(episodes, stamp)
+            # Chunked: a heavy machine's transcript directory can outrun
+            # SQLite's per-statement variable limit, and a partial IN list
+            # would read as "these are gone" and delete live episodes.
+            for start in range(0, len(ids), _IN_CHUNK):
+                batch = ids[start : start + _IN_CHUNK]
+                placeholders = ",".join("?" * len(batch))
+                self._conn.execute(
+                    f"UPDATE episodes SET last_seen_at = ? WHERE id IN ({placeholders})",
+                    (stamp, *batch),
+                )
+            cur = self._conn.execute(
+                "DELETE FROM episodes WHERE tier = ? AND kind = ? AND last_seen_at < ?",
+                (tier, kind, stamp),
+            )
+            dropped = cur.rowcount or 0
+        self.prune(now=stamp)
+        return dropped
+
     def _upsert(self, episodes: Iterable[Episode], stamp: float) -> None:
         """Insert or refresh *episodes*. Caller owns the transaction.
 
@@ -322,8 +386,24 @@ class EpisodeStore:
 
     # -- reads -------------------------------------------------------------
 
-    def list_episodes(self, *, tier: str | None = None, kind: str | None = None) -> list[dict]:
-        """Episodes, newest birth first. Both filters are optional."""
+    def list_episodes(
+        self,
+        *,
+        tier: str | None = None,
+        tiers: Sequence[str] | None = None,
+        kind: str | None = None,
+        subjects: Sequence[str] | None = None,
+    ) -> list[dict]:
+        """Episodes, newest birth first. Every filter is optional and ANDed.
+
+        *tiers* is the allowlist form, for a reader that must name the tiers it
+        is willing to serve rather than take whatever the store happens to
+        hold — a new tier is then invisible to it until somebody decides
+        otherwise, which is the opposite of the default it replaced.
+
+        An empty *tiers* or *subjects* selects nothing, which is the honest
+        reading of an empty allowlist and not the same as ``None``.
+        """
         sql = (
             "SELECT id, tier, kind, subject, body, evidence, nodes, "
             "birth_commit, birth_at, last_seen_at FROM episodes"
@@ -333,9 +413,26 @@ class EpisodeStore:
         if tier is not None:
             clauses.append("tier = ?")
             params.append(tier)
+        if tiers is not None:
+            if not tiers:
+                return []
+            clauses.append(f"tier IN ({','.join('?' * len(tiers))})")
+            params.extend(tiers)
         if kind is not None:
             clauses.append("kind = ?")
             params.append(kind)
+        if subjects is not None:
+            if not subjects:
+                return []
+            if len(subjects) > _IN_CHUNK:
+                # Chunking a SELECT would mean stitching pages back into one
+                # ordering; the callers that filter by subject ask about the
+                # handful they are writing, so refuse rather than mislead.
+                raise ValueError(
+                    f"subjects filter takes at most {_IN_CHUNK} values, got {len(subjects)}"
+                )
+            clauses.append(f"subject IN ({','.join('?' * len(subjects))})")
+            params.extend(subjects)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY birth_at DESC, id ASC"

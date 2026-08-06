@@ -22,6 +22,7 @@ import pytest
 from repowise.core.precedent.store import (
     TIER_GIT,
     TIER_STRUCTURAL,
+    TIER_TRANSCRIPT,
     Episode,
     EpisodeStore,
     default_store_path,
@@ -624,3 +625,62 @@ async def test_the_episode_is_served_on_both_paths_and_never_cached(
     assert provider.calls == 1, "second call must be served from cache"
     assert cached["_meta"]["cached"] is True
     assert cached["episodes"][0]["kind"] == "formatter_drift"
+
+
+# -- the tier gate -----------------------------------------------------------
+#
+# The store's third tier is per-machine, and the reader used to take whatever
+# the store held. Reproduced against this repository's real store before the
+# gate existed: with 56 of its 426 sessions recorded, the guard went silent on
+# its own formatter reproduction and served a session instead.
+
+
+def _session_episode(subject: str, nodes: tuple[str, ...]) -> Episode:
+    return Episode(
+        tier=TIER_TRANSCRIPT,
+        kind="session",
+        subject=subject,
+        body="user: should we reformat everything\nassistant: sure, run the formatter",
+        evidence=f"session {subject[:8]}, 2026-08-01, touched {len(nodes)} files",
+        nodes=nodes,
+        # A session is dated, not committed. This is what makes it unsuppressable.
+        birth_commit=None,
+    )
+
+
+def test_a_transcript_episode_is_never_served(repo):
+    root = repo
+    _write(root, _session_episode("abcdef12", ("Makefile", "pyproject.toml")), born=1000.0)
+
+    p = run(payload(), root)
+    assert "episodes" not in p
+
+
+def test_a_transcript_episode_cannot_take_the_slot_from_a_shareable_one(repo):
+    """The regression the gate exists for, in miniature.
+
+    A session touches far more files than a fix commit, so it outranks one on
+    the window's specificity sort; and with no birth commit it never reaches
+    the git query, so it can never be suppressed. It wins the window and holds
+    it — which is why the reader names its tiers instead of taking the store's.
+    """
+    root = repo
+    _write(root, formatter_episode(_head(root)), born=1000.0)
+    for i in range(_MAX_SCOPED_CANDIDATES + 2):
+        _write(
+            root,
+            _session_episode(f"session{i:02d}", ("Makefile", "pyproject.toml")),
+            born=2000.0 + i,
+        )
+
+    p = run(payload(), root)
+    assert [e["tier"] for e in p["episodes"]] == [TIER_STRUCTURAL]
+
+
+def test_the_served_tiers_are_the_shareable_ones(repo):
+    """Asserted on the payload, so a later reader cannot flip it by accident."""
+    from repowise.core.precedent.store import SHAREABLE_TIERS
+    from repowise.server.mcp_server.tool_answer.episodes import _SERVED_TIERS
+
+    assert tuple(_SERVED_TIERS) == tuple(SHAREABLE_TIERS)
+    assert TIER_TRANSCRIPT not in _SERVED_TIERS

@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -63,8 +64,18 @@ from repowise.core.analysis.decisions.provenance import (
 from repowise.core.analysis.decisions.rationale_comments import CAUSAL_MARKERS
 from repowise.core.analysis.decisions.scope import resolve_module_nodes
 from repowise.core.distill.corrections import command_anchor
+from repowise.core.precedent.transcript_episodes import (
+    TranscriptEpisodeRecorder,
+    record_transcript_episodes,
+)
 from repowise.core.sessions import INTENT_TURNS, Event, get_adapter
 from repowise.core.sessions.cursor import iter_new_events
+from repowise.core.sessions.events import (
+    FILE_INPUT_KEYS,
+    event_files,
+    is_prose_user_text,
+    relative_files,
+)
 from repowise.core.sessions.staging import SessionStagingStore
 
 logger = structlog.get_logger(__name__)
@@ -133,8 +144,21 @@ _TRAILING_FILES = 8
 _QUOTE_CAP = 600
 _MAX_QUOTES_PER_EVENT = 2
 
+#: Wall-clock ceiling on one run's transcript sweep.
+#:
+#: The corpus this pass reads is bounded by how much the user has worked, not
+#: by the repository: a first read starts every cursor at byte 0, and on this
+#: machine that is 857 MB across 426 sessions for one repo. Without a ceiling
+#: an index's cost depends on a directory that has nothing to do with the code
+#: being indexed.
+#:
+#: Stopping is safe rather than lossy, which is what makes a ceiling the right
+#: instrument here: cursors are per file and saved after the loop, so the next
+#: run resumes exactly where this one stopped, and steady state (a handful of
+#: sessions with new bytes) finishes in well under a tenth of this.
+SWEEP_BUDGET_S = 5.0
+
 _EXIT_CODE_RE = re.compile(r"^Error: Exit code (\d+)")
-_FILE_INPUT_KEYS = ("file_path", "path", "notebook_path")
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
@@ -166,36 +190,12 @@ def _clip(text: str, cap: int = _QUOTE_CAP) -> str:
     return text if len(text) <= cap else text[: cap - 1] + "…"
 
 
-def _event_files(event: Event) -> list[str]:
-    """File paths named by this event's tool inputs."""
-    files: list[str] = []
-    for use in event.tool_uses:
-        for key in _FILE_INPUT_KEYS:
-            value = use.input.get(key)
-            if isinstance(value, str) and value.strip():
-                files.append(value)
-                break
-    return files
-
-
 def _interrupt_guidance(text: str) -> str:
     """The user's own words in an interrupt event, marker lines dropped."""
     from repowise.core.sessions import INTERRUPT_MARKER
 
     lines = [ln for ln in text.splitlines() if INTERRUPT_MARKER not in ln]
     return "\n".join(lines).strip()
-
-
-def _is_prose_user_text(event: Event) -> bool:
-    """A message the user actually typed, not harness plumbing."""
-    if event.kind != "user" or event.sidechain or event.is_meta or event.is_compact_summary:
-        return False
-    if event.tool_results:
-        return False
-    text = event.text.strip()
-    # Command output wrappers, system reminders, and pasted XML-ish blocks
-    # start with a tag; none of them are the user speaking.
-    return bool(text) and not text.startswith("<")
 
 
 def _correction_quote(event: Event) -> str | None:
@@ -238,7 +238,7 @@ def _result_anchor(name: str, use_input: dict[str, Any]) -> str:
     command = use_input.get("command")
     if isinstance(command, str) and command.strip():
         return command_anchor(command)
-    for key in _FILE_INPUT_KEYS:
+    for key in FILE_INPUT_KEYS:
         value = use_input.get(key)
         if isinstance(value, str) and value.strip():
             basename = value.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
@@ -274,7 +274,7 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
             continue
 
         if event.kind == "assistant" and event.tool_uses:
-            files = _event_files(event)
+            files = event_files(event)
             for f in files:
                 trailing_files.append(f)
             for entry in open_candidates:
@@ -345,7 +345,7 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
                         open_dead_end = None
             continue
 
-        if _is_prose_user_text(event):
+        if is_prose_user_text(event):
             quote = _correction_quote(event)
             if quote is not None:
                 _add(
@@ -361,7 +361,7 @@ def mine_events(events: Iterable[Event], repo_prefix: str) -> list[SessionCandid
 
         # Explicit choices: user prose or main-thread assistant prose.
         if event.text and not event.is_meta and not event.is_compact_summary:
-            if event.kind == "user" and not _is_prose_user_text(event):
+            if event.kind == "user" and not is_prose_user_text(event):
                 continue
             if event.kind == "assistant" and event.sidechain:
                 continue
@@ -523,21 +523,6 @@ def _gate_structured(item: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any
 _MAX_EVIDENCE_SESSIONS = 5
 
 
-def _relative_files(files: list[str], repo_root: Path) -> list[str]:
-    """Repo-relative POSIX paths; files outside the repo are dropped."""
-    import os.path
-
-    out: list[str] = []
-    for f in files:
-        try:
-            rel = os.path.relpath(f, str(repo_root))
-        except (ValueError, OSError):
-            continue
-        if not rel.startswith(".."):
-            out.append(rel.replace("\\", "/"))
-    return list(dict.fromkeys(out))
-
-
 def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedDecision]:
     """decision_records-ready members for one promotable staging row.
 
@@ -549,7 +534,7 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
     """
     structured = row["structured"]
     status = "active" if row["first_promotion"] else "proposed"
-    files = _relative_files(structured.get("affected_files") or row["files"], repo_root)
+    files = relative_files(structured.get("affected_files") or row["files"], repo_root)
     modules = resolve_module_nodes(files)
     confidence = compute_confidence(
         rank_for_source("session"),
@@ -681,12 +666,12 @@ async def apply_injection_feedback(
 async def mine_session_decisions(
     repo_path: Path,
     *,
-    provider: Any,
+    provider: Any | None,
     projects_root: Path | None = None,
     max_structured: int = MAX_STRUCTURED_PER_UPDATE,
     now: float | None = None,
 ) -> list[ExtractedDecision]:
-    """Mine, structure, and promote session decisions for one repo.
+    """Read this repo's new transcript lines once, and serve both consumers.
 
     Reads only transcript lines appended since the last run (cursors live in
     the staging DB and only advance in the same commit that stages what was
@@ -694,6 +679,16 @@ async def mine_session_decisions(
     decisions that qualify for promotion, ready for the caller's normal
     ``bulk_upsert_decisions`` path. Best-effort at the file level; a failed
     LLM call leaves candidates staged for the next update.
+
+    The same pass records one transcript episode per session, riding the event
+    stream rather than re-reading it. That is not a tidiness point: the cursor
+    advances as the file is read, so a second pass over transcripts would find
+    nothing left to read, and whichever consumer ran second would be silently
+    empty rather than merely slow.
+
+    *provider* may be ``None``. Discovery, folding and staging are keyless and
+    run regardless; only the structuring pass needs a model, so a user with no
+    API key gets transcript episodes and a staged backlog rather than nothing.
     """
     repo_root = Path(repo_path).resolve()
     repo_prefix = str(repo_root).lower().rstrip("\\/")
@@ -701,15 +696,32 @@ async def mine_session_decisions(
     # This miner needs user prose, assistant prose, tool uses and results:
     # everything the conversation carries, minus the fat non-dialog lines.
     prefilter = adapter.prefilter(INTENT_TURNS)
+    recorder = TranscriptEpisodeRecorder(repo_root)
 
     store = SessionStagingStore.open_default(repo_root)
     try:
         # Stage new gate hits from transcript lines appended since last run.
         staged = 0
-        for path in adapter.discover(repo_root, projects_root=projects_root):
+        deadline = time.monotonic() + SWEEP_BUDGET_S
+        deferred = 0
+        discovered = adapter.discover(repo_root, projects_root=projects_root)
+        # Every discovered transcript is present whether or not this run gets
+        # to read it; the episode writer treats absence as deletion.
+        recorder.note_present(discovered)
+        for index, path in enumerate(discovered):
+            if time.monotonic() > deadline:
+                # A first index on a machine with a long agent history reads
+                # the whole corpus from byte 0, and that corpus is bounded by
+                # how much the user has worked, not by the size of the repo:
+                # 857 MB across 426 sessions here. Stopping is safe and
+                # self-healing rather than lossy, because the cursor is per
+                # file and saved below, so the next run resumes exactly where
+                # this one stopped. Steady state never reaches the budget.
+                deferred = len(discovered) - index
+                break
             try:
                 events = iter_new_events(adapter, path, store.cursors, prefilter=prefilter)
-                for candidate in mine_events(events, repo_prefix):
+                for candidate in mine_events(recorder.observe(path, events), repo_prefix):
                     if store.add_raw(
                         hash_=candidate.hash,
                         kind=candidate.kind,
@@ -724,12 +736,22 @@ async def mine_session_decisions(
         store.prune(now=now)
         store.cursors.save()  # commits the staged raws atomically with the cursors
 
+        # After the cursors commit, deliberately: the episode store is a
+        # separate sidecar, so writing it first would leave an episode
+        # describing bytes the cursor still thinks are unread.
+        episodes = record_transcript_episodes(repo_root, recorder)
+
         # One batched structuring pass over whatever is pending (this run's
         # hits plus any backlog a previous failed call left behind).
+        # Queried even with no provider: it is one indexed read, and the
+        # structuring loop below is what skips. Forcing this empty instead
+        # would report a backlog of zero on exactly the path most likely to
+        # have one, since nothing keyless ever drains it.
         pending = store.pending_raws(max_structured)
         structured_count = 0
         processed = 0
-        for start in range(0, len(pending), _LLM_CHUNK):
+        chunk_starts = [] if provider is None else range(0, len(pending), _LLM_CHUNK)
+        for start in chunk_starts:
             chunk = pending[start : start + _LLM_CHUNK]
             prompt = SESSION_MINING_PROMPT.format(candidates_block=_candidates_block(chunk))
             try:
@@ -776,6 +798,8 @@ async def mine_session_decisions(
             structured=structured_count,
             pending_backlog=max(0, len(pending) - processed),
             promoted=len(decisions),
+            episodes=episodes,
+            transcripts_deferred=deferred,
         )
         return decisions
     finally:

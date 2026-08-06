@@ -314,7 +314,11 @@ async def _run_decision_extraction(
                 session_mining_enabled,
             )
 
-            if llm_client is not None and session_mining_enabled(repo_cfg):
+            # Not gated on a provider: the same pass records transcript
+            # episodes, which need no model, and gating the read on a key
+            # would leave a keyless index with no transcript supply at all.
+            # The miner skips its own structuring pass when provider is None.
+            if session_mining_enabled(repo_cfg):
                 session_decisions = await asyncio.wait_for(
                     mine_session_decisions(repo_path, provider=llm_client),
                     timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
