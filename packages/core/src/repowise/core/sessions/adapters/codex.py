@@ -10,20 +10,26 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
 from repowise.core.fs_walk import iter_glob
-from repowise.core.sessions.adapters.base import HarnessAdapter, RawPrefilter
+from repowise.core.sessions.adapters.base import (
+    INTENT_SHELL_CALLS,
+    INTENT_TOOL_CALLS,
+    INTENT_TURNS,
+    HarnessAdapter,
+    RawPrefilter,
+)
 from repowise.core.sessions.adapters.claude_code import parse_timestamp
+from repowise.core.sessions.adapters.registry import register_adapter
 from repowise.core.sessions.events import Event, ToolResult, ToolUse
 
 _TOOL_CALL_RE = re.compile(r"tools\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _SHELL_COMMAND_RE = re.compile(r'"command"\s*:\s*"([^"]*)"')
 _PATH_RE = re.compile(r"(?m)^([^\r\n]+(?:\\|/)[^\r\n]+)$")
 
-
+@register_adapter
 class CodexAdapter(HarnessAdapter):
     """Normalizes Codex session JSONL into the shared Event stream."""
 
@@ -31,6 +37,7 @@ class CodexAdapter(HarnessAdapter):
 
     def __init__(self):
         self._tool_calls: dict[str, ToolUse] = {}
+        self._current_session: str | None = None
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
         root = projects_root if projects_root is not None else Path.home() / ".codex" / "sessions"
@@ -77,7 +84,11 @@ class CodexAdapter(HarnessAdapter):
 
         if entry_kind == "session_meta":
             event.text = ""
+            self._current_session = event.session_id
             return event
+
+        if event.session_id is None:
+            event.session_id = self._current_session
 
         text = _extract_text(
             entry.get("text"), payload.get("message"), payload.get("content"), payload.get("output")
@@ -107,22 +118,36 @@ class CodexAdapter(HarnessAdapter):
 
         return event
 
-    def iter_events(self, path: Path, *, prefilter: RawPrefilter | None = None) -> Iterator[Event]:
-        current_session = None
-        with path.open(encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
-                if prefilter is not None and not prefilter(raw):
-                    continue
-                event = self.normalize(raw)
-                if event is None:
-                    continue
-                if event.kind == "session_meta":
-                    current_session = event.session_id
-                    self._tool_calls.clear()
-                if event.session_id is None:
-                    event.session_id = current_session
+    def prefilter(self, intent: str) -> RawPrefilter | None:
+        if intent == INTENT_SHELL_CALLS:
+            return lambda raw: (
+                '"type":"custom_tool_call"' in raw
+                or '"type":"custom_tool_call_output"' in raw
+            )
 
-                yield event
+        if intent == INTENT_TOOL_CALLS:
+            return lambda raw: (
+                '"type":"custom_tool_call"' in raw
+                or '"type":"custom_tool_call_output"' in raw
+                or '"type":"function_call"' in raw
+                or '"type":"function_call_output"' in raw
+            )
+
+        if intent == INTENT_TURNS:
+            return lambda raw: (
+                '"type":"event_msg"' in raw
+                or '"type":"response_item"' in raw
+            )
+
+        return None
+
+    def begin_file(self, path: Path | None = None) -> None:
+        self._tool_calls.clear()
+        self._current_session = None
+
+    def end_file(self) -> None:
+        self._tool_calls.clear()
+        self._current_session = None
 
     def _fill_response_item(self, event: Event, payload: dict[str, Any]) -> None:
         """Handles response_item entries in Codex transcripts, and converts them to either text, tool uses or tool results
@@ -178,8 +203,6 @@ class CodexAdapter(HarnessAdapter):
             if tool is not None and tool.name == "search_codebase":
                 rewritten = _rewrite_search_output(output)
 
-                rewritten = _rewrite_search_output(output)
-
                 results = rewritten["result"]["results"]
                 if results:
                     tool.input["path"] = results[0]["file"]
@@ -194,6 +217,61 @@ class CodexAdapter(HarnessAdapter):
                     payload=output,
                 )
             )
+
+        if payload_type == "function_call":
+            tool_id = payload.get("call_id")
+            name = payload.get("name")
+
+            if not isinstance(tool_id, str) or not isinstance(name, str):
+                return
+
+            arguments = payload.get("arguments")
+
+            if isinstance(arguments, str):
+                try:
+                    normalized_input = json.loads(arguments)
+                except ValueError:
+                    normalized_input = {}
+            elif isinstance(arguments, dict):
+                normalized_input = arguments
+            else:
+                normalized_input = {}
+
+            normalized_name = _normalize_tool_name(name, normalized_input)
+
+            tool = ToolUse(
+                id=tool_id,
+                name=normalized_name,
+                input=normalized_input,
+            )
+
+            self._tool_calls[tool_id] = tool
+            event.tool_uses.append(tool)
+            return
+        
+        if payload_type == "function_call_output":
+            output = payload.get("output")
+            text = _extract_text(None, None, output, None)
+
+            if(text ):
+                event.text = text
+
+            call_id = payload.get("call_id")
+
+            if not isinstance(call_id, str):
+                return
+
+            self._tool_calls.pop(call_id, None)
+
+            event.tool_results.append(
+                ToolResult(
+                    tool_use_id=call_id,
+                    is_error=False,
+                    content=output,
+                    payload=output,
+                )
+            )
+            return
 
 
 def _rewrite_search_output(output: list[dict[str, str]]) -> dict:
