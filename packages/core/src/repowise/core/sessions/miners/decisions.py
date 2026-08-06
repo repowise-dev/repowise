@@ -706,7 +706,8 @@ async def mine_session_decisions(
         deferred = 0
         discovered = adapter.discover(repo_root, projects_root=projects_root)
         # Every discovered transcript is present whether or not this run gets
-        # to read it; the episode writer treats absence as deletion.
+        # to read it; the episode writer notes absence on the row it can no
+        # longer point at, and keeps the episode.
         recorder.note_present(discovered)
         for index, path in enumerate(discovered):
             if time.monotonic() > deadline:

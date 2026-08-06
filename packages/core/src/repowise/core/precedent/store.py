@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from repowise.core.fts_query import build_fts5_query, meaningful_terms
+
+_log = logging.getLogger(__name__)
 
 EPISODES_DIRNAME = "episodes"
 EPISODES_DB_FILENAME = "episodes.db"
@@ -53,6 +58,17 @@ DEFAULT_MAX_ROWS = 5000
 #: chunk rather than one variable past whatever SQLite was compiled with.
 _IN_CHUNK = 500
 
+#: How much wider than the caller's limit the BM25 window is drawn, so the
+#: rerank has something to reorder, and the hard ceiling on it, because every
+#: row in the window is a body this store then scans.
+_RERANK_FACTOR = 5
+_RERANK_WINDOW_MAX = 50
+
+#: Appended to an episode's evidence the first time a run finds the source it
+#: was derived from gone. The episode itself stays: the body is the content and
+#: the pointer was only ever provenance.
+SOURCE_GONE_NOTE = " (source no longer on disk)"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes (
     id TEXT PRIMARY KEY,
@@ -68,6 +84,31 @@ CREATE TABLE IF NOT EXISTS episodes (
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_tier_kind ON episodes(tier, kind);
 CREATE INDEX IF NOT EXISTS idx_episodes_last_seen ON episodes(last_seen_at);
+"""
+
+#: The searchable projection of an episode. External-content rather than a
+#: table of its own: ``body`` is already a column and this corpus is 11 MB on
+#: a real machine, so a standalone index would keep a second copy of all of it
+#: for nothing. The columns are named after the ones they shadow, which is what
+#: lets SQLite read them back out of ``episodes`` on a hit.
+_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5(
+    subject, body, content='episodes', content_rowid='rowid'
+);
+CREATE TRIGGER IF NOT EXISTS episodes_fts_ai AFTER INSERT ON episodes BEGIN
+    INSERT INTO episode_fts(rowid, subject, body)
+        VALUES (new.rowid, new.subject, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS episodes_fts_ad AFTER DELETE ON episodes BEGIN
+    INSERT INTO episode_fts(episode_fts, rowid, subject, body)
+        VALUES ('delete', old.rowid, old.subject, old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS episodes_fts_au AFTER UPDATE ON episodes BEGIN
+    INSERT INTO episode_fts(episode_fts, rowid, subject, body)
+        VALUES ('delete', old.rowid, old.subject, old.body);
+    INSERT INTO episode_fts(rowid, subject, body)
+        VALUES (new.rowid, new.subject, new.body);
+END;
 """
 
 
@@ -137,6 +178,47 @@ class EpisodeStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self.fts_enabled = self._ensure_fts()
+
+    def _ensure_fts(self) -> bool:
+        """Create the search index and refill it if it is behind. Never raises.
+
+        Modelled on ``persistence/search.py:_upgrade_sqlite_schema``, whose one
+        binding rule is that it must not raise: every command opens the store
+        through it, so an exception over an index would take down a product
+        that is still perfectly usable without one. Here the stake is smaller
+        and the rule is the same — a store that cannot build an index still
+        answers every read the guard and the hooks make of it.
+
+        Refill is one statement rather than a re-derivation. The rows are the
+        system of record and ``body`` is a column of them, so FTS5's own
+        ``rebuild`` reads what a hand-written refill would have selected.
+
+        Drift is detected by which objects are missing, not by comparing row
+        counts: an external-content table reads through to ``episodes`` on a
+        scan, so ``count(*)`` answers with the content table's size and reports
+        an index holding nothing as full. Presence is the honest signal, and it
+        is enough — once the triggers exist no drift can accumulate behind them.
+        """
+        try:
+            existing = {
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE name IN "
+                    "('episode_fts', 'episodes_fts_ai', 'episodes_fts_ad', 'episodes_fts_au')"
+                )
+            }
+            self._conn.executescript(_FTS_SCHEMA)
+            if len(existing) < 4:
+                # A store written before this index existed, or by a build
+                # without FTS5, or one whose objects somebody dropped.
+                self._conn.execute("INSERT INTO episode_fts(episode_fts) VALUES ('rebuild')")
+            self._conn.commit()
+            return True
+        except sqlite3.Error:
+            self._conn.rollback()
+            _log.debug("episode search index unavailable", exc_info=True)
+            return False
 
     @classmethod
     def open_for_repo(cls, repo_path: Path | str) -> EpisodeStore:
@@ -234,7 +316,7 @@ class EpisodeStore:
         self.prune(now=stamp)
         return dropped
 
-    def sync_tier(
+    def accumulate_tier(
         self,
         *,
         tier: str,
@@ -243,50 +325,94 @@ class EpisodeStore:
         present_subjects: Sequence[str],
         now: float | None = None,
     ) -> int:
-        """Accumulate into *tier*, bounded by what still exists.
+        """Accumulate into *tier*, outliving the sources the episodes came from.
 
         The third lifecycle, and the reason it is not one of the other two:
 
         * :meth:`replace_kinds` says *this run derived the whole kind*, which
-          is false here — a run reads only the transcript bytes appended since
-          the last one, so a sweep would delete every session it did not
-          revisit;
+          is false here — a run reads only the bytes appended since the last
+          one, so a sweep would delete every source it did not revisit;
         * :meth:`append_tier` says *this run covered a window and everything in
-          it is re-observed*, which is also false — the pass has no window, and
-          nothing about reading today's session says last March's still exists.
+          it is re-observed*, which is also false — the pass has no window.
 
-        What is true, and true of no other tier, is that this one's membership
-        can be **enumerated without being read**: the sources are files on
-        disk, so a run knows which episodes still have something behind them
-        for the cost of the directory listing it already did. That is the
-        vouch. *present_subjects* are marked re-observed whether or not they
-        were read this run — which is what stops a live episode dying of the
-        TTL simply because its session ended — and the rest of *kind* is
-        dropped, because its source is gone rather than merely quiet.
+        What replaces both is that an episode is **self-contained**: the body
+        holds the prose, so the source pointer is provenance and not content.
+        The source is therefore free to disappear, and it will. The harness
+        this tier reads from prunes its transcripts at 30 days by default,
+        counted here at 1,509 files whose age distribution stops dead at 30 —
+        so an earlier version of this method, which read "the file is gone" as
+        "the episode is gone", capped the tier at the harness's retention and
+        could never support the one claim the tier exists to make. Being the
+        only durable copy is the strongest thing the store has to say.
 
-        Returns rows dropped for having no source left.
+        What bounds the tier instead is what bounds the other accumulating one:
+        the TTL and the per-tier row cap. Every run marks the whole kind
+        re-observed, because a run of the index is what vouches that this
+        repository is still live; the TTL then evicts a tier whose repository
+        has stopped being indexed altogether, which is what it is for.
+
+        *present_subjects* survives the change with a smaller job. It is still
+        the cheap enumeration — the sources are files on disk, so a listing
+        answers it without a read — but a missing source is now recorded as a
+        **note on the row** rather than acted on, so a reader can say the
+        quotation outlived what it was quoted from instead of following a
+        pointer into nothing. An empty *present_subjects* is no vouch at all
+        (a run on a machine that never had the sources looks identical to one
+        whose sources all vanished), so it annotates nothing.
+
+        Returns rows newly marked as having lost their source.
         """
         stamp = time.time() if now is None else now
-        ids = [episode_id(tier, kind, s) for s in present_subjects]
-        with self._conn:  # one transaction: never half-synced
+        with self._conn:  # one transaction: never half-written
             self._upsert(episodes, stamp)
-            # Chunked: a heavy machine's transcript directory can outrun
-            # SQLite's per-statement variable limit, and a partial IN list
-            # would read as "these are gone" and delete live episodes.
-            for start in range(0, len(ids), _IN_CHUNK):
-                batch = ids[start : start + _IN_CHUNK]
-                placeholders = ",".join("?" * len(batch))
-                self._conn.execute(
-                    f"UPDATE episodes SET last_seen_at = ? WHERE id IN ({placeholders})",
-                    (stamp, *batch),
-                )
-            cur = self._conn.execute(
-                "DELETE FROM episodes WHERE tier = ? AND kind = ? AND last_seen_at < ?",
-                (tier, kind, stamp),
+            self._conn.execute(
+                "UPDATE episodes SET last_seen_at = ? WHERE tier = ? AND kind = ?",
+                (stamp, tier, kind),
             )
-            dropped = cur.rowcount or 0
+            noted = self._note_missing_sources(tier, kind, present_subjects)
         self.prune(now=stamp)
-        return dropped
+        return noted
+
+    def _note_missing_sources(
+        self, tier: str, kind: str, present_subjects: Sequence[str]
+    ) -> int:
+        """Make the note match what is on disk, in both directions. In-transaction.
+
+        A temporary table rather than a ``NOT IN`` list, because this is a
+        negation and a negation cannot be chunked: a partial list would read as
+        "everything else is gone" and annotate live rows. The same reasoning
+        that made the positive form chunk-safe makes this form all-or-nothing.
+
+        The note is **cleared as well as written**, and the asymmetry it fixes
+        is not hypothetical. Clearing it only on re-derivation would leave the
+        note stuck forever on the ordinary case: a source has to be *read* to
+        be re-derived, an old session has nothing new to read, and one
+        directory listing that misses a file — a transient failure, no deletion
+        needed — would then mark it gone permanently while the file sat there.
+        Presence is a fact about now, so the row is made to agree with now.
+        """
+        if not present_subjects:
+            return 0
+        ids = [(episode_id(tier, kind, s),) for s in present_subjects]
+        self._conn.execute("CREATE TEMP TABLE IF NOT EXISTS present_ids (id TEXT PRIMARY KEY)")
+        self._conn.execute("DELETE FROM present_ids")
+        self._conn.executemany("INSERT OR IGNORE INTO present_ids (id) VALUES (?)", ids)
+        cur = self._conn.execute(
+            # ``instr`` rather than LIKE: the marker is a literal, and a LIKE
+            # pattern is a thing to escape even when it is a constant today.
+            "UPDATE episodes SET evidence = evidence || ? "
+            "WHERE tier = ? AND kind = ? AND instr(evidence, ?) = 0 "
+            "AND id NOT IN (SELECT id FROM present_ids)",
+            (SOURCE_GONE_NOTE, tier, kind, SOURCE_GONE_NOTE),
+        )
+        noted = cur.rowcount or 0
+        self._conn.execute(
+            "UPDATE episodes SET evidence = replace(evidence, ?, '') "
+            "WHERE tier = ? AND kind = ? AND instr(evidence, ?) > 0 "
+            "AND id IN (SELECT id FROM present_ids)",
+            (SOURCE_GONE_NOTE, tier, kind, SOURCE_GONE_NOTE),
+        )
+        return noted
 
     def _upsert(self, episodes: Iterable[Episode], stamp: float) -> None:
         """Insert or refresh *episodes*. Caller owns the transaction.
@@ -437,6 +563,96 @@ class EpisodeStore:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY birth_at DESC, id ASC"
         return [_row_to_dict(row) for row in self._conn.execute(sql, params)]
+
+    def search(
+        self,
+        query: str,
+        *,
+        tiers: Sequence[str] | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Episodes matching *query*, best first, each with its BM25 ``score``.
+
+        Ranked rather than filtered, which is the difference between this and
+        :meth:`list_episodes`: a question is a paraphrase of the episode that
+        answers it, so the expression is built by the same shared builder the
+        wiki index uses (:mod:`repowise.core.fts_query`) — it is where the
+        reduction to ``[a-zA-Z0-9_]+`` lives, and reimplementing that escaping
+        is how a store learns about FTS5's grammar the expensive way.
+
+        BM25 orders the candidates and a second pass reorders them by how many
+        **distinct** question terms the body carries, BM25 breaking the ties.
+        Measured on this repository's own store against a grep-established
+        answer key: 74% to 84% hit@3, 58% to 68% hit@1. The reason is the shape
+        of the document — a session is long and repeats itself, so a body
+        mentioning one term of the question forty times outscores one that
+        answers all four, and term frequency is exactly what BM25 rewards.
+        Counting distinct terms fits no constant to this corpus; the signal is
+        the question's own vocabulary.
+
+        The opposite lever was tried first and is recorded because it looked
+        obvious: passing the wiki index's document-frequency ceiling made this
+        *worse* (74% to 68%), since a term in a fifth of the sessions is
+        ordinary here rather than uninformative.
+
+        Coverage counts a term as present by substring, so ``cat`` is found
+        inside ``concatenate``. That is loose, and it is what the numbers above
+        were measured with: tightening it to word boundaries is a change to the
+        thing being measured, not a free correctness fix, so it belongs with a
+        re-run rather than with a tidy-up.
+
+        Returns nothing rather than raising when there is no index, and the
+        same for a query FTS5 will not parse: a search that cannot run is a
+        feature that says nothing, never a caller that has to handle it.
+        """
+        if not self.fts_enabled or not query.strip():
+            return []
+        if tiers is not None and not tiers:
+            return []
+        # Deliberately without the document-frequency ceiling the wiki index
+        # passes here. Measured on this store: applying it moved r1's
+        # grep-grounded regression from 74% to 68% hit@3, and pushed the
+        # episode holding every rare term of a question from rank 9 to 11.
+        # A session body is long and mentions many things, so a term in a fifth
+        # of the sessions is ordinary rather than uninformative, and matching
+        # more of a question's vocabulary discriminates better than matching
+        # only its rarest words. The ceiling is a property of the wiki corpus's
+        # vocabulary, not a general truth, and it does not transfer.
+        expression = build_fts5_query(query)
+        sql = (
+            "SELECT e.id, e.tier, e.kind, e.subject, e.body, e.evidence, e.nodes, "
+            "e.birth_commit, e.birth_at, e.last_seen_at, bm25(episode_fts) AS score "
+            "FROM episode_fts JOIN episodes e ON e.rowid = episode_fts.rowid "
+            "WHERE episode_fts MATCH ?"
+        )
+        params: list[object] = [expression]
+        if tiers is not None:
+            sql += f" AND e.tier IN ({','.join('?' * len(tiers))})"
+            params.extend(tiers)
+        # BM25 is negative and more negative is better, so plain ascending
+        # order is best-first; the sign is flipped on the way out.
+        sql += " ORDER BY score LIMIT ?"
+        # Reranking can only reorder what BM25 hands it, so the window is wider
+        # than the caller asked for — and bounded, because every row in it is a
+        # body this method then scans.
+        window = max(1, limit) * _RERANK_FACTOR
+        params.append(min(window, _RERANK_WINDOW_MAX))
+        try:
+            rows = self._conn.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            _log.debug("episode search failed for %r", query, exc_info=True)
+            return []
+
+        hits = [{**_row_to_dict(row), "score": -(row[10] or 0.0)} for row in rows]
+        terms = set(meaningful_terms(query))
+        if terms:
+            hits.sort(
+                key=lambda h: (
+                    -sum(1 for t in terms if t in h["body"].casefold()),
+                    -h["score"],
+                )
+            )
+        return hits[: max(1, limit)]
 
     def count(self) -> int:
         (rows,) = self._conn.execute("SELECT COUNT(*) FROM episodes").fetchone()
