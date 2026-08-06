@@ -66,7 +66,7 @@ async def find_completed_phases(
     """
     from repowise.core.persistence._interfaces.job_store import JobState
 
-    jobs = await job_store.list_jobs(repository_id=repository_id)
+    jobs = await job_store.list_jobs(repository_id=repository_id, limit=10_000)
     return {j.phase for j in jobs if j.state == JobState.COMPLETED}
 
 

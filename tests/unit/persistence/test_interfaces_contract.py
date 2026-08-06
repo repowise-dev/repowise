@@ -210,3 +210,39 @@ async def test_job_store_find_resumable_filters_by_state(job_store):
 @pytest.mark.asyncio
 async def test_job_store_get_unknown_returns_none(job_store):
     assert await job_store.get_job("does-not-exist") is None
+
+
+@pytest.mark.asyncio
+async def test_job_store_list_jobs_respects_limit(job_store):
+    repo_id = job_store._test_repo_id  # type: ignore[attr-defined]
+    # Create 5 jobs: 3 completed, 2 running.
+    completed_phases = {"parse", "graph", "index"}
+    running_phases = {"analysis", "generate"}
+    for phase in completed_phases | running_phases:
+        job = await job_store.create_job(repository_id=repo_id, phase=phase)
+        target = JobState.COMPLETED if phase in completed_phases else JobState.RUNNING
+        await job_store.update_state(job.id, target)
+
+    # Default limit (100) returns all 5 jobs.
+    all_jobs = await job_store.list_jobs(repository_id=repo_id)
+    assert len(all_jobs) == 5
+
+    # A small limit truncates the result set.
+    limited = await job_store.list_jobs(repository_id=repo_id, limit=3)
+    assert len(limited) == 3
+
+
+@pytest.mark.asyncio
+async def test_find_completed_phases_uses_unbounded_limit(job_store):
+    """Resume readers must see every completed phase, not just the newest 100."""
+    from repowise.core.pipeline.checkpoint import find_completed_phases
+
+    repo_id = job_store._test_repo_id  # type: ignore[attr-defined]
+    # Create 6 completed jobs (more than the old default limit of 5 would hide).
+    phases = {f"phase-{i}" for i in range(6)}
+    for phase in phases:
+        job = await job_store.create_job(repository_id=repo_id, phase=phase)
+        await job_store.update_state(job.id, JobState.COMPLETED)
+
+    done = await find_completed_phases(job_store, repository_id=repo_id)
+    assert done == phases
