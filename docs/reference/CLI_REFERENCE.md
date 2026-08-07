@@ -584,7 +584,7 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
 
 ### `repowise health [PATH]`
 
-Compute per-file code-health scores from 25 deterministic markers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
+Compute per-file code-health scores from 49 deterministic detectors (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
 
 **Options:**
 

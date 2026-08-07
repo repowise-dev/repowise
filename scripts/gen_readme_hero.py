@@ -90,7 +90,7 @@ add(f'<text x="{PAD}" y="{80}" class="sub">Index once, in seconds, no LLM requir
 TOP = 104
 # ============ A: Code Health (large) ======================================
 ax, ay, aw, ah = PAD, TOP, 748, 352
-card(ax, ay, aw, ah, "CODE HEALTH", "25 markers · zero LLM · <30s")
+card(ax, ay, aw, ah, "CODE HEALTH", "49 detectors · zero LLM · <30s")
 
 # KPI chips
 kpis = [("Defect risk", "7.5", "/10", WARNING), ("Maintainability", "8.6", "/10", SUCCESS), ("Perf risks", "268", "", PLUM)]

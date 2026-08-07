@@ -442,11 +442,20 @@ A health score is worth something only if the files it flags are the files that
 break. Scores are taken at a historical commit, bug fixes are counted over the
 following six months, and nothing after the scoring commit feeds the score.
 
-Across **21 repositories, 9 languages, 2,826 files**: **ROC AUC 0.74**
-(95% CI 0.68 to 0.79), reaching 0.90 on individual repos. It survives controlling
-for file size, so it is not simply flagging the big files, and it beats recent
-churn by +0.10 AUC and prior-defect history by +0.12 (DeLong p < 1e-9). On
-PROMISE/jEdit, a dataset it never saw, it holds at 0.76 to 0.78.
+Across **21 repositories, 9 languages, 2,826 files**: **ROC AUC 0.737**
+(95% CI 0.683 to 0.787), ranging from 0.55 to 0.86 across individual repos. It
+beats recent churn by +0.100 AUC and prior-defect history by +0.117 (DeLong
+p < 1e-9). On PROMISE/jEdit, a dataset it never saw and which carries no git
+history at all, it holds at 0.76 to 0.78.
+
+It is **not** better than raw file size at discrimination: LOC-only scores 0.742
+against our 0.737 (p = 0.92, a tie). Where it wins is effort-aware ranking,
+Popt +0.134 (95% CI +0.080 to +0.198) — same discrimination as counting lines,
+much better at ordering a fixed review budget, and unlike a line count it says
+why. Holding size fixed, within-band AUC runs 0.525 / 0.572 / 0.593 / 0.718
+across NLOC quartiles: the signal survives cleanly only in the largest quartile,
+and a purpose-built positive control confirms that collapse is a real absence
+rather than too few positives to detect one.
 
 **Against CodeScene**, the closest commercial product and the only other vendor
 in this category with a published empirical defect study. Both tools scored the
@@ -471,7 +480,23 @@ through. If what you want is a handful of files to fix this quarter rather than
 the ranking that catches the most defects, that operating point is the better
 one, and it is a deliberate design choice rather than a weaker model. Our AUC
 edge is also **marginal**, not significant at 0.05, and we would rather say so
-than round it up.
+than round it up. So is our raw defect-density lead: 16.9x against 14.2x, but
+p = 0.65 on a heavy tail. The size-normalized version of that row, 2.18x against
+0.56x, is the one that reaches significance and the one to cite.
+
+**The axis we lost outright.** CodeScene's "Code Red" study reports a Pearson
+correlation of **−0.58** between Code Health and mean issue-resolution time, on
+proprietary Jira cycle-time data. We tried to replicate that on open data and
+could not. Across 17 repositories and 271 files, GitHub PR merge time correlated
+with health at **−0.09** (95% CI −0.19 to +0.14), and six queue-independent
+effort signals — commit span, commit count, review rounds, changes-requested,
+commits after first review, review-comment density — all came back flat with
+every interval spanning zero. The likely reason is structural: GitHub merge time
+largely measures maintainer review-queue availability, not how hard a change was.
+An early three-repo slice did show a review-rounds correlation of about −0.29,
+and it did not survive expanding the corpus, so we treat it as small-sample
+noise. **The business-impact axis remains CodeScene's, unreplicated on open
+data.**
 
 Reports:
 **[BENCHMARK\_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)** ·

@@ -49,7 +49,7 @@ your agent in under five minutes, with no API key.
 | Doc | What it covers |
 |-----|----------------|
 | [layers/INTELLIGENCE_LAYERS.md](layers/INTELLIGENCE_LAYERS.md) | Overview of the five layers: graph, git, docs, decisions, code health |
-| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability, and performance from 25 deterministic markers |
+| [layers/CODE_HEALTH.md](layers/CODE_HEALTH.md) | Defect risk, maintainability, and performance from 49 deterministic detectors |
 | [layers/REFACTORING.md](layers/REFACTORING.md) | Concrete, graph-aware refactoring plans (Extract Class, Move Method, Break Cycle) |
 | [layers/CHANGE_RISK.md](layers/CHANGE_RISK.md) | Score any commit or `base..HEAD` range 0-10 for defect risk |
 | [layers/BUG_HISTORY.md](layers/BUG_HISTORY.md) | Which files and symbols actually get bug-fixed, and how recently |
