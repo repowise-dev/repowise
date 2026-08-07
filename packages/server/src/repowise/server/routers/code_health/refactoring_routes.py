@@ -24,6 +24,18 @@ _EFFORT_BUCKETS: tuple[tuple[int, str], ...] = (
 )
 
 
+_SORT_KEYS = {
+    "impact_per_effort": lambda t: (-t["impact_per_effort"], -t["total_impact"]),
+    "total_impact": lambda t: -t["total_impact"],
+    # ``score`` clamps at 1.0, so on a real repo dozens of targets tie at the
+    # top and sorting on it alone returns them in dict-insertion order.
+    # ``total_impact`` is the same pre-clamp magnitude the crud layer ranks
+    # metrics by, so "Worst score" agrees with the files list.
+    "score": lambda t: (t["score"], -t["total_impact"], t["file_path"]),
+    "finding_count": lambda t: -t["finding_count"],
+}
+
+
 def _effort_for_nloc(nloc: int) -> str:
     for ceiling, label in _EFFORT_BUCKETS:
         if nloc <= ceiling:
@@ -103,11 +115,5 @@ async def refactoring_targets(
             }
         )
 
-    sort_key_map = {
-        "impact_per_effort": lambda t: (-t["impact_per_effort"], -t["total_impact"]),
-        "total_impact": lambda t: -t["total_impact"],
-        "score": lambda t: t["score"],
-        "finding_count": lambda t: -t["finding_count"],
-    }
-    targets.sort(key=sort_key_map[sort])
+    targets.sort(key=_SORT_KEYS[sort])
     return {"targets": targets[:limit], "total": len(targets)}

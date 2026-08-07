@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
@@ -310,20 +310,102 @@ async def get_health_findings(
     )
 
 
+async def get_deduction_by_path(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: list[str] | None = None,
+    status: str = "open",
+) -> dict[str, float]:
+    """``{file_path: summed health_impact}`` over the repo's findings.
+
+    The pre-clamp deduction magnitude, aggregated in SQL rather than by
+    hydrating every finding. Each stored ``health_impact`` is already the
+    applied (capped) value, so the sum equals the breakdown endpoint's
+    ``total_deduction``.
+
+    Files with no findings are simply absent — a caller reading this as a
+    ranking key should treat a miss as 0.0 (a clean file has no magnitude).
+    """
+    totals: dict[str, float] = {}
+    base = select(
+        HealthFinding.file_path,
+        func.sum(HealthFinding.health_impact),
+    ).where(
+        HealthFinding.repository_id == repository_id,
+        HealthFinding.status == status,
+    )
+    # Batched like the other ``IN`` lookups here: SQLITE_MAX_VARIABLE_NUMBER is
+    # 999 before SQLite 3.32 and a module-scoped caller expands without bound.
+    chunks: list[list[str] | None] = (
+        [file_paths[i : i + _BATCH_SIZE] for i in range(0, len(file_paths), _BATCH_SIZE)]
+        if file_paths is not None
+        else [None]
+    )
+    for chunk in chunks:
+        q = base if chunk is None else base.where(HealthFinding.file_path.in_(chunk))
+        for path, total in (await session.execute(q.group_by(HealthFinding.file_path))).all():
+            totals[path] = float(total or 0.0)
+    return totals
+
+
+def sort_metrics_worst_first(
+    rows: list[Any], deduction_by_path: dict[str, float]
+) -> list[Any]:
+    """Order per-file metrics worst-first: ``(score asc, deduction desc, path)``.
+
+    ``score`` alone cannot rank the band that matters. It clamps at 1.0, so on
+    a real repo dozens of files tie there and any list sorted on score alone
+    comes back in whatever order the DB happened to return — path order, in
+    practice. That put this repo's single worst file (12.9 points of deduction)
+    at position 27 of a list capped at 20.
+
+    ``total_deduction`` is the pre-clamp magnitude, so it keeps ranking below
+    the floor: a -25 file sorts above a -9 file that prints the same 1.0. The
+    trailing ``file_path`` makes the order total, so a page boundary is stable
+    across requests instead of shuffling two equal rows.
+
+    Shared with the MCP ``get_health`` tool, which builds its own deduction map
+    from findings it has already loaded rather than re-querying. One comparator
+    so REST, MCP and hosted cannot drift into three different "worst files".
+    """
+    return sorted(
+        rows,
+        key=lambda m: (m.score, -deduction_by_path.get(m.file_path, 0.0), m.file_path),
+    )
+
+
 async def get_health_metrics(
     session: AsyncSession,
     repository_id: str,
     *,
     file_paths: list[str] | None = None,
 ) -> list[HealthFileMetric]:
+    """Per-file health metrics, ordered worst-first.
+
+    See :func:`sort_metrics_worst_first` for why the order is not a plain
+    ``ORDER BY score``.
+    """
     q = select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
     if file_paths is not None:
         q = q.where(HealthFileMetric.file_path.in_(file_paths))
-    q = q.order_by(HealthFileMetric.score.asc())
     result = await session.execute(q)
-    return _filter_excluded_paths(
+    rows = _filter_excluded_paths(
         list(result.scalars().all()),
         await _health_exclude_spec(session, repository_id),
+    )
+    if len(rows) < 2:
+        # Nothing to order. Skips the aggregate for the single-file lookups
+        # (symbol drawer, file detail, one-plan refactoring view), which are
+        # per-request reads that would otherwise pay for a ranking they cannot
+        # use.
+        return rows
+    # Scoped to the caller's paths, not to ``rows``: a repo-wide read wants the
+    # single grouped scan, and the extra keys an exclude config leaves in the
+    # map are never looked up.
+    return sort_metrics_worst_first(
+        rows,
+        await get_deduction_by_path(session, repository_id, file_paths=file_paths),
     )
 
 

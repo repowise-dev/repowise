@@ -30,6 +30,7 @@ from .dead_code import (
 )
 from .health import (
     HEALTH_SNAPSHOT_RETENTION,
+    get_deduction_by_path,
     get_file_language_map,
     get_health_findings,
     get_health_metrics,
@@ -40,6 +41,7 @@ from .health import (
     save_health_findings,
     save_health_metrics,
     save_health_snapshot,
+    sort_metrics_worst_first,
     update_health_finding_status,
     upsert_health_findings,
     upsert_health_metrics,
@@ -58,6 +60,7 @@ __all__ = [
     "get_coverage_summary",
     "get_dead_code_findings",
     "get_dead_code_summary",
+    "get_deduction_by_path",
     "get_file_language_map",
     "get_health_findings",
     "get_health_metrics",
@@ -76,6 +79,7 @@ __all__ = [
     "save_health_snapshot",
     "save_refactoring_suggestions",
     "save_test_coverage",
+    "sort_metrics_worst_first",
     "tests_covering",
     "update_dead_code_status",
     "update_health_finding_status",

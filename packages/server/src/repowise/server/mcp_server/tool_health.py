@@ -27,6 +27,7 @@ from repowise.core.persistence.crud import (
     get_refactoring_suggestions,
     list_health_snapshots,
     load_coverage_for_repo,
+    sort_metrics_worst_first,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import HealthFileMetric, HealthFinding
@@ -523,14 +524,12 @@ async def get_health(
         effective_targets = file_targets if scoped else []
         nothing_resolved = scoped and not effective_targets
 
-        if scoped:
-            metric_rows = [
-                m
-                for m in sorted(all_metrics, key=lambda r: r.score)
-                if m.file_path in set(effective_targets)
-            ]
-        else:
-            metric_rows = sorted(all_metrics, key=lambda r: r.score)
+        # Ordered below, once the findings the ranking needs are loaded.
+        unranked_metrics = (
+            [m for m in all_metrics if m.file_path in set(effective_targets)]
+            if scoped
+            else all_metrics
+        )
 
         open_findings = (
             HealthFinding.repository_id == repository.id,
@@ -715,6 +714,23 @@ async def get_health(
             churn_points = [
                 asdict(p) for p in churn_complexity_points(all_metrics, git_meta_by_path)[:limit]
             ]
+
+        # Worst-first order, deferred to here because ranking needs the summed
+        # deduction per file and ``lead_rows`` already carries every open
+        # finding this response is entitled to see. Same comparator the crud
+        # layer applies to ``get_health_metrics``, so the REST dashboard and
+        # this tool cannot disagree about which file is worst — but fed from
+        # rows already in memory, so it costs no extra query in either mode.
+        #
+        # Deliberately ``lead_rows`` (the unfiltered open set) rather than
+        # ``emitted``: asking to *see* one dimension must not restate which
+        # files the repo's worst are.
+        deduction_by_path: dict[str, float] = {}
+        for f in lead_rows:
+            deduction_by_path[f.file_path] = deduction_by_path.get(f.file_path, 0.0) + float(
+                f.health_impact or 0.0
+            )
+        metric_rows = sort_metrics_worst_first(unranked_metrics, deduction_by_path)
 
         # Load the snapshot window for the repo-level trend block and/or the
         # per-file trajectory we attach in targeted mode ("should I touch this

@@ -377,3 +377,96 @@ async def test_get_health_dimension_filter_leaves_kpis_and_ranking_alone(setup_m
     filtered = await get_health(include=["biomarkers", "maintainability"])
     assert filtered["kpis"]["performance_findings"] == full["kpis"]["performance_findings"]
     assert filtered["worst_files"] == full["worst_files"]
+
+
+@pytest.fixture
+async def floored_health_data(session, populated_db: str) -> str:
+    """Four files clamped at the 1.0 score floor, worst one last by path.
+
+    Mirrors the shape of a real repo, where 30 files sit at exactly 1.0 and the
+    deepest of them sorts last alphabetically.
+    """
+    from repowise.core.persistence.crud import save_health_findings, save_health_metrics
+
+    rid = populated_db
+    paths = ["src/a.py", "src/b.py", "src/c.py", "src/z.py"]
+    await save_health_metrics(
+        session,
+        rid,
+        [
+            {
+                "file_path": p,
+                "score": 1.0,
+                "max_ccn": 20,
+                "max_nesting": 5,
+                "nloc": 100,
+                "has_test_file": False,
+                "module": "src",
+            }
+            for p in paths
+        ],
+    )
+    # z.py is the deepest by a wide margin and would be invisible under a
+    # score-only sort at any limit below 4.
+    impacts = {"src/a.py": 2.0, "src/b.py": 3.0, "src/c.py": 4.0, "src/z.py": 9.0}
+    await save_health_findings(
+        session,
+        rid,
+        [
+            {
+                "file_path": p,
+                "biomarker_type": "complex_method",
+                "severity": "high",
+                "function_name": "run",
+                "line_start": 1,
+                "line_end": 20,
+                "details": {},
+                "health_impact": impact,
+                "reason": f"{p} is complex",
+            }
+            for p, impact in impacts.items()
+        ],
+    )
+    return rid
+
+
+@pytest.mark.asyncio
+async def test_worst_files_ranks_floored_ties_by_deduction(setup_mcp, floored_health_data):
+    """The headline "worst files" list contains the actual worst file.
+
+    Regression: the list sorted on ``score`` alone. The score clamps at 1.0, so
+    ties broke by DB order — path order in practice — and on this repo the file
+    carrying the largest deduction landed at position 27 of a list capped at 20.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health()
+    assert [m["file_path"] for m in result["worst_files"]] == [
+        "src/z.py",
+        "src/c.py",
+        "src/b.py",
+        "src/a.py",
+    ]
+
+    # The cap is where the old order actually hurt: under a score-only sort the
+    # worst file falls off the page entirely.
+    capped = await get_health(limit=1)
+    assert [m["file_path"] for m in capped["worst_files"]] == ["src/z.py"]
+
+
+@pytest.mark.asyncio
+async def test_worst_files_order_survives_every_dimension_filter(setup_mcp, floored_health_data):
+    """Ranking reads the unfiltered open set, whatever the caller asked to see.
+
+    The combination is the point: a cap and a filter interacting is where this
+    tool has broken twice. Narrowing the *findings* to one dimension must not
+    silently re-rank which files the repo's worst are.
+    """
+    from repowise.server.mcp_server import get_health
+
+    baseline = [m["file_path"] for m in (await get_health(limit=2))["worst_files"]]
+    assert baseline == ["src/z.py", "src/c.py"]
+
+    for include in (["defect"], ["maintainability"], ["performance"], ["biomarkers", "defect"]):
+        result = await get_health(include=include, limit=2)
+        assert [m["file_path"] for m in result["worst_files"]] == baseline, include

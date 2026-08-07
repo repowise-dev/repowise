@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import { FileText } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import {
@@ -63,17 +62,11 @@ export function HealthFileTable({
   selectedPath,
   emptyMessage,
 }: HealthFileTableProps) {
-  // When sorting by score, two floored files both read 1.0; break that tie by
-  // deduction magnitude so the deeper problem sorts first (server sorts by
-  // score only, so this is a within-page refinement — P1).
-  const rows = useMemo(() => {
-    if (sortField !== "score") return files;
-    const dir = sortOrder === "desc" ? -1 : 1;
-    return [...files].sort((a, b) => {
-      if (a.score !== b.score) return (a.score - b.score) * dir;
-      return (b.total_deduction ?? 0) - (a.total_deduction ?? 0);
-    });
-  }, [files, sortField, sortOrder]);
+  // Rendered in server order. The floored-score tie is broken by deduction
+  // magnitude in the crud layer now, so a re-sort here would only reorder the
+  // page it was handed — and the file it should surface is usually the one the
+  // server left off that page entirely.
+  const rows = files;
 
   const columns: ResponsiveColumn<HealthFileRow>[] = [
     {
