@@ -409,6 +409,47 @@ async def get_health_metrics(
     )
 
 
+async def get_average_health(session: AsyncSession, repository_id: str) -> float | None:
+    """The repo's NLOC-weighted average health score, or ``None`` if unmeasured.
+
+    Numerically identical to ``get_health_summary()["average_health"]`` — same
+    weighting, same ``max(nloc, 1)`` floor, same 2dp rounding — for callers that
+    want *only* that number. The summary computes it as a by-product of building
+    twenty-odd KPIs, which costs a full ORM hydration of the metrics table, the
+    grouped deduction aggregate behind the worst-first ranking, the whole
+    findings table for the per-dimension counts, and the graph's language map
+    for perf coverage. The public badge endpoints want one float.
+
+    Three columns and the same exclusion filter every other health read applies.
+    That filter is a compiled ``pathspec``, not something SQL can express, which
+    is why this is a narrow select reduced in Python rather than an ``AVG()``:
+    a SQL average would quietly include files the dashboard excludes, and the
+    badge would then disagree with the page it links to.
+    """
+    rows = _filter_excluded_paths(
+        list(
+            (
+                await session.execute(
+                    select(
+                        HealthFileMetric.file_path,
+                        HealthFileMetric.score,
+                        HealthFileMetric.nloc,
+                    ).where(HealthFileMetric.repository_id == repository_id)
+                )
+            ).all()
+        ),
+        await _health_exclude_spec(session, repository_id),
+    )
+    if not rows:
+        return None
+    total_nloc = sum(max(r.nloc, 1) for r in rows)
+    if total_nloc:
+        avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
+    else:
+        avg = sum(r.score for r in rows) / len(rows)
+    return round(avg, 2)
+
+
 async def get_file_language_map(session: AsyncSession, repository_id: str) -> dict[str, str]:
     """``{file_path: language_tag}`` for every file node in the graph."""
     q = select(GraphNode.node_id, GraphNode.language).where(

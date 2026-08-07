@@ -160,12 +160,21 @@ def symbols_named(
     BINARY collation unless a column says otherwise, and neither the ORM path
     nor this one asks for NOCASE. The widened rescue depends on that, since it
     generates its case variants explicitly.
+
+    Ordered because the ``LIMIT`` truncates. Unordered, the rows arrive in
+    whatever order the chosen index happens to walk, so *which* rows survive
+    the cut was the planner's choice — and adding an unrelated index to this
+    table silently changed the answer. ``(file_path, name)`` is the order the
+    ``uq_wiki_symbol`` autoindex gave for free, its key being
+    ``"<path>::<name>"``, so this pins the long-standing result rather than
+    picking a new one.
     """
     if not names:
         return []
     placeholders = ",".join("?" * len(names))
     return conn.execute(
         "SELECT name, kind, file_path, start_line FROM wiki_symbols "
-        f"WHERE repository_id = ? AND name IN ({placeholders}) LIMIT ?",
+        f"WHERE repository_id = ? AND name IN ({placeholders}) "
+        "ORDER BY file_path, name LIMIT ?",
         (repository_id, *names, limit),
     ).fetchall()

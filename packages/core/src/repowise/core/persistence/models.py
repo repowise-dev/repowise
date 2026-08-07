@@ -413,7 +413,22 @@ class WikiSymbol(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
 
-    __table_args__ = (UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),)
+    __table_args__ = (
+        UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),
+        # The unique constraint's implicit index is keyed on ``symbol_id``, so a
+        # lookup by *file* could only seek on ``repository_id`` and then filter
+        # the repo's symbols in memory. That is the shape behind every
+        # file-scoped symbol join (health findings -> symbol ids, the file
+        # drawer, the symbol panel), not just one caller. Measured on a real
+        # 28,175-symbol index, a 400-path lookup returning 6,937 rows went
+        # 33.3ms -> 11.7ms, the plan flipping to a keyed seek, same rows.
+        #
+        # Adding this changed which index the planner picks for *other* queries
+        # on this table, and an unordered ``LIMIT`` there is decided by whatever
+        # order the chosen index walks. ``augment_cmd``'s symbol rescue had two
+        # such queries and now orders explicitly — see ``symbols_named``.
+        Index("ix_wiki_symbols_repo_path", "repository_id", "file_path"),
+    )
 
 
 class GitMetadata(Base):

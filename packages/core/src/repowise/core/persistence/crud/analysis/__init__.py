@@ -31,6 +31,7 @@ from .dead_code import (
 from .health import (
     HEALTH_SNAPSHOT_RETENTION,
     HealthSnapshotHeadline,
+    get_average_health,
     get_deduction_by_path,
     get_file_language_map,
     get_health_findings,
@@ -60,6 +61,7 @@ __all__ = [
     "HealthSnapshotHeadline",
     "covered_source_files",
     "files_covered_by",
+    "get_average_health",
     "get_coverage_summary",
     "get_dead_code_findings",
     "get_dead_code_summary",
