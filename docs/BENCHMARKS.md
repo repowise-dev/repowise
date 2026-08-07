@@ -537,6 +537,20 @@ Beyond the ones stated in each section:
 - **§2's difficulty split is post-hoc.** The median split was chosen after seeing
   the data. The pre-registered comparisons on this page are stronger evidence.
 
+## Keeping the marketing site honest
+
+repowise.dev mirrors the figures on this page in a TypeScript module,
+`frontend/src/lib/benchmark-facts.ts`, so pages and blog posts render one
+shared set of numbers instead of each hardcoding its own copy. Two copies of
+the same numbers drift, so `scripts/check_benchmark_facts.py` in this repo
+parses both files, compares them, and fails on a mismatch: a changed table
+cell, a scalar fact whose value no longer appears in the section it cites, a
+published fact missing its caveat, or a `section` anchor that no longer
+exists as a heading here. It runs in CI. The frontend repo is not checked
+into this one, so the script skips cleanly (exit 0) wherever `frontend/` is
+absent, and only checks for real when it is present, such as a local clone
+with both repos side by side.
+
 ## Method and provenance
 
 The full methodology, the pre-registration files with their commit timestamps,

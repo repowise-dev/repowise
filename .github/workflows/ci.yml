@@ -68,6 +68,13 @@ jobs:
       - name: Run ruff
         run: uv run ruff check .
 
+      - name: Check benchmark facts against the marketing site
+        # frontend/ is a separate repo not checked into this one, so it is
+        # absent here; the script detects that and exits 0. This step still
+        # runs so the check is exercised wherever frontend/ IS checked out
+        # alongside this repo (e.g. a local dev clone).
+        run: python scripts/check_benchmark_facts.py
+
   # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
   # ---------------------------------------------------------------------------
