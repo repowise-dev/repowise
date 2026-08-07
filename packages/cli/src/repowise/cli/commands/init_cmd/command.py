@@ -403,7 +403,7 @@ def _run_generation_phase(
     "provider_name",
     default=None,
     help=(
-        "LLM provider name (anthropic, openai, openrouter, gemini, "
+        "LLM provider name (anthropic, openai, openrouter, orcarouter, gemini, "
         "deepseek, kimi, ollama, litellm, codex_cli, opencode, mock)."
     ),
 )

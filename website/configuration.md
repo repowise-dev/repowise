@@ -132,6 +132,21 @@ repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
 repowise init --provider openrouter --model x-ai/grok-4 --reasoning off
 ```
 
+For [OrcaRouter](https://www.orcarouter.ai), a multi-vendor routing gateway
+with 180+ models (Claude, GPT, Gemini, Qwen, DeepSeek, …) behind one
+OpenAI-compatible endpoint:
+
+```bash
+export ORCAROUTER_API_KEY="sk-orca-..."
+repowise init --provider orcarouter --model anthropic/claude-haiku-4.5 --reasoning minimal
+repowise init --provider orcarouter --model openai/gpt-5.4-mini --reasoning off
+```
+
+Model identifiers use the `vendor/model` form, the same convention as
+OpenRouter. It also runs gateway-level, zero-trust security for AI agents on
+the same endpoint — screening every prompt/response and governing every tool
+call on a default-deny basis, with no application code changes.
+
 ---
 
 ### Gemini (Google)

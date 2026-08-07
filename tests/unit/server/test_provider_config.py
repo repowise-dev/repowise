@@ -117,6 +117,34 @@ def test_kimi_repo_config_passes_key_model_and_base_url(clean_env, tmp_path, mon
     assert captured["base_url"] == "https://kimi.example/v1"
 
 
+def test_orcarouter_repo_config_passes_key_model_and_base_url(clean_env, tmp_path, monkeypatch):
+    repo = _make_repo(
+        tmp_path / "repo",
+        config="""
+            provider: orcarouter
+            model: anthropic/claude-haiku-4.5
+            embedder: mock
+        """,
+        env="ORCAROUTER_API_KEY=sk-orca-test\nORCAROUTER_BASE_URL=https://orcarouter.example/v1\n",
+    )
+
+    captured: dict = {}
+
+    def fake_get_provider(provider_id, **kwargs):
+        captured["provider_id"] = provider_id
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("repowise.core.providers.llm.registry.get_provider", fake_get_provider)
+
+    pc.get_chat_provider_instance(repo_path=str(repo), repo_id="orcarouter-repo")
+
+    assert captured["provider_id"] == "orcarouter"
+    assert captured["model"] == "anthropic/claude-haiku-4.5"
+    assert captured["api_key"] == "sk-orca-test"
+    assert captured["base_url"] == "https://orcarouter.example/v1"
+
+
 # ---------------------------------------------------------------------------
 # Precedence + no cross-repo shadowing.
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ Built-in providers:
     openai     — gpt-5.4-nano, gpt-5.4-mini, gpt-5.4
     gemini     — gemini-3.1-flash-lite-preview, gemini-3-flash-preview, gemini-3.1-pro-preview
     openrouter — 200+ models via OpenRouter (anthropic/claude-sonnet-4.6, etc.)
+    orcarouter — 180+ models via OrcaRouter (anthropic/claude-sonnet-4.6, etc.)
     deepseek   — deepseek-v4-flash, deepseek-v4-pro via api.deepseek.com
     kimi       — kimi-for-coding, kimi-for-coding-highspeed, and K2.x models
     ollama     — local inference (llama3.2, codellama, etc.)
