@@ -197,9 +197,9 @@ class TestIdentity:
         # target that is a name rather than a path.
         directories = {f.rsplit("/", 1)[0] for f in files if "/" in f} | {"root"}
         for group in group_files(files, params=TINY):
-            assert (
-                group.target_path in directories
-            ), f"{group.target_path!r} is not a directory in this repository"
+            assert group.target_path in directories, (
+                f"{group.target_path!r} is not a directory in this repository"
+            )
 
     def test_a_group_of_root_level_files_is_named_for_the_root(self):
         """The repository root is a directory whose path is the empty string.
@@ -361,3 +361,76 @@ class TestLayers:
         first = group_files(files, layer_of_file=layers, params=TINY)[0]
         second = group_files(list(reversed(files)), layer_of_file=layers, params=TINY)[0]
         assert first.dominant_layer == second.dominant_layer
+
+
+class TestLocality:
+    """A group is a subtree or a run of adjacent siblings, never a scattering.
+
+    The partition can leave a directory below the min-files floor, and the walk
+    and the absorption pass both look for a neighbour to fold it into. A
+    neighbour under a shared parent is a run of adjacent siblings; a neighbour
+    whose only common ancestor is the repository root is a different top-level
+    subsystem, and merging the two produces a page that describes one directory
+    under another's name. These assert the merge is refused in that case even
+    though a thin page is the price.
+    """
+
+    @staticmethod
+    def _one_place(group) -> bool:
+        # A group is local when its members share a single top-level directory,
+        # or are all root-level files (whose shared directory is the root).
+        if all("/" not in m for m in group.members):
+            return True
+        return len({m.split("/")[0] for m in group.members}) == 1
+
+    def test_thin_unrelated_top_level_dirs_do_not_merge(self):
+        # alpha+beta+gamma fit one 6-file page under the ceiling, but share only
+        # the repository root; merging them would be a scattering across three
+        # subsystems named after one.
+        files = _repo({"alpha": 2, "beta": 2, "gamma": 2, "delta": 1})
+        groups = group_files(files, params=TINY)
+        assert all(self._one_place(g) for g in groups)
+
+    def test_the_scattering_becomes_thin_local_pages_not_one_mislabelled_page(self):
+        # The explicit trade: four isolated thin top-level dirs become four thin
+        # pages, not one 7-file page titled after whichever sorts first. A thin
+        # local page is the intended outcome, per _absorb_thin's own comment.
+        files = _repo({"alpha": 2, "beta": 2, "gamma": 2, "delta": 1})
+        groups = group_files(files, params=TINY)
+        assert {g.target_path for g in groups} == {"alpha", "beta", "gamma", "delta"}
+        assert any(g.file_count < TINY.min_files for g in groups)
+
+    def test_a_root_file_is_not_absorbed_into_a_subtree(self):
+        # A lone root file shares no directory with a subtree; it stays its own
+        # page rather than being folded in and mis-attributed to that subtree.
+        # ``zzz/big`` keeps the repo over the ceiling so the root file is a
+        # leftover the walk would otherwise merge into ``src/alpha`` (1+3 fits).
+        files = _repo({"": 1, "src/alpha": 3, "zzz/big": 5})
+        groups = group_files(files, params=TINY)
+        assert all(self._one_place(g) for g in groups)
+        alpha = next(g for g in groups if "alpha" in g.target_path)
+        assert all("/" in m for m in alpha.members)
+
+    def test_root_level_files_still_co_locate(self):
+        # The guard blocks cross-top-level merges, not root files grouping
+        # together: their shared directory is the root, which is legitimate.
+        groups = group_files(_repo({"": 5}), params=TINY)
+        assert len(groups) == 1
+        assert all("/" not in m for m in groups[0].members)
+
+    def test_adjacent_siblings_under_one_parent_still_merge(self):
+        # Locality permits a run of adjacent siblings: two thin dirs under one
+        # parent are one place and still form a single page. A third top-level
+        # subtree keeps the repo over the ceiling so the walk actually merges.
+        files = _repo({"src/alpha": 2, "src/beta": 3, "zzz/big": 6})
+        by_target = {g.target_path: g for g in group_files(files, params=TINY)}
+        src_group = next(g for t, g in by_target.items() if t.startswith("src"))
+        assert {m.split("/")[0] for m in src_group.members} == {"src"}
+
+    def test_totality_and_determinism_hold_under_the_guard(self):
+        files = _repo({"alpha": 2, "beta": 2, "gamma": 2, "delta": 1})
+        sig = lambda gs: [(g.target_path, tuple(g.members)) for g in gs]  # noqa: E731
+        assert sig(group_files(files, params=TINY)) == sig(group_files(files, params=TINY))
+        claimed = [m for g in group_files(files, params=TINY) for m in g.members]
+        assert sorted(claimed) == sorted(files)
+        assert len(claimed) == len(set(claimed))
