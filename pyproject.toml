@@ -49,6 +49,7 @@ dependencies = [
     "tree-sitter-swift>=0.0.1",
     "tree-sitter-scala>=0.23,<1",
     "tree-sitter-php>=0.23,<1",
+    "tree-sitter-pascal>=0.11,<1",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
     # Markup grammars for single-file components: these locate <script> blocks
