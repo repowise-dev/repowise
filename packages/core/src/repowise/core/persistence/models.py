@@ -1126,6 +1126,17 @@ class HealthFinding(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
 
+    # The table had no index at all, so every read full-scanned it. Two shapes
+    # are served: a file-scoped lookup (``get_health`` with targets, the call an
+    # agent makes to self-check a file before and after an edit) and a
+    # repo-wide top-N ordered by impact. The first index turns the scan into a
+    # seek; the second lets the ranked read stop early instead of sorting the
+    # whole table into a temp B-tree.
+    __table_args__ = (
+        Index("ix_health_findings_repo_status_path", "repository_id", "status", "file_path"),
+        Index("ix_health_findings_repo_status_impact", "repository_id", "status", "health_impact"),
+    )
+
 
 class RefactoringSuggestion(Base):
     """One deterministic refactoring opportunity from the refactoring layer.

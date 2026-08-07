@@ -638,3 +638,45 @@ async def get_node_degree_counts(
         "in_degree": in_result.scalar() or 0,
         "out_degree": out_result.scalar() or 0,
     }
+
+
+async def get_node_degree_counts_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    node_ids: list[str],
+) -> dict[str, dict[str, int]]:
+    """Return ``node_id -> {in_degree, out_degree}`` for many nodes at once.
+
+    Three queries total instead of three per node (existence, then one grouped
+    count per direction). Callers that need degrees for a set of files were
+    otherwise forced into an N+1.
+
+    A node absent from the graph is absent from the result, mirroring
+    ``get_graph_node`` returning ``None``: consumers distinguish "not a graph
+    node" (no entry) from "a node with no edges" (``{0, 0}``), and collapsing
+    the two would report isolated files as un-analyzed.
+    """
+    if not node_ids:
+        return {}
+    existing = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_id.in_(node_ids),
+        )
+    )
+    counts = {node_id: {"in_degree": 0, "out_degree": 0} for node_id in existing.scalars().all()}
+    if not counts:
+        return {}
+    present = list(counts)
+    for column, key in (
+        (GraphEdge.target_node_id, "in_degree"),
+        (GraphEdge.source_node_id, "out_degree"),
+    ):
+        rows = await session.execute(
+            select(column, func.count())
+            .where(GraphEdge.repository_id == repository_id, column.in_(present))
+            .group_by(column)
+        )
+        for node_id, count in rows.all():
+            counts[node_id][key] = count or 0
+    return counts

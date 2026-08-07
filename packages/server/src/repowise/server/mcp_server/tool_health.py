@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import select
@@ -21,9 +22,8 @@ from repowise.core.persistence.crud import (
     get_all_git_metadata,
     get_coverage_summary,
     get_file_language_map,
-    get_git_metadata,
-    get_graph_node,
-    get_node_degree_counts,
+    get_git_metadata_bulk,
+    get_node_degree_counts_bulk,
     get_refactoring_suggestions,
     list_health_snapshots,
     load_coverage_for_repo,
@@ -440,8 +440,20 @@ async def get_health(
         limit: max rows in every ranked list (capped at 50); each carries a
             ``*_total`` sibling so truncation is never silent.
     """
+    started = perf_counter()
     limit = min(max(limit, 1), 50)
     include_set = set(include or [])
+    only_set = set(only or [])
+
+    def wants(block: str) -> bool:
+        """True when ``block`` survives the ``only`` projection.
+
+        ``only`` used to be applied to the finished response, so the cheapest
+        documented call — ``only=["directive"]`` — still paid for every block it
+        then discarded. Consulted before the expensive optional work so the
+        projection gates the work as well as the payload.
+        """
+        return not only_set or block in only_set
 
     # Split ``module:foo`` targets out of the path list. A target that
     # matches one or more modules is expanded into the set of files
@@ -497,27 +509,111 @@ async def get_health(
         else:
             metric_rows = sorted(all_metrics, key=lambda r: r.score)
 
-        finding_q = select(HealthFinding).where(
+        open_findings = (
             HealthFinding.repository_id == repository.id,
             HealthFinding.status == "open",
         )
+        # Two row sets, deliberately split.
+        #
+        # ``finding_rows`` are the ones this response will serialize.
+        # ``lead_rows`` is the wider set the per-file dominant-cause reduction
+        # and the exact totals are computed from — it only ever needs four
+        # columns.
+        #
+        # Targeted mode asks about a handful of files, so one full read serves
+        # both. Dashboard mode does not: hydrating every open finding as a full
+        # ORM object to emit ``limit`` of them measured 262ms on this repo, and
+        # that cost is linear in finding count, so it grows with the repo the
+        # dashboard is describing.
         if scoped:
-            finding_q = finding_q.where(HealthFinding.file_path.in_(effective_targets))
-        finding_q = finding_q.order_by(HealthFinding.health_impact.desc())
-        finding_rows = filter_rows_by_attr(
-            list((await session.execute(finding_q)).scalars().all()),
-            "file_path",
-            exclude_spec,
-        )
+            finding_rows = filter_rows_by_attr(
+                list(
+                    (
+                        await session.execute(
+                            select(HealthFinding)
+                            .where(*open_findings)
+                            .where(HealthFinding.file_path.in_(effective_targets))
+                            .order_by(HealthFinding.health_impact.desc())
+                        )
+                    )
+                    .scalars()
+                    .all()
+                ),
+                "file_path",
+                exclude_spec,
+            )
+            lead_rows: list[Any] = finding_rows
+        else:
+            # Narrow read over every open finding: the four attributes
+            # ``_leads_by_file`` reads, plus ``dimension`` for the perf headline.
+            # SQLAlchemy ``Row`` exposes these as attributes, so the reduction
+            # and the exclude filter both run against it unchanged.
+            lite_rows = list(
+                (
+                    await session.execute(
+                        select(
+                            HealthFinding.file_path,
+                            HealthFinding.health_impact,
+                            HealthFinding.biomarker_type,
+                            HealthFinding.reason,
+                            HealthFinding.dimension,
+                        )
+                        .where(*open_findings)
+                        .order_by(HealthFinding.health_impact.desc())
+                    )
+                ).all()
+            )
+            lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
+            # Over-fetch by the number of rows exclusion will drop, so the
+            # emitted list still holds ``limit`` surviving rows — the whole-set
+            # filter-then-slice this replaces could never come up short.
+            dropped = len(lite_rows) - len(lead_rows)
+            finding_rows = filter_rows_by_attr(
+                list(
+                    (
+                        await session.execute(
+                            select(HealthFinding)
+                            .where(*open_findings)
+                            .order_by(HealthFinding.health_impact.desc())
+                            .limit(limit + dropped)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                ),
+                "file_path",
+                exclude_spec,
+            )[:limit]
+
+        # Exact whether or not ``finding_rows`` was capped: both modes count the
+        # post-exclusion open set, which is what ``lead_rows`` is.
+        findings_total = len(lead_rows)
 
         # Dashboard perf headline: coverage (how much of the analyzed code the
-        # perf pass ran on) + open performance-finding count. finding_rows in
-        # dashboard mode is the complete open set, so the count is exact.
-        if not scoped:
+        # perf pass ran on) + open performance-finding count. Both feed ``kpis``
+        # alone, so a projection that drops kpis skips the language-map read.
+        if not scoped and wants("kpis"):
             lang_by_path = await get_file_language_map(session, repository.id)
             perf_coverage = coverage_for_metrics(all_metrics, lang_by_path)
             perf_findings_count = sum(
-                1 for f in finding_rows if (f.dimension or "defect") == "performance"
+                1 for f in lead_rows if (f.dimension or "defect") == "performance"
+            )
+
+        # ``accuracy`` scores the ranking against every finding, not the capped
+        # head — the one caller that genuinely needs the full set, loaded only
+        # when asked for so the default dashboard never pays for it.
+        accuracy_rows: list[Any] = []
+        if "accuracy" in include_set and not scoped:
+            accuracy_rows = filter_rows_by_attr(
+                list(
+                    (
+                        await session.execute(select(HealthFinding).where(*open_findings))
+                    )
+                    .scalars()
+                    .all()
+                ),
+                "file_path",
+                exclude_spec,
             )
 
         # Structured refactoring plans (Extract Class, ...) — loaded only when
@@ -556,15 +652,21 @@ async def get_health(
         # before touching it. Targeted mode only; the target set is small.
         signals_by_path: dict[str, dict[str, Any]] = {}
         if "signals" in include_set and effective_targets:
+            # Batched, not per-file. This loop used to issue three round-trips
+            # per target (git metadata, graph node, degree counts) — the exact
+            # cross-function N+1 the tool's own ``io_in_loop`` biomarker flags
+            # here. ``module:`` targets expand to every file in the module, so
+            # the target set is not always small.
+            git_meta_by_path = await get_git_metadata_bulk(
+                session, repository.id, list(effective_targets)
+            )
+            degrees_by_path = await get_node_degree_counts_bulk(
+                session, repository.id, list(effective_targets)
+            )
             for path in effective_targets:
-                git_meta = await get_git_metadata(session, repository.id, path)
-                node = await get_graph_node(session, repository.id, path)
-                degrees = (
-                    await get_node_degree_counts(session, repository.id, path)
-                    if node is not None
-                    else None
+                signals_by_path[path] = asdict(
+                    file_signals(git_meta_by_path.get(path), degrees_by_path.get(path))
                 )
-                signals_by_path[path] = asdict(file_signals(git_meta, degrees))
 
         # Churn x complexity quadrant for the whole repo (dashboard mode). One
         # git-metadata query joined against the already-loaded metrics.
@@ -587,9 +689,29 @@ async def get_health(
         performance_findings=perf_findings_count,
         coverage=perf_coverage,
     )
-    # Dominant-cause lead per file, from the findings already loaded (targeted
-    # findings are scoped to the targets; dashboard findings cover every file).
-    leads = _leads_by_file(finding_rows)
+    # Dominant-cause lead per file. Targeted mode wants one per target, so the
+    # reduction runs over the whole (small) scoped set. Dashboard mode only ever
+    # prints a lead for the files it emits, so it reduces just those rows
+    # instead of all ~10k — identical output, and ``_leads_by_file`` measured
+    # ~148ms per call when handed the full set.
+    if scoped:
+        by_leverage: list[HealthFileMetric] = []
+        lead_source: list[Any] = lead_rows
+    else:
+        # Leverage view: files ranked by NLOC-weighted deficit (how much each
+        # drags the headline), not by raw score. Distinct from worst_files — a
+        # big warning-band file outranks a tiny alert-band one here because
+        # fixing it moves the average far more. Computed before the leads so the
+        # set of printed files is known.
+        by_leverage = sorted(
+            (m for m in all_metrics if m.score < HEALTHY_MIN),
+            key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
+            reverse=True,
+        )
+        printed = {m.file_path for m in metric_rows[:limit]}
+        printed |= {m.file_path for m in by_leverage[:limit]}
+        lead_source = [r for r in lead_rows if r.file_path in printed]
+    leads = _leads_by_file(lead_source)
 
     if scoped:
         metric_payload: list[dict[str, Any]] = []
@@ -605,7 +727,7 @@ async def get_health(
             # Capped like every other ranked list, with the total alongside so
             # the truncation is visible rather than inferred from the length.
             "findings": [_serialize_finding(f) for f in finding_rows[:limit]],
-            "findings_total": len(finding_rows),
+            "findings_total": findings_total,
         }
         unresolved = _unresolved_targets(
             file_targets=file_targets,
@@ -645,17 +767,9 @@ async def get_health(
     else:
         # Dashboard mode — top-N worst files + headline findings + the
         # per-module rollup so the overview page doesn't need a second
-        # round-trip.
-        # Leverage view: files ranked by NLOC-weighted deficit (how much each
-        # drags the headline), not by raw score. Distinct from worst_files —
-        # a big warning-band file outranks a tiny alert-band one here because
-        # fixing it moves the average far more. Same serializer, so every row
-        # carries weighted_deficit for the caller to sort on further.
-        by_leverage = sorted(
-            (m for m in all_metrics if m.score < HEALTHY_MIN),
-            key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
-            reverse=True,
-        )
+        # round-trip. ``by_leverage`` is built above, before the leads.
+        # Same serializer as worst_files, so every row carries
+        # weighted_deficit for the caller to sort on further.
         all_modules = _module_rollups(all_metrics)
         gap = _gap_analysis(all_metrics)
         result = {
@@ -675,7 +789,7 @@ async def get_health(
                 _serialize_metric(m, leads.get(m.file_path)) for m in by_leverage[:limit]
             ],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
-            "top_findings_total": len(finding_rows),
+            "top_findings_total": findings_total,
             # Worst-first, so the cap keeps the modules worth looking at. On a
             # monorepo the tail is dozens of single-file buckets.
             "modules": all_modules[:limit],
@@ -684,16 +798,24 @@ async def get_health(
         if "churn_complexity" in include_set:
             result["churn_complexity"] = churn_points
         if "accuracy" in include_set:
-            # Self-validation: does the score rank the buggy files first? Pure
-            # over the already-loaded metrics + findings (no extra query).
+            # Self-validation: does the score rank the buggy files first?
+            # Scored over the full open set (``accuracy_rows``), not the capped
+            # head — ranking quality measured on the top 20 would be circular.
             # ``None`` when there isn't enough signal for an honest number.
             result["defect_accuracy"] = compute_defect_accuracy(
                 all_metrics,
-                [_serialize_finding(f) for f in finding_rows],
+                [_serialize_finding(f) for f in accuracy_rows],
             )
 
     if "biomarkers" in include_set and "findings" not in result:
-        result["findings"] = [_serialize_finding(f) for f in finding_rows]
+        # Capped like every other ranked list. Uncapped, this was the one block
+        # in the tool that could return the repo's entire open finding set: on a
+        # 3.2k-file repo ``include=["biomarkers"]`` with no targets served 10.3k
+        # rows / 4.7MB, which overflows an agent's context and returns nothing
+        # usable. Findings arrive impact-ordered, so the cap keeps the ones
+        # worth reading.
+        result["findings"] = [_serialize_finding(f) for f in finding_rows[:limit]]
+        result["findings_total"] = findings_total
 
     if "refactoring" in include_set:
         # Structured refactoring plans (the concrete split groups / evidence /
@@ -831,4 +953,7 @@ async def get_health(
     analyzed = [m.updated_at for m in all_metrics if getattr(m, "updated_at", None)]
     if analyzed:
         result["_meta"]["health_analyzed_at"] = max(analyzed).isoformat()
+    # Server-side wall clock, as ``get_context`` already reports. Without it a
+    # regression in here is invisible until someone profiles it by hand.
+    result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
     return result
