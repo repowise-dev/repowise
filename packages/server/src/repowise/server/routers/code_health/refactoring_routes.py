@@ -13,7 +13,6 @@ from repowise.server.deps import get_db_session
 
 from ._router import router
 from .aggregation import _clean_module
-from .serializers import _finding_to_dict
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -60,7 +59,16 @@ async def refactoring_targets(
     ),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Refactoring candidates ranked by impact / effort."""
+    """Refactoring candidates ranked by impact / effort.
+
+    A target carries its *primary* finding plus ``finding_count``, not the
+    findings themselves. Serializing every file's full finding list here cost
+    1.8 MB at the default ``limit=200`` (2.9 MB at 500) to render a list that
+    shows none of it — the work was done for all ~2,400 files with findings,
+    before the ``[:limit]`` slice, and ~90% was then discarded. The two
+    consumers both sit behind a click and fetch what they need from
+    ``GET /health/findings?file_path=``.
+    """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -115,7 +123,6 @@ async def refactoring_targets(
                 "biomarkers": sorted({x.biomarker_type for x in fs}),
                 "effort_bucket": effort_bucket,
                 "impact_per_effort": ratio,
-                "all_findings": [_finding_to_dict(f) for f in fs],
             }
         )
 
