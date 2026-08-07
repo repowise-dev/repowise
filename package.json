@@ -23,7 +23,7 @@
   },
   "overrides": {
     "form-data@>=4.0.0 <4.0.6": "^4.0.6",
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.13",
     "js-yaml@>=4.0.0 <4.2.0": "^4.2.0",
     "postcss": "^8.5.23",
     "serialize-javascript@<7.0.5": "^7.0.5",
