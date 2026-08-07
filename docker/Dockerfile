@@ -12,12 +12,15 @@ FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /app
 
-# Install dependencies first (cached layer)
-COPY packages/web/package.json packages/web/package-lock.json* ./
+# Copy root manifest/lockfile and all packages for monorepo resolution
+COPY package.json package-lock.json* ./
+COPY packages/ ./packages/
+
+# Change directory to web package and install dependencies
+WORKDIR /app/packages/web
 RUN npm install --production=false
 
-# Copy source and build
-COPY packages/web/ ./
+# Build Next.js frontend
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_PUBLIC_REPOWISE_API_URL=http://localhost:7337
 RUN npm run build
@@ -47,9 +50,9 @@ COPY packages/server/ packages/server/
 RUN pip install --no-cache-dir ".[all]"
 
 # Copy built Next.js standalone output
-COPY --from=frontend-builder /app/.next/standalone /app/web
-COPY --from=frontend-builder /app/.next/static /app/web/.next/static
-COPY --from=frontend-builder /app/public /app/web/public
+COPY --from=frontend-builder /app/packages/web/.next/standalone /app/web
+COPY --from=frontend-builder /app/packages/web/.next/static /app/web/.next/static
+COPY --from=frontend-builder /app/packages/web/public /app/web/public
 
 # Data volume for .repowise directory
 # mkdir is required: VOLUME only registers metadata and does not create the
