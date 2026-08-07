@@ -95,6 +95,18 @@ def _serialize_refactoring(r: Any) -> dict[str, Any]:
     }
 
 
+def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
+    """True when *row* belongs to one of *dimensions* (empty set -> everything).
+
+    ``dimension`` is nullable and a NULL means ``defect``: the column was added
+    without a backfill, so pre-existing rows stay NULL until the next index
+    recomputes them. Reading it as anything else drops real defect findings.
+    """
+    if not dimensions:
+        return True
+    return (row.dimension or "defect") in dimensions
+
+
 def _round_opt(v: Any) -> float | None:
     """Round a nullable per-dimension score, preserving ``None`` (not measured)."""
     return round(v, 2) if v is not None else None
@@ -455,6 +467,17 @@ async def get_health(
         """
         return not only_set or block in only_set
 
+    # Resolved before the reads, not after them. Applied to the finished
+    # response, a dimension filter narrowed a list that had already been capped
+    # by impact — and performance findings carry low impact by construction, so
+    # ``include=["biomarkers", "performance"]`` filtered a defect-heavy head down
+    # to nothing while the total still reported the whole repo. The filter now
+    # decides which rows are eligible for the cap in the first place.
+    dimension_filter = include_set & {"performance", "defect", "maintainability"}
+    # The serialized-rows read is the expensive optional one; skip it when no
+    # block that carries findings survives the projection.
+    wants_findings = wants("findings") or wants("top_findings")
+
     # Split ``module:foo`` targets out of the path list. A target that
     # matches one or more modules is expanded into the set of files
     # belonging to those modules.
@@ -543,15 +566,19 @@ async def get_health(
                 exclude_spec,
             )
             lead_rows: list[Any] = finding_rows
+            emitted = [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
+            finding_rows = emitted[:limit]
         else:
             # Narrow read over every open finding: the four attributes
-            # ``_leads_by_file`` reads, plus ``dimension`` for the perf headline.
-            # SQLAlchemy ``Row`` exposes these as attributes, so the reduction
-            # and the exclude filter both run against it unchanged.
+            # ``_leads_by_file`` reads, plus ``dimension`` for the perf headline
+            # and ``id`` to fetch the head. SQLAlchemy ``Row`` exposes these as
+            # attributes, so the reduction and the exclude filter both run
+            # against it unchanged.
             lite_rows = list(
                 (
                     await session.execute(
                         select(
+                            HealthFinding.id,
                             HealthFinding.file_path,
                             HealthFinding.health_impact,
                             HealthFinding.biomarker_type,
@@ -563,31 +590,37 @@ async def get_health(
                     )
                 ).all()
             )
+            # ``lead_rows`` stays the unfiltered open set: it feeds the per-file
+            # leads and the performance KPI, neither of which should change
+            # because the caller asked to *see* one dimension.
             lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
-            # Over-fetch by the number of rows exclusion will drop, so the
-            # emitted list still holds ``limit`` surviving rows — the whole-set
-            # filter-then-slice this replaces could never come up short.
-            dropped = len(lite_rows) - len(lead_rows)
-            finding_rows = filter_rows_by_attr(
-                list(
-                    (
+            emitted = [r for r in lead_rows if _in_dimensions(r, dimension_filter)]
+            # Fetch the head by id rather than re-running the ranked query with
+            # an over-fetch margin. The margin had to cover every exclusion in
+            # the table, so a repo excluding a large subtree turned the "capped"
+            # read back into a near-full one; by id it is exactly ``limit`` rows
+            # whatever the exclude config or dimension filter say.
+            head_ids = [r.id for r in emitted[:limit]]
+            finding_rows = []
+            if head_ids and wants_findings:
+                by_id = {
+                    f.id: f
+                    for f in (
                         await session.execute(
-                            select(HealthFinding)
-                            .where(*open_findings)
-                            .order_by(HealthFinding.health_impact.desc())
-                            .limit(limit + dropped)
+                            select(HealthFinding).where(HealthFinding.id.in_(head_ids))
                         )
                     )
                     .scalars()
                     .all()
-                ),
-                "file_path",
-                exclude_spec,
-            )[:limit]
+                }
+                # Re-imposed from ``head_ids``; ``IN`` does not preserve order.
+                finding_rows = [by_id[i] for i in head_ids if i in by_id]
 
-        # Exact whether or not ``finding_rows`` was capped: both modes count the
-        # post-exclusion open set, which is what ``lead_rows`` is.
-        findings_total = len(lead_rows)
+        # Counts the rows this response is about: the post-exclusion open set,
+        # narrowed to the requested dimensions when one was asked for. Reporting
+        # the unfiltered total beside a filtered list is what made an empty
+        # ``findings`` read as "nothing here" rather than "nothing shown".
+        findings_total = len(emitted)
 
         # Dashboard perf headline: coverage (how much of the analyzed code the
         # perf pass ran on) + open performance-finding count. Both feed ``kpis``
@@ -599,15 +632,21 @@ async def get_health(
                 1 for f in lead_rows if (f.dimension or "defect") == "performance"
             )
 
-        # ``accuracy`` scores the ranking against every finding, not the capped
-        # head — the one caller that genuinely needs the full set, loaded only
-        # when asked for so the default dashboard never pays for it.
+        # ``accuracy`` scores the ranking against the whole repo rather than the
+        # capped head, but it reads exactly one biomarker: ``compute_defect_accuracy``
+        # ignores every finding whose type is not ``prior_defect``. Selecting
+        # those directly keeps the honest denominator without re-reading the
+        # ~10k rows the narrow pass above exists to avoid.
         accuracy_rows: list[Any] = []
         if "accuracy" in include_set and not scoped:
             accuracy_rows = filter_rows_by_attr(
                 list(
                     (
-                        await session.execute(select(HealthFinding).where(*open_findings))
+                        await session.execute(
+                            select(HealthFinding)
+                            .where(*open_findings)
+                            .where(HealthFinding.biomarker_type == "prior_defect")
+                        )
                     )
                     .scalars()
                     .all()
@@ -901,19 +940,10 @@ async def get_health(
             "files": coverage_payload,
         }
 
-    # Dimension filter: ``include=["performance"]`` (or "defect" /
-    # "maintainability") narrows the returned findings to that pillar so an
-    # agent can ask "show me only the performance risk in this change". Applied
-    # after the biomarkers/refactoring includes so it filters whatever findings
-    # the response carries. Each finding's ``dimension`` is set at scoring time.
-    dimension_filter = include_set & {"performance", "defect", "maintainability"}
-    if dimension_filter:
-        for field in ("findings", "top_findings"):
-            rows = result.get(field)
-            if rows:
-                result[field] = [
-                    r for r in rows if (r.get("dimension") or "defect") in dimension_filter
-                ]
+    # (The dimension filter — ``include=["performance"]`` and friends, so an
+    # agent can ask "show me only the performance risk in this change" — is
+    # applied where the rows are selected, not here. Filtering the finished
+    # response meant filtering a list already capped by impact.)
 
     # One entry per biomarker type actually present in the findings this
     # response carries. Built last so the dimension filter above has already

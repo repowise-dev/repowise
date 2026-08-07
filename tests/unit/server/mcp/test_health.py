@@ -334,3 +334,46 @@ async def test_get_health_only_projection_preserves_block_content(setup_mcp, hea
     projected = await get_health(only=["kpis"])
     assert set(projected) == {"mode", "kpis", "_meta"}
     assert projected["kpis"] == full["kpis"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_dimension_filter_is_not_defeated_by_the_cap(setup_mcp, health_data):
+    """A dimension filter selects the rows, rather than trimming a capped head.
+
+    Regression: the filter used to run over the finished response, so it
+    narrowed a list already capped by ``health_impact``. Performance findings
+    carry low impact by construction, so the head was defect-heavy and
+    ``include=["biomarkers", "performance"]`` filtered down to nothing — while
+    ``findings_total`` still reported the whole repo, which reads as "no
+    performance risk here" rather than "none shown".
+    """
+    from repowise.server.mcp_server import get_health
+
+    # limit=1 forces the cap to bite before the filter would have run.
+    result = await get_health(include=["biomarkers", "performance"], limit=1)
+    assert [f["dimension"] for f in result["findings"]] == ["performance"]
+    # The total describes the filtered set, so an empty list is unambiguous.
+    assert result["findings_total"] == 1
+
+    maint = await get_health(include=["biomarkers", "maintainability"], limit=1)
+    assert [f["dimension"] for f in maint["findings"]] == ["maintainability"]
+
+    scoped = await get_health(
+        targets=["src/auth/service.py"], include=["biomarkers", "performance"]
+    )
+    assert [f["dimension"] for f in scoped["findings"]] == ["performance"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_dimension_filter_leaves_kpis_and_ranking_alone(setup_mcp, health_data):
+    """Asking to *see* one dimension must not restate the repo's health.
+
+    The leads and the performance KPI come from the unfiltered open set; only
+    the emitted findings narrow.
+    """
+    from repowise.server.mcp_server import get_health
+
+    full = await get_health()
+    filtered = await get_health(include=["biomarkers", "maintainability"])
+    assert filtered["kpis"]["performance_findings"] == full["kpis"]["performance_findings"]
+    assert filtered["worst_files"] == full["worst_files"]

@@ -658,13 +658,20 @@ async def get_node_degree_counts_bulk(
     """
     if not node_ids:
         return {}
-    existing = await session.execute(
-        select(GraphNode.node_id).where(
-            GraphNode.repository_id == repository_id,
-            GraphNode.node_id.in_(node_ids),
+    # Batched like ``get_graph_nodes_by_ids`` above: SQLITE_MAX_VARIABLE_NUMBER
+    # is 999 on SQLite < 3.32, and the caller's input is unbounded by design (a
+    # ``module:`` target expands to every file in the module).
+    unique_ids = list(dict.fromkeys(node_ids))
+    counts: dict[str, dict[str, int]] = {}
+    for i in range(0, len(unique_ids), _BATCH_SIZE):
+        existing = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_id.in_(unique_ids[i : i + _BATCH_SIZE]),
+            )
         )
-    )
-    counts = {node_id: {"in_degree": 0, "out_degree": 0} for node_id in existing.scalars().all()}
+        for node_id in existing.scalars().all():
+            counts[node_id] = {"in_degree": 0, "out_degree": 0}
     if not counts:
         return {}
     present = list(counts)
@@ -672,11 +679,15 @@ async def get_node_degree_counts_bulk(
         (GraphEdge.target_node_id, "in_degree"),
         (GraphEdge.source_node_id, "out_degree"),
     ):
-        rows = await session.execute(
-            select(column, func.count())
-            .where(GraphEdge.repository_id == repository_id, column.in_(present))
-            .group_by(column)
-        )
-        for node_id, count in rows.all():
-            counts[node_id][key] = count or 0
+        for i in range(0, len(present), _BATCH_SIZE):
+            rows = await session.execute(
+                select(column, func.count())
+                .where(
+                    GraphEdge.repository_id == repository_id,
+                    column.in_(present[i : i + _BATCH_SIZE]),
+                )
+                .group_by(column)
+            )
+            for node_id, count in rows.all():
+                counts[node_id][key] = count or 0
     return counts

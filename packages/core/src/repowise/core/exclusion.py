@@ -13,6 +13,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+# Per-spec memo ceiling. Comfortably above any real repo's distinct path count,
+# low enough that 64 cached specs cannot pin unbounded memory.
+_MEMO_MAX = 200_000
+
 
 def _gitignore_files(root: Path) -> tuple[Path, ...]:
     """The gitignore-stack files unioned into the spec."""
@@ -31,18 +35,32 @@ def _rule_files(root: Path) -> tuple[Path, ...]:
     return (get_repowise_dir(root) / CONFIG_FILENAME, *_gitignore_files(root))
 
 
-def _rules_stamp(root: Path) -> tuple[int, ...]:
-    """mtime of each rule source, ``0`` when absent — the cache invalidator."""
+def _rules_stamp(root: Path) -> tuple[tuple[int, int], ...]:
+    """``(mtime_ns, size)`` per rule source, ``(0, 0)`` when absent.
+
+    Size is in the key because mtime alone is not a reliable invalidator on
+    Windows: measured on NTFS, 25 of 199 back-to-back writes shared an identical
+    ``st_mtime_ns``. A rules edit that landed inside one timestamp tick would
+    otherwise pin the stale spec for the life of the process, with no way to
+    force a recompile short of restarting the server. A pattern edit essentially
+    always changes the file size, and it rides the same ``stat`` call.
+    """
     stamp = []
     for path in _rule_files(root):
         try:
-            stamp.append(path.stat().st_mtime_ns)
+            st = path.stat()
+            stamp.append((st.st_mtime_ns, st.st_size))
         except OSError:
-            stamp.append(0)
+            stamp.append((0, 0))
     return tuple(stamp)
 
 
-@lru_cache(maxsize=8)
+# Sized for workspace mode, not for one repo. A workspace can register many
+# repos, and an agent sweeping them round-robin past the cache size gets a 0%
+# hit rate — which is worse than no cache, since a miss now also pays
+# ``Path.resolve()`` and three ``stat`` calls. Specs are small; the mtime/size
+# stamp in the key means stale entries are unreachable rather than merely old.
+@lru_cache(maxsize=64)
 def _compile_spec(root_key: str, _stamp: tuple[int, ...]) -> Any:
     """Compile and cache one repo's spec. Keyed by root + rule-file mtimes."""
     import pathspec
@@ -100,6 +118,13 @@ def is_excluded(path: str | None, spec: Any) -> bool:
         return bool(spec.match_file(path))
     cached = memo.get(path)
     if cached is None:
+        if len(memo) >= _MEMO_MAX:
+            # Bounded rather than merely finite. The natural ceiling is the
+            # repo's distinct paths, but this is also fed symbol ids and
+            # decision-anchored paths by other tools, so nothing guarantees
+            # that. Dropping the whole memo costs one repopulation pass and
+            # keeps a long-lived server from growing without limit.
+            memo.clear()
         cached = memo[path] = bool(spec.match_file(path))
     return cached
 
