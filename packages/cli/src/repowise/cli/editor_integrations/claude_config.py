@@ -207,7 +207,7 @@ def enable_tool_search_in_claude_code() -> Path | None:
 
 
 # Current augment PostToolUse matcher. Read/Edit/Write power the distill
-# read-intelligence layer (skeleton nudges + per-file stale-read notices);
+# read-intelligence layer (skeleton replacement + per-file stale-read notices);
 # PowerShell is the Windows Claude Code shell tool (same payload shape as
 # Bash); the mcp__ pattern feeds the read-after-served ledger (read_enrich)
 # and matches the repowise MCP server under any registration name (local,

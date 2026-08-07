@@ -95,7 +95,7 @@ _CLIP_RATIONALE = 160
 
 # ---------------------------------------------------------------------------
 # Shared SQLite plumbing (read-only wiki.db, stdlib sqlite3 — the hook path
-# must not pay the sqlalchemy import; same pattern as the skeleton nudge)
+# must not pay the sqlalchemy import; same pattern as fast_lookup)
 # ---------------------------------------------------------------------------
 
 

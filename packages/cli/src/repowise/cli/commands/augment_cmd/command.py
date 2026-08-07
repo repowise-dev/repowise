@@ -46,9 +46,6 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
       served as its skeleton via updatedToolOutput, elision markers and
       1-indexed line ranges intact, once per file per session. Opt-in
       (hooks.read_skeleton), default off.
-    * Skeleton nudge: the fallback when the replacement does not apply —
-      a one-line pointer at get_context(include=["skeleton"]) with a cheap
-      bounds-arithmetic estimate.
     * Stale-read notice: when this file was Edited/Written after the
       session's previous Read of it, flag that earlier excerpts are stale.
       Once per file per session, never blocking.

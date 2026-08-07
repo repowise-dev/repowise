@@ -1,11 +1,19 @@
 """PostToolUse Read → serve the indexed skeleton instead of the whole file.
 
 The skeleton *nudge* — a one-line pointer at ``get_context(include=
-["skeleton"])`` — fired 502 times across 185 sessions and was acted on once.
+["skeleton"])`` — fired 516 times across 203 sessions and was acted on once.
 It did not fail on content. It failed by asking the agent to do something the
 hook could do itself. This module does it instead: when every gate below
 clears, the hook returns ``updatedToolOutput`` and the agent's Read of a large
 indexed file arrives as its skeleton.
+
+The nudge has since been retired outright rather than kept as a fallback: a
+replay under three looser judges, including the compliance form used for a
+notice that asks for a *non*-action, found it at or below the unconditioned
+base rate on every one, and a session's second nudge did no better than its
+first. ``sessions/efficacy.py`` carries the numbers. So a client that cannot
+honour a replacement now gets silence, which is the honest fallback for a
+surface with nothing to say.
 
 **This is not a silent truncation.** ``build_skeleton`` marks every elided
 span with its 1-indexed line range, so the agent can see exactly what was
@@ -17,7 +25,7 @@ time returns it whole; the header says so.
 Gates, cheapest first (:func:`skeleton_replacement`):
 
 1. **Unbounded read only.** A ranged Read is already a targeted question.
-2. **Above the size floor** the nudge already used.
+2. **Above the size floor** (100 output lines).
 3. **Opted in.** ``hooks.read_skeleton: true`` in ``.repowise/config.yaml``,
    default off. Read with a lazy ``yaml`` import and fail-closed.
 4. **Not a verification re-read.** A Read that follows an Edit of the same
@@ -49,8 +57,8 @@ if TYPE_CHECKING:  # pragma: no cover - the hook path imports these lazily
     from repowise.core.distill.skeleton import SkeletonResult, SkeletonSymbol
 
 #: Claude Code release that introduced ``updatedToolOutput``. Older clients
-#: ignore the field, which would silently drop the enrichment, so on those we
-#: fall back to the nudge (see :func:`supports_updated_output`).
+#: ignore the field, which would silently drop the enrichment, so on those the
+#: Read is left untouched (see :func:`supports_updated_output`).
 _MIN_CLIENT_VERSION = (2, 1, 218)
 
 #: Hard ceiling on the replacement string; shared with every other replacing
@@ -302,8 +310,8 @@ def _indexed_symbols(db_path: Path, rel: str) -> list[SkeletonSymbol]:
     """Persisted symbol rows for one file as ``SkeletonSymbol``s, or [].
 
     Read-only stdlib sqlite3 for the same reason
-    :func:`read_state._file_symbol_bounds` uses it: the hook path must not pay
-    the sqlalchemy import to read five columns.
+    :mod:`fast_lookup` uses it: the hook path must not pay the sqlalchemy
+    import to read five columns.
     """
     if not db_path.exists():
         return []

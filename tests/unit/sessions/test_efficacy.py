@@ -151,6 +151,11 @@ def test_ranged_read_after_a_nudge_is_ambiguous_not_acted():
     """Reading a range of a file you just read in full is ordinary edit prep.
 
     Crediting it is what turns the nudge's real 0.2% into a flattering 19.7%.
+    The suspicion that fell out of that — that 0.2% measured the judge rather
+    than the surface — was tested and did not hold: three looser readings all
+    came back at or below the base rate, and the nudge has been retired on the
+    emission side. Every skeleton_nudge case in this file now guards a
+    historical population, not a live one.
     """
     (firing,) = parse_emission(NUDGE)
     classify(firing, [_use("Read", file_path="pkg/core/thing.py", offset=40, limit=20)])

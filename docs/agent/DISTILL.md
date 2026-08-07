@@ -191,8 +191,11 @@ smarter than blind truncation.
 
 The existing PostToolUse hook complements this passively:
 
-- **Skeleton nudge** — after a large `Read` of an indexed file, the agent is
-  told the skeleton's token cost vs the full file (once per file per session).
+- **Skeleton replacement** — an unbounded `Read` of a large indexed file is
+  served *as* its skeleton, elision ranges intact, once per file per session
+  (opt-in: `hooks.read_skeleton`). The advisory version of this — a one-line
+  nudge naming the skeleton's token cost — was retired after 516 firings
+  showed no effect above the base rate.
 - **Stale-read notice** — after an `Edit`/`Write`, a later `Read` of the same
   file warns that earlier excerpts predate the edit.
 - **Search digest** — grep floods (≥50 lines) get a compact grouped-by-file
