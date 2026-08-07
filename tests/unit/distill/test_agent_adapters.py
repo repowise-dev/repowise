@@ -12,8 +12,9 @@ import os
 
 import pytest
 
+from repowise.cli.agent_adapters import claude_code as claude_module
 from repowise.cli.agent_adapters import codex as codex_module
-from repowise.cli.agent_adapters.base import RewriteResult
+from repowise.cli.agent_adapters.base import RewriteResult, unmatched_tool_names
 from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER, CodexAdapter
 from repowise.cli.editor_integrations import claude_config, codex_config
@@ -133,6 +134,17 @@ def _read(settings_path) -> dict:
 
 def _pre_hooks(settings_path) -> list:
     return _read(settings_path).get("hooks", {}).get("PreToolUse", [])
+
+
+def _write_rewrite_entry(path, matcher: str, command: str) -> None:
+    """Seed a config holding our rewrite hook under an arbitrary matcher.
+
+    Both agents keep their PreToolUse entries in the same shape, so one
+    helper seeds either settings.json or hooks.json.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
+    path.write_text(json.dumps({"hooks": {"PreToolUse": [entry]}}), encoding="utf-8")
 
 
 class TestRewriteHookInstall:
@@ -266,6 +278,119 @@ class TestAdapterDelegation:
         assert adapter.rewrite_hook_installed() is True
         assert adapter.uninstall_rewrite_hook() is True
         assert adapter.rewrite_hook_installed() is False
+
+
+class TestUnmatchedToolNames:
+    """The predicate that separates a registered hook from a live one.
+
+    A false alarm here is the worst outcome — it tells someone a working hook
+    is dead — so the anchoring and dialect cases below are the load-bearing
+    ones, not the happy path.
+    """
+
+    def test_alternation_covers_both(self) -> None:
+        assert unmatched_tool_names("Bash|PowerShell", frozenset({"Bash", "PowerShell"})) == ()
+
+    def test_regex_matchers_are_unanchored(self) -> None:
+        # A matcher carrying a regex character is read as an *unanchored*
+        # pattern, so `Shell$` genuinely selects `PowerShell`. Anchoring it
+        # would report a firing hook as inert.
+        names = frozenset({"Bash", "PowerShell"})
+        assert unmatched_tool_names("Shell$", names) == ("Bash",)
+        assert unmatched_tool_names("ash$", names) == ("PowerShell",)
+        assert unmatched_tool_names(".*", names) == ()
+
+    def test_plain_matcher_is_an_exact_list_not_a_substring(self) -> None:
+        # The other half of the dialect: with no regex character in it, the
+        # matcher is a list of names compared exactly, so a prefix selects
+        # nothing.
+        assert unmatched_tool_names("Bas", frozenset({"Bash"})) == ("Bash",)
+        assert unmatched_tool_names("Bash, PowerShell", frozenset({"Bash", "PowerShell"})) == ()
+
+    def test_narrowed_matcher_names_what_it_misses(self) -> None:
+        assert unmatched_tool_names("Bash", frozenset({"Bash", "shell_command"})) == (
+            "shell_command",
+        )
+
+    def test_stale_literal_misses_everything(self) -> None:
+        assert unmatched_tool_names("Bash", frozenset({"shell_command"})) == ("shell_command",)
+
+    def test_absent_matcher_is_match_all(self) -> None:
+        assert unmatched_tool_names("", frozenset({"Bash"})) == ()
+        assert unmatched_tool_names(None, frozenset({"Bash"})) == ()
+
+    def test_uncompilable_pattern_falls_back_to_equality(self) -> None:
+        assert unmatched_tool_names("Bash(", frozenset({"Bash("})) == ()
+        assert unmatched_tool_names("Bash(", frozenset({"Bash"})) == ("Bash",)
+
+    def test_adapter_declining_to_say_is_not_evidence(self) -> None:
+        assert unmatched_tool_names("anything", frozenset()) == ()
+
+
+class TestRewriteHookStatus:
+    """Registered and live are different questions, and both get answered.
+
+    A hook that matches nothing is silent in exactly the way a working one is,
+    so nothing catches a stale matcher unless the status surface reports it.
+    """
+
+    def test_not_installed(self, settings_path, adapter) -> None:
+        status = adapter.rewrite_hook_status()
+        assert status.installed is False
+        assert status.matcher is None
+        assert status.unmatched == ()
+
+    def test_fresh_install_is_live(self, settings_path, adapter) -> None:
+        install_claude_code_rewrite_hook()
+        status = adapter.rewrite_hook_status()
+        assert (status.installed, status.fires, status.unmatched) == (True, True, ())
+
+    def test_stale_matcher_is_registered_but_inert(self, settings_path, adapter) -> None:
+        # A matcher naming a tool Claude Code does not use: registered under
+        # the presence check, and firing on nothing.
+        _write_rewrite_entry(settings_path, "Shell", "repowise-rewrite")
+        assert claude_code_rewrite_hook_installed() is True
+        status = adapter.rewrite_hook_status()
+        assert status.installed is True
+        assert status.fires is False
+        assert status.unmatched == ("Bash", "PowerShell")
+        assert status.matcher == "Shell"
+
+    def test_narrowed_matcher_fires_and_still_misses(self, settings_path, adapter) -> None:
+        # The Windows half of the surface: a Bash-only entry rewrites nothing
+        # a PowerShell agent runs, and reads as fully installed without this.
+        _write_rewrite_entry(settings_path, "Bash", "repowise-rewrite")
+        status = adapter.rewrite_hook_status()
+        assert (status.installed, status.fires) == (True, True)
+        assert status.unmatched == ("PowerShell",)
+
+    def test_codex_stale_bash_matcher_is_narrowed(
+        self, codex_hooks_path, codex_adapter
+    ) -> None:
+        # The exact install every Codex user held before the tool-name fix.
+        # ``Bash`` stays in the gate because a live hook payload was never
+        # captured, so the honest verdict is narrowed rather than dead: it
+        # misses ``shell_command``, which is every shell call in 18 real
+        # rollouts.
+        _write_rewrite_entry(codex_hooks_path, "Bash", "repowise-rewrite --agent codex")
+        status = codex_adapter.rewrite_hook_status()
+        assert (status.installed, status.fires) == (True, True)
+        assert status.unmatched == ("shell_command",)
+
+    def test_codex_fresh_install_is_live(self, codex_hooks_path, codex_adapter) -> None:
+        install_codex_rewrite_hook()
+        status = codex_adapter.rewrite_hook_status()
+        assert (status.installed, status.unmatched) == (True, ())
+
+    def test_installed_matcher_selects_every_gated_tool_name(self) -> None:
+        # The pin the Codex fix asked for, now held on both surfaces: the
+        # matcher the installer writes and the gate that reads the payload
+        # cannot drift apart without failing here.
+        for names, matcher in (
+            (claude_module.SHELL_TOOL_NAMES, claude_module.SHELL_TOOL_MATCHER),
+            (codex_module.SHELL_TOOL_NAMES, codex_module.SHELL_TOOL_MATCHER),
+        ):
+            assert unmatched_tool_names(matcher, names) == ()
 
 
 # ---------------------------------------------------------------------------

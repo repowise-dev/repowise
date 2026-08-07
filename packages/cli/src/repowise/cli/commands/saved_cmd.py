@@ -23,8 +23,9 @@ from rich.table import Table
 
 from repowise.cli.helpers import console
 
-#: Pricing model used for the dollar estimate. Saved tokens are input-side
-#: tokens the coding agent never had to read, so the input rate applies.
+#: Fallback pricing model for the dollar estimate. Saved tokens are input-side
+#: tokens the coding agent never had to read, so the input rate applies. Used
+#: only when no agent session can be detected — see :func:`_resolve_pricing`.
 DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
 
 
@@ -47,10 +48,13 @@ DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
 @click.option(
     "--model",
     "pricing_model",
-    default=DEFAULT_PRICING_MODEL,
-    show_default=True,
+    default=None,
     metavar="MODEL",
-    help="Pricing model for the dollar estimate (input-token rate).",
+    help=(
+        "Pricing model for the dollar estimate (input-token rate). Defaults to "
+        "the model detected from this repo's most recent agent session, and "
+        f"falls back to {DEFAULT_PRICING_MODEL} when there is none."
+    ),
 )
 @click.option(
     "--missed",
@@ -70,7 +74,7 @@ def saved_command(
     path: str | None,
     group_by: str,
     since: str | None,
-    pricing_model: str,
+    pricing_model: str | None,
     show_missed: bool,
     missed_days: float,
 ) -> None:
@@ -86,6 +90,7 @@ def saved_command(
     since_ts = _parse_since(since)
 
     start = Path(path).resolve() if path else Path.cwd()
+    pricing_model, pricing_note = _resolve_pricing(start, pricing_model)
 
     if show_missed:
         _print_missed_report(start, missed_days, pricing_model)
@@ -158,7 +163,7 @@ def saved_command(
     console.print(table)
     console.print(
         f"  Estimated saved: [bold green]${usd:.4f}[/bold green] "
-        f"[dim](at ${rate:.2f}/M input tokens, {pricing_model}; "
+        f"[dim](at ${rate:.2f}/M input tokens, {pricing_note}; "
         f"tokens are chars/4 estimates)[/dim]"
     )
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
@@ -411,20 +416,48 @@ def _render_missed_distill_table(
     console.print()
 
 
+def _resolve_pricing(repo_root: Path, override: str | None) -> tuple[str, str]:
+    """The model to price saved tokens at, and how it was arrived at.
+
+    The Costs endpoint has always priced this ledger at the model detected from
+    the repo's most recent agent session; this command assumed Sonnet. Same
+    tokens, two dollar figures, on two surfaces a reader takes for one — and
+    the assumed one understates an Opus session by two thirds. Detection is
+    shared with the endpoint rather than reimplemented, and any failure lands
+    on the documented default rather than an error.
+    """
+    if override:
+        return override, override
+    try:
+        from repowise.core.distill.session_model import resolve_session_model
+
+        resolved = resolve_session_model(repo_root)
+    except Exception:
+        return DEFAULT_PRICING_MODEL, f"{DEFAULT_PRICING_MODEL}, assumed"
+    return resolved.model, f"{resolved.model}, {resolved.source}"
+
+
 def _rewrite_hook_installed() -> bool:
-    """True when any agent surface has the rewrite hook wired up.
+    """True when any agent surface has a rewrite hook that can actually fire.
 
     Mirrors the doctor check: Claude Code is always considered, Codex only
-    when it is actually present on the machine.
+    when it is actually present on the machine. Registered is not enough — an
+    entry whose matcher names a renamed tool fires on nothing, and telling
+    someone their hook is installed is the one answer that hides why the rows
+    below it are still there.
     """
     try:
         from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
         from repowise.cli.agent_adapters.codex import CodexAdapter
 
-        if ClaudeCodeAdapter().rewrite_hook_installed():
+        def live(adapter) -> bool:
+            status = adapter.rewrite_hook_status()
+            return status.installed and not status.unmatched
+
+        if live(ClaudeCodeAdapter()):
             return True
         codex = CodexAdapter()
-        return codex.detect() and codex.rewrite_hook_installed()
+        return codex.detect() and live(codex)
     except Exception:
         return False
 

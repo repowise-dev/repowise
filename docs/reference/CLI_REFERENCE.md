@@ -744,7 +744,7 @@ distill filters.
 |------|-------------|
 | `--by` | Grouping: `filter` (default), `day`, `source` |
 | `--since` | Only count savings since this ISO date |
-| `--model` | Pricing model for the dollar estimate (input-token rate; default `claude-sonnet-4-6`) |
+| `--model` | Pricing model for the dollar estimate (input-token rate). Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |
 

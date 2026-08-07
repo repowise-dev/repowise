@@ -145,6 +145,21 @@ NO_ACTION_EXPECTED = frozenset(
     }
 )
 
+#: (surface, category) pairs whose emission has been removed. The judges below
+#: stay so a transcript backfill still settles the rows already in the corpus,
+#: but nothing new lands here, and a rate over a closed population is not an
+#: adoption rate — ``read``/``reread`` reads 100% and ``read``/``skeleton_nudge``
+#: 0.2% off populations that stopped growing, and both are indistinguishable
+#: from a live surface until they are labelled apart. Historical, not current.
+RETIRED_CATEGORIES = frozenset(
+    {
+        # Retired in the read hook; see ``augment_cmd/read_state.py``.
+        ("read", "reread"),
+        # Retired on the emission side after the dose measurement.
+        ("read", "skeleton_nudge"),
+    }
+)
+
 #: Firings whose recommended outcome is a *non*-action, scored as compliance
 #: (did the agent avoid re-offending?) rather than adoption. Same ``acted``
 #: column, and ``repowise hook stats`` labels these "respected" so the two are

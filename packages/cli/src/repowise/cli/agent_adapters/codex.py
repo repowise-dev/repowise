@@ -61,6 +61,8 @@ SHELL_TOOL_MATCHER: str = "|".join(sorted(SHELL_TOOL_NAMES))
 class CodexAdapter(AgentAdapter):
     name: ClassVar[str] = "codex"
 
+    shell_tool_names: ClassVar[frozenset[str]] = SHELL_TOOL_NAMES
+
     #: No ask-with-mutation in the Codex hook protocol — see module docstring.
     rewrite_permissions: ClassVar[frozenset[str]] = frozenset({"allow"})
 
@@ -133,3 +135,10 @@ class CodexAdapter(AgentAdapter):
         )
 
         return codex_rewrite_hook_installed()
+
+    def rewrite_hook_matcher(self) -> str | None:
+        from repowise.cli.editor_integrations.codex_config import (
+            codex_rewrite_hook_matcher,
+        )
+
+        return codex_rewrite_hook_matcher()

@@ -226,28 +226,50 @@ def uninstall_codex_rewrite_hook() -> bool:
 
 def codex_rewrite_hook_installed() -> bool:
     """True when the distill rewrite entry is registered in hooks.json."""
+    return codex_rewrite_hook_matcher() is not None
+
+
+def codex_rewrite_hook_matcher() -> str | None:
+    """The matcher on the installed rewrite entry, or None when not installed.
+
+    ``""`` is a real answer: an entry with no matcher at all. The caller needs
+    the matcher and not just its presence because the two say different
+    things — an entry whose matcher names a tool Codex has since renamed is
+    registered and will never fire.
+    """
     from repowise.cli.mcp_config import load_existing_config
 
     hooks_path = _codex_hooks_path()
     if not hooks_path.exists():
-        return False
+        return None
     try:
         existing = load_existing_config(hooks_path)
     except Exception:
-        return False
+        return None
     hooks = existing.get("hooks")
     if not isinstance(hooks, dict):
-        return False
+        return None
     pre_hooks = hooks.get("PreToolUse")
-    return isinstance(pre_hooks, list) and _has_rewrite_hook(pre_hooks)
+    if not isinstance(pre_hooks, list):
+        return None
+    return _rewrite_matcher(pre_hooks)
 
 
 def _is_rewrite_hook(hook: dict) -> bool:
     return _REWRITE_HOOK_COMMAND in hook.get("command", "")
 
 
+def _rewrite_matcher(hook_list: list) -> str | None:
+    """Matcher of the first entry carrying our hook, or None if there is none."""
+    for entry in hook_list:
+        if any(_is_rewrite_hook(h) for h in entry.get("hooks", [])):
+            matcher = entry.get("matcher")
+            return matcher if isinstance(matcher, str) else ""
+    return None
+
+
 def _has_rewrite_hook(hook_list: list) -> bool:
-    return any(_is_rewrite_hook(h) for entry in hook_list for h in entry.get("hooks", []))
+    return _rewrite_matcher(hook_list) is not None
 
 
 # ---------------------------------------------------------------------------

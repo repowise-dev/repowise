@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+from repowise.cli.agent_adapters.claude_code import SHELL_TOOL_MATCHER
 from repowise.cli.mcp_config import (
     generate_mcp_config,
     load_existing_config,
@@ -353,9 +354,12 @@ def install_claude_code_hooks() -> Path | None:
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 
-# Current rewrite PreToolUse matcher; PowerShell is the Windows Claude Code
-# shell tool. Legacy Bash-only installs are widened in place.
-_REWRITE_MATCHER = "Bash|PowerShell"
+# Current rewrite PreToolUse matcher, derived from the adapter's own tool-name
+# set so the installed matcher and the gate that reads the payload cannot
+# drift apart. Legacy Bash-only installs are widened in place. Safe at module
+# scope for the same reason the Codex twin is: the adapter imports this module
+# lazily, and its own imports are stdlib only.
+_REWRITE_MATCHER = SHELL_TOOL_MATCHER
 _LEGACY_REWRITE_MATCHERS = ("Bash",)
 
 
@@ -486,26 +490,47 @@ def uninstall_claude_code_rewrite_hook() -> bool:
 
 def claude_code_rewrite_hook_installed() -> bool:
     """True when the distill rewrite hook is registered in settings.json."""
+    return claude_code_rewrite_hook_matcher() is not None
+
+
+def claude_code_rewrite_hook_matcher() -> str | None:
+    """The matcher on the installed rewrite entry, or None when not installed.
+
+    ``""`` is a real answer: an entry with no matcher at all. Presence and
+    matcher say different things — an entry pointing at a tool name Claude
+    Code no longer uses is registered and will never fire.
+    """
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
-        return False
+        return None
     try:
         existing = load_existing_config(settings_path)
     except Exception:
-        return False
+        return None
     hooks = existing.get("hooks")
     if not isinstance(hooks, dict):
-        return False
+        return None
     pre_hooks = hooks.get("PreToolUse")
-    return isinstance(pre_hooks, list) and _has_rewrite_hook(pre_hooks)
+    if not isinstance(pre_hooks, list):
+        return None
+    return _rewrite_matcher(pre_hooks)
 
 
 def _is_rewrite_hook(hook: dict) -> bool:
     return _REWRITE_HOOK_COMMAND in hook.get("command", "")
 
 
+def _rewrite_matcher(hook_list: list) -> str | None:
+    """Matcher of the first entry carrying our hook, or None if there is none."""
+    for entry in hook_list:
+        if any(_is_rewrite_hook(h) for h in entry.get("hooks", [])):
+            matcher = entry.get("matcher")
+            return matcher if isinstance(matcher, str) else ""
+    return None
+
+
 def _has_rewrite_hook(hook_list: list) -> bool:
-    return any(_is_rewrite_hook(h) for entry in hook_list for h in entry.get("hooks", []))
+    return _rewrite_matcher(hook_list) is not None
 
 
 def _strip_hooks(hook_list: list, predicate) -> bool:

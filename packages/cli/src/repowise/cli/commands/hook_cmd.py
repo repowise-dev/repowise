@@ -128,6 +128,32 @@ def _target_repo_paths(target) -> list:
     return [target.repo_path] if (target.repo_path / ".repowise").is_dir() else []
 
 
+def _print_rewrite_hook_status(label: str, status) -> None:
+    """Report one agent's rewrite hook, separating registered from live.
+
+    Presence keys on the hook command, so an entry whose matcher names a tool
+    the agent has since renamed reads as "installed" while firing on nothing.
+    A hook that matches nothing is silent in exactly the way a working one is,
+    which is why this has to be said rather than inferred.
+    """
+    if not status.installed:
+        console.print(f"  [dim]✗[/dim] {label} rewrite hook: not installed")
+        return
+    if not status.unmatched:
+        console.print(f"  [green]✓[/green] {label} rewrite hook: installed")
+        return
+    missed = ", ".join(status.unmatched)
+    state = "registered but inert" if not status.fires else "installed, matcher too narrow"
+    console.print(f"  [yellow]![/yellow] {label} rewrite hook: {state}")
+    console.print(
+        f"      [dim]its matcher ({status.matcher!r}) does not select {missed}, so "
+        f"commands {label} runs under {'that name' if len(status.unmatched) == 1 else 'those names'} "
+        "pass through unrewritten. `repowise hook rewrite install` repoints a "
+        "matcher it recognises as its own; a hand-narrowed one has to be "
+        "widened by hand.[/dim]"
+    )
+
+
 def _codex_capability_note(version, supports) -> str:
     """One honest line about what the local Codex build can actually do."""
     from repowise.cli.editor_integrations.codex_config import CODEX_REWRITE_MIN_VERSION
@@ -341,11 +367,7 @@ def rewrite_status(path: str | None, workspace: bool, no_workspace: bool) -> Non
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.agent_adapters.codex import CodexAdapter
 
-    installed = ClaudeCodeAdapter().rewrite_hook_installed()
-    icon = "[green]✓[/green]" if installed else "[dim]✗[/dim]"
-    console.print(
-        f"  {icon} claude-code rewrite hook: {'installed' if installed else 'not installed'}"
-    )
+    _print_rewrite_hook_status("claude-code", ClaudeCodeAdapter().rewrite_hook_status())
 
     codex = CodexAdapter()
     if not codex.detect():
@@ -360,11 +382,7 @@ def rewrite_status(path: str | None, workspace: bool, no_workspace: bool) -> Non
 
     version = codex_cli_version()
     supports = codex_supports_rewrite(version)
-    codex_installed = codex.rewrite_hook_installed()
-    icon = "[green]✓[/green]" if codex_installed else "[dim]✗[/dim]"
-    console.print(
-        f"  {icon} codex rewrite hook: {'installed' if codex_installed else 'not installed'}"
-    )
+    _print_rewrite_hook_status("codex", codex.rewrite_hook_status())
     console.print(f"      [dim]{_codex_capability_note(version, supports)}[/dim]")
 
     target = _hook_target(path, workspace, no_workspace)
@@ -547,7 +565,11 @@ def hook_stats(path: str | None, as_json: bool) -> None:
     """
     import json as json_mod
 
-    from repowise.core.sessions.efficacy import CLASSIFIED_SURFACES, NO_ACTION_EXPECTED
+    from repowise.core.sessions.efficacy import (
+        CLASSIFIED_SURFACES,
+        NO_ACTION_EXPECTED,
+        RETIRED_CATEGORIES,
+    )
     from repowise.core.sessions.staging import SessionStagingStore, default_store_path
 
     target = resolve_command_target(path=path, workspace_flag=False, no_workspace_flag=True)
@@ -570,6 +592,10 @@ def hook_stats(path: str | None, as_json: bool) -> None:
         return
 
     if as_json:
+        # The machine-readable twin carries the same lie the table did, so it
+        # gets the same label rather than a footer nothing can parse.
+        for row in rows:
+            row["retired"] = (row["surface"], row["category"]) in RETIRED_CATEGORIES
         console.print_json(
             json_mod.dumps({"surfaces": rows, "runs": by_tool, "decision_feedback": feedback})
         )
@@ -589,7 +615,13 @@ def hook_stats(path: str | None, as_json: bool) -> None:
     for row in rows:
         pair = (row["surface"], row["category"])
         classified = row["evaluated"]
-        if row["surface"] not in CLASSIFIED_SURFACES:
+        retired = pair in RETIRED_CATEGORIES
+        if retired:
+            # A closed population. Its firings and cost are real history and
+            # stay visible; its rate is not a rate, because the denominator
+            # stopped growing when the emission was deleted.
+            acted, rate = "-", "[dim]retired[/dim]"
+        elif row["surface"] not in CLASSIFIED_SURFACES:
             # Decision rows are judged as followed-vs-contradicted against the
             # decision records, not as acted-on; read_enrich never emits.
             acted, rate = "-", "[dim]n/a[/dim]"
@@ -603,19 +635,25 @@ def hook_stats(path: str | None, as_json: bool) -> None:
             colour = "green" if pct >= 20 else ("yellow" if pct >= 5 else "red")
             rate = f"[{colour}]{pct:.1f}%[/{colour}]"
         n = row["duration_ms_count"]
+        # Dimming the whole row is what makes a retired surface legible at a
+        # glance; the rate cell alone is too easy to read past.
+        lo, hi = ("[dim]", "[/dim]") if retired else ("", "")
+        label = f"{row['surface']}/{row['category']}" if row["category"] else row["surface"]
         table.add_row(
-            f"{row['surface']}/{row['category']}" if row["category"] else row["surface"],
-            str(row["firings"]),
-            str(row["sessions"]),
-            acted,
+            f"{lo}{label}{hi}",
+            f"{lo}{row['firings']}{hi}",
+            f"{lo}{row['sessions']}{hi}",
+            acted if acted == "-" else f"{lo}{acted}{hi}",
             rate,
-            f"~{row['chars'] // 4}t",
-            f"{row['duration_ms_total'] // n}" if n else "[dim]-[/dim]",
+            f"{lo}~{row['chars'] // 4}t{hi}",
+            f"{lo}{row['duration_ms_total'] // n}{hi}" if n else "[dim]-[/dim]",
         )
     console.print(table)
     console.print(
-        "  [dim]rate is over classified firings only; 'n/a' marks a notice with no "
-        "action to take, and read/reread counts as respected-not-re-offended.[/dim]"
+        "  [dim]rate is over classified firings only, and 'n/a' marks a notice "
+        "with no action to take. Dimmed 'retired' rows are history: the "
+        "emission is gone, so the counts cannot grow and the rate is not "
+        "adoption.[/dim]"
     )
 
     # The decision surface's own verdict, which the acted-on rate above cannot
