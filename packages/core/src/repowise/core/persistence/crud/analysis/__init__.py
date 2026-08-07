@@ -30,10 +30,12 @@ from .dead_code import (
 )
 from .health import (
     HEALTH_SNAPSHOT_RETENTION,
+    HealthSnapshotHeadline,
     get_deduction_by_path,
     get_file_language_map,
     get_health_findings,
     get_health_metrics,
+    get_health_snapshot_headline,
     get_health_summary,
     get_perf_coverage,
     list_health_snapshots,
@@ -55,6 +57,7 @@ from .refactoring import (
 
 __all__ = [
     "HEALTH_SNAPSHOT_RETENTION",
+    "HealthSnapshotHeadline",
     "covered_source_files",
     "files_covered_by",
     "get_coverage_summary",
@@ -64,6 +67,7 @@ __all__ = [
     "get_file_language_map",
     "get_health_findings",
     "get_health_metrics",
+    "get_health_snapshot_headline",
     "get_health_summary",
     "get_perf_coverage",
     "get_refactoring_suggestion",

@@ -369,7 +369,10 @@ async def overview_summary(
     # defect-accuracy stat both want every per-file row, and letting each fetch
     # its own pulled the whole table twice per page load.
     health_metrics = await crud.get_health_metrics(session, repo_id)
-    health_summary = await crud.get_health_summary(session, repo_id, metrics=health_metrics)
+    findings = await crud.get_health_findings(session, repo_id)
+    health_summary = await crud.get_health_summary(
+        session, repo_id, metrics=health_metrics, findings=findings
+    )
     snapshots = await crud.list_health_snapshots(session, repo_id)
     hotspot_health: float | None = None
     last_indexed_at: str | None = None
@@ -394,7 +397,6 @@ async def overview_summary(
         except Exception:
             pass
 
-    findings = await crud.get_health_findings(session, repo_id)
     severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for f in findings:
         s = (f.severity or "").lower()
@@ -405,6 +407,31 @@ async def overview_summary(
     # ranking, shown on the health card. Sourced here rather than from the stats
     # payload: this is a health number, and having the overview reach across
     # into another page's payload for it is what broke when that payload changed.
+    #
+    # ``prior_defect`` rows only, each carrying its parsed ``details``. Two
+    # problems in one shape: the stat reads no other biomarker, so converting
+    # the other ~90% of findings was waste; and it reads the fix count and the
+    # window *out of* ``details``, which this call site never supplied — so
+    # every flagged file reported ``recent_fixes: 1`` (333 of 999 have more, up
+    # to 19) and ``window_days`` echoed the default instead of the indexed
+    # value. The health dashboard computes the same stat from the real numbers,
+    # so the two surfaces disagreed on one figure.
+    # Parsed per row: one malformed blob must not cost the whole panel.
+    prior_defect_rows: list[dict] = []
+    for f in findings:
+        if f.biomarker_type != "prior_defect":
+            continue
+        details: Any = {}
+        with contextlib.suppress(Exception):
+            details = json.loads(f.details_json) if f.details_json else {}
+        prior_defect_rows.append(
+            {
+                "file_path": f.file_path,
+                "biomarker_type": f.biomarker_type,
+                "details": details,
+            }
+        )
+
     defect_accuracy = None
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
@@ -420,14 +447,7 @@ async def overview_summary(
                 }
                 for m in health_metrics
             ],
-            [
-                {
-                    "file_path": f.file_path,
-                    "biomarker_type": f.biomarker_type,
-                    "severity": f.severity,
-                }
-                for f in findings
-            ],
+            prior_defect_rows,
         )
     except Exception:
         # Best-effort: the card omits the panel rather than failing the page.

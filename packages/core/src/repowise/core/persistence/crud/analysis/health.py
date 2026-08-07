@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -430,14 +430,25 @@ async def get_perf_coverage(session: AsyncSession, repository_id: str) -> PerfCo
 
 
 async def get_health_summary(
-    session: AsyncSession, repository_id: str, *, metrics: list | None = None
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    metrics: list | None = None,
+    findings: list | None = None,
 ) -> dict:
     """Aggregate KPIs over the per-file metrics table.
 
-    *metrics* lets a caller that has already loaded the per-file rows hand them
-    over instead of paying for a second full read. Callers doing more than one
-    thing with them — the overview payload computes both these KPIs and the
-    defect-accuracy stat — would otherwise pull the whole table twice.
+    *metrics* and *findings* let a caller that has already loaded those rows
+    hand them over instead of paying for a second full read. Callers doing more
+    than one thing with them — the overview payload builds these KPIs, the
+    severity breakdown and the defect-accuracy stat off the same two tables —
+    would otherwise pull each table twice per request.
+
+    Both are expected to be exactly what this function would have read itself:
+    ``get_health_metrics(repository_id)`` and
+    ``get_health_findings(repository_id)``, i.e. every open row for the repo,
+    post-exclusion. Handing over a *filtered* subset would silently skew
+    ``open_findings`` and the per-dimension counts, which are repo headlines.
     """
     if metrics is None:
         metrics = await get_health_metrics(session, repository_id)
@@ -510,7 +521,8 @@ async def get_health_summary(
             worst_performance_path = perf_worst.file_path
             worst_performance_score = round(perf_worst.performance_score, 2)
 
-    findings = await get_health_findings(session, repository_id)
+    if findings is None:
+        findings = await get_health_findings(session, repository_id)
     by_dim: dict[str, int] = {}
     for finding in findings:
         dim = finding.dimension or "defect"
@@ -640,6 +652,41 @@ async def list_health_snapshots(
     if limit is not None and len(rows) > limit:
         rows = rows[-limit:]
     return rows
+
+
+class HealthSnapshotHeadline(NamedTuple):
+    """The three snapshot scalars a dashboard header actually reads."""
+
+    hotspot_health: float | None
+    taken_at: datetime | None
+    snapshot_count: int
+
+
+async def get_health_snapshot_headline(
+    session: AsyncSession, repository_id: str
+) -> HealthSnapshotHeadline:
+    """Latest snapshot's ``hotspot_health`` / ``taken_at``, plus how many exist.
+
+    ``list_health_snapshots`` hydrates whole entities, and every row carries a
+    ``per_file_scores_json`` blob sized by the repo's file count — on this
+    codebase that is ~186 KB each, 2.2 MB across the retained history. A caller
+    that only needs the header scalars was reading all of it to use two floats.
+
+    Two columns, no JSON. Callers that genuinely need the per-file maps (the
+    trend routes, the file drawer's sparkline) should keep using
+    ``list_health_snapshots``.
+    """
+    rows = (
+        await session.execute(
+            select(HealthSnapshot.hotspot_health, HealthSnapshot.taken_at)
+            .where(HealthSnapshot.repository_id == repository_id)
+            .order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
+        )
+    ).all()
+    if not rows:
+        return HealthSnapshotHeadline(None, None, 0)
+    hotspot_health, taken_at = rows[-1]
+    return HealthSnapshotHeadline(float(hotspot_health), taken_at, len(rows))
 
 
 async def upsert_health_findings(
