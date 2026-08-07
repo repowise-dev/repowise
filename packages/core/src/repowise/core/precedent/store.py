@@ -47,6 +47,13 @@ TIER_TRANSCRIPT = "transcript"
 #: exists only on the laptop that recorded it.
 SHAREABLE_TIERS = (TIER_STRUCTURAL, TIER_GIT)
 
+# Pinned, because a hand-written TypeScript union mirrors this set
+# (``packages/types/src/episodes.ts``) and the HTTP layer narrows a response
+# field to it. Adding a tier here without widening that union ships a type
+# that lies to every consumer, and nothing on either side would fail. Change
+# both, or neither.
+assert SHAREABLE_TIERS == (TIER_STRUCTURAL, TIER_GIT)
+
 #: Rows not re-observed for this long are dropped. Every index refreshes
 #: ``last_seen_at`` for a fact that still holds, so this evicts only episodes
 #: whose repository has stopped being indexed — never a live one. (Contrast
@@ -644,6 +651,49 @@ class EpisodeStore:
 
     # -- reads -------------------------------------------------------------
 
+    def _filter(
+        self,
+        *,
+        tier: str | None,
+        tiers: Sequence[str] | None,
+        kind: str | None,
+        subjects: Sequence[str] | None,
+    ) -> tuple[str, list[object]] | None:
+        """The shared ``WHERE`` for the filtered reads, or None to select nothing.
+
+        ``None`` rather than an empty clause, because an empty *tiers* or
+        *subjects* allowlist selects nothing and a caller that turned that into
+        ``WHERE 1=1`` would serve the whole store on an empty allowlist — the
+        exact inversion the allowlist exists to prevent.
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if tier is not None:
+            clauses.append("tier = ?")
+            params.append(tier)
+        if tiers is not None:
+            if not tiers:
+                return None
+            clauses.append(f"tier IN ({','.join('?' * len(tiers))})")
+            params.extend(tiers)
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if subjects is not None:
+            if not subjects:
+                return None
+            if len(subjects) > _IN_CHUNK:
+                # Chunking a SELECT would mean stitching pages back into one
+                # ordering; the callers that filter by subject ask about the
+                # handful they are writing, so refuse rather than mislead.
+                raise ValueError(
+                    f"subjects filter takes at most {_IN_CHUNK} values, got {len(subjects)}"
+                )
+            clauses.append(f"subject IN ({','.join('?' * len(subjects))})")
+            params.extend(subjects)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        return where, params
+
     def list_episodes(
         self,
         *,
@@ -651,6 +701,9 @@ class EpisodeStore:
         tiers: Sequence[str] | None = None,
         kind: str | None = None,
         subjects: Sequence[str] | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        with_body: bool = True,
     ) -> list[dict]:
         """Episodes, newest birth first. Every filter is optional and ANDed.
 
@@ -661,40 +714,126 @@ class EpisodeStore:
 
         An empty *tiers* or *subjects* selects nothing, which is the honest
         reading of an empty allowlist and not the same as ``None``.
+
+        *limit* / *offset* page it, and either works alone — an *offset* with
+        no *limit* means "the rest", not "everything", which is the trap the
+        obvious implementation sets. Unpaged is still the default because the
+        three in-process callers want the whole selection, but a caller
+        serving a page must bound it: the per-tier cap is
+        :data:`DEFAULT_MAX_ROWS` and git bodies run to hundreds of characters
+        each, so the unbounded read is multi-megabyte at the ceiling.
+
+        Ordering is ``(birth_at DESC, id ASC)`` and ``id`` is the primary key,
+        so it is a total order and paging cannot duplicate or skip a row when
+        births tie. There is no index on ``birth_at``, so each page sorts the
+        filtered set in a temp b-tree — affordable only because of that cap,
+        and cheaper with *with_body* off.
+
+        *with_body* set false drops the ``body`` key entirely rather than
+        blanking it, so a reader cannot mistake "not fetched" for "empty". The
+        column is never read — the projection substitutes a constant — which
+        is the point: a timeline row needs the date, the subject and the
+        scope, and the body belongs to whatever opens one.
         """
+        built = self._filter(tier=tier, tiers=tiers, kind=kind, subjects=subjects)
+        if built is None:
+            return []
+        where, params = built
+        body_col = "body" if with_body else "''"
+        sql = (
+            f"SELECT id, tier, kind, subject, {body_col}, evidence, nodes, "
+            f"birth_commit, birth_at, last_seen_at FROM episodes{where}"
+            " ORDER BY birth_at DESC, id ASC"
+        )
+        if limit is not None or offset:
+            # SQLite has no bare OFFSET, so an offset without a limit needs a
+            # sentinel. -1 is its own "unbounded" and is the honest one here;
+            # a caller paging from an offset with no limit means "the rest",
+            # not "nothing". Clamped limits stay >= 0 so a negative limit
+            # returns no rows rather than inheriting that unbounded meaning.
+            bound = -1 if limit is None else max(0, limit)
+            sql += " LIMIT ? OFFSET ?"
+            params = [*params, bound, max(0, offset)]
+        rows = [_row_to_dict(row) for row in self._conn.execute(sql, params)]
+        if not with_body:
+            for row in rows:
+                del row["body"]
+        return rows
+
+    def group_counts(
+        self, column: str, *, tiers: Sequence[str] | None = None
+    ) -> dict[str, int]:
+        """``COUNT(*) GROUP BY column``, for a caller that needs a breakdown.
+
+        *column* is checked against a literal allowlist rather than escaped: it
+        is interpolated into the statement because a column name cannot be
+        bound as a parameter, and an allowlist is the only form of that which
+        is safe by construction rather than by review.
+
+        Grouped in SQL rather than counted in Python, because the caller that
+        wants this is rendering a summary and the alternative is materialising
+        every row in the store to add up two integers.
+        """
+        if column not in {"tier", "kind"}:
+            raise ValueError(f"group_counts takes 'tier' or 'kind', got {column!r}")
+        built = self._filter(tier=None, tiers=tiers, kind=None, subjects=None)
+        if built is None:
+            return {}
+        where, params = built
+        sql = f"SELECT {column}, COUNT(*) FROM episodes{where} GROUP BY {column}"
+        return {str(name): int(n) for name, n in self._conn.execute(sql, params)}
+
+    def get_episode(
+        self, episode_id: str, *, tiers: Sequence[str] | None = None
+    ) -> dict | None:
+        """One episode by id, or None — including when its tier is not allowed.
+
+        The tier allowlist is applied here rather than by the caller because
+        forgetting it on a by-id read is the same disclosure as forgetting it
+        on a list, with none of the visibility: one row, addressable by a
+        stable hash, is exactly the shape somebody guesses at.
+
+        Built through :meth:`_filter` rather than with its own tier clause, so
+        there is exactly one implementation of "which tiers may be read". A
+        second copy here is how a later change to the allowlist reaches the
+        list and misses the by-id read.
+        """
+        built = self._filter(tier=None, tiers=tiers, kind=None, subjects=None)
+        if built is None:
+            return None
+        where, params = built
+        clause = f"{where} AND id = ?" if where else " WHERE id = ?"
         sql = (
             "SELECT id, tier, kind, subject, body, evidence, nodes, "
-            "birth_commit, birth_at, last_seen_at FROM episodes"
+            f"birth_commit, birth_at, last_seen_at FROM episodes{clause}"
         )
-        clauses: list[str] = []
-        params: list[object] = []
-        if tier is not None:
-            clauses.append("tier = ?")
-            params.append(tier)
-        if tiers is not None:
-            if not tiers:
-                return []
-            clauses.append(f"tier IN ({','.join('?' * len(tiers))})")
-            params.extend(tiers)
-        if kind is not None:
-            clauses.append("kind = ?")
-            params.append(kind)
-        if subjects is not None:
-            if not subjects:
-                return []
-            if len(subjects) > _IN_CHUNK:
-                # Chunking a SELECT would mean stitching pages back into one
-                # ordering; the callers that filter by subject ask about the
-                # handful they are writing, so refuse rather than mislead.
-                raise ValueError(
-                    f"subjects filter takes at most {_IN_CHUNK} values, got {len(subjects)}"
-                )
-            clauses.append(f"subject IN ({','.join('?' * len(subjects))})")
-            params.extend(subjects)
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY birth_at DESC, id ASC"
-        return [_row_to_dict(row) for row in self._conn.execute(sql, params)]
+        row = self._conn.execute(sql, [*params, episode_id]).fetchone()
+        return _row_to_dict(row) if row else None
+
+    def count_episodes(
+        self,
+        *,
+        tier: str | None = None,
+        tiers: Sequence[str] | None = None,
+        kind: str | None = None,
+        subjects: Sequence[str] | None = None,
+    ) -> int:
+        """How many episodes the same filters select.
+
+        Separate from :meth:`count` because a paged reader has to state a total
+        it measured rather than the length of the page it happened to fetch,
+        and separate from counting the page for the reason the decisions
+        endpoint already learned: a capped list reported "97 of 100" on a
+        repository holding several hundred records.
+        """
+        built = self._filter(tier=tier, tiers=tiers, kind=kind, subjects=subjects)
+        if built is None:
+            return 0
+        where, params = built
+        (rows,) = self._conn.execute(
+            f"SELECT COUNT(*) FROM episodes{where}", params
+        ).fetchone()
+        return int(rows)
 
     def search(
         self,
@@ -810,7 +949,8 @@ class EpisodeStore:
         if tiers is not None and not tiers:
             return {}
         if not self.node_index_enabled:
-            return {p: len(rows) for p, rows in self._scan_by_node(paths, tiers).items()}
+            scanned = self._scan_by_node(paths, tiers, with_body=False)
+            return {p: len(rows) for p, rows in scanned.items()}
         counts: dict[str, int] = {}
         for path in paths:
             sub, params = self._node_subquery(path)
@@ -884,7 +1024,11 @@ class EpisodeStore:
         return [_row_to_dict(row) for row in rows]
 
     def _scan_by_node(
-        self, paths: Sequence[str], tiers: Sequence[str] | None
+        self,
+        paths: Sequence[str],
+        tiers: Sequence[str] | None,
+        *,
+        with_body: bool = True,
     ) -> dict[str, list[dict]]:
         """The pre-index implementation, kept as the fallback. Never raises.
 
@@ -894,9 +1038,13 @@ class EpisodeStore:
         5,000-row cap, versus 1.6 ms indexed), which is the right trade against
         the alternative: answering "nothing is bound here" in the same shape as
         the truth, on a surface whose whole job is to say what happened.
+
+        *with_body* exists for :meth:`count_by_node`, whose fallback otherwise
+        materialises every body in the store to return integers and throw the
+        text away — megabytes allocated per call at the cap, for nothing.
         """
         try:
-            rows = self.list_episodes(tiers=tiers)
+            rows = self.list_episodes(tiers=tiers, with_body=with_body)
         except sqlite3.Error:
             _log.debug("episode node scan failed", exc_info=True)
             return {}

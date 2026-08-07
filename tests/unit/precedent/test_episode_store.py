@@ -1191,3 +1191,151 @@ class TestNodeIndexRecovery:
                 "SELECT COUNT(*) FROM episode_nodes WHERE path = '123'"
             ).fetchone()
             assert rows == 0
+
+
+def _tiered(tier: str, kind: str, subject: str, birth_at: float) -> Episode:
+    """An episode with an explicit birth, so ordering is deterministic."""
+    return Episode(
+        tier=tier,
+        kind=kind,
+        subject=subject,
+        body=f"body of {subject}",
+        evidence="e",
+        nodes=("pkg/a.py",),
+        birth_commit="a" * 40,
+        birth_at=birth_at,
+    )
+
+
+def _seeded(tmp_path: Path) -> EpisodeStore:
+    """Five episodes across two tiers and three kinds, newest last."""
+    store = _store(tmp_path)
+    store.append_tier(
+        tier=TIER_GIT,
+        episodes=[_tiered(TIER_GIT, "code_fix", f"sha{i}", 1000.0 + i) for i in range(3)],
+        oldest_birth_at=1000.0,
+    )
+    store.replace_kinds(
+        tier=TIER_STRUCTURAL,
+        kinds=["nested_repos", "formatter_drift"],
+        episodes=[
+            _tiered(TIER_STRUCTURAL, "nested_repos", ".", 900.0),
+            _tiered(TIER_STRUCTURAL, "formatter_drift", "ruff", 901.0),
+        ],
+    )
+    return store
+
+
+class TestPaging:
+    def test_limit_and_offset_walk_the_ordering(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            everything = store.list_episodes(tiers=SHAREABLE_TIERS)
+            first = store.list_episodes(tiers=SHAREABLE_TIERS, limit=2, offset=0)
+            second = store.list_episodes(tiers=SHAREABLE_TIERS, limit=2, offset=2)
+        assert [r["id"] for r in first + second] == [r["id"] for r in everything[:4]]
+
+    def test_unpaged_is_still_the_default(self, tmp_path: Path) -> None:
+        """The three in-process callers pass no limit and must keep everything."""
+        with _seeded(tmp_path) as store:
+            assert len(store.list_episodes(tiers=SHAREABLE_TIERS)) == 5
+
+    def test_offset_past_the_end_is_empty_not_an_error(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            assert store.list_episodes(tiers=SHAREABLE_TIERS, limit=10, offset=99) == []
+
+
+class TestBodyProjection:
+    def test_without_body_the_key_is_absent_not_blank(self, tmp_path: Path) -> None:
+        """Absent, so a reader cannot mistake "not fetched" for "empty"."""
+        with _seeded(tmp_path) as store:
+            (row,) = store.list_episodes(tiers=SHAREABLE_TIERS, limit=1, with_body=False)
+            (full,) = store.list_episodes(tiers=SHAREABLE_TIERS, limit=1)
+        assert "body" not in row
+        assert full["body"]
+        assert {*row} | {"body"} == {*full}
+
+    def test_every_other_field_survives(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            (row,) = store.list_episodes(tiers=SHAREABLE_TIERS, limit=1, with_body=False)
+        assert row["nodes"] == ["pkg/a.py"]
+        assert row["birth_commit"] and row["birth_at"]
+
+
+class TestCountEpisodes:
+    def test_counts_what_the_same_filters_select(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            for kwargs in ({}, {"tier": TIER_GIT}, {"kind": "code_fix"}):
+                assert store.count_episodes(**kwargs) == len(store.list_episodes(**kwargs))
+
+    def test_an_empty_allowlist_counts_nothing(self, tmp_path: Path) -> None:
+        """Not everything — the inversion the allowlist exists to prevent."""
+        with _seeded(tmp_path) as store:
+            assert store.count_episodes(tiers=[]) == 0
+            assert store.list_episodes(tiers=[]) == []
+
+    def test_total_is_independent_of_the_page(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            page = store.list_episodes(tiers=SHAREABLE_TIERS, limit=2)
+            assert len(page) == 2
+            assert store.count_episodes(tiers=SHAREABLE_TIERS) == 5
+
+
+class TestGroupCounts:
+    def test_groups_by_tier_and_kind(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            assert store.group_counts("tier", tiers=SHAREABLE_TIERS) == {
+                TIER_GIT: 3,
+                TIER_STRUCTURAL: 2,
+            }
+            assert store.group_counts("kind", tiers=SHAREABLE_TIERS) == {
+                "code_fix": 3,
+                "formatter_drift": 1,
+                "nested_repos": 1,
+            }
+
+    def test_an_unlisted_column_raises_rather_than_interpolating(
+        self, tmp_path: Path
+    ) -> None:
+        with _seeded(tmp_path) as store:
+            with pytest.raises(ValueError):
+                store.group_counts("body")
+            with pytest.raises(ValueError):
+                store.group_counts("id) --")
+
+    def test_the_allowlist_is_honoured(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            store.accumulate_tier(
+                tier=TIER_TRANSCRIPT,
+                kind="session",
+                episodes=[_tiered(TIER_TRANSCRIPT, "session", "s1", 1200.0)],
+                present_subjects=["s1"],
+            )
+            assert TIER_TRANSCRIPT not in store.group_counts("tier", tiers=SHAREABLE_TIERS)
+            assert TIER_TRANSCRIPT in store.group_counts("tier")
+
+
+class TestGetEpisode:
+    def test_returns_the_row_by_id(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            (want,) = store.list_episodes(tier=TIER_STRUCTURAL, kind="nested_repos")
+            got = store.get_episode(want["id"], tiers=SHAREABLE_TIERS)
+        assert got == want
+
+    def test_a_tier_outside_the_allowlist_is_not_reachable_by_id(
+        self, tmp_path: Path
+    ) -> None:
+        """A stable hash is exactly the shape somebody guesses at."""
+        with _seeded(tmp_path) as store:
+            store.accumulate_tier(
+                tier=TIER_TRANSCRIPT,
+                kind="session",
+                episodes=[_tiered(TIER_TRANSCRIPT, "session", "s1", 1200.0)],
+                present_subjects=["s1"],
+            )
+            (secret,) = store.list_episodes(tier=TIER_TRANSCRIPT)
+            assert store.get_episode(secret["id"], tiers=SHAREABLE_TIERS) is None
+            assert store.get_episode(secret["id"]) is not None
+
+    def test_unknown_id_is_none(self, tmp_path: Path) -> None:
+        with _seeded(tmp_path) as store:
+            assert store.get_episode("nope", tiers=SHAREABLE_TIERS) is None

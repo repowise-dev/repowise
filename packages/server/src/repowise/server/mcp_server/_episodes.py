@@ -14,19 +14,38 @@ MCP budget helpers.
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
-from repowise.core.precedent.currency import commits_since
+from repowise.core.precedent.currency import (
+    episode_currency as currency,
+)
+from repowise.core.precedent.currency import (
+    episode_still_true as still_true,
+)
+from repowise.core.precedent.currency import (
+    free_currency as _free_currency,
+)
 from repowise.core.precedent.store import (
     SHAREABLE_TIERS,
-    TIER_STRUCTURAL,
     EpisodeStore,
     default_store_path,
 )
 from repowise.server.mcp_server._budget import OmissionCollector
+
+#: Declared because three of these are re-exports. ``currency`` /
+#: ``still_true`` / ``_free_currency`` moved to ``core.precedent.currency``
+#: when the HTTP layer became a third caller, and the names are kept here so
+#: this module's own callers did not have to move with them.
+__all__ = [
+    "SERVED_TIERS",
+    "bank_overflow",
+    "currency",
+    "enrich_episode_counts",
+    "episode_evidence",
+    "quote_body",
+    "still_true",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -58,122 +77,12 @@ _MAX_SCOPE_NODES = 12
 #: it. Structural and git episodes describe the repository and travel with it.
 SERVED_TIERS = SHAREABLE_TIERS
 
-#: Tiers whose episodes are re-derived whole on every index, and for which a
-#: refreshed ``last_seen_at`` is therefore proof of currency at no cost. A tier
-#: that *accumulates* members has no such proof: re-observing that a commit
-#: happened says nothing about whether the files it changed have moved since,
-#: so the shortcut would fire always and hide the one question worth asking.
-RE_DERIVED_TIERS = frozenset({TIER_STRUCTURAL})
-
-#: Seconds allowed for one read-time git query. Measured at 55-66 ms on a
-#: 1,000-commit repository; the timeout is for the pathological case (a cold,
-#: very large repo), where saying nothing is the right answer.
-GIT_TIMEOUT_S = 2.0
+#: ``currency`` / ``still_true`` / ``_free_currency`` are imported above rather
+#: than defined here. They moved to ``core.precedent.currency`` when the HTTP
+#: layer became a third caller; the names are kept so this module's callers did
+#: not have to move with them.
 
 
-@dataclass(frozen=True)
-class Currency:
-    """What git says about an episode's claim, and whether it vouches for it.
-
-    Two fields rather than one, because two readers need different halves of
-    the same answer and collapsing them is how one of them ends up wrong. A
-    guard appending a claim beside an answer *about the present* must stay
-    silent unless ``current``; a reader asking *what happened here* wants the
-    ``sentence`` either way, since a superseded episode is still a true
-    statement about the past.
-    """
-
-    sentence: str
-    current: bool
-
-
-def currency(row: dict, *, root: Path) -> Currency:
-    """What is known about whether this episode still holds.
-
-    Measured against the checkout's live ``HEAD``, not the indexed commit: an
-    episode is a claim about the tree on disk, and that is the tree the reader
-    is about to act on.
-
-    Three cases, and the third is the one worth reading.
-
-    *Re-observed.* Every index re-derives a structural fact that still holds,
-    so a stamp later than ``birth_at`` is proof of currency that costs no git
-    call at all. See :data:`RE_DERIVED_TIERS` for why it is not general.
-
-    *Node-scoped.* ``git rev-list --count <birth>..HEAD -- <nodes>`` is the
-    real question, and zero is a real answer. Anything else — including a git
-    failure — means we cannot vouch for it.
-
-    *Repo-wide, derived once.* Git cannot decide this one. Its scope is the
-    whole tree, so any commit at all makes the count non-zero, and the fact it
-    asserts ("the tree is not formatter-clean") is not what a commit falsifies
-    — running the formatter is. Calling it not-current would retire the record
-    on the very next commit and leave a guard that only passes its own tests,
-    so the age is reported and the claim stands.
-    """
-    birth_at = row.get("birth_at") or 0.0
-    last_seen = row.get("last_seen_at") or 0.0
-    recorded = recorded_on(birth_at)
-    if last_seen > birth_at and row.get("tier") in RE_DERIVED_TIERS:
-        return Currency(f"re-observed by a later index (recorded {recorded})", True)
-
-    birth_commit = row.get("birth_commit")
-    nodes = [n for n in (row.get("nodes") or []) if isinstance(n, str) and n]
-
-    if nodes:
-        if not birth_commit:
-            # No birth commit means there is nothing to ask git *from*, which
-            # is not the same as git answering badly: the claim is undated
-            # rather than contradicted, and the guard has always served it.
-            return Currency(f"recorded {recorded}; not re-checked since", True)
-        changed = commits_since(
-            root, since_commit=birth_commit, nodes=nodes, timeout=GIT_TIMEOUT_S
-        )
-        if changed is None:
-            return Currency(
-                f"recorded {recorded} at {short(birth_commit)}; git could not be asked", False
-            )
-        if changed > 0:
-            plural = "commit has" if changed == 1 else "commits have"
-            return Currency(
-                f"recorded {recorded} at {short(birth_commit)}; {changed} {plural} "
-                "touched its scope since",
-                False,
-            )
-        return Currency(
-            f"nothing in its scope has changed since {short(birth_commit)} "
-            f"(recorded {recorded})",
-            True,
-        )
-
-    if not birth_commit:
-        return Currency(f"recorded {recorded}; a standing claim about this checkout", True)
-    moved = commits_since(root, since_commit=birth_commit, nodes=[], timeout=GIT_TIMEOUT_S)
-    if moved is None:
-        return Currency(
-            f"recorded {recorded} at {short(birth_commit)}; not re-checked since", True
-        )
-    if moved == 0:
-        return Currency(
-            f"recorded {recorded} at {short(birth_commit)}, the current commit", True
-        )
-    plural = "commit" if moved == 1 else "commits"
-    return Currency(
-        f"recorded {recorded} at {short(birth_commit)}; the tree has moved "
-        f"{moved} {plural} since and this was not re-checked",
-        True,
-    )
-
-
-def still_true(row: dict, *, root: Path) -> str | None:
-    """The gate form of :func:`currency`: a sentence, or None to stay silent.
-
-    For a surface that puts an episode beside an answer about the present,
-    where precision is close to absolute and anything git cannot vouch for is
-    not worth the risk of contradicting a correct synthesis.
-    """
-    verdict = currency(row, root=root)
-    return verdict.sentence if verdict.current else None
 
 
 def quote_body(
@@ -415,28 +324,3 @@ def enrich_episode_counts(results: Sequence[dict], root: Path) -> None:
 def _file_of(target: str) -> str:
     """The file a target names, dropping any ``::symbol`` suffix."""
     return target.split("::", 1)[0].strip()
-
-
-def _free_currency(row: dict) -> str | None:
-    """The currency signal available without a git call, or None to say nothing.
-
-    Every index re-derives a structural fact that still holds, so a stamp later
-    than the birth is proof of currency that costs nothing. It proves nothing
-    for a tier that accumulates members, and a guess dressed as a verdict is
-    worse than an absent field.
-    """
-    birth_at = row.get("birth_at") or 0.0
-    last_seen = row.get("last_seen_at") or 0.0
-    if last_seen > birth_at and row.get("tier") in RE_DERIVED_TIERS:
-        return f"re-observed by a later index (recorded {recorded_on(birth_at)})"
-    return None
-
-
-def recorded_on(birth_at: float) -> str:
-    if not birth_at:
-        return "at an unknown date"
-    return time.strftime("%Y-%m-%d", time.gmtime(birth_at))
-
-
-def short(sha: str) -> str:
-    return sha[:12]

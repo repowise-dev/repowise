@@ -414,7 +414,7 @@ def git_calls(monkeypatch):
     currency verdict is one implementation serving every reader, so this is
     where the query is made from.
     """
-    from repowise.server.mcp_server import _episodes as mod
+    from repowise.core.precedent import currency as mod
 
     calls: list[tuple] = []
     real = mod.commits_since

@@ -233,7 +233,7 @@ class TestCurrency:
         The same bound, for the same reason, that this mode already applies to
         the decision it ranks first.
         """
-        from repowise.server.mcp_server import _episodes as mod
+        from repowise.core.precedent import currency as mod
 
         calls: list = []
         real = mod.commits_since
@@ -252,7 +252,7 @@ class TestCurrency:
         assert len(calls) == 1
 
     def test_a_re_observed_structural_fact_needs_no_git_query(self, repo, monkeypatch):
-        from repowise.server.mcp_server import _episodes as mod
+        from repowise.core.precedent import currency as mod
 
         calls: list = []
         monkeypatch.setattr(mod, "commits_since", lambda *a, **k: calls.append(a))
