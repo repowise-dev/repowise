@@ -64,6 +64,13 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
     * After file edits, emit a short reminder that the indexed context may
       be stale.
 
+  PostToolUseFailure → Read / Edit / Write / Grep / Glob / NotebookEdit
+    * Wrong-path rescue: the call failed because the path is not in this
+      tree, and exactly one indexed file carries that basename. Names it.
+      Silent on an ambiguous basename, a directory target, a path in another
+      checkout, and on the failures where Claude Code already printed its
+      own suggestion — the whole value here is that a rescue can be trusted.
+
 There is intentionally NO PreToolUse handling. Earlier versions enriched
 every Grep/Glob unconditionally with importers/dependencies/symbols; in
 practice this added noise on the >70% of searches where the agent had
@@ -94,6 +101,7 @@ from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
 from .session_start import _handle_claude_session_start
+from .wrong_path import _handle_tool_failure
 
 _EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
 
@@ -150,6 +158,27 @@ def _run_augment(*, client: str | None = None) -> None:
         if result:
             _emit_response(event, result)
         _count_run(cwd, session_id, event, "", emitted=bool(result))
+        return
+
+    if event == "PostToolUseFailure":
+        # A tool that just failed on a path this tree does not have is the one
+        # moment the index can answer a question the agent actually asked.
+        #
+        # This event carries the failure in ``error`` and not in
+        # ``tool_response``, which is PostToolUse-only, and it fires for a user
+        # interrupt as well as for a real error. Both are load-bearing: reading
+        # the wrong field is silence, and answering an interrupt is noise at
+        # the moment the user asked for quiet.
+        if payload.get("is_interrupt"):
+            return
+        session_id = payload.get("session_id", "")
+        session_id = session_id if isinstance(session_id, str) else ""
+        result = _handle_tool_failure(
+            tool_name, tool_input, payload.get("error"), cwd, session_id=session_id
+        )
+        if result:
+            _emit_response(event, result)
+        _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
         return
 
     if event != "PostToolUse":

@@ -239,6 +239,13 @@ _AUGMENT_HOOK_COMMAND = (
 )
 
 
+# PostToolUseFailure carries the wrong-path rescue. Narrower than
+# _AUGMENT_MATCHER on purpose: only the tools that take a path argument can
+# fail in the way this surface answers, and a Bash failure is a command line
+# rather than a path, so matching it would wake the hook for nothing.
+_FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
+
+
 def _session_start_entry() -> dict:
     return {
         "matcher": _SESSION_START_MATCHER,
@@ -253,12 +260,44 @@ def _session_start_entry() -> dict:
     }
 
 
+def _backfill_event(hooks: dict, event: str, entry_factory) -> bool:
+    """Add this event's augment entry if the install predates it.
+
+    Preserves a user's own hooks on the same event by appending rather than
+    replacing, and is a no-op once a repowise entry is present, so migration
+    stays idempotent across runs.
+    """
+    existing = hooks.get(event)
+    if existing is None:
+        hooks[event] = [entry_factory()]
+        return True
+    if isinstance(existing, list) and not _has_repowise_hook(existing):
+        existing.append(entry_factory())
+        return True
+    return False
+
+
+def _failure_entry() -> dict:
+    return {
+        "matcher": _FAILURE_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _AUGMENT_HOOK_COMMAND,
+                "timeout": 10,
+                "statusMessage": "Checking codebase context...",
+            }
+        ],
+    }
+
+
 def install_claude_code_hooks() -> Path | None:
-    """Register PostToolUse + SessionStart hooks in ~/.claude/settings.json.
+    """Register the augment hooks in ~/.claude/settings.json.
 
     PostToolUse detects git staleness, enriches Grep/Glob results, and emits
     Read-intelligence notices; SessionStart injects the live index-freshness
-    context block. Existing user hooks are preserved.
+    context block; PostToolUseFailure carries the wrong-path rescue. Existing
+    user hooks are preserved.
     """
     settings_path = _claude_code_settings_path()
 
@@ -299,9 +338,12 @@ def install_claude_code_hooks() -> Path | None:
             post_hooks.append(post_hook_entry)
 
         # SessionStart: live index-freshness context at session start.
-        session_hooks = hooks.setdefault("SessionStart", [])
-        if not _has_repowise_hook(session_hooks):
-            session_hooks.append(_session_start_entry())
+        # PostToolUseFailure: the wrong-path rescue.
+        # Both go through the same helper as the self-heal, which leaves a
+        # hand-written non-list value alone instead of iterating it into an
+        # AttributeError the OSError handler below would not catch.
+        _backfill_event(hooks, "SessionStart", _session_start_entry)
+        _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
 
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -554,17 +596,14 @@ def migrate_claude_code_hooks() -> bool:
     if isinstance(post, list) and _migrate_legacy_hook(post):
         changed = True
 
-    # Users who installed before the SessionStart context hook existed have
-    # the augment PostToolUse entry but no SessionStart one; backfill it.
-    # Gated on the augment hook so migration never installs for someone who
-    # removed repowise hooks on purpose.
+    # An install predating one of the later events has the augment PostToolUse
+    # entry but not that event's; backfill each. Gated on the augment hook so
+    # migration never installs for someone who removed repowise hooks on
+    # purpose.
     if isinstance(post, list) and _has_repowise_hook(post):
-        session = hooks.get("SessionStart")
-        if session is None:
-            hooks["SessionStart"] = [_session_start_entry()]
+        if _backfill_event(hooks, "SessionStart", _session_start_entry):
             changed = True
-        elif isinstance(session, list) and not _has_repowise_hook(session):
-            session.append(_session_start_entry())
+        if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
             changed = True
 
     if not changed:

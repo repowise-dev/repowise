@@ -706,9 +706,10 @@ def hook_stats(path: str | None, as_json: bool) -> None:
     is_flag=True,
     default=False,
     help=(
-        "Clear the read/search/fix_history rows before replaying. Run this once "
-        "after upgrading: rows written under the older ledger keys cannot be "
-        "matched to a transcript firing and would be counted twice."
+        "Clear every transcript-classified surface's rows before replaying. "
+        "Run this once after upgrading: rows written under the older ledger "
+        "keys cannot be matched to a transcript firing and would be counted "
+        "twice. Decision rows are never touched."
     ),
 )
 def hook_backfill(path: str | None, all_projects: bool, days: int | None, reset: bool) -> None:

@@ -92,7 +92,7 @@ AMBIGUOUS = "ranged_read"
 #: Surfaces this module judges. ``decision`` rows key on decision-record ids
 #: and are judged by the decision miner; ``read_enrich`` is a silent KPI with
 #: no emission to act on.
-CLASSIFIED_SURFACES = ("read", "search", "fix_history")
+CLASSIFIED_SURFACES = ("read", "search", "fix_history", "wrong_path")
 
 #: (surface, category) pairs that carry no recommended action, so an unacted
 #: firing is not a failure. Reported as a count, excluded from rates. The
@@ -211,7 +211,26 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "digest",
         re.compile(r"^\[repowise\] Search flood — compact digest"),
     ),
+    # Deliberately one line, so ``parse_emission`` — which harvests loose path
+    # tokens from continuation lines only — cannot turn the attempted path into
+    # a target. The resolved path is the last field and is captured to end of
+    # line rather than as ``\S+``: an indexed path can contain a space, and
+    # truncating it there both stores a node id that does not exist and leaves
+    # a prefix short enough to substring-match almost anything.
+    (
+        "wrong_path",
+        "rescue",
+        re.compile(
+            r"^\[repowise\] \S+ is not in this tree\. "
+            r"The only indexed \S+ is (?P<target>.+)$"
+        ),
+    ),
 )
+
+#: The attempted path from a wrong-path rescue, for the judge below. Read off
+#: the emission rather than carried on :class:`Firing`, which has no field for
+#: "what this firing was steering the agent away from".
+_WRONG_PATH_ATTEMPTED = re.compile(r"^\[repowise\] (?P<attempted>\S+) is not in this tree\.")
 
 #: A path-shaped token, for harvesting the file lists that follow a triage
 #: header or ride inside a digest body. Both separators are accepted: triage
@@ -291,8 +310,16 @@ def parse_emission(text: str) -> list[Firing]:
 
 
 def _normalize(path: str) -> str:
-    """Repo-relative POSIX spelling, as the ledger's node ids use."""
-    return path.replace("\\\\", "/").replace("\\", "/").lstrip("./").rstrip(".,;:")
+    """Repo-relative POSIX spelling, as the ledger's node ids use.
+
+    ``removeprefix`` rather than ``lstrip``, which strips a character *set*:
+    it turned ``.github/workflows/ci.yml`` into ``github/...``, storing a node
+    id no repository has and widening the target to a substring that matches
+    more than it should.
+    """
+    return (
+        path.replace("\\\\", "/").replace("\\", "/").removeprefix("./").rstrip(".,;:")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +362,7 @@ def classify(firing: Firing, following: list[tuple[str, str]]) -> Firing:
         ("search", "rescue_wide"): _acted_rescue,
         ("search", "digest"): _acted_target,
         ("fix_history", "edit_notice"): _acted_fix_history,
+        ("wrong_path", "rescue"): _acted_wrong_path,
     }.get((firing.surface, firing.category))
     if judge is None:
         firing.acted = None
@@ -405,6 +433,23 @@ def _acted_target(firing: Firing, name: str, norm: str, raw: str) -> str:
         if target and target in norm:
             return f"touched_rank{rank}"
     return ""
+
+
+def _acted_wrong_path(firing: Firing, name: str, norm: str, raw: str) -> str:
+    """Went where it pointed — and retrying the failed path is not that.
+
+    ``_acted_target`` is an unanchored substring test, so it cannot be used
+    here alone: whenever the attempted path *contains* the resolved one (the
+    agent guessed an extra directory in front of a real file, which is half of
+    this surface's corpus), a verbatim retry of the failed path matches the
+    target and scores as compliance. Disqualifying the attempted path first is
+    what keeps the rate about the rescue rather than about the mistake.
+    """
+    m = _WRONG_PATH_ATTEMPTED.match(firing.text)
+    attempted = _normalize(m.group("attempted")) if m else ""
+    if attempted and attempted in norm:
+        return ""
+    return _acted_target(firing, name, norm, raw)
 
 
 def _acted_rescue(firing: Firing, name: str, norm: str, raw: str) -> str:
