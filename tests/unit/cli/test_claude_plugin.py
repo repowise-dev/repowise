@@ -57,6 +57,12 @@ def test_claude_plugin_hooks_match_installer() -> None:
 
     assert rows("PostToolUse") == [(claude_config._AUGMENT_MATCHER, command)]
     assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, command)]
+    assert rows("PostToolUseFailure") == [(claude_config._FAILURE_MATCHER, command)]
+
+    # Every event the installer registers, and nothing else: a surface that
+    # ships only to fresh CLI installs and not to the plugin is the failure
+    # this guards, and it is invisible from either side alone.
+    assert set(hooks) == {"PostToolUse", "SessionStart", "PostToolUseFailure"}
 
     commands = [
         hook["command"]
@@ -64,7 +70,7 @@ def test_claude_plugin_hooks_match_installer() -> None:
         for entry in entries
         for hook in entry["hooks"]
     ]
-    assert commands == [command] * 2
+    assert commands == [command] * len(hooks)
 
 
 def _posix_bash() -> str | None:
