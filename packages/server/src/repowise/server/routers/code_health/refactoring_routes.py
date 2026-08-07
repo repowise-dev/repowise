@@ -29,8 +29,12 @@ _SORT_KEYS = {
     "total_impact": lambda t: -t["total_impact"],
     # ``score`` clamps at 1.0, so on a real repo dozens of targets tie at the
     # top and sorting on it alone returns them in dict-insertion order.
-    # ``total_impact`` is the same pre-clamp magnitude the crud layer ranks
-    # metrics by, so "Worst score" agrees with the files list.
+    # ``total_impact`` is the same pre-clamp deduction magnitude the crud layer
+    # ranks metrics by — but summed over the findings that survived this
+    # request's ``biomarker`` / ``min_severity`` filters, so under a filter this
+    # ranks by the filtered depth rather than the file's full depth. That is
+    # what a filtered queue should do; it just means the order is not expected
+    # to match /health/files once a filter is on.
     "score": lambda t: (t["score"], -t["total_impact"], t["file_path"]),
     "finding_count": lambda t: -t["finding_count"],
 }

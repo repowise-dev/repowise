@@ -1,4 +1,4 @@
-﻿"""Worst-first ordering of per-file health metrics.
+"""Worst-first ordering of per-file health metrics.
 
 The score clamps at 1.0, so on a real repo dozens of files tie there and a list
 sorted on score alone comes back in DB order. Measured on this repo's own

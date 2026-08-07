@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { FileText } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import {
@@ -62,11 +63,23 @@ export function HealthFileTable({
   selectedPath,
   emptyMessage,
 }: HealthFileTableProps) {
-  // Rendered in server order. The floored-score tie is broken by deduction
-  // magnitude in the crud layer now, so a re-sort here would only reorder the
-  // page it was handed — and the file it should surface is usually the one the
-  // server left off that page entirely.
-  const rows = files;
+  // Two floored files both read 1.0; break that tie by deduction magnitude so
+  // the deeper problem sorts first. The OSS server now does this in the crud
+  // layer, which makes this a no-op there — but this component is published and
+  // the hosted backend still sorts on score alone, so it stays as that
+  // deployment's only tiebreak until the same ordering lands there.
+  //
+  // It can only ever refine the page it was handed. Recovering a file the
+  // server left *off* the page needs the server-side sort; that is why this is
+  // a fallback and not the fix.
+  const rows = useMemo(() => {
+    if (sortField !== "score") return files;
+    const dir = sortOrder === "desc" ? -1 : 1;
+    return [...files].sort((a, b) => {
+      if (a.score !== b.score) return (a.score - b.score) * dir;
+      return (b.total_deduction ?? 0) - (a.total_deduction ?? 0);
+    });
+  }, [files, sortField, sortOrder]);
 
   const columns: ResponsiveColumn<HealthFileRow>[] = [
     {

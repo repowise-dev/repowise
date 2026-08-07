@@ -96,6 +96,11 @@ const MAP_FILE_LIMIT = 2000;
  * "no data" swatch for data that exists. Matching the map's 2,000 would still
  * miss 445. 5,000 covers every churned file here with headroom; a repo that
  * exceeds it degrades back to the same partial join rather than breaking.
+ *
+ * Costs ~469 KB uncompressed on this repo (3,011 points), on a request that
+ * only fires once the churn lens is selected. The hosted route still caps at
+ * 1,000, so porting this page there needs that ceiling raised first or the
+ * request 422s.
  */
 const CHURN_POINT_LIMIT = 5000;
 

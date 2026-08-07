@@ -470,3 +470,26 @@ async def test_worst_files_order_survives_every_dimension_filter(setup_mcp, floo
     for include in (["defect"], ["maintainability"], ["performance"], ["biomarkers", "defect"]):
         result = await get_health(include=include, limit=2)
         assert [m["file_path"] for m in result["worst_files"]] == baseline, include
+
+
+@pytest.mark.asyncio
+async def test_one_response_agrees_with_itself_about_the_worst_file(
+    setup_mcp, floored_health_data
+):
+    """``kpis`` and ``worst_files`` must name the same file.
+
+    Regression: ``_compute_kpis`` reduces with ``min()``, which returns the
+    *first* minimum, so it answered from whatever order it was handed. Ranking
+    ``worst_files`` without also ranking the list behind the KPIs produced a
+    payload whose headline named one file as the worst performer while the
+    list printed directly beneath it led with another.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health()
+    assert result["kpis"]["worst_performer_path"] == result["worst_files"][0]["file_path"]
+    assert result["kpis"]["worst_performer_path"] == "src/z.py"
+
+    # Same reduction, same tie, one level down: the module rollup's worst
+    # performer is picked with ``min()`` over the same rows.
+    assert [m["worst_performer_path"] for m in result["modules"]] == ["src/z.py"]

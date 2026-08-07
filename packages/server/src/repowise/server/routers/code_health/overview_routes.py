@@ -49,8 +49,12 @@ async def health_overview(
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
-    summary = await crud.get_health_summary(session, repo_id)
+    # ``metrics=`` exists for exactly this caller (see the parameter's
+    # docstring): without it the summary pulls the whole metrics table a second
+    # time, and since that read now also aggregates the deduction column it
+    # would pay for the ranking twice.
     metrics = await crud.get_health_metrics(session, repo_id)
+    summary = await crud.get_health_summary(session, repo_id, metrics=metrics)
     findings = await crud.get_health_findings(session, repo_id)
     snapshots = await crud.list_health_snapshots(session, repo_id)
 
