@@ -8,12 +8,14 @@ migration-safe, and preserves user hooks and the augment PostToolUse entry.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
+from repowise.cli.agent_adapters import codex as codex_module
 from repowise.cli.agent_adapters.base import RewriteResult
 from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
-from repowise.cli.agent_adapters.codex import CodexAdapter
+from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER, CodexAdapter
 from repowise.cli.editor_integrations import claude_config, codex_config
 from repowise.cli.editor_integrations.claude_config import (
     claude_code_rewrite_hook_installed,
@@ -290,13 +292,36 @@ class TestCodexParsePayload:
         assert req is not None
         assert req.command == "pytest -x"
         assert req.cwd == "/repo"
-        assert req.shell == "posix"
+        assert req.shell == ("powershell" if os.name == "nt" else "posix")
+
+    def test_shell_dialect_follows_the_platform(self, codex_adapter, monkeypatch) -> None:
+        """Codex names its shell tool the same everywhere; the shell differs.
+
+        The dialect was hardcoded to ``posix``, which was harmless only
+        because the tool-name gate above it never matched. On Windows the
+        real rollouts are PowerShell (`get-content`, `get-childitem`,
+        `$env:`), and calling that posix skips `decide`'s alias bailout —
+        the guard that stops an alias command being re-run through cmd.exe.
+        """
+        raw = json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "shell_command",
+                "tool_input": {"command": "ls -Force"},
+                "cwd": "/repo",
+            }
+        )
+        monkeypatch.setattr(codex_module.os, "name", "nt")
+        assert codex_adapter.parse_hook_payload(raw).shell == "powershell"
+        monkeypatch.setattr(codex_module.os, "name", "posix")
+        assert codex_adapter.parse_hook_payload(raw).shell == "posix"
 
     @pytest.mark.parametrize(
         "mutation",
         [
             {"hook_event_name": "PostToolUse"},
             {"tool_name": "PowerShell"},  # Codex has no PowerShell tool
+            {"tool_name": "exec"},  # a JS program, not a command string
             {"tool_name": "apply_patch"},
             {"tool_input": {}},
             {"tool_input": {"command": "   "}},
@@ -385,7 +410,11 @@ class TestCodexHooksInstall:
         assert install_codex_rewrite_hook() == codex_hooks_path
         entries = _codex_pre_hooks(codex_hooks_path)
         assert len(entries) == 1
-        assert entries[0]["matcher"] == "Bash"
+        # Derived from the adapter's own gate, not a literal: an installed
+        # matcher naming a tool the gate declines is a hook that runs for
+        # nothing, and one missing a name the gate accepts never runs at all.
+        assert entries[0]["matcher"] == SHELL_TOOL_MATCHER
+        assert "shell_command" in entries[0]["matcher"]
         hook = entries[0]["hooks"][0]
         assert hook["command"] == "repowise-rewrite --agent codex"
         assert codex_rewrite_hook_installed() is True
@@ -394,6 +423,111 @@ class TestCodexHooksInstall:
         install_codex_rewrite_hook()
         install_codex_rewrite_hook()
         assert len(_codex_pre_hooks(codex_hooks_path)) == 1
+
+    def test_reinstall_upgrades_a_matcher_codex_no_longer_uses(
+        self, codex_hooks_path
+    ) -> None:
+        """An existing install must not stay dead just because it is present.
+
+        ``_is_rewrite_hook`` keys on the command, so an entry left over from
+        when the matcher was the bare literal ``Bash`` — a name Codex has not
+        used for its shell tool in any measured release — is found by the
+        presence check and would otherwise be skipped forever. Reinstalling
+        is the only repair a user has.
+        """
+        codex_hooks_path.parent.mkdir(parents=True, exist_ok=True)
+        stale = {
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "repowise-rewrite --agent codex"}],
+        }
+        codex_hooks_path.write_text(
+            json.dumps({"hooks": {"PreToolUse": [stale]}}), encoding="utf-8"
+        )
+
+        install_codex_rewrite_hook()
+
+        entries = _codex_pre_hooks(codex_hooks_path)
+        assert len(entries) == 1, "upgrade in place, never a second entry"
+        assert entries[0]["matcher"] == SHELL_TOOL_MATCHER
+
+    def test_self_heal_upgrades_without_being_asked(self, codex_hooks_path) -> None:
+        """`repowise <anything>` repairs a stale matcher; the hook cannot.
+
+        A hook whose matcher matches nothing never runs, so unlike the Claude
+        side it has no way to heal itself. The CLI is the only place it can
+        happen, and a user who opted in months ago will not think to re-run
+        install.
+        """
+        codex_hooks_path.parent.mkdir(parents=True, exist_ok=True)
+        codex_hooks_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "repowise-rewrite --agent codex",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert codex_config.migrate_codex_rewrite_hook() is True
+        assert _codex_pre_hooks(codex_hooks_path)[0]["matcher"] == SHELL_TOOL_MATCHER
+        # Idempotent: a second pass has nothing to do and writes nothing.
+        assert codex_config.migrate_codex_rewrite_hook() is False
+
+    def test_self_heal_never_installs_for_someone_who_opted_out(
+        self, codex_hooks_path
+    ) -> None:
+        """No hooks file, or no repowise entry, means nothing to migrate."""
+        assert codex_config.migrate_codex_rewrite_hook() is False
+
+        codex_hooks_path.parent.mkdir(parents=True, exist_ok=True)
+        codex_hooks_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {"type": "command", "command": "my-validator"}
+                                ],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert codex_config.migrate_codex_rewrite_hook() is False
+        assert _codex_pre_hooks(codex_hooks_path)[0]["matcher"] == "Bash"
+
+    def test_reinstall_leaves_a_deliberately_narrowed_matcher_alone(
+        self, codex_hooks_path
+    ) -> None:
+        """Only matchers this installer shipped are moved, not the user's."""
+        codex_hooks_path.parent.mkdir(parents=True, exist_ok=True)
+        theirs = {
+            "matcher": "shell_command",
+            "hooks": [{"type": "command", "command": "repowise-rewrite --agent codex"}],
+        }
+        codex_hooks_path.write_text(
+            json.dumps({"hooks": {"PreToolUse": [theirs]}}), encoding="utf-8"
+        )
+
+        install_codex_rewrite_hook()
+
+        assert _codex_pre_hooks(codex_hooks_path)[0]["matcher"] == "shell_command"
 
     def test_preserves_user_hooks(self, codex_hooks_path) -> None:
         codex_hooks_path.parent.mkdir(parents=True, exist_ok=True)

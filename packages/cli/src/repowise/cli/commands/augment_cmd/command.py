@@ -91,6 +91,8 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.agent_adapters.codex import SHELL_TOOL_NAMES
+
 from ._shared import HookResult, as_result
 from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
@@ -101,6 +103,13 @@ from .session_start import _handle_claude_session_start
 from .wrong_path import _handle_tool_failure
 
 _EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
+
+#: Shell tools, across both harnesses. ``PowerShell`` is Windows Claude Code;
+#: the rest are what Codex has called its shell tool, owned by the adapter so
+#: the dispatch here and the installed matcher cannot disagree. Free at module
+#: scope: ``agent_adapters`` is stdlib-only by its own hot-path contract, and
+#: `tests/unit/cli/test_augment_hook_perf.py` holds that.
+_SHELL_TOOL_NAMES = SHELL_TOOL_NAMES | {"PowerShell"}
 
 
 @click.command("augment")
@@ -340,9 +349,10 @@ def _handle_post_tool_use(
         # Read-after-served KPI: logged to the ledger, never spoken about.
         _log_read_after_served(tool_input, tool_output, cwd, session_id)
         return _handle_read_post(tool_input, tool_output, cwd, session_id)
-    if tool_name in ("Bash", "PowerShell"):
-        # The PowerShell tool (Windows Claude Code) surfaces the same
-        # stdout/stderr response shape as Bash — one handler covers both.
+    if tool_name in _SHELL_TOOL_NAMES:
+        # The PowerShell tool (Windows Claude Code) and Codex's several names
+        # for its shell all surface the same stdout/stderr response shape as
+        # Bash — one handler covers them.
         return as_result(_handle_bash_post(tool_input, tool_output, cwd))
     if tool_name in ("Grep", "Glob"):
         # ``client`` reaches this one because the flood digest can *replace*
