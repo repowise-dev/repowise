@@ -9,6 +9,7 @@ import {
 } from "../shared/responsive-table";
 import { VerificationBadge } from "./verification-badge";
 import { DecisionStatusMark } from "./decision-status-mark";
+import { describeRecordStaleness } from "./decision-staleness";
 import { stripMarkdown } from "../lib/format";
 import type {
   DecisionRecord,
@@ -17,9 +18,11 @@ import type {
   DecisionScope,
 } from "@repowise-dev/types/decisions";
 
-// The engine emits more sources than the four the type union names — a live
-// index carries comment / pr / adr / changelog / session as well. Unmapped
-// values used to fall through raw, so one column mixed "Docs" with "pr".
+// The engine emits more sources than the four the type union names: a live
+// index carries comment / pr / adr / session as well. Unmapped values used
+// to fall through raw, so one column mixed "Docs" with "pr". The retired
+// entries below stay in the map so an old row still renders a label; see
+// RETIRED_SOURCES for why they are not offered as filters.
 const SOURCE_LABEL: Record<string, string> = {
   inline_marker: "Marker",
   git_archaeology: "Git history",
@@ -32,11 +35,23 @@ const SOURCE_LABEL: Record<string, string> = {
   session: "Session",
 };
 
-const SCOPE_LABEL: Record<string, string> = {
-  file: "File",
-  module: "Module",
-  "cross-module": "Cross-module",
-};
+// Sources the engine no longer emits and whose rows were purged with them.
+// Mirrors `RETIRED_SOURCES` in `analysis/decisions/provenance.py`; a record
+// carrying one of these cannot exist, so offering it as a filter is a control
+// that cannot act. Note `code_comment` is retired and `comment` is not: they
+// are different values and a live index still carries the second.
+const RETIRED_SOURCES = new Set(["code_comment", "readme_mining", "changelog"]);
+
+/**
+ * `source` is an unconstrained string on the wire, so a plain index into the
+ * map reaches `Object.prototype`: a row sourced `toString` would hand a
+ * function to `localeCompare` and throw inside the sort comparator.
+ */
+function sourceLabel(source: string): string {
+  return Object.hasOwn(SOURCE_LABEL, source)
+    ? (SOURCE_LABEL[source] as string)
+    : source;
+}
 
 export type DecisionStatusFilter = DecisionStatus | "all";
 export type DecisionSourceFilter = DecisionSource | "all";
@@ -96,6 +111,25 @@ export function DecisionsTable({
     (d) => !hasScope || scopeFilter === "all" || d.scope === scopeFilter,
   );
 
+  // The hardcoded list offered `readme_mining` and `cli` while omitting `pr`
+  // and `session`, which between them are 86% of a live index. Filtering is a
+  // server round trip on the whole store, so the two live sources could not
+  // be reached at all and the retired one could only empty the table.
+  //
+  // Built from the label map rather than from the loaded rows on purpose: the
+  // rows are one page of fifty, so a source that happens not to appear on
+  // page one would become unselectable, which is the same defect wearing a
+  // dynamic coat. Anything present but unmapped is unioned in so a source the
+  // engine adds is reachable before this map learns its name.
+  const sourceOptions = [
+    ...new Set([
+      ...Object.keys(SOURCE_LABEL).filter((s) => !RETIRED_SOURCES.has(s)),
+      ...(decisions ?? []).map((d) => d.source).filter(Boolean),
+    ]),
+  ]
+    .filter((s) => !RETIRED_SOURCES.has(s))
+    .sort((a, b) => sourceLabel(a).localeCompare(sourceLabel(b)));
+
   const columns: ResponsiveColumn<DecisionRecord>[] = [
     {
       key: "title",
@@ -104,13 +138,18 @@ export function DecisionsTable({
       cellClassName: "min-w-[200px] max-w-[520px]",
       render: (d) => (
         <div className="min-w-0">
-          <Link
-            href={`${prefix}/decisions/${d.id}`}
-            className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline block truncate"
-            title={stripMarkdown(d.title)}
-          >
-            {stripMarkdown(d.title)}
-          </Link>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Link
+              href={`${prefix}/decisions/${d.id}`}
+              className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline truncate"
+              title={stripMarkdown(d.title)}
+            >
+              {stripMarkdown(d.title)}
+            </Link>
+            {d.verification && d.verification !== "exact" && (
+              <VerificationBadge verification={d.verification} iconOnly />
+            )}
+          </span>
           {d.evidence_preview?.source_quote && (
             <p
               className="mt-0.5 truncate text-xs italic text-[var(--color-text-tertiary)]"
@@ -146,41 +185,22 @@ export function DecisionsTable({
       header: "Source",
       priority: 3,
       cellClassName: "text-[var(--color-text-secondary)]",
-      render: (d) => SOURCE_LABEL[d.source] ?? d.source,
+      render: (d) => sourceLabel(d.source),
     },
-    {
-      key: "scope",
-      header: "Scope",
-      priority: 3,
-      render: (d) =>
-        d.scope ? (
-          <span className="text-[var(--color-text-secondary)]">
-            {SCOPE_LABEL[d.scope] ?? d.scope}
-          </span>
-        ) : (
-          <span className="text-[var(--color-text-tertiary)]">—</span>
-        ),
-    },
-    {
-      key: "trust",
-      header: "Trust",
-      priority: 3,
-      render: (d) =>
-        d.verification ? (
-          <VerificationBadge verification={d.verification} iconOnly />
-        ) : (
-          <span className="text-[var(--color-text-tertiary)]">—</span>
-        ),
-    },
-    {
-      key: "confidence",
-      header: "Confidence",
-      mobileLabel: "Conf",
-      align: "right",
-      priority: 2,
-      cellClassName: "tabular-nums text-[var(--color-text-secondary)]",
-      render: (d) => `${Math.round(d.confidence * 100)}%`,
-    },
+    // Scope, Confidence and Trust all left this row. Scope is `cross-module`
+    // on three quarters of a live index and confidence is source rank times
+    // verification, so every record from one source carries one number: all
+    // twelve session records read 84%. A column whose value you can predict
+    // from the column beside it spends width repeating itself.
+    //
+    // Trust went for a different reason. 91% of a live index verifies
+    // `exact`, so the mark belongs on the exception rather than on every row
+    // (it is now inline beside the title above). Making the *column* appear
+    // only when a loaded row needs it was the first attempt and was worse:
+    // `visibleDecisions` is one page of fifty, so the table grew and lost a
+    // column between clicks of Next, and a reader who saw a mark on page one
+    // had no way to tell page two had even been asked. That is the same
+    // defect the source filter avoids ten lines above.
     {
       key: "tags",
       header: "Tags",
@@ -208,21 +228,36 @@ export function DecisionsTable({
     },
     {
       key: "staleness",
-      header: "Staleness",
-      mobileLabel: "Stale",
+      // Not "Files changed since". The score's numerator also counts a file
+      // the repository no longer tracks, so a record naming three deleted
+      // paths would read as three files that changed. "Scope changed" is the
+      // claim the number supports; the tooltip carries the whole sentence.
+      header: "Scope changed",
+      mobileLabel: "Changed",
       align: "right",
       priority: 2,
-      render: (d) => (
-        <span className="tabular-nums" title="0 = fresh, 1 = fully stale">
-          {d.staleness_score > 0.5 ? (
-            <span className="text-[var(--color-error)]">{Math.round(d.staleness_score * 100)}%</span>
-          ) : d.staleness_score > 0 ? (
-            <span className="text-[var(--color-text-tertiary)]">{Math.round(d.staleness_score * 100)}%</span>
-          ) : (
-            <span className="text-[var(--color-text-tertiary)]">—</span>
-          )}
-        </span>
-      ),
+      // Was a percentage with a "0 = fresh, 1 = fully stale" tooltip, and the
+      // percentage was wrong twice over. Its zero was one dash shared by a
+      // record whose files had not moved and a record naming no files at all,
+      // and its red above 0.5 painted three confirmed working rules as
+      // expired because the files they cite happened to change. Red is
+      // reserved for health bands; this is a count, so it reads as one, in
+      // mono like every other machine-produced figure.
+      render: (d) => {
+        const s = describeRecordStaleness(d);
+        return (
+          <span
+            className={
+              s.kind === "moved"
+                ? "font-mono text-xs tabular-nums text-[var(--color-text-secondary)]"
+                : "font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]"
+            }
+            title={s.sentence}
+          >
+            {s.short}
+          </span>
+        );
+      },
     },
   ];
 
@@ -267,26 +302,18 @@ export function DecisionsTable({
           className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
         >
           <option value="all">All sources</option>
-          <option value="inline_marker">Inline markers</option>
-          <option value="git_archaeology">Git archaeology</option>
-          <option value="readme_mining">Docs mining</option>
-          <option value="cli">Manual</option>
+          {sourceOptions.map((s) => (
+            <option key={s} value={s}>
+              {sourceLabel(s)}
+            </option>
+          ))}
         </select>
-        {hasScope && (
-          <select
-            value={filters.scope ?? "all"}
-            onChange={(e) =>
-              onFiltersChange({ ...filters, scope: e.target.value as DecisionScopeFilter })
-            }
-            aria-label="Filter by scope"
-            className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
-          >
-            <option value="all">All scopes</option>
-            <option value="file">File</option>
-            <option value="module">Module</option>
-            <option value="cross-module">Cross-module</option>
-          </select>
-        )}
+        {/* The scope control is gone with the scope column. It steered an axis
+            that is `cross-module` on three quarters of a live index, and with
+            the column no longer drawn a reader who used it would watch rows
+            disappear for a reason nothing on screen explains. The prop and the
+            filtering below it are kept, so a host still passing `scope` gets
+            the same rows it did before. */}
       </div>
 
       <ResponsiveTable
