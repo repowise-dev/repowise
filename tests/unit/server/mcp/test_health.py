@@ -108,6 +108,160 @@ async def test_get_health_refactoring_capped_and_leverage_ranked(setup_mcp, heal
     assert "refactoring_plans_total" in result
 
 
+async def _seed_plans(session, rid, plans):
+    """Store refactoring suggestions for the directive / ranking tests."""
+    from repowise.core.persistence import crud
+
+    await crud.save_refactoring_suggestions(
+        session,
+        rid,
+        [
+            {
+                "refactoring_type": p.get("refactoring_type", "extract_method"),
+                "file_path": p["file_path"],
+                "target_symbol": p.get("target_symbol", "authenticate"),
+                "line_start": 10,
+                "line_end": 80,
+                "plan": {"groups": []},
+                "evidence": {},
+                "impact_delta": p["impact_delta"],
+                "effort_bucket": "S",
+                "blast_radius": {"dependents_count": 0},
+                "confidence": "high",
+                "source_biomarker": p["source_biomarker"],
+            }
+            for p in plans
+        ],
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_directive_admits_when_the_file_has_no_plans_at_all(setup_mcp, health_data):
+    """``plan_via`` promised a fix for ``reason``; with no plans it cannot deliver one."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(only=["directive"])
+    directive = result["directive"]
+    # The seeded worst file leads with complex_method and carries no plans.
+    assert directive["fix_first"] == "src/auth/service.py"
+    assert directive["plan_addresses_reason"] is False
+    assert "no plans at all" in directive["plan_note"]
+
+
+@pytest.mark.asyncio
+async def test_directive_admits_when_plans_target_a_different_biomarker(
+    setup_mcp, health_data, session
+):
+    """The failure this ships for: plans exist, for a cause other than the one named."""
+    from repowise.server.mcp_server import get_health
+
+    await _seed_plans(
+        session,
+        health_data,
+        [{"file_path": "src/auth/service.py", "source_biomarker": "dry_violation", "impact_delta": 1.0}],
+    )
+
+    directive = (await get_health(only=["directive"]))["directive"]
+    assert directive["plan_addresses_reason"] is False
+    # Names the gap on both sides: the unaddressed cause and what is on offer.
+    assert "complex_method" in directive["plan_note"]
+    assert "dry_violation" in directive["plan_note"]
+
+
+@pytest.mark.asyncio
+async def test_directive_confirms_when_a_plan_addresses_the_reason(
+    setup_mcp, health_data, session
+):
+    """The true branch has to be reachable, or the flag is decoration."""
+    from repowise.server.mcp_server import get_health
+
+    await _seed_plans(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "source_biomarker": "complex_method",
+                "impact_delta": 1.0,
+            }
+        ],
+    )
+
+    directive = (await get_health(only=["directive"]))["directive"]
+    assert directive["plan_addresses_reason"] is True
+    assert "plan_note" not in directive
+
+
+@pytest.mark.asyncio
+async def test_directive_does_not_claim_a_file_is_planless_over_an_unattributed_plan(
+    setup_mcp, health_data, session
+):
+    """``split_file`` and ``break_cycle`` store an empty ``source_biomarker``.
+
+    Keying "has plans" off the biomarker set would tell the caller this file has
+    no plans while the highest-leverage plan kind sits on it — a false statement
+    in the one field that exists to stop the tool over-promising.
+    """
+    from repowise.server.mcp_server import get_health
+
+    await _seed_plans(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "refactoring_type": "split_file",
+                "source_biomarker": "",
+                "impact_delta": 2.0,
+            }
+        ],
+    )
+
+    directive = (await get_health(only=["directive"]))["directive"]
+    assert directive["plan_addresses_reason"] is False
+    assert "no plans at all" not in directive["plan_note"]
+    assert "record no source biomarker" in directive["plan_note"]
+
+
+@pytest.mark.asyncio
+async def test_directive_stays_silent_when_the_file_has_no_named_cause(
+    setup_mcp, health_data, session
+):
+    """No lead biomarker means nothing to report a plan gap *about*.
+
+    ``reason`` already degrades to the bare score here, so a note would read
+    "No stored plan addresses None".
+    """
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    # Big and low-scoring, so it outranks the seeded worst file on leverage —
+    # but with no findings at all, so it has no lead.
+    await save_health_metrics(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/legacy/blob.py",
+                "score": 2.0,
+                "max_ccn": 1,
+                "max_nesting": 1,
+                "nloc": 5000,
+                "has_test_file": False,
+                "module": "legacy",
+            }
+        ],
+    )
+    await session.commit()
+
+    directive = (await get_health(only=["directive"]))["directive"]
+    assert directive["fix_first"] == "src/legacy/blob.py"
+    assert directive["plan_addresses_reason"] is False
+    assert "plan_note" not in directive
+    assert "None" not in directive["reason"]
+
+
 @pytest.mark.asyncio
 async def test_get_health_targeted(setup_mcp, health_data):
     from repowise.server.mcp_server import get_health

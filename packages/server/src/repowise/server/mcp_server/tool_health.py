@@ -30,7 +30,11 @@ from repowise.core.persistence.crud import (
     sort_metrics_worst_first,
 )
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+from repowise.core.persistence.models import (
+    HealthFileMetric,
+    HealthFinding,
+    RefactoringSuggestion,
+)
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -258,6 +262,8 @@ def _directive(
     by_leverage: list[HealthFileMetric],
     leads: dict[str, dict[str, Any]],
     gap_points: int,
+    plan_biomarkers_by_path: dict[str, set[str]] | None = None,
+    plan_count_by_path: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
     """The one file to fix first, and what fixing it buys.
 
@@ -274,7 +280,15 @@ def _directive(
     top = by_leverage[0]
     recovers = round(max(HEALTHY_MIN - top.score, 0.0) * max(top.nloc, 1))
     lead = leads.get(top.file_path) or {}
-    return {
+    # Does anything behind ``plan_via`` actually address the cause named in
+    # ``reason``? Plans carry the biomarker that produced them, and several
+    # biomarkers have no detector at all — ``coverage_gradient`` above all, which
+    # no plan kind can answer because none of them writes tests. Saying so beats
+    # routing the caller to plans for a different problem with full confidence.
+    lead_biomarker = lead.get("primary_biomarker")
+    available = (plan_biomarkers_by_path or {}).get(top.file_path, set())
+    addresses = bool(lead_biomarker) and lead_biomarker in available
+    out = {
         "fix_first": top.file_path,
         "reason": lead.get("primary_reason") or f"scores {round(top.score, 2)}",
         # Points the repo headline recovers if this one file reaches Healthy,
@@ -284,7 +298,38 @@ def _directive(
         "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
         "then": [m.file_path for m in by_leverage[1:3]],
         "plan_via": "get_health(include=['refactoring'])",
+        "plan_addresses_reason": addresses,
     }
+    # Only speak when there is a named cause to speak about. With no lead the
+    # ``reason`` above already falls back to the bare score, and a note reading
+    # "No stored plan addresses None" would be worse than silence.
+    if not addresses and lead_biomarker:
+        # Name the gap rather than leaving the caller to diff two biomarker
+        # vocabularies. The three branches call for different next moves:
+        # plans for other causes, plans with no recorded cause, or no plans.
+        n_plans = (plan_count_by_path or {}).get(top.file_path, 0)
+        if available:
+            # Deliberately "target X, Y" rather than "the plans target only X, Y":
+            # plans with an empty ``source_biomarker`` are counted in ``n_plans``
+            # but cannot be named, so an exhaustive phrasing would be a claim
+            # this read cannot support.
+            out["plan_note"] = (
+                f"No stored plan addresses {lead_biomarker!r}; the plans on this file "
+                f"target {', '.join(sorted(available))}. Treat plan_via as related "
+                f"cleanup, not the fix for reason."
+            )
+        elif n_plans:
+            out["plan_note"] = (
+                f"No stored plan addresses {lead_biomarker!r}; this file's {n_plans} "
+                f"plan(s) record no source biomarker. Treat plan_via as related "
+                f"cleanup, not the fix for reason."
+            )
+        else:
+            out["plan_note"] = (
+                f"No stored plan addresses {lead_biomarker!r}, and this file has no "
+                f"plans at all. plan_via will return plans for other files."
+            )
+    return out
 
 
 def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | None:
@@ -743,34 +788,78 @@ async def get_health(
         if "trend" in include_set or scoped:
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
+        # Dominant-cause lead per file. Targeted mode wants one per target, so
+        # the reduction runs over the whole (small) scoped set. Dashboard mode
+        # only ever prints a lead for the files it emits, so it reduces just
+        # those rows instead of all ~10k — identical output, and
+        # ``_leads_by_file`` measured ~148ms per call handed the full set.
+        #
+        # Computed inside the session because the directive's plan lookup below
+        # needs ``by_leverage`` and has to run before the session closes.
+        if scoped:
+            by_leverage: list[HealthFileMetric] = []
+            lead_source: list[Any] = lead_rows
+        else:
+            # Leverage view: files ranked by NLOC-weighted deficit (how much
+            # each drags the headline), not by raw score. Distinct from
+            # worst_files — a big warning-band file outranks a tiny alert-band
+            # one here because fixing it moves the average far more. Computed
+            # before the leads so the set of printed files is known.
+            by_leverage = sorted(
+                (m for m in all_metrics if m.score < HEALTHY_MIN),
+                key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
+                reverse=True,
+            )
+            printed = {m.file_path for m in metric_rows[:limit]}
+            printed |= {m.file_path for m in by_leverage[:limit]}
+            lead_source = [r for r in lead_rows if r.file_path in printed]
+        leads = _leads_by_file(lead_source)
+
+        # Which biomarkers the stored plans for the directive's candidates
+        # actually address. The directive names a file and a ``reason``, then
+        # points at ``include=['refactoring']`` for the fix — but no detector
+        # emits a plan for ``coverage_gradient``, which is the dominant cause on
+        # most of this repo's worst files, so that promise was unkeepable and
+        # silent about it. Read for the three named files only (``fix_first``
+        # plus the two in ``then``), and only when the directive survives the
+        # projection, so ``only=["directive"]`` stays the cheapest useful call.
+        # Two columns, not whole rows: this reads one field, and the ORM row
+        # carries ``plan_json`` + ``evidence_json`` + ``blast_radius_json``.
+        # ``status == "open"`` mirrors ``get_refactoring_suggestions`` so the
+        # directive cannot claim a plan the ``refactoring`` block would not
+        # return. Candidate paths come from ``by_leverage`` ⊆ ``all_metrics``,
+        # already exclude-filtered, so the ``IN`` needs no second pass through
+        # the exclude spec.
+        plan_biomarkers_by_path: dict[str, set[str]] = {}
+        plan_count_by_path: dict[str, int] = {}
+        if not scoped and wants("directive") and by_leverage:
+            directive_paths = [m.file_path for m in by_leverage[:3]]
+            for path, source in (
+                await session.execute(
+                    select(
+                        RefactoringSuggestion.file_path,
+                        RefactoringSuggestion.source_biomarker,
+                    ).where(
+                        RefactoringSuggestion.repository_id == repository.id,
+                        RefactoringSuggestion.status == "open",
+                        RefactoringSuggestion.file_path.in_(directive_paths),
+                    )
+                )
+            ).all():
+                # Presence is counted separately from attribution. Every
+                # ``split_file`` and ``break_cycle`` plan stores an empty
+                # ``source_biomarker``, so keying "has plans" off the biomarker
+                # set would report no plans on a file while the highest-leverage
+                # plan kind sits on it.
+                plan_count_by_path[path] = plan_count_by_path.get(path, 0) + 1
+                if source:
+                    plan_biomarkers_by_path.setdefault(path, set()).add(source)
+
     kpis = _compute_kpis(
         metric_rows if scoped else all_metrics,
         performance_findings=perf_findings_count,
         coverage=perf_coverage,
     )
-    # Dominant-cause lead per file. Targeted mode wants one per target, so the
-    # reduction runs over the whole (small) scoped set. Dashboard mode only ever
-    # prints a lead for the files it emits, so it reduces just those rows
-    # instead of all ~10k — identical output, and ``_leads_by_file`` measured
-    # ~148ms per call when handed the full set.
-    if scoped:
-        by_leverage: list[HealthFileMetric] = []
-        lead_source: list[Any] = lead_rows
-    else:
-        # Leverage view: files ranked by NLOC-weighted deficit (how much each
-        # drags the headline), not by raw score. Distinct from worst_files — a
-        # big warning-band file outranks a tiny alert-band one here because
-        # fixing it moves the average far more. Computed before the leads so the
-        # set of printed files is known.
-        by_leverage = sorted(
-            (m for m in all_metrics if m.score < HEALTHY_MIN),
-            key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
-            reverse=True,
-        )
-        printed = {m.file_path for m in metric_rows[:limit]}
-        printed |= {m.file_path for m in by_leverage[:limit]}
-        lead_source = [r for r in lead_rows if r.file_path in printed]
-    leads = _leads_by_file(lead_source)
 
     if scoped:
         metric_payload: list[dict[str, Any]] = []
@@ -835,7 +924,13 @@ async def get_health(
             "mode": "dashboard",
             # Lead with the call, not the data. Every block below ranks and
             # describes; this one recommends.
-            "directive": _directive(by_leverage, leads, gap.get("weighted_gap_points") or 0),
+            "directive": _directive(
+                by_leverage,
+                leads,
+                gap.get("weighted_gap_points") or 0,
+                plan_biomarkers_by_path,
+                plan_count_by_path,
+            ),
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
             # Where the gap to Healthy concentrates — the "few files, not the
@@ -892,6 +987,13 @@ async def get_health(
             m.file_path: round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1))
             for m in all_metrics
         }
+        # A "plans matching the file's lead biomarker sort first" tiebreak was
+        # tried here and removed: measured on this repo, 0 of the top 20 files
+        # by deficit have any plan addressing their lead, so it could not move a
+        # row inside the cap, while ``deficit`` rounds to an int and ties across
+        # files — which would have let the boost reorder *between* files. The
+        # honest fix for the mismatch is ``directive.plan_addresses_reason``,
+        # which reports it rather than reshuffling around it.
         ranked = sorted(
             refactoring_rows,
             key=lambda r: (deficit_by_path.get(r.file_path, 0), r.impact_delta or 0.0),
