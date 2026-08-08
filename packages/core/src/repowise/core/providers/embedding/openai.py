@@ -136,6 +136,7 @@ class OpenAIEmbedder:
         model = self._model
         timeout = self._timeout
         request_dimensions = self._request_dimensions
+        expected_dimensions = self._dimensions
 
         def _embed_sync() -> list[list[float]]:
             import openai  # type: ignore[import-untyped]
@@ -152,6 +153,25 @@ class OpenAIEmbedder:
                 create_kwargs["dimensions"] = request_dimensions
             response = self._client.embeddings.create(**create_kwargs)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]
+            widths = {len(v) for v in raw_vectors}
+            if widths and widths != {expected_dimensions}:
+                actual = min(widths - {expected_dimensions})
+                if request_dimensions is not None:
+                    hint = (
+                        f"Set REPOWISE_EMBEDDING_DIMS={actual} to match the server's"
+                        f" native output, or remove the override to use the model's default."
+                    )
+                else:
+                    hint = (
+                        f"The width {expected_dimensions} came from the built-in _DIMS table for"
+                        f" {model!r}. Add or update OpenAIEmbedder._DIMS[{model!r}] = {actual},"
+                        f" or set REPOWISE_EMBEDDING_DIMS={actual}."
+                    )
+                raise ValueError(
+                    f"OpenAIEmbedder declared {expected_dimensions}-dimensional vectors but the"
+                    f" API returned {actual} (model={model!r}). The endpoint likely ignored"
+                    f" the 'dimensions' parameter. {hint}"
+                )
             return [_l2_normalize(v) for v in raw_vectors]
 
         return await asyncio.to_thread(_embed_sync)

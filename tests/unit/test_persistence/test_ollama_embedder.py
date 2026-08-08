@@ -70,7 +70,13 @@ async def test_embed_empty_returns_empty() -> None:
 
 
 async def test_embed_posts_batch_to_native_endpoint() -> None:
-    _FakeAsyncClient.response_data = {"embeddings": [[1.0, 0.0], [0.0, 2.0]]}
+    # Response vectors must be 1024-wide to match the declared dimensions=1024.
+    _FakeAsyncClient.response_data = {
+        "embeddings": [
+            [1.0] + [0.0] * 1023,
+            [0.0, 1.0] + [0.0] * 1022,
+        ]
+    }
     embedder = OllamaEmbedder(
         model="qwen3-embedding:0.6b",
         base_url="http://localhost:11434/",
@@ -95,8 +101,9 @@ async def test_embed_posts_batch_to_native_endpoint() -> None:
 
 
 async def test_embed_supports_legacy_single_embedding_response() -> None:
+    # dimensions=2 so the declared width matches the 2-wide legacy response.
     _FakeAsyncClient.response_data = {"embedding": [3.0, 4.0]}
-    embedder = OllamaEmbedder(model="embeddinggemma")
+    embedder = OllamaEmbedder(model="embeddinggemma", dimensions=2)
 
     result = await embedder.embed(["one"])
 
@@ -144,8 +151,52 @@ def test_explicit_timeout_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None
 
 async def test_env_timeout_is_applied_to_the_request(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "300")
-    embedder = OllamaEmbedder(model="embeddinggemma")
+    # dimensions=2 so the default 2-wide fixture response passes the width guard.
+    embedder = OllamaEmbedder(model="embeddinggemma", dimensions=2)
 
     await embedder.embed(["one"])
 
     assert _FakeAsyncClient.calls[0]["timeout"] == 300.0
+
+
+# ---------------------------------------------------------------------------
+# Width verification — the check added in fix/embedder-width-verification
+# ---------------------------------------------------------------------------
+
+
+async def test_embed_raises_when_server_returns_wrong_width_inferred() -> None:
+    # embeddinggemma → _infer_dimensions() → 768.
+    # Server returns 3-wide vectors (ignores 'dimensions' parameter).
+    # Hint should reference OLLAMA_EMBEDDING_DIMS because the user never set it.
+    _FakeAsyncClient.response_data = {"embeddings": [[1.0, 0.0, 0.0]]}
+    embedder = OllamaEmbedder(model="embeddinggemma")
+    assert embedder.dimensions == 768
+
+    with pytest.raises(ValueError, match="768") as exc_info:
+        await embedder.embed(["hello"])
+
+    msg = str(exc_info.value)
+    assert "3" in msg                       # actual width named
+    assert "OLLAMA_EMBEDDING_DIMS" in msg   # points at the env var fix
+
+
+async def test_embed_raises_when_server_returns_wrong_width_explicit() -> None:
+    # User set dimensions=1024 explicitly; server returns 3-wide vectors.
+    # Hint should also reference OLLAMA_EMBEDDING_DIMS / REPOWISE_EMBEDDING_DIMS.
+    _FakeAsyncClient.response_data = {"embeddings": [[1.0, 0.0, 0.0]]}
+    embedder = OllamaEmbedder(model="qwen3-embedding:0.6b", dimensions=1024)
+    assert embedder.dimensions == 1024
+
+    with pytest.raises(ValueError, match="1024") as exc_info:
+        await embedder.embed(["hello"])
+
+    msg = str(exc_info.value)
+    assert "3" in msg
+    assert "OLLAMA_EMBEDDING_DIMS" in msg
+
+
+async def test_embed_width_check_not_triggered_on_empty() -> None:
+    # embed([]) short-circuits and returns [] without calling the server.
+    embedder = OllamaEmbedder(model="embeddinggemma")
+    assert await embedder.embed([]) == []
+

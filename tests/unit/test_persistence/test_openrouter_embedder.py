@@ -57,6 +57,12 @@ def test_unknown_model_raises_at_construction():
         OpenRouterEmbedder(api_key="k", model="some/future-model")
 
 
+def test_malformed_env_raises_the_same_message(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "abc")
+    with pytest.raises(ValueError, match="dimensions must be a positive integer"):
+        OpenRouterEmbedder(api_key="k")
+
+
 # ---------------------------------------------------------------------------
 # Embedding
 # ---------------------------------------------------------------------------
@@ -81,8 +87,9 @@ async def test_embed_empty_returns_empty():
 
 
 async def test_embed_returns_normalized_vectors():
+    # dimensions=3 so the declared width matches the 3-wide mock — original vector preserved.
     raw = [1.0, 0.0, 0.0]
-    emb = OpenRouterEmbedder(api_key="k")
+    emb = OpenRouterEmbedder(api_key="k", dimensions=3)
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.return_value = _make_mock_response([raw])
@@ -94,9 +101,10 @@ async def test_embed_returns_normalized_vectors():
 
 
 async def test_embed_batch_returns_correct_count():
+    # dimensions=2 so the declared width matches the 2-wide mock — original vectors preserved.
     texts = ["a", "b", "c"]
     raw_vecs = [[1.0, 0.0], [0.0, 1.0], [0.707, 0.707]]
-    emb = OpenRouterEmbedder(api_key="k")
+    emb = OpenRouterEmbedder(api_key="k", dimensions=2)
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.return_value = _make_mock_response(raw_vecs)
@@ -106,11 +114,12 @@ async def test_embed_batch_returns_correct_count():
 
 
 async def test_embed_passes_model_and_input():
-    emb = OpenRouterEmbedder(api_key="k", model="openai/text-embedding-3-large")
+    # dimensions=2 so the 2-wide mock response passes the width guard — original intent preserved.
+    emb = OpenRouterEmbedder(api_key="k", model="openai/text-embedding-3-large", dimensions=2)
     captured: list = []
 
-    def fake_create(model, input):
-        captured.append({"model": model, "input": input})
+    def fake_create(**kwargs):
+        captured.append({"model": kwargs["model"], "input": kwargs["input"]})
         return _make_mock_response([[1.0, 0.0]])
 
     with patch("openai.OpenAI") as mock_client:
@@ -123,7 +132,8 @@ async def test_embed_passes_model_and_input():
 
 async def test_embed_uses_openrouter_base_url():
     """Verify the client is created with the OpenRouter base URL."""
-    emb = OpenRouterEmbedder(api_key="sk-or-test")
+    # dimensions=1 so the 1-wide mock response passes the width guard — original mock preserved.
+    emb = OpenRouterEmbedder(api_key="sk-or-test", dimensions=1)
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.return_value = _make_mock_response([[1.0]])
@@ -131,3 +141,33 @@ async def test_embed_uses_openrouter_base_url():
 
     call_kwargs = mock_client.call_args
     assert call_kwargs.kwargs.get("base_url") == "https://openrouter.ai/api/v1"
+
+
+# ---------------------------------------------------------------------------
+# Width verification — the check added in fix/embedder-width-verification
+# ---------------------------------------------------------------------------
+
+
+async def test_embed_raises_when_api_returns_wrong_width():
+    # google/gemini-embedding-001 is declared as 768 in _DIMS.
+    # Fake API returns 3-wide vectors (wrong width).
+    # Error message should name both numbers and mention _DIMS.
+    emb = OpenRouterEmbedder(api_key="k", model="google/gemini-embedding-001")
+    assert emb.dimensions == 768
+
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.return_value = _make_mock_response(
+            [[1.0, 0.0, 0.0]]
+        )
+        with pytest.raises(ValueError, match="768") as exc_info:
+            await emb.embed(["hello"])
+
+    msg = str(exc_info.value)
+    assert "3" in msg       # actual width named
+    assert "_DIMS" in msg   # points at the table entry
+
+
+async def test_embed_width_check_not_triggered_on_empty():
+    emb = OpenRouterEmbedder(api_key="k")
+    assert await emb.embed([]) == []
+

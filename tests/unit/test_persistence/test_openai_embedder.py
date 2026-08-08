@@ -106,8 +106,9 @@ async def test_embed_empty_returns_empty():
 
 
 async def test_embed_returns_normalized_vectors():
+    # dimensions=3 so the declared width matches the 3-wide fake vector.
     raw = [1.0, 0.0, 0.0]
-    emb = OpenAIEmbedder(api_key="k")
+    emb = OpenAIEmbedder(api_key="k", dimensions=3)
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.return_value = _make_mock_response([raw])
@@ -119,9 +120,10 @@ async def test_embed_returns_normalized_vectors():
 
 
 async def test_embed_batch_returns_correct_count():
+    # dimensions=2 so the declared width matches the 2-wide fake vectors.
     texts = ["a", "b", "c"]
     raw_vecs = [[1.0, 0.0], [0.0, 1.0], [0.707, 0.707]]
-    emb = OpenAIEmbedder(api_key="k")
+    emb = OpenAIEmbedder(api_key="k", dimensions=2)
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.return_value = _make_mock_response(raw_vecs)
@@ -131,11 +133,12 @@ async def test_embed_batch_returns_correct_count():
 
 
 async def test_embed_passes_model_and_input():
-    emb = OpenAIEmbedder(api_key="k", model="text-embedding-3-large")
+    # dimensions=2 so the fake 2-wide response passes the width guard.
+    emb = OpenAIEmbedder(api_key="k", model="text-embedding-3-large", dimensions=2)
     captured: list = []
 
-    def fake_create(model, input):
-        captured.append({"model": model, "input": input})
+    def fake_create(**kwargs):
+        captured.append({"model": kwargs["model"], "input": kwargs["input"]})
         return _make_mock_response([[1.0, 0.0]])
 
     with patch("openai.OpenAI") as mock_client:
@@ -156,7 +159,8 @@ async def _capture_create_kwargs(emb: OpenAIEmbedder) -> dict:
 
     def fake_create(**kwargs):
         captured.update(kwargs)
-        return _make_mock_response([[1.0, 0.0]])
+        # Return a vector of the declared width so the new width guard doesn't fire.
+        return _make_mock_response([[1.0] + [0.0] * (emb.dimensions - 1)])
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.side_effect = fake_create
@@ -185,3 +189,54 @@ async def test_default_request_omits_dimensions():
         OpenAIEmbedder(api_key="k", model="text-embedding-3-small")
     )
     assert "dimensions" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# Width verification — the check added in fix/embedder-width-verification
+# ---------------------------------------------------------------------------
+
+
+async def test_embed_raises_when_api_returns_wrong_width_from_dims_table():
+    # Declared via _DIMS (user never chose the number). The error message should
+    # mention _DIMS so the user knows where to look.
+    emb = OpenAIEmbedder(api_key="k", model="text-embedding-3-small")
+    assert emb.dimensions == 1536  # from _DIMS table
+
+    with patch("openai.OpenAI") as mock_client:
+        # Fake API silently ignores 'dimensions' and returns its native 3-wide vector.
+        mock_client.return_value.embeddings.create.return_value = _make_mock_response(
+            [[1.0, 0.0, 0.0]]
+        )
+        with pytest.raises(ValueError, match="1536") as exc_info:
+            await emb.embed(["hello"])
+
+    msg = str(exc_info.value)
+    assert "3" in msg                   # actual width named
+    assert "_DIMS" in msg               # points at the table, not the user
+
+
+async def test_embed_raises_when_api_returns_wrong_width_with_user_override(monkeypatch):
+    # Declared via REPOWISE_EMBEDDING_DIMS (user explicitly set it). The error
+    # message should reference REPOWISE_EMBEDDING_DIMS so they know what to change.
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "512")
+    emb = OpenAIEmbedder(api_key="k", model="text-embedding-3-small")
+    assert emb.dimensions == 512        # from env override
+
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.return_value = _make_mock_response(
+            [[1.0, 0.0, 0.0]]
+        )
+        with pytest.raises(ValueError, match="512") as exc_info:
+            await emb.embed(["hello"])
+
+    msg = str(exc_info.value)
+    assert "3" in msg
+    assert "REPOWISE_EMBEDDING_DIMS" in msg
+
+
+async def test_embed_width_check_is_skipped_for_empty_response():
+    # embed([]) short-circuits before the API call and returns []; the guard
+    # must not fire on the empty list itself.
+    emb = OpenAIEmbedder(api_key="k")
+    assert await emb.embed([]) == []
+
