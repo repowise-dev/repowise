@@ -86,7 +86,7 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
 
 
 def _fallback_module(rel_path: str) -> str | None:
-    """Top-level directory as a stand-in module label when no community map.
+    """Top-level directory as a stand-in module label.
 
     Returns ``None`` for root-level files so the rollup endpoint doesn't
     create a phantom "" bucket.
@@ -96,6 +96,81 @@ def _fallback_module(rel_path: str) -> str | None:
         return None
     head = norm.split("/", 1)[0]
     return head or None
+
+
+# Files that mark a directory as the root of a distributable package.
+#
+# Every name here is one the traverser actually emits. That is the binding
+# constraint, not the set of manifests that exist: the analyzer sees
+# ``parsed_files``, and the traverser drops any file whose language it cannot
+# detect. Verified by running ``FileTraverser`` over a directory holding one of
+# each — ``go.mod``, ``pom.xml``, ``build.gradle``, ``Gemfile``, ``setup.cfg``
+# and ``*.csproj`` are all dropped, so listing them here would be dead entries
+# that read as support. Go, Maven, Groovy-Gradle, Ruby and .NET repos therefore
+# fall back to the top-level directory, which is exactly what they get today —
+# no regression, just no improvement until the traverser yields those files.
+#
+# Kept conservative besides: a false root fragments the rollup, and the
+# top-level fallback is already reasonable. ``requirements.txt`` is deliberately
+# absent — it appears in subdirectories that are not packages.
+_PACKAGE_MANIFESTS = frozenset(
+    {
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "Cargo.toml",
+        "build.gradle.kts",
+        "composer.json",
+    }
+)
+
+
+def _package_roots(all_paths: set[str]) -> set[str]:
+    """Directories holding a package manifest, from the analyzed file list.
+
+    A manifest at the repo root is ignored: it would put every file in one
+    bucket, which is the degenerate case this exists to avoid.
+    """
+    roots: set[str] = set()
+    for p in all_paths:
+        norm = p.replace("\\", "/")
+        if "/" not in norm:
+            continue
+        head, base = norm.rsplit("/", 1)
+        if base in _PACKAGE_MANIFESTS:
+            roots.add(head)
+    return roots
+
+
+def _module_for(rel_path: str, package_roots: set[str]) -> str | None:
+    """The package boundary a file belongs to.
+
+    ``module`` is the directory/package axis and nothing else. It used to be
+    ``community_label or top_level_dir``, which mixed two namespaces in one
+    field: graph community labels are semantic clusters named after a member
+    directory, so a file could report a module it does not live in (measured on
+    this repo: 1,355 of 3,263 files, e.g. every ``packages/api-client`` source
+    file reporting ``tests/unit``). Worse, only the full-index path ever passed
+    a community map — the incremental, re-score and ``repowise health`` paths
+    did not — so which namespace a row carried depended on which code path last
+    wrote it.
+
+    The top-level directory alone is not enough either: on a monorepo it buckets
+    69% of this repo under ``packages``. So prefer the deepest enclosing package
+    manifest and fall back to the top-level directory, which is exactly the old
+    behaviour on a repo with no nested packages.
+    """
+    norm = rel_path.replace("\\", "/")
+    if "/" not in norm:
+        return None
+    if package_roots:
+        parts = norm.split("/")
+        # Deepest first, so a nested package wins over the one containing it.
+        for i in range(len(parts) - 1, 0, -1):
+            candidate = "/".join(parts[:i])
+            if candidate in package_roots:
+                return candidate
+    return _fallback_module(norm)
 
 
 def _read_source_lines(abs_path: str) -> list[str] | None:
@@ -330,7 +405,12 @@ class HealthAnalyzer:
         # PageRank is optional — graph_builder.symbol_pagerank exists but
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
-        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
+        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames(analyzed_paths)
+        # One scan of the file list decides the package boundaries for every
+        # file, so ``module`` is a property of the repo layout rather than of
+        # whichever code path happens to be running.
+        package_roots = _package_roots(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -417,6 +497,7 @@ class HealthAnalyzer:
                 pf,
                 fcx,
                 path_basenames,
+                package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -490,7 +571,12 @@ class HealthAnalyzer:
         )
         changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
-        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
+        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames(analyzed_paths)
+        # One scan of the file list decides the package boundaries for every
+        # file, so ``module`` is a property of the repo layout rather than of
+        # whichever code path happens to be running.
+        package_roots = _package_roots(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -591,6 +677,7 @@ class HealthAnalyzer:
                 pf,
                 fcx,
                 path_basenames,
+                package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -767,6 +854,7 @@ class HealthAnalyzer:
         pf: Any,
         fcx: FileComplexity,
         path_basenames: set[str],
+        package_roots: set[str],
         *,
         disabled: list[str],
         dup_report: DuplicationReport,
@@ -815,7 +903,7 @@ class HealthAnalyzer:
         clones = dup_report.pairs_by_file.get(file_path, [])
         dup_pct = dup_report.duplication_pct.get(file_path)
 
-        module = self.module_map.get(file_path) or _fallback_module(file_path)
+        module = _module_for(file_path, package_roots)
 
         file_git_meta = self.git_meta_map.get(file_path, {}) or {}
         blame_idx_obj = file_git_meta.get("blame_index")

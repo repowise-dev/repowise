@@ -91,6 +91,7 @@ def test_health_metric_nloc_uses_file_nloc():
         pf,
         fcx,
         path_basenames={"route.js"},
+        package_roots=set(),
         disabled=[],
         dup_report=DuplicationReport(),
     )
