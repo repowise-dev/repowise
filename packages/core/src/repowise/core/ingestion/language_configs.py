@@ -344,6 +344,42 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
         ),
     ),
+    "pascal": LanguageConfig(
+        symbol_node_types={
+            # declType wraps class/record/interface/helper/enum/set/array/alias
+            # in one node shape (see spec docstring) -- "class" is the closest
+            # single bucket, same tradeoff Go makes for `type_spec`: "struct".
+            # A real kind refinement (peek at the `type` field to distinguish
+            # class/struct/interface/enum) would need a hook parser.py doesn't
+            # currently expose per-language the way it does for Go/Kotlin --
+            # flagged as a follow-up, not attempted here.
+            "declType": "class",
+            "declProc": "function",  # signature only (interface decl / forward decl)
+            "defProc": "function",   # full definition with body
+            # Matches C#'s choice for the same concept (property_declaration ->
+            # "variable"); "property" is not a valid SymbolKind literal.
+            "declProp": "variable",
+        },
+        import_node_types=["declUses"],
+        export_node_types=[],       # Pascal has no explicit re-export syntax
+        # No pascal_visibility exists yet. Pascal visibility is per-*section*
+        # (`strict private`/`protected`/`public`/`published` governs every
+        # declaration until the next section keyword, i.e. extractors/
+        # visibility.py's per-declaration-modifier shape doesn't fit Pascal
+        # without a declSection sibling-walk). public_by_default is the same
+        # placeholder C/C++/JS/Ruby/Luau/Shell already use for real, not a
+        # Pascal-specific hack -- but it is a placeholder, not a real answer.
+        visibility_fn=public_by_default,
+        parent_extraction="nesting",
+        # NOT {"declClass", "declIntf", "declHelper"} -- see the spec docstring.
+        # ASTParser._find_parent walks ancestors checking `ancestor.type in
+        # parent_class_types` then reads `ancestor.child_by_field_name("name")`;
+        # only declType carries a name field, so pointing this at the inner
+        # class/interface/helper node would silently return no parent for every
+        # method (found by tracing _find_parent's actual implementation, not
+        # guessed).
+        parent_class_types=frozenset({"declType"}),
+    ),
     "luau": LanguageConfig(
         symbol_node_types={
             "function_declaration": "function",
