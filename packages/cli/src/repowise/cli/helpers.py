@@ -182,6 +182,17 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     return resolve_db_url(repo_path)
 
 
+def db_configured() -> bool:
+    """True when ``REPOWISE_DB_URL`` or ``REPOWISE_DATABASE_URL`` is set.
+
+    The DB may still be the repo-local ``wiki.db`` default — the file
+    existence check the callers pair this with decides that.
+    """
+    from repowise.core.persistence import get_configured_db_url
+
+    return get_configured_db_url() is not None
+
+
 # ---------------------------------------------------------------------------
 # State file
 # ---------------------------------------------------------------------------

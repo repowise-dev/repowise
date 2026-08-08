@@ -286,6 +286,110 @@ class TestDoctorAfterInit:
         assert "repowise Doctor" in result.output
 
 
+class TestStatusDoctorWithEnvDb:
+    """Regression guard for #1274: with REPOWISE_DB_URL set, status and doctor
+    must query the configured DB even when no repo-local wiki.db exists.
+
+    The env DB lives outside the repo (like a Postgres container), so the
+    pre-fix file-existence guards bailed out before ever resolving the URL.
+    """
+
+    @pytest.fixture
+    def env_db_repo(self, tmp_path, sample_repo_path, monkeypatch):
+        """sample_repo copy with REPOWISE_DB_URL pointing at an external DB."""
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        db_path = tmp_path / "external.db"
+        monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{db_path}")
+        return dest
+
+    def test_status_queries_env_db_without_local_wiki_db(self, runner, env_db_repo):
+        result = runner.invoke(
+            cli,
+            ["init", str(env_db_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        # The scenario that used to fail: data in the env DB, no local wiki.db.
+        assert not (env_db_repo / ".repowise" / "wiki.db").exists()
+
+        result = runner.invoke(
+            cli,
+            ["status", str(env_db_repo)],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Sync State" in result.output
+        assert "Database not found" not in result.output
+        assert "Pages by Type" in result.output
+
+    def test_doctor_reports_db_ok_with_env_db(self, runner, env_db_repo):
+        runner.invoke(
+            cli,
+            ["init", str(env_db_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert not (env_db_repo / ".repowise" / "wiki.db").exists()
+
+        result = runner.invoke(
+            cli,
+            ["doctor", str(env_db_repo)],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "wiki.db not found" not in result.output
+
+    def test_status_still_reports_not_found_with_no_db_configured(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        # A .repowise/ dir with state but no DB — the "Database not found"
+        # branch requires an initialized repo to get past the earlier guard.
+        (dest / ".repowise").mkdir()
+        (dest / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+        result = runner.invoke(cli, ["status", str(dest)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "Database not found" in result.output
+
+    def test_doctor_still_reports_fail_with_no_db_configured(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+
+        result = runner.invoke(cli, ["doctor", str(dest)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert "wiki.db not found" in result.output
+
+    def test_doctor_corrupt_local_db_shows_one_fail_row(
+        self, runner, tmp_path, sample_repo_path, monkeypatch
+    ):
+        """A local wiki.db that exists but cannot be opened must report the real
+        connection error — not an extra, contradictory "wiki.db not found" row
+        (regression guard for the reviewer finding on #1274)."""
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        dest = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, dest)
+        (dest / ".repowise").mkdir()
+        (dest / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+        # Corrupt: not a valid SQLite file.
+        (dest / ".repowise" / "wiki.db").write_text("this is not a database", encoding="utf-8")
+
+        result = runner.invoke(cli, ["doctor", str(dest)], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        # Exactly one Database row — the real connection error, not a second
+        # contradictory "wiki.db not found" row.
+        assert "file is not a" in result.output
+        assert "wiki.db not found" not in result.output
+
+
 class TestSearchFulltext:
     def test_returns_results_or_no_error(self, runner, work_repo):
         runner.invoke(

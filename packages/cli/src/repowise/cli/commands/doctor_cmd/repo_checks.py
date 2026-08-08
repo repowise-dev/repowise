@@ -9,6 +9,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    db_configured,
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
@@ -67,9 +68,10 @@ def _run_repo_checks(
 
     # 3. Database connectable?
     db_path = repowise_dir / "wiki.db"
+    probed = db_path.exists() or db_configured()
     db_ok = False
     page_count = 0
-    if db_path.exists():
+    if probed:
         try:
 
             async def _check_db():
@@ -99,7 +101,7 @@ def _run_repo_checks(
             checks.append(_check("Database", False, str(e)))
     if db_ok:
         checks.append(_check("Database", True, f"{page_count} pages"))
-    elif not db_path.exists():
+    elif not probed:
         checks.append(_check("Database", False, "wiki.db not found"))
 
     # 4. state.json valid?
