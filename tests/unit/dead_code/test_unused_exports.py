@@ -276,3 +276,58 @@ def test_unused_export_not_rescued_for_index_stem():
     )
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
     assert "stranded_export" in names
+
+
+def test_deprecated_unused_export_survives_default_min_confidence():
+    """A deprecated unused export must not be silently erased by the default min_confidence filter."""
+    g = _build_graph(
+        nodes={
+            "pkg/utils.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "legacy_helper_DEPRECATED",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 10,
+                        "complexity_estimate": 2,
+                    },
+                ],
+            },
+            "pkg/main.py": {
+                "is_entry_point": True,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [],
+            },
+        },
+        # main.py imports utils.py but does NOT import legacy_helper_DEPRECATED by name
+        edges=[
+            (
+                "pkg/main.py",
+                "pkg/utils.py",
+                {"edge_type": "imports", "imported_names": ["other_func"]},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    # Default min_confidence is 0.4; the deprecated branch used to emit 0.3,
+    # which was filtered out, making the whole low-confidence bucket permanently 0.
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+        }
+    )
+    unused = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
+    names = {f.symbol_name for f in unused}
+    assert "legacy_helper_DEPRECATED" in names
+    finding = next(f for f in unused if f.symbol_name == "legacy_helper_DEPRECATED")
+    assert finding.confidence >= 0.4

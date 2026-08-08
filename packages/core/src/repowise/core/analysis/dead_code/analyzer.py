@@ -1098,7 +1098,7 @@ class DeadCodeAnalyzer:
                     continue
 
                 if is_deprecated:
-                    confidence = 0.3
+                    confidence = 0.4
                 elif file_has_importers:
                     confidence = 1.0
                 else:
