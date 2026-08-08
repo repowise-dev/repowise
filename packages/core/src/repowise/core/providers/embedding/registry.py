@@ -6,6 +6,7 @@ and runtime registration for community embedders.
 Built-in embedders:
     openai  → OpenAIEmbedder  (text-embedding-3-small default)
     gemini  → GeminiEmbedder  (gemini-embedding-001 default)
+    edenai  → EdenAIEmbedder  (openai/text-embedding-3-small via Eden AI's EU gateway)
     mock    → MockEmbedder    (testing only, zero dependencies)
 
 Custom embedder registration:
@@ -28,6 +29,7 @@ _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "gemini": ("repowise.core.providers.embedding.gemini", "GeminiEmbedder"),
     "ollama": ("repowise.core.providers.embedding.ollama", "OllamaEmbedder"),
     "openrouter": ("repowise.core.providers.embedding.openrouter", "OpenRouterEmbedder"),
+    "edenai": ("repowise.core.providers.embedding.edenai", "EdenAIEmbedder"),
     "mock": ("repowise.core.providers.embedding.base", "MockEmbedder"),
 }
 
@@ -81,6 +83,7 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
         "gemini": "google-genai",
         "ollama": "httpx",
         "openrouter": "openai",  # openrouter uses the openai package
+        "edenai": "openai",  # edenai uses the openai package
     }
     try:
         module = importlib.import_module(module_path)
