@@ -328,6 +328,11 @@ async def persist_graph_nodes(
         data = graph.nodes[node_id]
         node_type = data.get("node_type", "file")
 
+        # External import nodes (id prefix "external:") should never be typed
+        # as "file" — they are third-party dependencies, not repo files.
+        if node_id.startswith("external:"):
+            node_type = "external"
+
         node_dict: dict[str, Any] = {
             "node_id": node_id,
             "node_type": node_type,
