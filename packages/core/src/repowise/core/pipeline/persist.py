@@ -52,7 +52,11 @@ def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
 
 
 async def mark_tombstone_pages(
-    session: Any, repo_id: str, candidates: list[tuple[str, list[str]]]
+    session: Any,
+    repo_id: str,
+    candidates: list[tuple[str, list[str]]],
+    *,
+    prune_versions: bool = False,
 ) -> list[str]:
     """Mark file pages for deleted/renamed files as tombstones.
 
@@ -69,6 +73,12 @@ async def mark_tombstone_pages(
     a real candidate out of the fetch. The row has to go, and only the caller
     knows when it is safe to write to the index — on SQLite it shares a file
     with this session.
+
+    ``prune_versions`` additionally sweeps the archived version history of the
+    pages just tombstoned. A tombstoned page's history is the clearest case
+    retention has: the file is gone, so no future regeneration will ever diff
+    against those rows. Off by default because deletion should be opted into by
+    the caller that knows the run is finished, not by the marking step.
     """
     if not candidates:
         return []
@@ -103,6 +113,15 @@ async def mark_tombstone_pages(
             candidate_count=len(candidates),
             sample=[p for p, _ in candidates[:3]],
         )
+    if marked and prune_versions:
+        # Best-effort: the tombstones are already written, and a failed version
+        # sweep must not cost the caller the marking it came for.
+        try:
+            from repowise.core.pipeline.retention_store import prune_page_versions
+
+            await prune_page_versions(session, repo_id, marked)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("tombstone_version_prune_failed", repo_id=repo_id, error=str(exc))
     return marked
 
 

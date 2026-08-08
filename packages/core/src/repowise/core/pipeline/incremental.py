@@ -1007,8 +1007,14 @@ async def persist_incremental_index(
                         tombstone_candidates,
                     )
 
+                    # An update is the one path that knows a file was deleted
+                    # rather than merely absent, so it is where the version
+                    # history of a dead page is safe to sweep.
                     tombstoned_page_ids = await mark_tombstone_pages(
-                        session, repo_id, tombstone_candidates(file_diffs)
+                        session,
+                        repo_id,
+                        tombstone_candidates(file_diffs),
+                        prune_versions=True,
                     )
                 except Exception as exc:
                     _skip("Tombstone marking", exc)
