@@ -506,7 +506,7 @@ def _read_output_line_count(tool_output: object) -> int:
             if isinstance(content, str):
                 return len(content.splitlines()) if content else 0
     text = _extract_output_text(tool_output)
-    return len(text.splitlines()) if text else 0
+    return len(text.splitlines()) if text.strip() else 0
 
 
 def _skeleton_nudge(repo_path: Path, rel: str, tool_output: object, state: dict) -> str | None:

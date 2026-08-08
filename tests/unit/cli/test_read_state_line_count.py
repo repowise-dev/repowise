@@ -24,3 +24,8 @@ def test_line_count_empty_content():
 def test_line_count_fallback_text():
     """The text fallback path must also handle trailing newlines correctly."""
     assert _read_output_line_count({"output": "a\nb\n"}) == 2
+
+
+def test_line_count_fallback_whitespace_only():
+    """Whitespace-only text fallback must count as zero lines."""
+    assert _read_output_line_count({"output": "   "}) == 0
