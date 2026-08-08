@@ -28,6 +28,7 @@ from ._router import router
 from .badge import _badge_fields, _render_badge_svg  # noqa: F401
 from .breakdown import _finding_base_deduction, _score_breakdown_from_findings  # noqa: F401
 from .overview_routes import _resolve_last_indexed_at  # noqa: F401
+from .refactoring_routes import _SORT_KEYS  # noqa: F401
 
 # re-export helpers imported by routers/files.py + tests (keep old import path working)
 from .serializers import (  # noqa: F401

@@ -58,6 +58,9 @@ async def _run_git_indexing(
             follow_renames=follow_renames,
             tier=tier,
             exclude_patterns=exclude_patterns,
+            # The indexing pass proper, and the one that knows the repo's
+            # excludes, so this is where a git episode may be recorded.
+            record_episodes=True,
         )
 
         def _on_start(total: int) -> None:

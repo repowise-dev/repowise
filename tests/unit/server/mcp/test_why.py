@@ -386,6 +386,45 @@ async def test_get_why_path_caps_records_and_keeps_the_active_one_first(session,
 
 
 @pytest.mark.asyncio
+async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, monkeypatch):
+    """The sanctioned read-time query is one call, not one per governing record.
+
+    Measured at ~66 ms against this repo, so eight of them would be ~530 ms on
+    a path that also does everything else. The record ranked first is the one
+    a reader acts on; the rest keep the stored proportion, which cost nothing.
+    """
+    from repowise.server.mcp_server import get_why, tool_why
+
+    calls: list[tuple] = []
+
+    def _fake(root, *, created_at, nodes):
+        calls.append((root, tuple(nodes)))
+        return "nothing in the 1 file it governs has changed since 2026-01-01"
+
+    monkeypatch.setattr(tool_why, "describe_decision_currency", _fake)
+    await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
+
+    result = await get_why("src/auth/service.py")
+
+    assert len(calls) == 1
+    assert "still_true" in result["decisions"][0]
+    assert all("still_true" not in d for d in result["decisions"][1:])
+
+
+@pytest.mark.asyncio
+async def test_get_why_stays_silent_when_git_cannot_decide(session, setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_why, tool_why
+
+    monkeypatch.setattr(
+        tool_why, "describe_decision_currency", lambda root, **kw: None
+    )
+
+    result = await get_why("src/auth/service.py")
+
+    assert all("still_true" not in d for d in result["decisions"])
+
+
+@pytest.mark.asyncio
 async def test_get_why_path_projects_wide_affected_files(session, setup_mcp):
     from repowise.server.mcp_server import get_why
     from repowise.server.mcp_server.tool_why import _MAX_AFFECTED_FILES

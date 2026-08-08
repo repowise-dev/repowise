@@ -710,16 +710,18 @@ async def run_update_evolution(
             regen.update(governed)
             result["superseded"] += 1
         elif kind == "amended":
-            # Keep it active but mark it stale so its drift is visible, and
-            # re-render its governed pages to reflect the amendment.
-            dec.staleness_score = max(dec.staleness_score, 0.6)
+            # Re-render the governed pages so the amendment shows up there.
+            # It no longer clamps ``staleness_score``: that column is now a
+            # measured fact — the fraction of the governed files that have
+            # changed since the record was born — and a judge's verdict
+            # written into it made the same number mean two different things
+            # depending on which writer ran last. The amendment is visible in
+            # the regenerated pages and in the run's own counters.
             dec.updated_at = now
             regen.update(governed)
             result["amended"] += 1
         elif kind == "reaffirmed":
-            # Still holds — relax staleness; no regen needed.
-            dec.staleness_score = min(dec.staleness_score, 0.2)
-            dec.updated_at = now
+            # Still holds — nothing to re-render, and nothing to write.
             result["reaffirmed"] += 1
 
     await session.flush()

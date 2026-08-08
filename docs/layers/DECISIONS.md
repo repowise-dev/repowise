@@ -167,22 +167,33 @@ never walked back to `proposed` by a later extraction.
 
 ## Staleness
 
-A decision is only useful while it still describes the code. Every record carries
-a `staleness_score` between 0 and 1, recomputed per affected file:
+A decision is only useful while it still describes the code, and that is a
+question the repository can answer rather than one worth guessing at. Every
+record carries a `staleness_score` between 0 and 1: **the fraction of its
+affected files that have been committed to since the decision was recorded.**
 
-- The file no longer exists: `1.0`.
-- The file has not changed since the decision was recorded: `0.0`.
-- Otherwise it grows with 90-day commit count and file age.
-- Plus `0.3` when a commit *after* the decision was recorded contains a conflict
-  signal ("replace", "remove", "deprecate", "migrate away", "revert", "drop")
-  and shares topic words with the decision text.
+- None of them has changed: `0.0`.
+- All of them have: `1.0`.
+- A file the repository does not track counts as changed, because a record
+  naming something absent cannot be shown to still hold.
 
-The record's score is the mean across its affected files. `>= 0.5` is stale
-everywhere: `repowise decision list --stale-only`, the health summary, and the
-staleness column in the CLI table.
+`>= 0.5` is stale everywhere: `repowise decision list --stale-only`, the health
+summary, and the staleness column in the CLI table.
 
-Staleness also decays the relevance of a decision when it is injected into a
-session, so guidance that stopped being true stops being pushed.
+There is deliberately no constant in that definition. An earlier version grew
+the score with 90-day commit volume and record age, and added a boost when a
+later commit *message* contained words like "migrate away"; both were fitted to
+one repository's history and to English commit prose, and the result was a
+number that moved for reasons unrelated to whether the code had moved.
+
+**A record that names no file scores 0.0 and is not fresh** — the question
+cannot be asked of it at all. `repowise decision health` counts those
+separately, as *unscoped*, rather than banking them as current.
+
+For one record on demand, `repowise decision show` and `get_why` on a path go
+further and ask git directly, printing what it says: *"nothing in the 3 files it
+governs has changed since 2026-05-02"*. That costs a subprocess, so it is served
+only where one is affordable — never from an editor hook or during an update.
 
 ## Session-mined decisions
 
@@ -231,8 +242,11 @@ the code is written.
 
 Every injected decision id is recorded locally. On the next `repowise update` the
 session miner checks whether the guidance was followed or contradicted by your
-corrections in that session and adjusts the decision's staleness accordingly.
-That is the feedback loop: guidance you keep overriding fades out.
+corrections in that session and stores that verdict on the injection, where
+`repowise hook stats` reports the split. It deliberately does not touch the
+record's staleness: whether you overrode a decision is a judgement about the
+record, staleness is a measurement of the code, and one of those is per-machine
+while the other travels with the repository.
 
 Decisions also land in the generated `CLAUDE.md` (active records, freshest
 first) and in `get_overview()`, `get_context()`, and the `governance_risk` flag

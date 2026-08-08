@@ -920,10 +920,10 @@ async def search_codebase(
 
     For QUESTIONS ("how does X work", "where is Y handled", "why is Z like
     this"), call get_answer instead: it runs this same hybrid retrieval
-    internally and synthesizes a cited answer, so a search_codebase call
-    before get_answer is a wasted round-trip. Use this tool directly when you
-    want the raw ranked hits themselves — enumerating matches, resolving an
-    identifier to a symbol_id, or scoping a later get_context call.
+    internally and synthesizes a cited answer, so searching first is a wasted
+    round-trip. Use this tool when you want the raw ranked hits themselves —
+    enumerating matches, resolving an identifier to a symbol_id, or scoping a
+    later get_context call.
 
     mode="auto" (default) routes the query: identifier-shaped queries search
     the indexed symbols (returns symbol_id/file/line bounds — pipe into

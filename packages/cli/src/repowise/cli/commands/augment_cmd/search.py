@@ -263,7 +263,7 @@ def _log_search_firing(
     if not session_id:
         return
     from ._shared import _ledger_key
-    from .decision_inject import _claim_ledger
+    from .ledger import _claim_ledger
 
     _claim_ledger(
         repo_path,
@@ -793,9 +793,16 @@ async def _rescue(
         # sit well outside the first two rows, and post-filtering them would
         # have made the widened rescue almost never fire, silently.
         name_clause = WikiSymbol.name.in_(sorted(variants))
+    # Ordered because the LIMIT truncates: unordered, which rows survive the cut
+    # is whatever order the chosen index walks, so an unrelated index added to
+    # wiki_symbols changes the result. (file_path, name) is what the
+    # uq_wiki_symbol autoindex gave for free — its key is "<path>::<name>" — so
+    # this pins the long-standing behaviour. Mirrored in
+    # ``fast_lookup.symbols_named``, which serves the same rescue.
     sym_stmt = (
         select(WikiSymbol.name, WikiSymbol.kind, WikiSymbol.file_path, WikiSymbol.start_line)
         .where(WikiSymbol.repository_id == repo_id, name_clause)
+        .order_by(WikiSymbol.file_path, WikiSymbol.name)
         .limit(_RESCUE_TOP_N if matched is None else _RESCUE_EXACT_FETCH)
     )
     rows = (await session.execute(sym_stmt)).all()

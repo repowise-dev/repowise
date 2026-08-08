@@ -197,15 +197,16 @@ def get_cli_update_check_cached(
         pass  # missing / corrupt / stale -> fall through to a live check
 
     result = get_cli_update_check(timeout=timeout)
-    with contextlib.suppress(Exception):  # caching is opportunistic
-        path.write_text(
-            json.dumps(
-                {
-                    "checked_at": time.time(),
-                    "latest_version": result.latest_version,
-                    "error": result.error,
-                }
-            ),
-            encoding="utf-8",
-        )
+    if result.latest_version is not None:
+        with contextlib.suppress(Exception):  # caching is opportunistic
+            path.write_text(
+                json.dumps(
+                    {
+                        "checked_at": time.time(),
+                        "latest_version": result.latest_version,
+                        "error": result.error,
+                    }
+                ),
+                encoding="utf-8",
+            )
     return result

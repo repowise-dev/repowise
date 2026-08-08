@@ -531,6 +531,13 @@ export interface RefactoringTarget {
   biomarkers: string[];
   effort_bucket: "S" | "M" | "L" | "XL";
   impact_per_effort: number;
+  /**
+   * No longer served by the OSS `/health/refactoring-targets` route: building it
+   * for every file with findings, before the `limit` slice, cost 1.8 MB per
+   * request to feed two click-gated consumers. Fetch a file's findings from
+   * `GET /health/findings?file_path=` instead. Kept optional because the hosted
+   * backend still sends it and a client may hold a cached older payload.
+   */
   all_findings?: Array<{
     id: string;
     biomarker_type: string;

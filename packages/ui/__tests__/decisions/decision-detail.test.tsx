@@ -133,18 +133,65 @@ describe("DecisionDetail", () => {
     expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
   });
 
-  it("reports staleness as a percentage, like the decisions table does", () => {
-    // It used to render "Staleness: 0.42" here and "42%" in the table — the
-    // same number in two units on two surfaces.
+  it("reports what moved as a count, not as a proportion", () => {
+    // Was "Staleness 42%" in a meta ribbon. A proportion has no reading at a
+    // glance; the count it is a proportion of does.
     renderView(
       <DecisionDetail
-        decision={makeDecision({ staleness_score: 0.42 })}
+        decision={makeDecision({
+          staleness_score: 0.42,
+          affected_files: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"],
+        })}
         adapter={makeAdapter()}
       />,
     );
-    expect(screen.getByText("Staleness").nextElementSibling).toHaveTextContent(
-      "42%",
+    expect(screen.queryByText("Staleness")).not.toBeInTheDocument();
+    expect(screen.queryByText("42%")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/3 of its 6 files have changed since it was recorded/),
+    ).toBeInTheDocument();
+  });
+
+  it("says outright when a record cannot be checked at all", () => {
+    // An unscoped record scores 0.0 and used to render exactly like a record
+    // whose code had not moved. Two meanings, one encoding.
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ affected_files: [], staleness_score: 0 })}
+        adapter={makeAdapter()}
+      />,
     );
+    expect(
+      screen.getByText(/names no files, so whether the code moved/),
+    ).toBeInTheDocument();
+  });
+
+  it("states the quiet case rather than leaving it blank", () => {
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({
+          affected_files: ["a.ts", "b.ts"],
+          staleness_score: 0,
+        })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "All 2 files it names are still tracked and unchanged since it was recorded.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("drops confidence from the ribbon, since it restated the source beside it", () => {
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ confidence: 0.844 })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(screen.queryByText("Confidence")).not.toBeInTheDocument();
+    expect(screen.queryByText("84%")).not.toBeInTheDocument();
   });
 
   it("explains what Confirm/Dismiss do next to the buttons", () => {

@@ -104,6 +104,12 @@ class RehydrateMixin:
             imported_names = edge.get("imported_names")
             if imported_names:
                 edge_attrs["imported_names"] = list(imported_names)
+            # Cohesion provenance — cycle detection drops these edges, so a
+            # rehydrated graph must carry the mark or it re-reports every
+            # cohesive package as an import cycle.
+            hint_source = edge.get("hint_source")
+            if hint_source:
+                edge_attrs["hint_source"] = hint_source
             graph.add_edge(source, target, **edge_attrs)
             edge_count += 1
 

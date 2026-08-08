@@ -1059,7 +1059,16 @@ async def recompute_decision_staleness(
     repository_id: str,
     git_meta_map: dict[str, dict],
 ) -> int:
-    """Recompute staleness_score for all active decisions. Returns update count."""
+    """Recompute staleness_score for all active decisions. Returns update count.
+
+    Also re-derives ``affected_modules_json`` from the files each record names.
+    The two belong in one pass because they are one repair: a record's module
+    linkage used to be the first path segment, which in a ``packages/`` layout
+    made almost every record claim ``packages`` or ``tests``, and the rows that
+    predate the fix carry it. Deriving here rather than in a data migration
+    keeps the single-repair-path rule — the one this repo already learned when
+    an alembic migration and a runtime repair disagreed about confidence.
+    """
     result = await session.execute(
         select(DecisionRecord).where(
             DecisionRecord.repository_id == repository_id,
@@ -1073,7 +1082,11 @@ async def recompute_decision_staleness(
         affected = json.loads(dec.affected_files_json)
         if affected:
             affected_by_id[dec.id] = affected
+
+    modules_updated = _backfill_module_nodes(decisions, affected_by_id)
     if not affected_by_id:
+        if modules_updated:
+            await session.flush()
         return 0
 
     git_meta_map = await _fill_git_meta_gaps(
@@ -1092,21 +1105,45 @@ async def recompute_decision_staleness(
 
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
-        decision_text = f"{dec.title} {dec.decision} {dec.rationale}"
         new_score = DecisionExtractor.compute_staleness(
             dec.created_at,
             affected,
             git_meta_map,
-            decision_text=decision_text,
         )
         if abs(new_score - dec.staleness_score) > 0.01:
             dec.staleness_score = round(new_score, 3)
             dec.updated_at = now
             updated += 1
 
-    if updated:
+    if updated or modules_updated:
         await session.flush()
+    # Deliberately the staleness count alone. The callers print this as
+    # "N decisions rescored"; folding a silent module repair into it would
+    # report a rescore that did not happen.
     return updated
+
+
+def _backfill_module_nodes(
+    decisions: list[DecisionRecord],
+    affected_by_id: dict[str, list[str]],
+) -> int:
+    """Re-derive each record's module linkage from its files. Returns rows moved.
+
+    Records naming no file are left alone: there is nothing to derive from, and
+    an invented scope is worse than an absent one.
+    """
+    from repowise.core.analysis.decisions.scope import resolve_module_nodes
+
+    moved = 0
+    for dec in decisions:
+        affected = affected_by_id.get(dec.id)
+        if not affected:
+            continue
+        derived = resolve_module_nodes(affected)
+        if derived != json.loads(dec.affected_modules_json or "[]"):
+            dec.affected_modules_json = json.dumps(derived)
+            moved += 1
+    return moved
 
 
 async def get_stale_decisions(
@@ -1144,6 +1181,11 @@ async def get_decision_health_summary(
         "superseded": 0,
         "dismissed": 0,
         "stale": 0,
+        # Active records naming no file. They score 0.0 because the staleness
+        # question cannot be asked of them, which renders identically to a
+        # record whose code genuinely has not moved — so they are counted
+        # separately rather than banked as fresh.
+        "unscoped": 0,
     }
     stale_decisions: list[DecisionRecord] = []
     proposed_decisions: list[DecisionRecord] = []
@@ -1156,7 +1198,10 @@ async def get_decision_health_summary(
             if d.staleness_score >= 0.5:
                 counts["stale"] += 1
                 stale_decisions.append(d)
-            for fp in json.loads(d.affected_files_json):
+            affected_files = json.loads(d.affected_files_json)
+            if not affected_files:
+                counts["unscoped"] += 1
+            for fp in affected_files:
                 governed_files.add(fp)
         elif d.status == "proposed":
             proposed_decisions.append(d)

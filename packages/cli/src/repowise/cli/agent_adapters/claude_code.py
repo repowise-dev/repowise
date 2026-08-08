@@ -20,8 +20,21 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+#: Every name Claude Code gives the tool that carries a shell command string.
+#: ``PowerShell`` is the Windows one and has the same payload shape. Kept as a
+#: set, and the installed matcher is derived from it below, for the reason the
+#: Codex adapter states at length: a rename upstream is silent here, because a
+#: gate that stops matching looks exactly like a hook with nothing to say.
+SHELL_TOOL_NAMES: frozenset[str] = frozenset({"Bash", "PowerShell"})
+
+#: The same set as a settings.json matcher. Derived rather than written twice.
+SHELL_TOOL_MATCHER: str = "|".join(sorted(SHELL_TOOL_NAMES))
+
+
 class ClaudeCodeAdapter(AgentAdapter):
     name: ClassVar[str] = "claude-code"
+
+    shell_tool_names: ClassVar[frozenset[str]] = SHELL_TOOL_NAMES
 
     def detect(self) -> bool:
         return os.path.isdir(os.path.expanduser("~/.claude"))
@@ -36,7 +49,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         if payload.get("hook_event_name") != "PreToolUse":
             return None
         tool_name = payload.get("tool_name")
-        if tool_name not in ("Bash", "PowerShell"):
+        if tool_name not in SHELL_TOOL_NAMES:
             return None
         tool_input = payload.get("tool_input")
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
@@ -81,3 +94,10 @@ class ClaudeCodeAdapter(AgentAdapter):
         )
 
         return claude_code_rewrite_hook_installed()
+
+    def rewrite_hook_matcher(self) -> str | None:
+        from repowise.cli.editor_integrations.claude_config import (
+            claude_code_rewrite_hook_matcher,
+        )
+
+        return claude_code_rewrite_hook_matcher()

@@ -13,7 +13,6 @@ from repowise.server.deps import get_db_session
 
 from ._router import router
 from .aggregation import _clean_module
-from .serializers import _finding_to_dict
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -22,6 +21,22 @@ _EFFORT_BUCKETS: tuple[tuple[int, str], ...] = (
     (150, "M"),
     (400, "L"),
 )
+
+
+_SORT_KEYS = {
+    "impact_per_effort": lambda t: (-t["impact_per_effort"], -t["total_impact"]),
+    "total_impact": lambda t: -t["total_impact"],
+    # ``score`` clamps at 1.0, so on a real repo dozens of targets tie at the
+    # top and sorting on it alone returns them in dict-insertion order.
+    # ``total_impact`` is the same pre-clamp deduction magnitude the crud layer
+    # ranks metrics by — but summed over the findings that survived this
+    # request's ``biomarker`` / ``min_severity`` filters, so under a filter this
+    # ranks by the filtered depth rather than the file's full depth. That is
+    # what a filtered queue should do; it just means the order is not expected
+    # to match /health/files once a filter is on.
+    "score": lambda t: (t["score"], -t["total_impact"], t["file_path"]),
+    "finding_count": lambda t: -t["finding_count"],
+}
 
 
 def _effort_for_nloc(nloc: int) -> str:
@@ -44,7 +59,16 @@ async def refactoring_targets(
     ),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Refactoring candidates ranked by impact / effort."""
+    """Refactoring candidates ranked by impact / effort.
+
+    A target carries its *primary* finding plus ``finding_count``, not the
+    findings themselves. Serializing every file's full finding list here cost
+    1.8 MB at the default ``limit=200`` (2.9 MB at 500) to render a list that
+    shows none of it — the work was done for all ~2,400 files with findings,
+    before the ``[:limit]`` slice, and ~90% was then discarded. The two
+    consumers both sit behind a click and fetch what they need from
+    ``GET /health/findings?file_path=``.
+    """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -99,15 +123,8 @@ async def refactoring_targets(
                 "biomarkers": sorted({x.biomarker_type for x in fs}),
                 "effort_bucket": effort_bucket,
                 "impact_per_effort": ratio,
-                "all_findings": [_finding_to_dict(f) for f in fs],
             }
         )
 
-    sort_key_map = {
-        "impact_per_effort": lambda t: (-t["impact_per_effort"], -t["total_impact"]),
-        "total_impact": lambda t: -t["total_impact"],
-        "score": lambda t: t["score"],
-        "finding_count": lambda t: -t["finding_count"],
-    }
-    targets.sort(key=sort_key_map[sort])
+    targets.sort(key=_SORT_KEYS[sort])
     return {"targets": targets[:limit], "total": len(targets)}

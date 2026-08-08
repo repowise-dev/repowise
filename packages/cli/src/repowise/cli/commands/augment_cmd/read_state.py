@@ -1,7 +1,7 @@
 """PostToolUse Read/Edit/Write per-session read intelligence.
 
 A small JSON state file under .repowise/ tracks which files this agent
-session has Read and Edited, keyed by the hook payload's session_id. Three
+session has Read and Edited, keyed by the hook payload's session_id. Two
 behaviors ride on it:
 
   * Stale-read notice — a Read of a file whose previous Read predates a
@@ -10,21 +10,30 @@ behaviors ride on it:
     *served as* its skeleton via ``updatedToolOutput``, once per file per
     session, when the repo opted in. Gates and rationale live in
     :mod:`read_skeleton`; this module owns only the session-state gates.
-  * Skeleton nudge — the fallback when the replacement does not apply: a
-    one-line pointer at get_context(include=["skeleton"]) with a
-    bounds-arithmetic estimate. Measured at 0.2%, and on the way out — it
-    survives only to cover clients that cannot honour a replacement.
 
 Rate limiting is the state file itself (per-file, per-session lists), NOT
 the _claim_emission temp marker — that TTL-based dedup only suppresses the
 two concurrently-registered hooks racing on one tool event, which still
 applies on top. A new session_id resets the state.
 
-The re-read notice lived here too, and was retired: it scored 100%
-"respected" only because agents rarely read the same file a third time, so
-it was measuring the base rate and changing nothing. The case it argued —
-"you already have this, take a range instead" — is now handled by doing it
-rather than saying it.
+Two notices lived here and were retired for the same reason wearing two
+different disguises. The re-read notice scored 100% "respected" only because
+agents rarely read the same file a third time, so it was measuring the base
+rate and changing nothing.
+
+The skeleton nudge (a one-line pointer at ``get_context(include=
+["skeleton"])`` on a large Read) was the loudest surface in the system and
+the measurement never came back. Over 516 replayed firings a structure call
+followed 11.4% of the time, against an 11.9% unconditioned base rate. The
+offense it asks the agent to stop, reading the *next* large indexed file
+whole, followed 57.1% of first nudges and 53.4% of later ones, so repeated
+exposure moved nothing. It was also answering the wrong reads:
+``is_unbounded_read`` gates the *replacement*, and the nudge sat on the
+branch the replacement declines, so 53.3% of firings followed a ranged Read.
+That is advice to be more targeted, given to a read that already was.
+
+The case both notices argued, "you already have this, take the structure
+instead", is handled by the replacement doing it rather than saying it.
 """
 
 from __future__ import annotations
@@ -34,8 +43,11 @@ from pathlib import Path
 
 from ._shared import HookResult, _extract_output_text, _find_repo_root, _relativize
 
-_READ_NUDGE_MIN_LINES = 100  # Read output lines before a skeleton nudge
-_READ_NUDGE_MIN_TOKENS = 3000  # full-file tokens below which a nudge is noise
+#: Replacement gates. Named for the retired nudge they were first tuned for,
+#: and left that way on purpose: :mod:`search_digest` documents its own ratio
+#: against ``_READ_NUDGE_MAX_RATIO`` by name, and the counterfactual leg has to
+#: keep asking the same question as the real one.
+_READ_NUDGE_MIN_LINES = 100  # Read output lines before a replacement is worth it
 _READ_NUDGE_MIN_SAVINGS = 1500  # estimated tokens saved must clear this
 _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
 
@@ -57,7 +69,6 @@ def _load_session_state(repo_path: Path, session_id: str) -> dict:
         "seq": 0,
         "reads": {},
         "edits": {},
-        "nudged": [],
         "stale_notified": [],
         # Files served as a skeleton this session. Doubles as the once-per-
         # file gate and as the "did the agent come back for it" marker.
@@ -194,7 +205,7 @@ def _handle_read_post(
     cwd: str,
     session_id: str,
 ) -> HookResult:
-    """Stale-read notice, then either a skeleton replacement or the nudge."""
+    """Stale-read notice, then the skeleton replacement where it applies."""
     file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
     if not isinstance(file_path, str) or not file_path.strip():
         return HookResult()
@@ -233,11 +244,6 @@ def _handle_read_post(
     )
     if replacement is not None:
         fired.append(("skeleton_served", replacement.text))
-    else:
-        nudge = _skeleton_nudge(repo_path, rel, tool_output, state)
-        if nudge:
-            notices.append(nudge)
-            fired.append(("skeleton_nudge", nudge))
 
     persisted = _save_session_state(repo_path, state)
     if not persisted:
@@ -466,7 +472,7 @@ def _log_read_firing(
     if not session_id:
         return
     from ._shared import _ledger_key
-    from .decision_inject import _claim_ledger
+    from .ledger import _claim_ledger
 
     _claim_ledger(
         repo_path,
@@ -507,69 +513,3 @@ def _read_output_line_count(tool_output: object) -> int:
                 return content.count("\n") + 1
     text = _extract_output_text(tool_output)
     return (text.count("\n") + 1) if text.strip() else 0
-
-
-def _skeleton_nudge(repo_path: Path, rel: str, tool_output: object, state: dict) -> str | None:
-    """One-line skeleton pointer for a large Read of an indexed file.
-
-    Cheap by construction: bails before any non-stdlib import when the repo
-    has no wiki.db, and the size estimate is pure bounds arithmetic — the
-    skeleton itself is never rendered on the hook path.
-    """
-    if rel in state["nudged"]:
-        return None
-    if _read_output_line_count(tool_output) < _READ_NUDGE_MIN_LINES:
-        return None
-    db_path = repo_path / ".repowise" / "wiki.db"
-    if not db_path.exists():
-        return None
-
-    bounds = _file_symbol_bounds(db_path, rel)
-    if not bounds:
-        return None
-    try:
-        size = (repo_path / rel).stat().st_size
-    except OSError:
-        return None
-    full_tokens = size // 4
-    if full_tokens < _READ_NUDGE_MIN_TOKENS:
-        return None
-
-    from repowise.core.distill.skeleton import estimate_skeleton_tokens
-
-    skeleton_tokens = estimate_skeleton_tokens(bounds, file_size_bytes=size)
-    if skeleton_tokens > full_tokens * _READ_NUDGE_MAX_RATIO:
-        return None
-    # A nudge is only worth the agent's attention when acting on it buys a
-    # real saving — a few hundred tokens on a mid-size file is noise.
-    if full_tokens - skeleton_tokens < _READ_NUDGE_MIN_SAVINGS:
-        return None
-
-    state["nudged"].append(rel)
-    return (
-        f"[repowise] A skeleton of {rel} is ~{skeleton_tokens} tokens vs ~{full_tokens} "
-        f'for the full file. For structure-level questions use get_context(["{rel}"], '
-        'include=["skeleton"]).'
-    )
-
-
-def _file_symbol_bounds(db_path: Path, rel: str) -> list[tuple[int, int]]:
-    """Persisted (start_line, end_line) pairs for one file, or [] on any miss.
-
-    Direct read-only stdlib sqlite3 — the hook path must not pay the
-    sqlalchemy import for two integers per symbol.
-    """
-    import sqlite3
-
-    try:
-        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=1)
-        try:
-            rows = con.execute(
-                "SELECT start_line, end_line FROM wiki_symbols WHERE file_path = ?",
-                (rel,),
-            ).fetchall()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return []
-    return [(s, e) for s, e in rows if isinstance(s, int) and isinstance(e, int) and s > 0]

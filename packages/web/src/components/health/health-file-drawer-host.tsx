@@ -41,7 +41,13 @@ export function HealthFileDrawerHost({
       permalinkHref={filePageHref ? `${filePageHref}?tab=health` : undefined}
       fileViewHref={filePageHref}
       fileViewHrefFor={
-        filePageHref ? () => `${filePageHref}?tab=health` : undefined
+        // Carry the line through. This used to discard its argument, which was
+        // survivable while the link only appeared next to a function name; now
+        // that file-level markers render their own line, dropping it would make
+        // 34 visually distinct "line N" links resolve to one identical URL.
+        filePageHref
+          ? (lineStart) => `${filePageHref}?tab=health#L${lineStart}`
+          : undefined
       }
       onPartnerHref={(path) => fileEntityPath(prefix, path)}
       onFindingStatusChange={async (findingId, status) => {

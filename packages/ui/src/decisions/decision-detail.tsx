@@ -42,6 +42,7 @@ import { VerificationBadge } from "./verification-badge";
 import { DecisionStatusMark } from "./decision-status-mark";
 import { DecisionEvidenceDrawer } from "./decision-evidence-drawer";
 import { DecisionLineage } from "./decision-lineage";
+import { describeRecordStaleness } from "./decision-staleness";
 import type {
   DecisionDetailAdapter,
   DecisionLinkComponent,
@@ -100,6 +101,16 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   // Which AI-prompt flavor the modal shows: verification ("is this decision
   // still true?") or enforcement ("make the code conform to it").
   const [promptMode, setPromptMode] = React.useState<"verify" | "enforce" | null>(null);
+
+  // Read from `decision.affected_files` and not from `linkedFiles`, which the
+  // editor below mutates locally. `staleness_score` is a proportion the server
+  // computed against the *stored* scope, so pairing it with an unsaved scope
+  // would print a count derived from one file set over a fraction derived from
+  // another, and the sentence would drift the moment somebody typed.
+  const staleness = React.useMemo(
+    () => describeRecordStaleness(decision),
+    [decision],
+  );
 
   // Lineage: cheap, load eagerly so the Evolution timeline renders when present.
   const { data: lineage } = useSWR(
@@ -272,23 +283,14 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </div>
         </div>
 
-        {/* One mono ribbon, tabular, instead of four sans sentences. Staleness
-            is a percentage here and a percentage in the table; it used to be
-            "0.42" on one surface and "42%" on the other. */}
+        {/* One mono ribbon, tabular, instead of four sans sentences.
+            Staleness left the ribbon: a proportion has no reading at a glance,
+            and the thing a reader wants from it is a sentence, which is now
+            below. Confidence left with it, being source rank times
+            verification, so it restated the Source cell beside it as a
+            percentage and every record from one source carried one number. */}
         <dl className="flex flex-wrap gap-x-8 gap-y-2">
           <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
-          <MetaItem label="Confidence" value={`${Math.round(decision.confidence * 100)}%`} />
-          <MetaItem
-            label="Staleness"
-            value={
-              decision.staleness_score > 0
-                ? `${Math.round(decision.staleness_score * 100)}%`
-                : "—"
-            }
-            {...(decision.staleness_score > 0.5
-              ? { valueClassName: "text-[var(--color-error)]" }
-              : {})}
-          />
           <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
         </dl>
 
@@ -319,19 +321,39 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         </div>
       </div>
 
-      {/* Stale warning. A line, not a filled panel: a tinted ground plus a
-          border plus coloured text says the same thing three times, and it
-          outweighed the record it was warning about. Same argument as the
-          status marks. */}
-      {decision.staleness_score > 0.5 && (
-        <p className="flex items-start gap-2 text-sm text-[var(--color-warning)]">
+      {/* What has happened to the code underneath this record, as a fact.
+          A line, not a filled panel: a tinted ground plus a border plus
+          coloured text says the same thing three times, and it outweighed the
+          record it was warning about.
+
+          It renders in all three states rather than only above a threshold,
+          because the two quiet states are not the same state. A record naming
+          no files scored 0.0 and rendered exactly like a record whose code had
+          not moved, so the reader who correctly read one was taught a rule
+          that made them wrong about the other. Only the moved case is marked,
+          and it is marked in warning rather than error: the arithmetic says
+          the files changed, which is a reason to re-read a record, not a
+          verdict that it expired. Three confirmed working rules on a live
+          index sat at a red 100% while being true. */}
+      {/* No band colour. The table cell on the list page is deliberately
+          uncoloured because a file-change count is not a health reading, and
+          amber here is the same category error one hue down. It would also
+          make this the third mark on one record drawing from one colour
+          vocabulary with no key: the status mark paints `active` green and
+          `deprecated` red, and the verification badge paints `fuzzy` amber.
+          The icon carries "look at this"; the sentence carries what it is. */}
+      <p
+        className={`flex items-start gap-2 text-sm ${
+          staleness.kind === "moved"
+            ? "text-[var(--color-text-secondary)]"
+            : "text-[var(--color-text-tertiary)]"
+        }`}
+      >
+        {staleness.kind === "moved" && (
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>
-            Affected files have changed significantly since this was recorded,
-            so it may no longer describe the code.
-          </span>
-        </p>
-      )}
+        )}
+        <span>{staleness.sentence}</span>
+      </p>
 
       {/* Evolution / lineage chain */}
       {lineage && lineage.length > 1 && (
@@ -542,23 +564,14 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   );
 }
 
-function MetaItem({
-  label,
-  value,
-  valueClassName,
-}: {
-  label: string;
-  value: string;
-  valueClassName?: string;
-}) {
+function MetaItem({ label, value }: { label: string; value: string }) {
+  // `valueClassName` went with the Staleness item, its only caller: it existed
+  // to paint that percentage red above 0.5, which is the thing this change
+  // removed. Module-private, so nothing outside can be relying on it.
   return (
     <div>
       <dt className={MICRO_LABEL}>{label}</dt>
-      <dd
-        className={`mt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-secondary)] ${
-          valueClassName ?? ""
-        }`}
-      >
+      <dd className="mt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-secondary)]">
         {value}
       </dd>
     </div>

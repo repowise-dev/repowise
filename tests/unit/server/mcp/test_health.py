@@ -279,3 +279,217 @@ async def test_get_health_metric_carries_dominant_cause_and_magnitude(setup_mcp,
     worst = next(m for m in dash["worst_files"] if m["file_path"] == "src/auth/service.py")
     assert worst["primary_biomarker"] == "complex_method"
     assert worst["total_deduction"] == pytest.approx(3.9)
+
+
+@pytest.mark.asyncio
+async def test_get_health_biomarkers_block_is_capped(setup_mcp, health_data):
+    """``include=["biomarkers"]`` respects ``limit`` and reports the true total.
+
+    Regression: this was the one ranked list in the tool with no cap, so a
+    dashboard-mode call returned every open finding in the repo — 10.3k rows /
+    4.7MB on repowise itself, which overflows an agent's context and yields
+    nothing usable. Every other list caps and carries a ``*_total`` sibling.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(include=["biomarkers"], limit=2)
+    assert len(result["findings"]) == 2
+    # The cap is visible rather than inferred from the length.
+    assert result["findings_total"] == 4
+    # Impact-ordered, so the cap keeps the findings worth reading.
+    impacts = [f["health_impact"] for f in result["findings"]]
+    assert impacts == sorted(impacts, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_get_health_totals_survive_the_cap(setup_mcp, health_data):
+    """Totals count the whole open set even when only ``limit`` rows ship.
+
+    Dashboard mode no longer hydrates every finding to emit a handful, so the
+    totals come from a separate narrow read; this pins them to the full set
+    rather than the truncated head.
+    """
+    from repowise.server.mcp_server import get_health
+
+    capped = await get_health(limit=1)
+    assert len(capped["top_findings"]) == 1
+    assert capped["top_findings_total"] == 4
+
+    scoped = await get_health(targets=["src/auth/service.py"], limit=1)
+    assert len(scoped["findings"]) == 1
+    assert scoped["findings_total"] == 4
+
+
+@pytest.mark.asyncio
+async def test_get_health_only_projection_preserves_block_content(setup_mcp, health_data):
+    """``only`` gates the work behind a block without changing what it holds.
+
+    The projection now skips expensive optional work rather than computing and
+    discarding it, so the surviving block must still be byte-identical to the
+    one the full response carries.
+    """
+    from repowise.server.mcp_server import get_health
+
+    full = await get_health()
+    projected = await get_health(only=["kpis"])
+    assert set(projected) == {"mode", "kpis", "_meta"}
+    assert projected["kpis"] == full["kpis"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_dimension_filter_is_not_defeated_by_the_cap(setup_mcp, health_data):
+    """A dimension filter selects the rows, rather than trimming a capped head.
+
+    Regression: the filter used to run over the finished response, so it
+    narrowed a list already capped by ``health_impact``. Performance findings
+    carry low impact by construction, so the head was defect-heavy and
+    ``include=["biomarkers", "performance"]`` filtered down to nothing — while
+    ``findings_total`` still reported the whole repo, which reads as "no
+    performance risk here" rather than "none shown".
+    """
+    from repowise.server.mcp_server import get_health
+
+    # limit=1 forces the cap to bite before the filter would have run.
+    result = await get_health(include=["biomarkers", "performance"], limit=1)
+    assert [f["dimension"] for f in result["findings"]] == ["performance"]
+    # The total describes the filtered set, so an empty list is unambiguous.
+    assert result["findings_total"] == 1
+
+    maint = await get_health(include=["biomarkers", "maintainability"], limit=1)
+    assert [f["dimension"] for f in maint["findings"]] == ["maintainability"]
+
+    scoped = await get_health(
+        targets=["src/auth/service.py"], include=["biomarkers", "performance"]
+    )
+    assert [f["dimension"] for f in scoped["findings"]] == ["performance"]
+
+
+@pytest.mark.asyncio
+async def test_get_health_dimension_filter_leaves_kpis_and_ranking_alone(setup_mcp, health_data):
+    """Asking to *see* one dimension must not restate the repo's health.
+
+    The leads and the performance KPI come from the unfiltered open set; only
+    the emitted findings narrow.
+    """
+    from repowise.server.mcp_server import get_health
+
+    full = await get_health()
+    filtered = await get_health(include=["biomarkers", "maintainability"])
+    assert filtered["kpis"]["performance_findings"] == full["kpis"]["performance_findings"]
+    assert filtered["worst_files"] == full["worst_files"]
+
+
+@pytest.fixture
+async def floored_health_data(session, populated_db: str) -> str:
+    """Four files clamped at the 1.0 score floor, worst one last by path.
+
+    Mirrors the shape of a real repo, where 30 files sit at exactly 1.0 and the
+    deepest of them sorts last alphabetically.
+    """
+    from repowise.core.persistence.crud import save_health_findings, save_health_metrics
+
+    rid = populated_db
+    paths = ["src/a.py", "src/b.py", "src/c.py", "src/z.py"]
+    await save_health_metrics(
+        session,
+        rid,
+        [
+            {
+                "file_path": p,
+                "score": 1.0,
+                "max_ccn": 20,
+                "max_nesting": 5,
+                "nloc": 100,
+                "has_test_file": False,
+                "module": "src",
+            }
+            for p in paths
+        ],
+    )
+    # z.py is the deepest by a wide margin and would be invisible under a
+    # score-only sort at any limit below 4.
+    impacts = {"src/a.py": 2.0, "src/b.py": 3.0, "src/c.py": 4.0, "src/z.py": 9.0}
+    await save_health_findings(
+        session,
+        rid,
+        [
+            {
+                "file_path": p,
+                "biomarker_type": "complex_method",
+                "severity": "high",
+                "function_name": "run",
+                "line_start": 1,
+                "line_end": 20,
+                "details": {},
+                "health_impact": impact,
+                "reason": f"{p} is complex",
+            }
+            for p, impact in impacts.items()
+        ],
+    )
+    return rid
+
+
+@pytest.mark.asyncio
+async def test_worst_files_ranks_floored_ties_by_deduction(setup_mcp, floored_health_data):
+    """The headline "worst files" list contains the actual worst file.
+
+    Regression: the list sorted on ``score`` alone. The score clamps at 1.0, so
+    ties broke by DB order — path order in practice — and on this repo the file
+    carrying the largest deduction landed at position 27 of a list capped at 20.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health()
+    assert [m["file_path"] for m in result["worst_files"]] == [
+        "src/z.py",
+        "src/c.py",
+        "src/b.py",
+        "src/a.py",
+    ]
+
+    # The cap is where the old order actually hurt: under a score-only sort the
+    # worst file falls off the page entirely.
+    capped = await get_health(limit=1)
+    assert [m["file_path"] for m in capped["worst_files"]] == ["src/z.py"]
+
+
+@pytest.mark.asyncio
+async def test_worst_files_order_survives_every_dimension_filter(setup_mcp, floored_health_data):
+    """Ranking reads the unfiltered open set, whatever the caller asked to see.
+
+    The combination is the point: a cap and a filter interacting is where this
+    tool has broken twice. Narrowing the *findings* to one dimension must not
+    silently re-rank which files the repo's worst are.
+    """
+    from repowise.server.mcp_server import get_health
+
+    baseline = [m["file_path"] for m in (await get_health(limit=2))["worst_files"]]
+    assert baseline == ["src/z.py", "src/c.py"]
+
+    for include in (["defect"], ["maintainability"], ["performance"], ["biomarkers", "defect"]):
+        result = await get_health(include=include, limit=2)
+        assert [m["file_path"] for m in result["worst_files"]] == baseline, include
+
+
+@pytest.mark.asyncio
+async def test_one_response_agrees_with_itself_about_the_worst_file(
+    setup_mcp, floored_health_data
+):
+    """``kpis`` and ``worst_files`` must name the same file.
+
+    Regression: ``_compute_kpis`` reduces with ``min()``, which returns the
+    *first* minimum, so it answered from whatever order it was handed. Ranking
+    ``worst_files`` without also ranking the list behind the KPIs produced a
+    payload whose headline named one file as the worst performer while the
+    list printed directly beneath it led with another.
+    """
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health()
+    assert result["kpis"]["worst_performer_path"] == result["worst_files"][0]["file_path"]
+    assert result["kpis"]["worst_performer_path"] == "src/z.py"
+
+    # Same reduction, same tie, one level down: the module rollup's worst
+    # performer is picked with ``min()`` over the same rows.
+    assert [m["worst_performer_path"] for m in result["modules"]] == ["src/z.py"]

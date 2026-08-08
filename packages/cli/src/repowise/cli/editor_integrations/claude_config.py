@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+from repowise.cli.agent_adapters.claude_code import SHELL_TOOL_MATCHER
 from repowise.cli.mcp_config import (
     generate_mcp_config,
     load_existing_config,
@@ -207,7 +208,7 @@ def enable_tool_search_in_claude_code() -> Path | None:
 
 
 # Current augment PostToolUse matcher. Read/Edit/Write power the distill
-# read-intelligence layer (skeleton nudges + per-file stale-read notices);
+# read-intelligence layer (skeleton replacement + per-file stale-read notices);
 # PowerShell is the Windows Claude Code shell tool (same payload shape as
 # Bash); the mcp__ pattern feeds the read-after-served ledger (read_enrich)
 # and matches the repowise MCP server under any registration name (local,
@@ -239,6 +240,13 @@ _AUGMENT_HOOK_COMMAND = (
 )
 
 
+# PostToolUseFailure carries the wrong-path rescue. Narrower than
+# _AUGMENT_MATCHER on purpose: only the tools that take a path argument can
+# fail in the way this surface answers, and a Bash failure is a command line
+# rather than a path, so matching it would wake the hook for nothing.
+_FAILURE_MATCHER = "Read|Edit|Write|Grep|Glob|NotebookEdit"
+
+
 def _session_start_entry() -> dict:
     return {
         "matcher": _SESSION_START_MATCHER,
@@ -253,12 +261,44 @@ def _session_start_entry() -> dict:
     }
 
 
+def _backfill_event(hooks: dict, event: str, entry_factory) -> bool:
+    """Add this event's augment entry if the install predates it.
+
+    Preserves a user's own hooks on the same event by appending rather than
+    replacing, and is a no-op once a repowise entry is present, so migration
+    stays idempotent across runs.
+    """
+    existing = hooks.get(event)
+    if existing is None:
+        hooks[event] = [entry_factory()]
+        return True
+    if isinstance(existing, list) and not _has_repowise_hook(existing):
+        existing.append(entry_factory())
+        return True
+    return False
+
+
+def _failure_entry() -> dict:
+    return {
+        "matcher": _FAILURE_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _AUGMENT_HOOK_COMMAND,
+                "timeout": 10,
+                "statusMessage": "Checking codebase context...",
+            }
+        ],
+    }
+
+
 def install_claude_code_hooks() -> Path | None:
-    """Register PostToolUse + SessionStart hooks in ~/.claude/settings.json.
+    """Register the augment hooks in ~/.claude/settings.json.
 
     PostToolUse detects git staleness, enriches Grep/Glob results, and emits
     Read-intelligence notices; SessionStart injects the live index-freshness
-    context block. Existing user hooks are preserved.
+    context block; PostToolUseFailure carries the wrong-path rescue. Existing
+    user hooks are preserved.
     """
     settings_path = _claude_code_settings_path()
 
@@ -299,9 +339,12 @@ def install_claude_code_hooks() -> Path | None:
             post_hooks.append(post_hook_entry)
 
         # SessionStart: live index-freshness context at session start.
-        session_hooks = hooks.setdefault("SessionStart", [])
-        if not _has_repowise_hook(session_hooks):
-            session_hooks.append(_session_start_entry())
+        # PostToolUseFailure: the wrong-path rescue.
+        # Both go through the same helper as the self-heal, which leaves a
+        # hand-written non-list value alone instead of iterating it into an
+        # AttributeError the OSError handler below would not catch.
+        _backfill_event(hooks, "SessionStart", _session_start_entry)
+        _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
 
         settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
@@ -311,9 +354,12 @@ def install_claude_code_hooks() -> Path | None:
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 
-# Current rewrite PreToolUse matcher; PowerShell is the Windows Claude Code
-# shell tool. Legacy Bash-only installs are widened in place.
-_REWRITE_MATCHER = "Bash|PowerShell"
+# Current rewrite PreToolUse matcher, derived from the adapter's own tool-name
+# set so the installed matcher and the gate that reads the payload cannot
+# drift apart. Legacy Bash-only installs are widened in place. Safe at module
+# scope for the same reason the Codex twin is: the adapter imports this module
+# lazily, and its own imports are stdlib only.
+_REWRITE_MATCHER = SHELL_TOOL_MATCHER
 _LEGACY_REWRITE_MATCHERS = ("Bash",)
 
 
@@ -444,26 +490,47 @@ def uninstall_claude_code_rewrite_hook() -> bool:
 
 def claude_code_rewrite_hook_installed() -> bool:
     """True when the distill rewrite hook is registered in settings.json."""
+    return claude_code_rewrite_hook_matcher() is not None
+
+
+def claude_code_rewrite_hook_matcher() -> str | None:
+    """The matcher on the installed rewrite entry, or None when not installed.
+
+    ``""`` is a real answer: an entry with no matcher at all. Presence and
+    matcher say different things — an entry pointing at a tool name Claude
+    Code no longer uses is registered and will never fire.
+    """
     settings_path = _claude_code_settings_path()
     if not settings_path.exists():
-        return False
+        return None
     try:
         existing = load_existing_config(settings_path)
     except Exception:
-        return False
+        return None
     hooks = existing.get("hooks")
     if not isinstance(hooks, dict):
-        return False
+        return None
     pre_hooks = hooks.get("PreToolUse")
-    return isinstance(pre_hooks, list) and _has_rewrite_hook(pre_hooks)
+    if not isinstance(pre_hooks, list):
+        return None
+    return _rewrite_matcher(pre_hooks)
 
 
 def _is_rewrite_hook(hook: dict) -> bool:
     return _REWRITE_HOOK_COMMAND in hook.get("command", "")
 
 
+def _rewrite_matcher(hook_list: list) -> str | None:
+    """Matcher of the first entry carrying our hook, or None if there is none."""
+    for entry in hook_list:
+        if any(_is_rewrite_hook(h) for h in entry.get("hooks", [])):
+            matcher = entry.get("matcher")
+            return matcher if isinstance(matcher, str) else ""
+    return None
+
+
 def _has_rewrite_hook(hook_list: list) -> bool:
-    return any(_is_rewrite_hook(h) for entry in hook_list for h in entry.get("hooks", []))
+    return _rewrite_matcher(hook_list) is not None
 
 
 def _strip_hooks(hook_list: list, predicate) -> bool:
@@ -554,17 +621,14 @@ def migrate_claude_code_hooks() -> bool:
     if isinstance(post, list) and _migrate_legacy_hook(post):
         changed = True
 
-    # Users who installed before the SessionStart context hook existed have
-    # the augment PostToolUse entry but no SessionStart one; backfill it.
-    # Gated on the augment hook so migration never installs for someone who
-    # removed repowise hooks on purpose.
+    # An install predating one of the later events has the augment PostToolUse
+    # entry but not that event's; backfill each. Gated on the augment hook so
+    # migration never installs for someone who removed repowise hooks on
+    # purpose.
     if isinstance(post, list) and _has_repowise_hook(post):
-        session = hooks.get("SessionStart")
-        if session is None:
-            hooks["SessionStart"] = [_session_start_entry()]
+        if _backfill_event(hooks, "SessionStart", _session_start_entry):
             changed = True
-        elif isinstance(session, list) and not _has_repowise_hook(session):
-            session.append(_session_start_entry())
+        if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
             changed = True
 
     if not changed:

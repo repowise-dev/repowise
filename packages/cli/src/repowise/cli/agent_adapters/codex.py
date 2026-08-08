@@ -3,9 +3,9 @@
 Protocol reference (Codex hooks, developers.openai.com/codex/hooks): hooks
 load from ``~/.codex/hooks.json`` (or a repo-local ``.codex/hooks.json``); a
 PreToolUse hook receives JSON on stdin with snake_case
-``hook_event_name``/``tool_name``/``tool_input``/``cwd`` — the shell tool is
-named ``Bash`` and ``tool_input.command`` is a string — and answers with
-camelCase ``hookSpecificOutput`` JSON on stdout.
+``hook_event_name``/``tool_name``/``tool_input``/``cwd`` — the shell tool
+answers to several names (:data:`SHELL_TOOL_NAMES`) and ``tool_input.command``
+is a string — and answers with camelCase ``hookSpecificOutput`` JSON on stdout.
 
 Two protocol limits shape this adapter's honesty posture:
 
@@ -24,7 +24,7 @@ Two protocol limits shape this adapter's honesty posture:
 from __future__ import annotations
 
 import json
-import os.path
+import os
 from typing import TYPE_CHECKING, ClassVar
 
 from repowise.cli.agent_adapters.base import AgentAdapter, RewriteRequest, RewriteResult
@@ -33,8 +33,35 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+#: Every name Codex has given the tool that carries a shell command *string*,
+#: because it has given it more than one and the rewrite is dead for any name
+#: it does not answer to.
+#:
+#: This started as the single literal ``"Bash"``. Measured against 18 real
+#: rollouts from Codex 0.145: ``"Bash"`` does not appear once, and the shell
+#: calls are ``shell_command`` (322), whose ``tool_input.command`` is a string
+#: — the shape :meth:`CodexAdapter.parse_hook_payload` already reads. A rename
+#: upstream is silent here (the gate stops matching and the hook never fires),
+#: so this is a set and new names are added rather than swapped in.
+#:
+#: **``exec`` is deliberately not in it.** It looks like a shell tool in the
+#: rollouts (423 calls) and is not one: it is a ``custom_tool_call`` whose
+#: input is a *JavaScript program* that calls ``tools.shell_command(...)``
+#: internally. There is no command string to read and nothing to rewrite, so
+#: matching it would buy 423 hook subprocesses that can only decline. A name
+#: belongs here once it is observed carrying ``tool_input.command``.
+SHELL_TOOL_NAMES: frozenset[str] = frozenset({"Bash", "shell_command"})
+
+#: The same set as a hooks.json matcher. Derived rather than written twice —
+#: an installer whose matcher disagrees with the adapter's gate installs a
+#: hook that runs and then declines every payload it is handed.
+SHELL_TOOL_MATCHER: str = "|".join(sorted(SHELL_TOOL_NAMES))
+
+
 class CodexAdapter(AgentAdapter):
     name: ClassVar[str] = "codex"
+
+    shell_tool_names: ClassVar[frozenset[str]] = SHELL_TOOL_NAMES
 
     #: No ask-with-mutation in the Codex hook protocol — see module docstring.
     rewrite_permissions: ClassVar[frozenset[str]] = frozenset({"allow"})
@@ -51,9 +78,10 @@ class CodexAdapter(AgentAdapter):
             return None
         if payload.get("hook_event_name") != "PreToolUse":
             return None
-        # Codex's shell tool is named "Bash" (there is no separate
-        # PowerShell tool); the command is always a string.
-        if payload.get("tool_name") != "Bash":
+        # Codex has no separate PowerShell tool, but it has renamed the shell
+        # one; see SHELL_TOOL_NAMES. The command is a string on every name
+        # that reaches the check below.
+        if payload.get("tool_name") not in SHELL_TOOL_NAMES:
             return None
         tool_input = payload.get("tool_input")
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
@@ -63,7 +91,14 @@ class CodexAdapter(AgentAdapter):
         return RewriteRequest(
             command=command,
             cwd=cwd if isinstance(cwd, str) else "",
-            shell="posix",
+            # Codex names its shell tool the same on every platform, so the
+            # dialect has to come from the platform. It is PowerShell on
+            # Windows — the real rollouts are full of `get-content`,
+            # `get-childitem` and `$env:` — and calling that "posix" skips
+            # `decide`'s PowerShell-alias bailout, which exists precisely to
+            # stop an alias command being re-run through cmd.exe. Dead code
+            # until the gate above started matching; live now.
+            shell="powershell" if os.name == "nt" else "posix",
         )
 
     def render_response(self, result: RewriteResult) -> str:
@@ -100,3 +135,10 @@ class CodexAdapter(AgentAdapter):
         )
 
         return codex_rewrite_hook_installed()
+
+    def rewrite_hook_matcher(self) -> str | None:
+        from repowise.cli.editor_integrations.codex_config import (
+            codex_rewrite_hook_matcher,
+        )
+
+        return codex_rewrite_hook_matcher()

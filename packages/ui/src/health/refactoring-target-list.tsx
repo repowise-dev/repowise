@@ -1,10 +1,19 @@
-import { RefactoringCard, type RefactoringTarget, type FindingStatus } from "./refactoring-card";
+import {
+  RefactoringCard,
+  type RefactoringTarget,
+  type RefactoringTargetFinding,
+  type FindingStatus,
+} from "./refactoring-card";
 
 export interface RefactoringTargetListProps {
   targets: RefactoringTarget[];
   onSelect?: ((target: RefactoringTarget) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
   onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
+  /** Per-card lazy fetch of a file's findings; see `RefactoringCardProps`. */
+  onLoadFindings?:
+    | ((filePath: string) => Promise<RefactoringTargetFinding[]>)
+    | undefined;
   emptyMessage?: string;
   /** File path of the card to flash-highlight (quadrant click). */
   highlightedPath?: string | null | undefined;
@@ -15,6 +24,7 @@ export function RefactoringTargetList({
   onSelect,
   onStatusChange,
   onGeneratePrompt,
+  onLoadFindings,
   emptyMessage = "No refactoring targets match the current filters.",
   highlightedPath,
 }: RefactoringTargetListProps) {
@@ -34,6 +44,7 @@ export function RefactoringTargetList({
           onSelect={onSelect}
           onStatusChange={onStatusChange}
           onGeneratePrompt={onGeneratePrompt}
+          onLoadFindings={onLoadFindings}
           highlighted={highlightedPath === t.file_path}
         />
       ))}

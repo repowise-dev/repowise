@@ -46,9 +46,6 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
       served as its skeleton via updatedToolOutput, elision markers and
       1-indexed line ranges intact, once per file per session. Opt-in
       (hooks.read_skeleton), default off.
-    * Skeleton nudge: the fallback when the replacement does not apply —
-      a one-line pointer at get_context(include=["skeleton"]) with a cheap
-      bounds-arithmetic estimate.
     * Stale-read notice: when this file was Edited/Written after the
       session's previous Read of it, flag that earlier excerpts are stale.
       Once per file per session, never blocking.
@@ -63,6 +60,13 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
   PostToolUse → edit tools (Codex)
     * After file edits, emit a short reminder that the indexed context may
       be stale.
+
+  PostToolUseFailure → Read / Edit / Write / Grep / Glob / NotebookEdit
+    * Wrong-path rescue: the call failed because the path is not in this
+      tree, and exactly one indexed file carries that basename. Names it.
+      Silent on an ambiguous basename, a directory target, a path in another
+      checkout, and on the failures where Claude Code already printed its
+      own suggestion — the whole value here is that a rescue can be trusted.
 
 There is intentionally NO PreToolUse handling. Earlier versions enriched
 every Grep/Glob unconditionally with importers/dependencies/symbols; in
@@ -87,6 +91,8 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.agent_adapters.codex import SHELL_TOOL_NAMES
+
 from ._shared import HookResult, as_result
 from .bash_staleness import _handle_bash_post
 from .codex import _handle_codex_context_event, _handle_post_edit_use
@@ -94,8 +100,16 @@ from .read_state import _handle_edit_post, _handle_read_post, _record_edit
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
 from .session_start import _handle_claude_session_start
+from .wrong_path import _handle_tool_failure
 
 _EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
+
+#: Shell tools, across both harnesses. ``PowerShell`` is Windows Claude Code;
+#: the rest are what Codex has called its shell tool, owned by the adapter so
+#: the dispatch here and the installed matcher cannot disagree. Free at module
+#: scope: ``agent_adapters`` is stdlib-only by its own hot-path contract, and
+#: `tests/unit/cli/test_augment_hook_perf.py` holds that.
+_SHELL_TOOL_NAMES = SHELL_TOOL_NAMES | {"PowerShell"}
 
 
 @click.command("augment")
@@ -152,6 +166,27 @@ def _run_augment(*, client: str | None = None) -> None:
         _count_run(cwd, session_id, event, "", emitted=bool(result))
         return
 
+    if event == "PostToolUseFailure":
+        # A tool that just failed on a path this tree does not have is the one
+        # moment the index can answer a question the agent actually asked.
+        #
+        # This event carries the failure in ``error`` and not in
+        # ``tool_response``, which is PostToolUse-only, and it fires for a user
+        # interrupt as well as for a real error. Both are load-bearing: reading
+        # the wrong field is silence, and answering an interrupt is noise at
+        # the moment the user asked for quiet.
+        if payload.get("is_interrupt"):
+            return
+        session_id = payload.get("session_id", "")
+        session_id = session_id if isinstance(session_id, str) else ""
+        result = _handle_tool_failure(
+            tool_name, tool_input, payload.get("error"), cwd, session_id=session_id
+        )
+        if result:
+            _emit_response(event, result)
+        _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
+        return
+
     if event != "PostToolUse":
         return
 
@@ -187,7 +222,7 @@ def _count_run(cwd: str, session_id: str, event: str, tool: str, *, emitted: boo
         return
     try:
         from ._shared import _find_repo_root
-        from .decision_inject import _record_hook_run
+        from .ledger import _record_hook_run
 
         repo_path = _find_repo_root(Path(cwd))
         if repo_path is not None:
@@ -314,9 +349,10 @@ def _handle_post_tool_use(
         # Read-after-served KPI: logged to the ledger, never spoken about.
         _log_read_after_served(tool_input, tool_output, cwd, session_id)
         return _handle_read_post(tool_input, tool_output, cwd, session_id)
-    if tool_name in ("Bash", "PowerShell"):
-        # The PowerShell tool (Windows Claude Code) surfaces the same
-        # stdout/stderr response shape as Bash — one handler covers both.
+    if tool_name in _SHELL_TOOL_NAMES:
+        # The PowerShell tool (Windows Claude Code) and Codex's several names
+        # for its shell all surface the same stdout/stderr response shape as
+        # Bash — one handler covers them.
         return as_result(_handle_bash_post(tool_input, tool_output, cwd))
     if tool_name in ("Grep", "Glob"):
         # ``client`` reaches this one because the flood digest can *replace*

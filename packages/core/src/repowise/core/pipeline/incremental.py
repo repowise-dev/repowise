@@ -92,6 +92,16 @@ def build_repo_graph(
     file_infos = [fi for fi in maybe_infos if fi is not None]
     repo_structure = traverser.get_repo_structure(file_infos)
 
+    # Structural episodes, minus the formatter check: this path is the hot one
+    # (every update, plus the config-triggered re-score), so it derives only
+    # what the walk has already paid for and never spawns a subprocess.
+    try:
+        from repowise.core.precedent.structural import record_structural_episodes
+
+        record_structural_episodes(repo_path, traverser, allow_formatter_check=False)
+    except Exception:
+        pass
+
     # Thread-pool source reads + content-hash parse cache split, shared with
     # the init parse phase: only changed files need a tree-sitter parse.
     # Cache failures degrade to all-miss (full parse), as before.
@@ -576,6 +586,8 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         # the repo's excludes an update would store events for files a full
         # index never sees, and they would never age out.
         exclude_patterns=cfg.get("exclude_patterns"),
+        # Git episodes ride the same capture and inherit those excludes.
+        record_episodes=True,
     )
     newest = await get_latest_commit_committed_at(session, repo_id)
     since_ts: int | None = None
@@ -969,9 +981,19 @@ async def persist_incremental_index(
             # whose updates all come from the post-commit hook this is the only
             # place a retirement can land.
             try:
-                from repowise.core.pipeline.persist import sweep_retired_pages
+                from repowise.core.pipeline.persist import (
+                    sweep_absent_cycle_pages,
+                    sweep_retired_pages,
+                )
 
                 swept_page_ids = await sweep_retired_pages(session, repo_id)
+                # Same reasoning as the retirement sweep above: this path never
+                # regenerates a cycle page, so asking the rebuilt graph whether
+                # the cycle still exists is the only way a fixed cycle's page
+                # can ever be retired for a user who only runs `update`.
+                swept_page_ids += await sweep_absent_cycle_pages(
+                    session, repo_id, graph_builder
+                )
             except Exception as exc:
                 _skip("Retired page sweep", exc)
 

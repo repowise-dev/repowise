@@ -73,11 +73,18 @@ class GitIndexer:
         follow_renames: bool = False,
         tier: GitIndexTier = GitIndexTier.FULL,
         exclude_patterns: list[str] | None = None,
+        record_episodes: bool = False,
     ) -> None:
         self.repo_path = Path(repo_path)
         self.commit_limit = commit_limit or _DEFAULT_COMMIT_LIMIT
         self.follow_renames = follow_renames
         self.tier = tier
+        # Off by default, and a constructor parameter rather than a call site.
+        # `health` and `dead-code` build an indexer of their own to read
+        # metadata, without the repo's exclude patterns; letting them write
+        # episodes would make two nominally read-only commands persist rows
+        # naming files the repo excludes, and those rows outlive every prune.
+        self.record_episodes = record_episodes
 
         import pathspec
 
@@ -286,6 +293,10 @@ class GitIndexer:
         # progress callbacks would visibly stall. Failure-isolated — the counts
         # above stand on their own if tracing breaks.
         fix_event_rows, built_ok = await asyncio.to_thread(self._build_fix_events, fix_walk)
+
+        # Git-tier episodes ride the same walk for the same reason. Off the
+        # event loop because it writes SQLite.
+        await asyncio.to_thread(self._record_git_episodes, fix_walk)
 
         # Per-file AI line share from the agent-trace records. Keyed by path
         # like the aggregates below, so it merges in the same pass and
@@ -738,6 +749,7 @@ class GitIndexer:
                 skip_shas=known_shas,
             )
             rows, ok = self._build_fix_events(walk)
+            self._record_git_episodes(walk)
             return rows, (walk.oldest_fix_ts if ok else 0), tracked
         except Exception as exc:
             logger.debug("incremental_fix_events_failed", error=str(exc))
@@ -763,6 +775,20 @@ class GitIndexer:
         except Exception as exc:
             logger.debug("fix_event_build_failed", error=str(exc))
             return [], False
+
+    def _record_git_episodes(self, walk: FixWalk) -> None:
+        """Persist *walk*'s code fixes as git-tier episodes. Never raises.
+
+        Imported lazily, like the other precedent call sites: the episode store
+        is stdlib-only so hook-time readers can open it cheaply, and keeping it
+        off this module's import graph is what preserves that.
+        """
+        if not self.record_episodes:
+            return
+        with contextlib.suppress(Exception):
+            from ...precedent.git_episodes import record_git_episodes
+
+            record_git_episodes(self.repo_path, walk)
 
     def capture_repo_totals(self) -> Any:
         """Whole-history :class:`RepoTotals` for this repo (opens its own repo).

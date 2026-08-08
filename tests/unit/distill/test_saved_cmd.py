@@ -148,9 +148,89 @@ def test_saved_dollar_estimate_uses_input_rate(repo_cwd: Path) -> None:
     )
     s.close()
     # claude-sonnet-4-6 input rate is $3.00/M -> exactly $3.00 for 1M saved.
-    result = CliRunner().invoke(saved_command, [])
+    # Pinned explicitly: the rate is now detected, and a tmp repo happens to
+    # have no session to detect, which is not something to assert by accident.
+    result = CliRunner().invoke(saved_command, ["--model", "claude-sonnet-4-6"])
     assert result.exit_code == 0
     assert "$3.0000" in result.output
+
+
+class TestPricingModelResolution:
+    """Saved tokens must cost what the agent that saved them costs.
+
+    The Costs endpoint has always priced this ledger at the detected session
+    model while this command assumed Sonnet, so the same ledger produced two
+    dollar figures — and the assumed one understates an Opus session by two
+    thirds.
+    """
+
+    def test_explicit_model_wins(self, tmp_path: Path) -> None:
+        model, note = saved_cmd._resolve_pricing(tmp_path, "gpt-5.4-nano")
+        assert model == "gpt-5.4-nano"
+        assert note == "gpt-5.4-nano"
+
+    def test_detected_model_is_used_and_named(self, tmp_path: Path, monkeypatch) -> None:
+        from repowise.core.distill import session_model
+
+        detected = session_model.ResolvedModel(
+            model="claude-opus-5",
+            raw="claude-opus-5[1m]",
+            agent="claude_code",
+            source="detected from Claude Code session",
+        )
+        monkeypatch.setattr(session_model, "resolve_session_model", lambda *a, **k: detected)
+        model, note = saved_cmd._resolve_pricing(tmp_path, None)
+        assert model == "claude-opus-5"
+        # The reader is told it was detected, not assumed.
+        assert note == "claude-opus-5, detected from Claude Code session"
+
+    def test_detection_failure_falls_back_rather_than_raising(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from repowise.core.distill import session_model
+
+        def boom(*_a, **_k):
+            raise RuntimeError("unreadable transcript")
+
+        monkeypatch.setattr(session_model, "resolve_session_model", boom)
+        model, note = saved_cmd._resolve_pricing(tmp_path, None)
+        assert model == saved_cmd.DEFAULT_PRICING_MODEL
+        assert "assumed" in note
+
+    def test_the_fallback_matches_the_resolver_s_own_default(self) -> None:
+        # Not asserted by running detection against a tmp path: that reads the
+        # real ~/.codex, where a rollout carrying no cwd is kept on purpose,
+        # so the assertion would pass or fail on whose machine ran it.
+        # `test_session_model.py` owns detection, hermetically, with injected
+        # roots. What belongs here is that the two defaults agree.
+        from repowise.core.distill.session_model import DEFAULT_MODEL
+
+        assert saved_cmd.DEFAULT_PRICING_MODEL == DEFAULT_MODEL
+
+    def test_detected_rate_reaches_the_dollar_line(self, repo_cwd: Path, monkeypatch) -> None:
+        from repowise.core.distill import session_model
+
+        detected = session_model.ResolvedModel(
+            model="claude-opus-5",
+            raw="claude-opus-5",
+            agent="claude_code",
+            source="detected from Claude Code session",
+        )
+        monkeypatch.setattr(session_model, "resolve_session_model", lambda *a, **k: detected)
+        s = _store(repo_cwd)
+        s.record_saving(
+            filter_name="test_output",
+            source="cli",
+            command="pytest",
+            raw_tokens=1_000_000,
+            distilled_tokens=0,
+        )
+        s.close()
+        result = CliRunner().invoke(saved_command, [])
+        assert result.exit_code == 0
+        # Opus input is $5.00/M, not the $3.00 this command used to assume.
+        assert "$5.0000" in result.output
+        assert "claude-opus-5" in result.output
 
 
 def test_saved_no_store_prints_hint(repo_cwd: Path) -> None:
@@ -226,11 +306,16 @@ def test_missed_tip_names_the_opt_out_when_the_repo_declined(monkeypatch, tmp_pa
 
 
 def test_rewrite_hook_installed_degrades_to_false(monkeypatch) -> None:
-    """A broken or absent adapter must not break `saved --missed`."""
+    """A broken or absent adapter must not break `saved --missed`.
+
+    Patches the status call rather than the presence check underneath it:
+    that is the entry point now, and stubbing anything shallower would let
+    this assertion fall through to the developer's real ~/.claude.
+    """
     import repowise.cli.agent_adapters.claude_code as cc
 
     def boom(self):
         raise RuntimeError("no adapter here")
 
-    monkeypatch.setattr(cc.ClaudeCodeAdapter, "rewrite_hook_installed", boom)
+    monkeypatch.setattr(cc.ClaudeCodeAdapter, "rewrite_hook_status", boom)
     assert saved_cmd._rewrite_hook_installed() is False

@@ -8,7 +8,7 @@ Two things are under test and they are not the same thing:
    argument that it fires only when it should.
 2. **The contract.** A replacement that does not carry its elision ranges is
    a silent truncation, which is the one outcome that would make this worse
-   than the nudge it replaces. That is asserted directly, not implied.
+   than the nudge it replaced. That is asserted directly, not implied.
 """
 
 from __future__ import annotations
@@ -465,14 +465,19 @@ def test_no_index_at_all_is_left_alone(repo: Path) -> None:
     assert _read(repo).replacement is None
 
 
-def test_an_unsupported_client_falls_back_to_the_nudge(
+def test_an_unsupported_client_gets_its_read_untouched(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Older clients ignore updatedToolOutput — emitting it would lose the win."""
+    """Older clients ignore updatedToolOutput — emitting it would lose the win.
+
+    This used to fall back to the skeleton nudge. The nudge was retired for
+    having no measurable effect, so the fallback is silence: there is nothing
+    to say to a client that cannot be handed the skeleton.
+    """
     monkeypatch.setenv("REPOWISE_HOOK_UPDATED_OUTPUT", "0")
     result = _read(repo)
     assert result.replacement is None
-    assert "A skeleton of pkg/big.py is ~" in (result.context or "")
+    assert result.context is None
 
 
 # ---------------------------------------------------------------------------

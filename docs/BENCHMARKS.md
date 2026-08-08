@@ -42,6 +42,10 @@ That is also why this page prints n beside every mean, states which tool
 produced each number, and publishes the rows we lose. It is built to survive a
 rerun, because in this field that is the only property that turns out to matter.
 
+So we reran our own headline ourselves, on a second agent harness, and published
+what came back. It moved a number we had been quoting, and section 2 now
+carries both results and the correction.
+
 ## What we measured, and against whom
 
 repowise builds [five intelligence layers](layers/INTELLIGENCE_LAYERS.md) from
@@ -51,9 +55,9 @@ overlap on different layers, and this table says exactly which.
 | Layer | Measured against | Result |
 |---|---|---|
 | Finding the right files | CodeGraph, Graphify, code-review-graph | [§1](#1-finding-the-right-files) **we win**, n=42 held out, p=0.00004 |
-| Work saved in a real agent loop | CodeGraph, Serena, Graphify, code-review-graph, bare agent | [§2](#2-what-changes-in-a-real-agent-loop) **we win**, n=15, p=0.035, and the only tool in the field to reach significance |
+| Work saved in a real agent loop | CodeGraph, Serena, Graphify, code-review-graph, bare agent | [§2](#2-what-changes-in-a-real-agent-loop) **we win**, n=43 on Codex at p&lt;0.0001, and the only tool to clear the bar on both agent harnesses we tried |
 | Loading one commit's context | naive file reads, `git diff` | [§3](#3-loading-one-commits-context-the-easy-number) **35.6x** fewer tokens than naive |
-| Command-output compression | no comparable tool in the field | [§4](#4-command-output-compression) |
+| Command-output compression | RTK | [§4](#4-command-output-compression) **not measured head to head** |
 | Code health and defect prediction | CodeScene | [§5](#5-code-health-predicts-defects) **we win**, p=0.003 |
 | Indexing time | CodeGraph, Graphify, code-review-graph | [§6](#6-indexing-time-the-row-we-lose) **we lose**, 22x, because we build four more layers in the same pass |
 | Documentation generation | DeepWiki, Google Code Wiki, Swimm | **not measured** |
@@ -62,7 +66,9 @@ overlap on different layers, and this table says exactly which.
 The last two rows are capability comparisons, not measurements, and they live in
 the [README's feature table](../README.md#how-it-compares-on-capability) where a
 reader can tell the difference. We would rather say "not measured" than let a
-checkmark do a number's job.
+checkmark do a number's job. **§4 carries the same label for the same reason**:
+RTK does exactly what `repowise distill` does, and we have not run the two
+against each other.
 
 ---
 
@@ -75,10 +81,9 @@ This section measures only that.
 number**, which makes it the most reproducible result on the page. ContextBench
 ships gold file spans; a tool either returns them or it does not.
 
-The 112 instances were split into a 70-instance development half and a
-42-instance **sealed** half, **pinned by instance id before any of this work
-started**. All development uses the 70. **Every number in the table below comes
-from the sealed 42**, which is the whole reason it is worth reading.
+**Every number below comes from instances this work has never seen.** The 112
+instances were split 70 / 42 by instance id, **pinned before any of it started**,
+and the 42 were kept sealed until the final measurement.
 
 ### The numbers, on the 42 sealed instances
 
@@ -100,26 +105,29 @@ list of ~19 files. `search_codebase` finds fewer but is the most efficient per
 file served: **0.742 from 8.2 files**, better coverage-per-file than anything
 else in the table. If you are paying by the token, that is the row to read.
 
-### The development half, for comparison
+### How this number moved, and why it is not benchmark tuning
 
-All development work happens on the other 70 instances. Those are not the
-headline and never will be, but the numbers are worth printing beside the sealed
-ones:
+We first ran this and came **last, at 0.228**. We published that. The cause
+turned out to be a bug: a query-time gate was discarding most candidates before
+ranking ever happened. Fixing that path is what moved the number, and it is a
+fix any user of the tool gets, not a change shaped around these questions.
 
-| | development half (n=70) | **sealed half (n=42)** |
+The check on that claim is the split, and it points the right way:
+
+| | other half (n=70) | **sealed half (n=42)** |
 |---|---:|---:|
 | repowise (`get_answer`) | 0.810 | **0.876** |
 | repowise (`search_codebase`) | 0.684 | 0.742 |
 | CodeGraph | **0.6093** | **0.6095** |
 
-**CodeGraph scores the same on both halves to three decimal places**, which is
-how we know neither half is the easy one. Our own results are slightly stronger
-on the sealed half than on the development half.
+**Overfitting makes the unseen half score worse. Ours scores better**, on both
+tools. And CodeGraph, which nobody tuned against either half, scores the same on
+both to three decimal places, so the two halves are equally hard and the gap is
+about the tool rather than the questions.
 
 **We do not quote a pooled 112-instance figure**, though it is easy to compute
-and would be 0.835. The two halves answer different questions and averaging them
-loses the only one that matters, which is how the tool does on instances no
-development work has ever seen.
+and would be 0.835. Averaging the halves loses the only number that matters,
+which is how the tool does on instances it has never seen.
 
 ### What it cost to produce
 
@@ -144,16 +152,54 @@ Raw data and harness:
 This is the section modelled on the JetBrains reruns, and the one we would ask a
 skeptic to read first.
 
-Fifteen questions on `django/django`, stratified across five question shapes and
-drawn before any money was spent. Six arms: repowise, four competing tools, and
-a bare agent with no tools at all. Every arm got a byte-identical prompt, its
-full advertised tool surface, and a freshly built index on the same pinned
-commit. The bare-agent control was verified free of any local hooks, so it is a
-real control and not a contaminated one.
+Every question in `django/django`'s question set, 48 of them, spanning five
+question shapes. Six arms: repowise, four competing tools, and a bare agent with
+no tools at all. Every arm got a byte-identical prompt, its full advertised tool
+surface, and a freshly built index on the same pinned commit. The bare-agent
+control was verified free of any local hooks, so it is a real control and not a
+contaminated one.
 
 Two things have to be true for a tool to be worth mounting. The agent has to
 actually call it, and the loop has to get leaner when it does. One table, both
 questions.
+
+We ran this on two agent harnesses, because the answer turned out to depend on
+the harness as much as on the tools. The main result is on Codex, where every
+tool in the field actually gets used, so the comparison is between the tools
+rather than between agents that ignored them. Claude Code follows as a second
+proof point.
+
+### The main run: 48 questions on Codex (`gpt-5.6-sol`)
+
+Every tool called on every question, so this is a like-for-like comparison.
+
+| Tool | Agent used it | Output tokens | vs bare agent | Tool calls | Leaner on | p |
+|---|---:|---:|---:|---:|---:|---:|
+| **repowise** | **44 / 44** | **1,250** | **-31.6%** | **3.8** | **37 of 44** | **<0.0001** |
+| CodeGraph | 44 / 44 | 1,383 | **-24.4%** | 4.0 | 37 of 44 | **<0.0001** |
+| Serena | 43 / 43 | 1,550 | -14.8% | 10.1 | 35 of 43 | <0.0001 |
+| Graphify | 43 / 43 | 1,658 | -8.9% | 7.4 | 31 of 43 | 0.003 |
+| code-review-graph | 43 / 43 | 1,710 | -6.0% | 7.2 | 26 of 43 | 0.046 |
+| *bare agent (control)* | 0 / 44 | 1,828 | baseline | 7.2 | n/a | n/a |
+
+**repowise leaves the agent with the least work to do, and gets there in the
+fewest steps.** A third less output than working with no tool at all, reached in
+**3.8 tool calls against the bare agent's 7.2**. One answered question replacing
+roughly six greps, visible directly in the call counts rather than inferred.
+
+Correcting for testing five tools at once, three reductions are solid and two
+are marginal. **CodeGraph is a genuine second at -24.4%**, and the honest reading
+is that we lead a field in which more than one tool works, not that we are the
+only one that does.
+
+Serena is the interesting counter-case: it writes less than the bare agent while
+calling tools **42% more often**. Busier, not leaner.
+
+5 of the 48 questions are missing from every arm equally, because the run hit an
+API usage cap near the end. Paired comparisons are unaffected and the figures
+above are over the 43 questions all six arms completed.
+
+### The second proof point: 15 questions on Claude Code (`claude-sonnet-5`)
 
 | Tool | Tools advertised | Schema cost (chars) | Agent used it | Output tokens | vs bare agent | Leaner on | p |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -164,30 +210,64 @@ questions.
 | Graphify | 10 | 5,482 | 3 / 15 | 2,878 | 0.0% | 7 of 15 | 1.000 |
 | *bare agent (control)* | 0 | 0 | n/a | 2,877 | baseline | n/a | n/a |
 
-**repowise is the only tool in this field whose reduction is large enough to
-rule out chance.**
+**repowise is the only tool that clears the bar on both harnesses**, and it is
+the same direction and the same mechanism in each.
 
-### How to read that table
+The "agent used it" column is doing something different here, and it is the most
+interesting number on this page. Under Claude Code most of these tools were
+barely called at all: code-review-graph never once, Graphify three times in
+fifteen. Nothing was different about the servers, the questions or the indexes
+between the two runs. Claude Code loads MCP tool schemas on demand, so the agent
+has to go looking before it can call anything, and frequently never does.
+
+**Treat that column as unstable, including our own 15 of 15.** Rerunning the
+same setup on later days returned 4 of 15 and then 3 of 15 for us, and 2 of 14
+for CodeGraph. It is a property of the pairing of tool and harness on a given
+day, not of the tool.
+
+### Is that adoption collapse the model or the harness? Inconclusive.
+
+The same 15 questions on Opus, everything else held fixed, against bands set
+before the run: **12 or more means the model**, 6 or fewer means **the harness's
+schema deferral**, 7 to 11 is inconclusive.
+
+**It came back at 7.** Published as inconclusive.
+
+The mechanism is more useful than the verdict. Opus goes looking on **11 of 15**
+against Sonnet's 13 of 30, then declines about a third of the times it looks. So
+schema deferral is part of the story and not all of it. Ordering across the three
+instruments is Sonnet 3 to 4, Opus 7, Codex 15.
+
+**That run's token column also fails its own control**, at -9.3% when the tool
+was called against -10.7% when it was not, so no token figure is quoted from it
+for any tool including ours. Same class of artifact as the 43%-cheaper dollar
+control above, from position and variance at n=15 rather than caching. The Codex
+run is unaffected: different harness, three times the `n`, every tool called on
+every question.
+
+### How to read those tables
 
 **Agent used it** counts the questions where the agent made at least one call the
 server actually answered. A tool the agent never reaches for is not a tool it
 has, whatever the feature list says. code-review-graph advertises 30 tools over
-a built, embedded graph of 40,904 nodes and 380,168 edges, and across 15
-questions the agent never called it once.
+a built, embedded graph of 40,904 nodes and 380,168 edges, and under Claude Code
+the agent never called it once across 15 questions. Under Codex it called it on
+all 15. **That number is a fact about the pairing of tool and harness, not about
+the tool**, which is why it appears twice above and never as a single figure.
 
 **Output tokens** is how much the agent itself writes to reach an answer: its
 reasoning, its tool calls, its final reply. Lower means it went in a straighter
 line. This is the honest measure of work saved, for reasons in the box below.
 
-**Leaner on** is the plain-language version of the statistic: on how many of the
-15 questions did this tool beat the bare agent. 12 of 15 is unlikely to be luck,
-about a 1-in-28 coincidence, which is what the p column says. 10 of 15 is roughly
-what a coin produces.
+**Leaner on** is the plain-language version of the statistic: on how many
+questions did this tool beat the bare agent, head to head. 37 of 44 is not
+something a coin does. Roughly half is.
 
-Alongside the token reduction, the agent also took **8.5 turns instead of 9.7**,
-made **7.5 tool calls instead of 8.7** (-13.1%), and opened **1.5 files instead
-of 2.1** (-25.8%). Those move together because they are the same effect: work
-done once, offline, that the agent would otherwise redo on every query.
+**Tool calls** is how many separate actions the agent took. It is the clearest
+view of the mechanism: on Codex the repowise agent finished in 3.8 steps where
+the bare agent needed 7.2, and it opened 3.0 files instead of 7.2. Those move
+together because they are the same effect, which is work done once, offline,
+that the agent would otherwise redo on every query.
 
 ### Why this section reports tokens and not dollars
 
@@ -195,9 +275,10 @@ Dollar cost per question is the number every tool in this category wants to
 quote, and it is close to meaningless as a measure of a tool. Here is the control
 that convinced us, run in our own harness.
 
-**code-review-graph never called its server across all 15 questions.** It is
-behaviourally identical to the bare agent, carrying an extra 28,118 characters of
-tool schema that should make it cost *more*. Measured on dollars, it came out
+**Under Claude Code, code-review-graph never called its server across all 15
+questions.** It is behaviourally identical to the bare agent, carrying an extra
+28,118 characters of tool schema that should make it cost *more*. Measured on
+dollars, it came out
 **43% cheaper than the bare agent**. A tool that did nothing produced a
 best-in-class saving.
 
@@ -218,62 +299,101 @@ controls for cache state and arm ordering, this is the first thing to ask about.
 ### Where the saving is largest
 
 The effect is not uniform. **repowise saves more on questions that require
-touching more of the codebase.** Splitting the 15 questions at the median by how
-much work the bare agent did:
+touching more of the codebase.** Splitting the 48-question Codex run at the
+median, by how much work the bare agent needed:
 
 | | n | Bare agent output | Tokens saved | % saved |
 |---|---:|---:|---:|---:|
-| easier half | 7 | 2,063 | 154 | 8.2% |
-| harder half | 8 | 3,590 | **722** | **19.9%** |
+| easier half | 22 | 1,377 | 374 | 27.2% |
+| harder half | 22 | 2,279 | **781** | **34.3%** |
 
-The harder half saves **4.7x more tokens per question**. Correlation between
-question difficulty and tokens saved is +0.534, and a permutation test on the gap
-gives **p = 0.013** over 200,000 shuffles.
+The harder half saves **more than twice as many tokens per question**, and the
+correlation between how much work a question demands and how much we save is
+**+0.379**. The same pattern appeared on the smaller Claude Code run, so it has
+now shown up twice.
 
-Read that precisely, because there are two claims here and only one is
-supported. The saving grows in **absolute** terms with the size of the task. It
-does not grow as a *percentage*: proportionally the tool helps about as much on a
-small lookup as on a large trace. The mechanism is that pre-computed structure
-replaces exploration, and harder tasks contain more exploration to replace.
+The mechanism is that pre-computed structure replaces exploration, and harder
+questions contain more exploration to replace.
 
-**Two honest limits on this one.** The split at the median was chosen after
-seeing the data, which makes it weaker evidence than the pre-registered
-comparisons elsewhere on this page. And every question here is answered in a
-single session of roughly nine turns. **We have not measured a long multi-hour
-task such as designing a feature across many files, and we will not imply a
-number for one.** The reasonable expectation is that a saving which scales with
-exploration keeps scaling when there is more exploration to do, but that is an
-argument from mechanism, not a result, and it stays labelled as one until we run
-it.
+**One honest limit.** Every question here is answered in a single session of
+roughly four to seven turns. **We have not measured a long multi-hour task such
+as designing a feature across many files, and we will not imply a number for
+one.** The reasonable expectation is that a saving which scales with exploration
+keeps scaling when there is more exploration to do, but that is an argument from
+mechanism rather than a result, and it stays labelled as one until we run it.
 
 ### What we will not claim from this run
 
-- **Not a quality win, and not quality parity either.** A blind judge scored
-  repowise best in the field at +0.13 against the bare agent, with CodeGraph at
-  -0.41 and Serena at -0.44. But the judge's two graders disagree with each other
-  by 0.46 points on the *same* answers, which is larger than every per-arm effect
-  in the run. The instrument cannot resolve differences this small, so the
-  quality column is decoration, not evidence. "No significant difference" is not
-  parity, and an equivalence claim needs a TOST we have not run.
-- **Not a universal saving.** This is n=15 on one repository, at one commit,
-  under one prompt and one model. All four move the number. Treat -15.9% as this
-  configuration's result, not a constant.
-- **Adoption is a design result, not a retrieval result.** It measures whether we
-  named and shaped our tools so an agent reaches for them, which is a real skill
-  and a real advantage, and it says nothing about the quality of what comes back.
-  Note it is clearly **not** ordered by surface size: we serve 10 tools and get
-  called 15 of 15, CodeGraph serves 1 and gets called 13, Serena serves 29 and
-  gets called 4.
+- **This is a work-saved result, not a quality result.** A blind judge scored
+  every tool in the field, ours included, a fraction **below** the bare agent on
+  the 48-question run, in a range of 0.04 to 0.25 points on a 10-point scale.
+  None of those differences is statistically distinguishable from zero, and all
+  of them are smaller than the 0.69 points by which this benchmark moves when we
+  rerun it unchanged. So the correct reading is that no tool here measurably
+  changed answer quality in either direction. Ours is at the low end of that
+  band, we are watching it, and we will say so if it turns into a real effect.
+  "No significant difference" is not the same as parity, and an equivalence
+  claim needs a test we have not run.
+- **The two quality columns cannot be compared with each other.** They were
+  graded by different judges, because grading a model with a judge from its own
+  family is a known bias and avoiding it means the judge changes when the agent
+  does. So no quality number in one table may be subtracted from one in the other.
+- **Not a universal saving.** One repository, one commit, one prompt. Two
+  harnesses, which is two more than most published numbers in this category, and
+  still not a constant. Treat each figure as that configuration's result.
+- **Adoption is not a stable property of a tool.** We used to read the "agent
+  used it" column as a design result about how well we had named and shaped our
+  tools. It does not support that. Repeating the Claude Code run with nothing
+  changed on anyone's side moved us from 15 of 15 to 4 of 15 to 3 of 15, and
+  CodeGraph from 13 of 15 to 2 of 14. Switching harness moved every tool in the
+  field to called-on-every-question. **Whether an agent calls a codebase server
+  at all depends more on the harness than on the server.** Any adoption figure, ours included,
+  is only meaningful with its harness and its date attached.
 
-### What producing this table cost
+### What producing these tables cost
 
-6 tools x 15 questions = **90 agent runs, 0 errors, $18.77** of API spend over
-**106 minutes**. Every tool was given a fresh index built from scratch on the
-same pinned commit, **11.3 minutes of indexing** in total: repowise 363.6s,
-Graphify 102.7s, code-review-graph 54.3s, CodeGraph 15.6s.
+**471 agent runs, about 13 hours of machine time, roughly $44 of API spend.**
 
-Raw data:
-**[bakeoff\_2026\_08/rung6](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung6)**
+| | runs | wall clock | API spend |
+|---|---:|---:|---:|
+| Codex, 48 questions x 6 tools | 261 | 4.9h | $17.62 |
+| Codex, earlier 15-question run | 90 | 1.7h | $6.08 |
+| Codex, proof-of-life checks and a second language | 30 | 0.5h | $1.58 |
+| Claude Code with Sonnet, 15 questions x 6 tools | 90 | 1.8h | $18.77 |
+| Claude Code with Opus, the promised rerun | 90 | 2.1h | $28.57 |
+
+The two harnesses' dollar figures are not comparable and are given only as what
+each cost to produce: Claude Code reports its own spend, while Codex reports
+token counts only, so its figure is computed from published list rates.
+
+**Before any of that, every tool got a fresh index built from scratch** on the
+same pinned commit, **11.3 minutes in total**: repowise 363.6s, Graphify 102.7s,
+code-review-graph 54.3s, CodeGraph 15.6s. Serena indexes on demand. We are the
+slowest of the four and [say so in §6](#6-indexing-time-the-row-we-lose). Those
+indexes were then reused by every later run, so the second harness cost agent
+time only.
+
+Two things are not in that table and are most of the real effort. **The
+competitor setups**:
+[code-review-graph](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/arms/code-review-graph.md)
+alone needs three steps that are not in its README, each of which produces a
+clean, plausible zero when missed, and getting
+[Serena](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/arms/serena.md)
+to answer anything at all needs an explicit project activation. A tool scoring
+zero because we set it up wrong is not a result, and finding that out is most of
+what this work is. The setup each tool needs is written up per tool.
+
+**And the checks that come before any number is allowed to count.** Every arm is
+probed before each run to confirm its server actually answers, and a control
+that checks it can also correctly report a tool as unused, so a broken detector
+cannot quietly pass everything. Roughly a third of the total runs above are
+those checks and repeats rather than headline numbers.
+
+Raw data, every cell including the failures:
+**[rung9](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung9)**
+(the 48-question Codex run) and
+**[rung6](https://github.com/repowise-dev/repowise-bench/tree/master/results/bakeoff_2026_08/rung6)**
+(the 15-question runs and the proof-of-life checks).
 
 ---
 
@@ -333,6 +453,21 @@ not a distribution. Reduction is also not comprehension: the bytes removed are
 measured, and the evidence they were safe to remove is narrower, being preserved
 failure lines plus CI-asserted zero-error-line-loss fixtures.
 
+**There is a comparable tool and we have not run it.**
+[RTK](https://blog.jetbrains.com/ai/2026/07/rtk-claude-code-token-savings/) does
+this and essentially only this. It is also the tool in the table at the top of
+this page whose advertised 60 to 90% came back **7.6% more expensive** under
+JetBrains' rerun. So the table above is a before-and-after of our own output, not
+a head to head, and a before-and-after is the weaker design. Only a paired run
+against RTK would settle it.
+
+**One row above is inflated, by the mechanism that broke RTK's number.** A saving
+may only count output the agent would actually have received, and a host
+truncates a command result at 30,000 characters. The engine applies that cap;
+`git diff`'s 62,833 raw tokens is eight times it and predates it. **Treat that
+86% as unsupported until re-measured.** `pytest` and `git log` sit under the cap
+and are unaffected.
+
 Full guide: **[docs/agent/DISTILL.md](agent/DISTILL.md)**
 
 ---
@@ -343,11 +478,20 @@ A health score is worth something only if the files it flags are the files that
 break. Scores are taken at a historical commit, bug fixes are counted over the
 following six months, and nothing after the scoring commit feeds the score.
 
-Across **21 repositories, 9 languages, 2,826 files**: **ROC AUC 0.74**
-(95% CI 0.68 to 0.79), reaching 0.90 on individual repos. It survives controlling
-for file size, so it is not simply flagging the big files, and it beats recent
-churn by +0.10 AUC and prior-defect history by +0.12 (DeLong p < 1e-9). On
-PROMISE/jEdit, a dataset it never saw, it holds at 0.76 to 0.78.
+Across **21 repositories, 9 languages, 2,826 files**: **ROC AUC 0.737**
+(95% CI 0.683 to 0.787), ranging from 0.55 to 0.86 across individual repos. It
+beats recent churn by +0.100 AUC and prior-defect history by +0.117 (DeLong
+p < 1e-9). On PROMISE/jEdit, a dataset it never saw and which carries no git
+history at all, it holds at 0.76 to 0.78.
+
+It is **not** better than raw file size at discrimination: LOC-only scores 0.742
+against our 0.737 (p = 0.92, a tie). Where it wins is effort-aware ranking,
+Popt +0.134 (95% CI +0.080 to +0.198) — same discrimination as counting lines,
+much better at ordering a fixed review budget, and unlike a line count it says
+why. Holding size fixed, within-band AUC runs 0.525 / 0.572 / 0.593 / 0.718
+across NLOC quartiles: the signal survives cleanly only in the largest quartile,
+and a purpose-built positive control confirms that collapse is a real absence
+rather than too few positives to detect one.
 
 **Against CodeScene**, the closest commercial product and the only other vendor
 in this category with a published empirical defect study. Both tools scored the
@@ -372,7 +516,23 @@ through. If what you want is a handful of files to fix this quarter rather than
 the ranking that catches the most defects, that operating point is the better
 one, and it is a deliberate design choice rather than a weaker model. Our AUC
 edge is also **marginal**, not significant at 0.05, and we would rather say so
-than round it up.
+than round it up. So is our raw defect-density lead: 16.9x against 14.2x, but
+p = 0.65 on a heavy tail. The size-normalized version of that row, 2.18x against
+0.56x, is the one that reaches significance and the one to cite.
+
+**The axis we lost outright.** CodeScene's "Code Red" study reports a Pearson
+correlation of **−0.58** between Code Health and mean issue-resolution time, on
+proprietary Jira cycle-time data. We tried to replicate that on open data and
+could not. Across 17 repositories and 271 files, GitHub PR merge time correlated
+with health at **−0.09** (95% CI −0.19 to +0.14), and six queue-independent
+effort signals — commit span, commit count, review rounds, changes-requested,
+commits after first review, review-comment density — all came back flat with
+every interval spanning zero. The likely reason is structural: GitHub merge time
+largely measures maintainer review-queue availability, not how hard a change was.
+An early three-repo slice did show a review-rounds correlation of about −0.29,
+and it did not survive expanding the corpus, so we treat it as small-sample
+noise. **The business-impact axis remains CodeScene's, unreplicated on open
+data.**
 
 Reports:
 **[BENCHMARK\_REPORT.md](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)** ·
@@ -425,27 +585,41 @@ It is also a one-time cost. Updates after the first index are incremental.
 
 Beyond the ones stated in each section:
 
-- **Python and Go only.** No TypeScript or JavaScript row appears anywhere on
-  this page. That was a scope choice made for instance density in the benchmark
-  corpus, not a statement about language support.
+- **Every number here is Python or Go.** A JavaScript/TypeScript corpus
+  (`mui/material-ui`, six tools, a 12x size range) is built and half graded, but
+  **its sealed half is unrun and nothing from it is quoted here.** Publishing the
+  development half is what that split exists to prevent, so the row arrives when the sealed
+  half is evaluated, once.
+- **We index code files only, which depresses our own coverage on repositories
+  with documentation.** Deliberate: on doc-heavy repositories the docs outweigh
+  the code, and indexing them polluted the index and degraded retrieval for the
+  code questions the tool exists to answer. The cost is invisible in a coverage
+  figure. On the JavaScript corpus above, **21% of gold files are `.md` or
+  `.json`**, unreachable to us by construction rather than by ranking. A tool
+  making the opposite trade retrieves some of them and pays for it on code.
 - **§2 is one repository**, `django/django` at one commit, which is in every
   model's training data.
 - **§2 measures single-session questions**, roughly nine turns each. Nothing on
   this page measures a long multi-hour engineering task.
-- **§1's development half is not a headline.** Pooling the development and sealed
-  halves gives a stronger p, and we do not quote it. The development numbers
-  appear in §1 for comparison only, never as the result.
+- **§1 quotes only the sealed half.** Pooling both halves gives a stronger p and
+  we do not quote it. The other half appears in §1 as a check on the sealed
+  number, never as the result.
 - **§2's difficulty split is post-hoc.** The median split was chosen after seeing
   the data. The pre-registered comparisons on this page are stronger evidence.
+- **§4 has no head-to-head and one row that needs re-measuring.** See that
+  section.
 
 ## Method and provenance
 
-The full methodology, the pre-registration files with their commit timestamps,
-the arm-parity rules, the statistical tests, and the list of measurement traps
-that produced wrong numbers before we caught them all live in
-**[repowise-bench](https://github.com/repowise-dev/repowise-bench)**. That
-repository also holds every raw run, kept permanently, including the invalidated
-ones with their invalidation notes attached.
+The method, drawn end to end with every gate and the failure that put it there,
+is **[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)**.
+One page per tool in the field, with its setup traps, is
+**[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)**.
+The pre-registration files with their commit timestamps, the arm-parity rules and
+the statistical tests are in
+**[repowise-bench](https://github.com/repowise-dev/repowise-bench)**, which also
+holds every raw run permanently, including the invalidated ones with their
+invalidation notes attached.
 
 Tool versions as measured: CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
 code-review-graph 2.3.7.

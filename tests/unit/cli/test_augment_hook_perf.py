@@ -278,6 +278,50 @@ def test_a_triage_that_queries_the_index_imports_nothing_heavy(tmp_path: Path) -
     assert out.stderr.strip() == "", f"a triage emission pulled in:\n{out.stderr}"
 
 
+def test_a_wrong_path_rescue_imports_nothing_heavy(tmp_path: Path) -> None:
+    """The failure surface reaches the index too, on the same cheap graph.
+
+    Its basename lookup is the fourth caller of ``fast_lookup``; this is the
+    guard that keeps it from reaching for the ORM the moment someone finds a
+    query easier to write there. Like the triage guard, it can only pass by
+    actually emitting.
+    """
+    repo = _indexed_search_repo(tmp_path)
+    # The rescue only names a file it can still see on disk, so the indexed
+    # node needs a real one behind it here.
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "b.py").write_text("x", encoding="utf-8")
+    attempted = repo / "src" / "nested" / "b.py"
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(attempted)},
+        "error": (
+            f"<tool_use_error>Path does not exist: {attempted}. "
+            f"Note: your current working directory is {repo}.</tool_use_error>"
+        ),
+        "cwd": str(repo),
+        "session_id": "perf",
+    }
+    code = (
+        "import sys, json, io; "
+        f"sys.stdin = io.StringIO({json.dumps(payload)!r}); "
+        "from repowise.cli.commands.augment_cmd import _run_augment; "
+        "_run_augment(client=None); "
+        f"heavy = sorted(m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r})); "
+        "print('\\n'.join(heavy), file=sys.stderr)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_fake_home(tmp_path),
+    )
+    assert "is not in this tree" in out.stdout, "the probe did not reach a rescue"
+    assert out.stderr.strip() == "", f"a wrong-path rescue pulled in:\n{out.stderr}"
+
+
 def test_a_silent_invocation_imports_nothing_heavy(tmp_path: Path) -> None:
     """A payload the hook has nothing to say about must stay on the cheap path."""
     code = (

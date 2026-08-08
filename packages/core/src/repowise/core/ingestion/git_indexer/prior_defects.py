@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from ._constants import PRIOR_DEFECT_WINDOW_DAYS, is_fix_commit
+from ._constants import PRIOR_DEFECT_WINDOW_DAYS, _truncate_body, is_fix_commit
 from .fix_shape import classify_fix_shape
 from .records import _RECORD_SEP, _extract_rename_paths
 
@@ -50,10 +50,15 @@ logger = structlog.get_logger(__name__)
 
 __all__ = ["FixCommit", "FixWalk", "PriorDefects", "collect_fix_commits", "compute_prior_defects"]
 
-# sha <US> committer-time <US> subject, one record per commit (NUL-separated);
-# --name-only then emits the touched paths on the lines that follow.
-_PRIOR_LOG_FORMAT = "%x00%H%x1f%ct%x1f%s"
+# sha <US> committer-time <US> subject <US> body <STX>, one record per commit
+# (NUL-separated); --name-only then emits the touched paths on the lines that
+# follow. The body (``%b``) is the only multi-line field, so it is captured last
+# and terminated explicitly: unlike the numstat block ``records.py`` disentangles
+# by shape, a ``--name-only`` path line is indistinguishable from a line of prose,
+# so the boundary has to be a byte git will never emit inside a message.
+_PRIOR_LOG_FORMAT = "%x00%H%x1f%ct%x1f%s%x1f%b%x02"
 _FIELD_SEP = "\x1f"
+_BODY_END = "\x02"
 
 # Fix commits per ``git log --no-walk`` batch in the diff pass. One subprocess
 # per batch, so bigger is cheaper — but each sha costs 41 characters of command
@@ -84,6 +89,11 @@ class FixCommit:
     the shape classifier reads and SZZ blames. *shape_kind* falls back to
     ``code_fix`` when the diff pass failed for this commit, which keeps the count
     on the pre-filter (safe) side of the change.
+
+    *subject* and *body* are the commit's own prose, byte-capped. The counting
+    consumers read neither: they exist for consumers that quote a change rather
+    than count it, and they cost no extra git work because the walk already
+    parses the subject to classify the commit.
     """
 
     sha: str
@@ -91,6 +101,8 @@ class FixCommit:
     paths: list[str]
     shape_kind: str = "code_fix"
     files: dict[str, FileDiff] = field(default_factory=dict)
+    subject: str = ""
+    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,7 +149,8 @@ def collect_fix_commits(
     is missing from the walk entirely, not merely un-diffed.
 
     Ceiling: the returned walk holds every fix commit's parsed patch, changed
-    line text included, for as long as the caller keeps it. Bounded in practice
+    line text included, plus a byte-capped copy of its message, for as long as
+    the caller keeps it. Bounded in practice
     by the window (a few hundred commits), but a repo whose fixes routinely touch
     multi-megabyte generated files will hold all of that at once. If that ever
     bites, drop ``removed``/``added`` after classification and carry the LOC
@@ -165,6 +178,8 @@ def collect_fix_commits(
             paths=fix.paths,
             shape_kind=classify_fix_shape(diffs[fix.sha]) if fix.sha in diffs else "code_fix",
             files=diffs.get(fix.sha, {}),
+            subject=fix.subject,
+            body=fix.body,
         )
         for fix in fixes
     ]
@@ -267,15 +282,48 @@ def _walk_fix_commits(repo: Any, rev_range: str, indexable_files: set[str]) -> l
         record = record.strip("\n")
         if not record:
             continue
-        header, _, body = record.partition("\n")
-        sha, _, rest = header.partition(_FIELD_SEP)
-        committed, _, subject = rest.partition(_FIELD_SEP)
+        fields, path_block = _split_record(record)
+        sha, committed, subject, body = fields
         if not is_fix_commit(subject):
             continue
-        paths = [p for p in _record_paths(body) if p in indexable_files]
+        paths = [p for p in _record_paths(path_block) if p in indexable_files]
         if paths:
-            fixes.append(FixCommit(sha=sha, ts=_as_ts(committed), paths=paths))
+            fixes.append(
+                FixCommit(
+                    sha=sha,
+                    ts=_as_ts(committed),
+                    paths=paths,
+                    subject=_truncate_body(subject.strip()),
+                    body=_truncate_body(body.strip()),
+                )
+            )
     return fixes
+
+
+def _split_record(record: str) -> tuple[tuple[str, str, str, str], str]:
+    """One log record split into its four header fields and its path block.
+
+    Both boundaries are taken from the right, and for the same reason. Git
+    C-quotes any control byte in a path, so neither the terminator nor a field
+    separator can appear in the path block: the *last* occurrence of each is
+    therefore the real one, and a commit message that somehow carried one keeps
+    its paths and its subject intact. Taking the subject boundary from the left
+    instead would truncate a subject at an embedded separator and change which
+    commits ``is_fix_commit`` matches, which is a defect count rather than a
+    cosmetic loss.
+
+    The terminator is not optional and there is no fallback for its absence:
+    a legacy re-parse would read body prose as paths and *inflate* counts,
+    which is worse than the format change it would be papering over.
+    ``tests/unit/ingestion/test_prior_defect_walk.py`` is the guard.
+    """
+    head, _, path_block = record.rpartition(_BODY_END)
+    sha, _, rest = head.partition(_FIELD_SEP)
+    committed, _, rest = rest.partition(_FIELD_SEP)
+    subject, sep, body = rest.rpartition(_FIELD_SEP)
+    if not sep:  # a commit with no body field at all
+        subject, body = rest, ""
+    return (sha, committed, subject, body), path_block
 
 
 def _as_ts(raw: str) -> int:

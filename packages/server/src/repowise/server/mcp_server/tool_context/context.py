@@ -32,6 +32,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, truncate_to_budget
+from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -58,6 +59,10 @@ async def get_context(
     and symbol_ids to pipe into get_symbol (cheaper than Read for bodies).
     fix_history appears only on files with counted bug fixes (count, age,
     bug_magnet); hotspot is churn. Either one is a cue to call get_risk.
+    episodes counts the dated records bound to a target — what happened here
+    and why — and appears only when there is at least one; get_why serves the
+    bodies. A symbol target is counted as its file, and a module aggregates
+    everything beneath it.
     Batch targets in one call. File targets above ~80 lines default to a
     skeleton (every signature + top-PageRank bodies, with a verified flag —
     a fraction of Read cost); ``mostly_full`` marks files where a direct
@@ -130,6 +135,11 @@ async def get_context(
             )
         else:
             results.append(r)
+
+    # One integer per target: how many dated episodes are bound here. A number
+    # invites a follow-up get_why; a paragraph would spend the budget of every
+    # caller that only wanted the triage card. Absent rather than zero.
+    await asyncio.to_thread(_enrich_episodes, results, ctx.path)
 
     response: dict[str, Any] = {
         "targets": {r["target"]: r for r in results},

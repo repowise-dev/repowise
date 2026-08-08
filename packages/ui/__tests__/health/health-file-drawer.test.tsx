@@ -66,8 +66,264 @@ describe("HealthFileDrawer finding grouping", () => {
     render(
       <HealthFileDrawer open onClose={() => {}} metric={metric()} findings={findings} />,
     );
-    expect(screen.getByText("File-level signals")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /File-level signals/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /_run_repo_checks/ })).toBeInTheDocument();
+  });
+
+  /** A file-level biomarker that fires per occurrence must not flood the drawer
+   *  with sibling rows. `error_handling` reaches 34 on one file in this repo. */
+  it("groups file-level markers by biomarker, not into one undifferentiated list", () => {
+    const findings: HealthDrawerFinding[] = [
+      ...[202, 46, 58].map((line) =>
+        finding({
+          biomarker_type: "error_handling",
+          function_name: null,
+          line_start: line,
+          line_end: line,
+          health_impact: 0.15,
+          reason: "broad `except Exception` catches unrelated errors.",
+        }),
+      ),
+      finding({
+        biomarker_type: "change_entropy",
+        function_name: null,
+        line_start: null,
+        health_impact: 2.0,
+        reason: "File changes touch many unrelated concerns.",
+      }),
+    ];
+    render(
+      <HealthFileDrawer open onClose={() => {}} metric={metric()} findings={findings} />,
+    );
+
+    // The three error_handling markers collapse into one header carrying their
+    // subtotal — not three siblings, and not merged with change_entropy.
+    // Scoped to the group header: an expanded group also renders an
+    // "About Error handling" InfoTip button.
+    const eh = screen.getByRole("button", { name: /Error handling · file-level/i });
+    expect(within(eh).getByText(/3 markers/)).toBeInTheDocument();
+    expect(within(eh).getByText(/−0\.45/)).toBeInTheDocument();
+    // The lone change_entropy marker stays in the pooled bucket rather than
+    // earning a group of its own.
+    expect(screen.getByRole("button", { name: /File-level signals/ })).toBeInTheDocument();
+  });
+
+  it("renders and links the line for a file-level marker that has no function", () => {
+    const findings: HealthDrawerFinding[] = [
+      finding({
+        biomarker_type: "error_handling",
+        function_name: null,
+        line_start: 202,
+        line_end: 202,
+        health_impact: 0.15,
+        reason: "broad `except Exception` catches unrelated errors.",
+      }),
+    ];
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        findings={findings}
+        fileViewHrefFor={(line) => `/files/doctor_cmd.py#L${line}`}
+      />,
+    );
+    // Gating the anchor on function_name hid the only field distinguishing one
+    // error_handling marker from the next, which is what made them read as
+    // duplicates.
+    const link = screen.getByRole("link", { name: /line 202/ });
+    expect(link).toHaveAttribute("href", "/files/doctor_cmd.py#L202");
+  });
+
+  it("marks a file-level group as capped when the server says its category shed weight", () => {
+    const findings: HealthDrawerFinding[] = [1, 2, 3].map((line) =>
+      finding({
+        biomarker_type: "error_handling",
+        function_name: null,
+        line_start: line,
+        health_impact: 0.1,
+        reason: "broad `except Exception` catches unrelated errors.",
+      }),
+    );
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        findings={findings}
+        breakdown={{
+          score: 9.7,
+          total_deduction: 0.3,
+          categories: [
+            {
+              category: "error_handling",
+              cap: 0.5,
+              raw_deduction: 5.1,
+              applied_deduction: 0.3,
+              capped: true,
+              finding_count: 3,
+              findings: [],
+            },
+          ],
+        }}
+      />,
+    );
+    // Scoped to the group header: an expanded group also renders an
+    // "About Error handling" InfoTip button.
+    const eh = screen.getByRole("button", { name: /Error handling · file-level/i });
+    expect(within(eh).getByText("capped")).toBeInTheDocument();
+  });
+
+  it("does not claim 'capped' when other biomarkers share the capped category", () => {
+    // `nested_complexity` and `brain_method` both sit in structural_complexity,
+    // so neither group owns the ceiling and neither may name it.
+    const findings: HealthDrawerFinding[] = [
+      finding({
+        biomarker_type: "nested_complexity",
+        function_name: null,
+        line_start: 5,
+        health_impact: 0.2,
+        reason: "Deeply nested control flow.",
+      }),
+      finding({
+        biomarker_type: "nested_complexity",
+        function_name: null,
+        line_start: 9,
+        health_impact: 0.2,
+        reason: "Deeply nested control flow.",
+      }),
+      finding({
+        biomarker_type: "brain_method",
+        function_name: null,
+        line_start: 12,
+        health_impact: 0.2,
+        reason: "Oversized, deeply-nested function.",
+      }),
+      finding({
+        biomarker_type: "brain_method",
+        function_name: null,
+        line_start: 20,
+        health_impact: 0.2,
+        reason: "Oversized, deeply-nested function.",
+      }),
+    ];
+    render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        findings={findings}
+        breakdown={{
+          score: 9.5,
+          total_deduction: 0.5,
+          categories: [
+            {
+              category: "structural_complexity",
+              cap: 4.0,
+              raw_deduction: 9.1,
+              applied_deduction: 4.0,
+              capped: true,
+              finding_count: 4,
+              findings: [],
+            },
+          ],
+        }}
+      />,
+    );
+    for (const label of [/Nested complexity · file-level/i, /Brain method · file-level/i]) {
+      expect(within(screen.getByRole("button", { name: label })).queryByText("capped"))
+        .not.toBeInTheDocument();
+    }
+  });
+
+  /** The regression an adversarial review caught: splitting every file-level
+   *  biomarker out turned one collapsed row into several EXPANDED ones,
+   *  because singleton groups render expanded. 53% of files in this repo carry
+   *  2+ distinct one-off file-level markers. One-offs must stay pooled. */
+  it("pools one-off file-level markers instead of giving each its own group", () => {
+    const findings: HealthDrawerFinding[] = [
+      finding({
+        biomarker_type: "dry_violation",
+        function_name: null,
+        line_start: null,
+        health_impact: 0.4,
+        reason: "Duplicated block.",
+      }),
+      finding({
+        biomarker_type: "change_entropy",
+        function_name: null,
+        line_start: null,
+        health_impact: 0.3,
+        reason: "File changes touch many unrelated concerns.",
+      }),
+      finding({
+        biomarker_type: "co_change_scatter",
+        function_name: null,
+        line_start: null,
+        health_impact: 0.2,
+        reason: "Co-changes scatter widely.",
+      }),
+    ];
+    render(
+      <HealthFileDrawer open onClose={() => {}} metric={metric()} findings={findings} />,
+    );
+    const pooled = screen.getByRole("button", { name: /File-level signals/ });
+    expect(within(pooled).getByText(/3 markers/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Dry violation · file-level/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("splits out a repeating file-level biomarker but leaves the one-offs pooled", () => {
+    const findings: HealthDrawerFinding[] = [
+      ...[10, 20, 30].map((line) =>
+        finding({
+          biomarker_type: "error_handling",
+          function_name: null,
+          line_start: line,
+          health_impact: 0.05,
+          reason: "broad `except Exception` catches unrelated errors.",
+        }),
+      ),
+      finding({
+        biomarker_type: "dry_violation",
+        function_name: null,
+        line_start: null,
+        health_impact: 0.4,
+        reason: "Duplicated block.",
+      }),
+      finding({
+        biomarker_type: "change_entropy",
+        function_name: null,
+        line_start: null,
+        health_impact: 0.3,
+        reason: "File changes touch many unrelated concerns.",
+      }),
+    ];
+    render(
+      <HealthFileDrawer open onClose={() => {}} metric={metric()} findings={findings} />,
+    );
+    const eh = screen.getByRole("button", { name: /Error handling · file-level/i });
+    expect(within(eh).getByText(/3 markers/)).toBeInTheDocument();
+    const pooled = screen.getByRole("button", { name: /File-level signals/ });
+    expect(within(pooled).getByText(/2 markers/)).toBeInTheDocument();
+  });
+
+  /** A C++/Rust function can legitimately be named `file::read`, so the group
+   *  key must not be a collidable string prefix. */
+  it("keeps a function named like the file-level sentinel in its function group", () => {
+    const findings: HealthDrawerFinding[] = [
+      finding({ function_name: "file::read", biomarker_type: "brain_method" }),
+      finding({ function_name: "file::read", biomarker_type: "nested_complexity" }),
+    ];
+    render(
+      <HealthFileDrawer open onClose={() => {}} metric={metric()} findings={findings} />,
+    );
+    const group = screen.getByRole("button", { name: /file::read/ });
+    expect(within(group).getByText(/2 markers/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /· file-level/i }),
+    ).not.toBeInTheDocument();
   });
 });
 

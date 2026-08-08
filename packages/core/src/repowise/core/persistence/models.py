@@ -282,6 +282,12 @@ class GraphEdge(Base):
     imported_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     edge_type: Mapped[str] = mapped_column(String(64), nullable=False, default="imports")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    # Provenance of a synthesised edge (e.g. "same_package", "header_source_pair").
+    # NULL for edges that come from a real import/using directive. Cycle detection
+    # reads it to drop intra-compilation-unit edges; see
+    # repowise.core.ingestion.cohesion. Persisted because the health engine and
+    # incremental updates run against a graph rehydrated from these rows.
+    hint_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -413,7 +419,22 @@ class WikiSymbol(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
 
-    __table_args__ = (UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),)
+    __table_args__ = (
+        UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),
+        # The unique constraint's implicit index is keyed on ``symbol_id``, so a
+        # lookup by *file* could only seek on ``repository_id`` and then filter
+        # the repo's symbols in memory. That is the shape behind every
+        # file-scoped symbol join (health findings -> symbol ids, the file
+        # drawer, the symbol panel), not just one caller. Measured on a real
+        # 28,175-symbol index, a 400-path lookup returning 6,937 rows went
+        # 33.3ms -> 11.7ms, the plan flipping to a keyed seek, same rows.
+        #
+        # Adding this changed which index the planner picks for *other* queries
+        # on this table, and an unordered ``LIMIT`` there is decided by whatever
+        # order the chosen index walks. ``augment_cmd``'s symbol rescue had two
+        # such queries and now orders explicitly — see ``symbols_named``.
+        Index("ix_wiki_symbols_repo_path", "repository_id", "file_path"),
+    )
 
 
 class GitMetadata(Base):
@@ -1124,6 +1145,17 @@ class HealthFinding(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    # The table had no index at all, so every read full-scanned it. Two shapes
+    # are served: a file-scoped lookup (``get_health`` with targets, the call an
+    # agent makes to self-check a file before and after an edit) and a
+    # repo-wide top-N ordered by impact. The first index turns the scan into a
+    # seek; the second lets the ranked read stop early instead of sorting the
+    # whole table into a temp B-tree.
+    __table_args__ = (
+        Index("ix_health_findings_repo_status_path", "repository_id", "status", "file_path"),
+        Index("ix_health_findings_repo_status_impact", "repository_id", "status", "health_impact"),
     )
 
 

@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -253,6 +253,7 @@ def _resolve_go_type_refs(
     if not parsed.type_refs:
         return 0
 
+    from .cohesion import SAME_PACKAGE_HINT
     from .parser_helpers import _GO_BUILTIN_TYPES
     from .resolvers.go_workspace import get_or_build_go_index
 
@@ -264,6 +265,10 @@ def _resolve_go_type_refs(
     # means a single import already maps to all of a package's files).
     candidates: set[str] = set()
     own_pkg = index.package_for_file(from_path)
+    # Siblings are one compilation unit, not dependencies: a Go package's files
+    # reference each other freely and cannot form an import cycle. Tracked so
+    # the resulting edges can be marked and kept out of cycle detection.
+    sibling_files: frozenset[str] = frozenset(own_pkg.files) if own_pkg else frozenset()
     if own_pkg:
         candidates.update(own_pkg.files)
     for imp in parsed.imports:
@@ -288,8 +293,14 @@ def _resolve_go_type_refs(
         if target is not None and target != from_path:
             if (name, target) not in seen_targets:
                 seen_targets.add((name, target))
-                _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
-                                            type_name=name, origin=ref.origin)
+                _add_or_merge_type_use_edge(
+                    graph,
+                    src=from_path,
+                    dst=target,
+                    type_name=name,
+                    origin=ref.origin,
+                    hint_source=SAME_PACKAGE_HINT if target in sibling_files else None,
+                )
                 emitted += 1
             continue
         # Type not found cross-file — check if it is defined in the same file.
@@ -733,8 +744,14 @@ def _add_or_merge_type_use_edge(
     dst: str,
     type_name: str,
     origin: str,
+    hint_source: str | None = None,
 ) -> None:
     """Add a ``type_use`` edge between two files, merging on conflict.
+
+    *hint_source* marks the edge's provenance when the two files belong to one
+    compilation unit (see :mod:`repowise.core.ingestion.cohesion`); it is
+    stamped on creation only, since an existing edge already carries whatever
+    stronger evidence produced it.
 
     The edge is persisted as its own ``edge_type='type_use'`` row so it
     is observable in ``graph_edges`` (the SQLite layer drops ad-hoc
@@ -764,12 +781,13 @@ def _add_or_merge_type_use_edge(
         if type_name not in names:
             names.append(type_name)
         return
-    graph.add_edge(
-        src,
-        dst,
-        edge_type="type_use",
-        origin=origin,
-        confidence=_TYPE_USE_CONFIDENCE,
-        type_uses=[type_name],
-        imported_names=[type_name],
-    )
+    attrs: dict[str, Any] = {
+        "edge_type": "type_use",
+        "origin": origin,
+        "confidence": _TYPE_USE_CONFIDENCE,
+        "type_uses": [type_name],
+        "imported_names": [type_name],
+    }
+    if hint_source is not None:
+        attrs["hint_source"] = hint_source
+    graph.add_edge(src, dst, **attrs)

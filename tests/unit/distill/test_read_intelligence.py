@@ -1,4 +1,4 @@
-"""Read-intelligence PostToolUse behaviors: skeleton nudges + stale reads.
+"""Read-intelligence PostToolUse behaviors: stale reads, and what was retired.
 
 Exercises the augment handlers directly (the `_handle_post_tool_use`
 dispatch layer), below `_emit_response`'s cross-process dedup, so the
@@ -50,7 +50,7 @@ def _index_file(repo: Path, rel: str, bounds: list[tuple[int, int]]) -> None:
 
 
 def _write_big_file(repo: Path, rel: str, lines: int = 600) -> Path:
-    """Default size clears the nudge's full-file token floor (~3k tokens)."""
+    """Default size clears the replacement's full-file token floor (~3k tokens)."""
     path = repo / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(f"x{n} = {n}  # padding padding" for n in range(lines)) + "\n")
@@ -86,78 +86,59 @@ def _edit_event(repo: Path, rel: str, tool: str = "Edit", session: str = SESSION
     )
 
 
-class TestSkeletonNudge:
-    def test_fires_for_big_read_of_indexed_file(self, repo: Path) -> None:
+class TestRetiredSkeletonNudge:
+    """The skeleton nudge was deleted; these keep it deleted.
+
+    It was the loudest surface in the system and it never earned a number.
+    Three readings were replayed over 516 firings before it was touched: a
+    structure call on any file followed 11.4% of nudges against an 11.9%
+    unconditioned base rate, ``get_context`` on a not-yet-read file 2.9%
+    against 3.4%, and read as compliance — did the agent stop reading large
+    indexed files whole — 54.8% re-offended inside the window. A session's
+    first nudge re-offended at 57.1% and its later ones at 53.4%, so being
+    told again changed nothing. What it asked for is now done by the
+    replacement rather than said.
+    """
+
+    def test_a_big_read_of_an_indexed_file_says_nothing(self, repo: Path) -> None:
         _write_big_file(repo, "src/big.py")
         _index_file(repo, "src/big.py", [(10, 60), (70, 150), (160, 195)])
+        assert _read_event(repo, "src/big.py") is None
 
-        result = _read_event(repo, "src/big.py")
-        assert result is not None
-        assert 'include=["skeleton"]' in result
-        assert "src/big.py" in result
-        assert "tokens" in result
-
-    def test_fires_exactly_once_per_file_per_session(self, repo: Path) -> None:
+    def test_no_pointer_survives_on_any_read_of_that_file(self, repo: Path) -> None:
+        """Including the second and a fresh session, which used to re-fire."""
         _write_big_file(repo, "src/big.py")
         _index_file(repo, "src/big.py", [(10, 60), (70, 150), (160, 195)])
-
-        first = _read_event(repo, "src/big.py")
-        assert first is not None and 'include=["skeleton"]' in first
-        # Every subsequent read of the same file this session is silent.
         assert _read_event(repo, "src/big.py") is None
         assert _read_event(repo, "src/big.py") is None
-        # A new session resets the claim — skeleton pointer fires again.
-        third_session = _read_event(repo, "src/big.py", session="session-2")
-        assert third_session is not None and 'include=["skeleton"]' in third_session
+        assert _read_event(repo, "src/big.py", session="session-2") is None
 
-    def test_silent_below_line_threshold(self, repo: Path) -> None:
-        _write_big_file(repo, "src/big.py")
-        _index_file(repo, "src/big.py", [(10, 60), (70, 150)])
-        assert _read_event(repo, "src/big.py", num_lines=40) is None
-
-    def test_silent_without_wiki_db(self, repo: Path) -> None:
-        _write_big_file(repo, "src/big.py")
-        assert _read_event(repo, "src/big.py") is None
-
-    def test_silent_when_file_not_indexed(self, repo: Path) -> None:
-        _write_big_file(repo, "src/big.py")
-        _index_file(repo, "src/other.py", [(1, 50)])
-        assert _read_event(repo, "src/big.py") is None
-
-    def test_silent_outside_any_repowise_repo(self, tmp_path: Path) -> None:
+    def test_a_read_outside_any_repowise_repo_is_left_alone(self, tmp_path: Path) -> None:
+        """`_handle_read_post`'s own early return, which the nudge tests used to
+        be the only cover for. It guards every Read notice, not just the one
+        that went."""
         plain = tmp_path / "plain"
         _write_big_file(plain, "src/big.py")
-        result = _post(
-            "Read",
-            tool_input={"file_path": str(plain / "src/big.py")},
-            tool_output={"file": {"numLines": 150}},
-            cwd=str(plain),
-            session_id=SESSION,
+        assert (
+            _post(
+                "Read",
+                tool_input={"file_path": str(plain / "src/big.py")},
+                tool_output={"file": {"numLines": 150}},
+                cwd=str(plain),
+                session_id=SESSION,
+            )
+            is None
         )
-        assert result is None
 
-    def test_silent_for_tiny_file(self, repo: Path) -> None:
-        # 150 reported lines but the on-disk file is too small to matter.
-        path = repo / "src" / "small.py"
-        path.parent.mkdir(parents=True)
-        path.write_text("x = 1\n" * 30)
-        _index_file(repo, "src/small.py", [(1, 30)])
-        assert _read_event(repo, "src/small.py") is None
-
-    def test_silent_below_token_floor(self, repo: Path) -> None:
-        # The live noise case: a ~1.5k-token file with a perfectly valid
-        # skeleton (~600 tokens saved) is a hint nobody should act on.
-        _write_big_file(repo, "src/mid.py", lines=200)
-        _index_file(repo, "src/mid.py", [(10, 60), (70, 150), (160, 195)])
-        assert _read_event(repo, "src/mid.py") is None
-
-    def test_fires_above_token_floor_with_real_savings(self, repo: Path) -> None:
-        # Same shape as the noise case, just genuinely large: ≥3k full-file
-        # tokens with ≥1.5k estimated savings.
-        _write_big_file(repo, "src/big.py", lines=600)
+    def test_the_stale_read_notice_is_unaffected(self, repo: Path) -> None:
+        """The one Read notice that survived, asserted on the nudge's own shape."""
+        _write_big_file(repo, "src/big.py")
         _index_file(repo, "src/big.py", [(10, 60), (70, 150), (160, 195)])
-        result = _read_event(repo, "src/big.py")
-        assert result is not None and 'include=["skeleton"]' in result
+        _read_event(repo, "src/big.py")
+        _edit_event(repo, "src/big.py")
+        notice = _read_event(repo, "src/big.py")
+        assert notice is not None and "stale" in notice
+        assert 'include=["skeleton"]' not in notice
 
 
 class TestStaleReadNotice:
@@ -267,7 +248,6 @@ class TestSessionState:
             "session_id": SESSION,
             "reads": {f"f{i}.py": float(i) for i in range(600)},
             "edits": {},
-            "nudged": [],
             "stale_notified": [],
         }
         _save_session_state(repo, state)

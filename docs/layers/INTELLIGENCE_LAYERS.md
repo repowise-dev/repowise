@@ -1,16 +1,19 @@
-# The Five Intelligence Layers
+# The Intelligence Layers
 
-repowise indexes your codebase **once**, builds five intelligence layers, then
-keeps them in sync on every commit. This document is the deep dive; the README
-gives the one-paragraph version of each layer and links here for the detail.
+repowise indexes your codebase **once**, builds five foundational layers, then
+keeps them in sync on every commit. Four further layers are derived from those
+five. This document is the deep dive; the README gives the one-paragraph version
+of each and links here for the detail.
 
 <div align="center">
-<img src="../../.github/assets/intelligence-layers.svg" alt="repowise's five intelligence layers: one index (repowise init) fans into Graph, Git, Docs, Decisions, and Code Health, each surfaced through its signature MCP tool and delivered through 10 task-shaped tools, the CLI, the local dashboard, auto-generated CLAUDE.md/AGENTS.md, and the PR bot" width="100%" />
+<img src="../../.github/assets/intelligence-layers.svg" alt="repowise's intelligence layers: one index (repowise init) fans into Graph, Git, Docs, Decisions, and Code Health, each surfaced through its signature MCP tool and delivered through task-shaped tools, the CLI, the local dashboard, auto-generated CLAUDE.md/AGENTS.md, and the PR bot" width="100%" />
 </div>
 
-The layers compound. The graph locates what git flags,
-code health scores it, decisions explain why it is shaped that way, and the docs
-make all of it searchable in natural language.
+The layers compound. The graph locates what git flags, code health scores it,
+decisions explain why it is shaped that way, and the docs make all of it
+searchable in natural language.
+
+**Foundational**
 
 1. [Graph Intelligence](#graph-intelligence)
 2. [Git Intelligence](#git-intelligence)
@@ -18,100 +21,115 @@ make all of it searchable in natural language.
 4. [Decision Intelligence](#decision-intelligence)
 5. [Code Health Intelligence](#code-health-intelligence)
 
-Two cross-cutting capabilities sit on top of the layers:
+**Derived** — built on the five, each with its own reference page
+
+6. [Change Risk](#change-risk) · [Test Intelligence](#test-intelligence) ·
+   [Bug History](#bug-history) · [Security](#security) ·
+   [Dead Code](#dead-code-detection)
+
+**Cross-cutting**
 
 - [Proactive context enrichment: hooks](#proactive-context-enrichment-hooks)
-- [Auto-sync: five ways to stay current](#auto-sync-five-ways-to-stay-current)
+- [Auto-sync](#auto-sync-five-ways-to-stay-current)
 - [Auto-generated CLAUDE.md](#auto-generated-claudemd)
+
+Everything below is computed **without model calls**. An LLM is an optional
+upgrade for prose quality in the docs layer, never a requirement for the index.
 
 ---
 
 ## Graph Intelligence
 
-tree-sitter parses every file across 18 languages into a **two-tier dependency
-graph**: file nodes and symbol nodes (functions, classes, methods). A 3-tier
-call resolver with confidence scoring handles import aliases, barrel
-re-exports, and namespace imports. Heritage extraction covers `extends`,
-`implements`, trait impls, derive macros, mixins, and extension conformance.
+tree-sitter parses your source into a **two-tier dependency graph**: file nodes
+and symbol nodes (functions, classes, methods). 18 languages parse to a full
+AST; see [`LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language tiers.
 
-- **Leiden community detection** finds logical modules even when your directory
-  structure doesn't reflect them.
+A **3-tier call resolver with confidence scoring** handles import aliases,
+barrel re-exports and namespace imports: same-file resolution at 0.95,
+import-scoped at 0.90, globally-unique at 0.50, with language-specific pre-tiers
+for Go packages, JVM same-package and C++ same-target. Heritage extraction
+covers `extends`, `implements` and trait impls.
+
+- **Leiden community detection** (Louvain fallback) finds logical modules even
+  when your directory structure doesn't reflect them.
 - **PageRank, betweenness centrality, SCC analysis, and execution-flow tracing**
-  from entry points identify your most central, most coupled, and most
-  traversed code.
-- **Framework-aware edges** connect routes to handlers for Django, FastAPI,
-  Flask, ASP.NET, Spring Boot, Express/NestJS, Gin/Echo/Chi, Axum/Actix, Rails,
-  Laravel, and more.
+  from entry points identify your most central, most coupled, and most traversed
+  code.
+- **Framework-aware edges** connect routes to handlers across 22 framework
+  detectors, including Django, FastAPI, Flask, ASP.NET, Spring, Micronaut,
+  Quarkus, Jakarta, Express/NestJS, Next.js App Router, Remix, tRPC, Hono,
+  Gin/Echo/Chi, Axum/Actix/Rocket, Rails, Laravel, TYPO3, Flutter and the
+  pytest/gtest test runners.
 
-See [`docs/layers/LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language coverage
-and [`docs/reference/COMPUTED_GLOSSARY.md`](../reference/COMPUTED_GLOSSARY.md) for every derived metric.
+Every derived metric is defined in
+[`COMPUTED_GLOSSARY.md`](../reference/COMPUTED_GLOSSARY.md).
 
 ---
 
 ## Git Intelligence
 
-repowise mines your git history (per-file, configurable depth) to produce
-signals no static analysis can find.
+repowise mines your git history to produce signals no static analysis can find.
 
-**Hotspots**: files in the top 25% of *both* churn and complexity. These are
-where bugs live. Flagged in the dashboard, in `CLAUDE.md`, and surfaced by
-`get_risk()` before your agent touches them.
+**Hotspots**: files in the top quartile of *decayed* churn (exponential
+half-life, so last month outweighs last year) that also clear minimum-activity
+floors — at least 3 commits in 90 days and a meaningful temporal score. Churn
+alone would flag every file a bulk refactor touched; the floors keep the list
+about sustained activity. Surfaced by `get_risk()` before your agent edits.
 
-**Ownership**: `git blame` aggregated into ownership percentages per author.
-Know who to ping. Know where knowledge silos exist.
+**Ownership**: `git blame` aggregated into per-author percentages. Know who to
+ping, and where knowledge silos are.
 
 **Co-change pairs**: files that change together in the same commit *without* an
-import link. Hidden coupling that AST parsing cannot detect. `get_context()`
-surfaces co-change partners alongside direct dependencies.
+import link. Hidden coupling AST parsing cannot detect. `get_context()` surfaces
+co-change partners alongside direct dependencies.
 
-**Bus factor**: files owned >80% by a single author. Shown in the ownership
-view, surfaced in `CLAUDE.md` as knowledge risk.
+**Bus factor**: how many authors it takes to cover 80% of a file's commits. A
+bus factor of 1 is the classic single-owner risk, surfaced in `CLAUDE.md`.
 
-**Significant commits**: the last 10 meaningful commit messages per file
-(filtered: no merges, no dependency bumps, no lint) feed generation prompts, so
-the wiki explains *why* code is structured the way it is.
+**Significant commits**: up to 50 meaningful commit messages per file — merges,
+dependency bumps, lint-only and bot commits filtered out — with the commit body
+retained when it carries decision intent. These feed generation prompts, so the
+wiki can explain *why* code is structured the way it is.
 
-**Contributor profiles**: every author with commits gets a profile page:
-modules they own, top files, co-authors, commit category mix
-(feat / fix / refactor / docs / test / chore / perf), silo modules they're
-solely on, bus-factor risk files, and dead-code burden. Surfaced via
-`/repos/<id>/owners` and linked from every owner reference.
+**Contributor profiles**: every author gets a page — modules they own, top
+files, co-authors, commit category mix, silo modules, bus-factor risk files, and
+dead-code burden.
 
-**Module health**: a composite 0–100 score per top-level module derived from
-silo penalty, hotspot density, dead-code percentage, average churn, doc
-coverage, and median bus factor. Surfaced on the Risk page and the per-module
-detail page, with cross-links to owners, hotspots, and governing decisions.
+**Module health**: a 0–100 composite per top-level module from silo penalty,
+hotspot density, dead-code percentage, average churn, doc coverage and median
+bus factor.
 
-**Reviewer suggestions**: paste a PR file list into Blast Radius and get a
-ranked list of likely reviewers, scored by direct authorship (×1.0), co-change
-partners (×0.5), and recency (×0.4), capped at the 5 strongest co-change signals
-per file.
+**Reviewer suggestions**: paste a PR file list into Blast Radius for a ranked
+reviewer list, scored by direct authorship (×1.0), co-change partners (×0.5) and
+recency (×0.4), capped at the 5 strongest co-change signals per file.
 
 ---
 
 ## Documentation Intelligence
 
-An LLM-generated wiki for every module and file, rebuilt **incrementally** on
-every commit.
+A wiki for every module and file, rebuilt **incrementally** on every commit.
+Deterministic templates render it with no model calls; supplying an LLM key
+upgrades the prose rather than enabling the layer.
 
 - **Coverage tracking**: what's documented and what isn't.
-- **Freshness scoring** per page: confidence scores show how current each page
-  is relative to the underlying code.
-- **Semantic search via RAG**: hybrid retrieval (full-text + vector merged via
-  Reciprocal Rank Fusion) with PageRank bias and 1-hop graph expansion.
+- **Freshness scoring** per page, relative to the underlying code.
+- **Semantic search via RAG**: hybrid retrieval merging full-text and vector
+  results through Reciprocal Rank Fusion, with PageRank bias and a 1–2 hop graph
+  expansion that walks the imports and projected-calls graph for flow-shaped
+  questions.
 
-A typical single-commit update touches 3–10 pages and completes in under 30
-seconds; only the pages your change actually touched are regenerated.
+A typical single-commit update regenerates only the handful of pages your change
+actually touched.
 
 ---
 
 ## Decision Intelligence
 
-Architectural decisions mined from **eight sources**: ADR files (Nygard/MADR),
-CHANGELOG entries, PR and squash-commit bodies, inline markers, git archaeology,
-README/docs, centrality-bounded code comments, and the LLM doc-generation pass
-itself. These are linked to the graph nodes they govern and tracked for
-staleness as code evolves.
+Architectural decisions mined at index time from **five sources**: ADR files
+(Nygard/MADR), PR and squash-commit bodies, inline markers, git archaeology, and
+centrality-bounded code comments. Two further capture paths exist for humans and
+agents: `repowise decision add`, and mining your Claude Code or Codex session
+transcripts.
 
 ```python
 # WHY: JWT chosen over sessions — API must be stateless for k8s horizontal scaling
@@ -119,214 +137,127 @@ staleness as code evolves.
 # TRADEOFF: Accepted eventual consistency in preferences for write throughput
 ```
 
-Every decision is **evidence-backed**: each rationale traces to a verbatim
-source span (ADR quote, commit body, code comment), and an anti-hallucination
-substring gate stamps each as **exact / fuzzy / unverified**: corroborating
-sources raise confidence rather than overwrite each other.
+Every decision is **evidence-backed**: each rationale traces to a verbatim source
+span, and an anti-hallucination substring gate stamps it **exact**, **fuzzy** or
+**unverified**. Corroborating sources raise confidence rather than overwrite each
+other.
 
-Decisions form a **graph**: typed edges (`supersedes` / `refines` /
-`relates_to` / `conflicts_with`) let `get_why()` answer *"why is auth structured
-this way?"* with a lineage chain (sessions -> JWT -> OAuth2). **No edges are
-written today**: the only detector that produced them scoped a conflict by
-similarity, which does not scope, so it is off and the edges it wrote have been
-removed (see `docs/layers/DECISIONS.md`). Lineage stays empty until a
-structural detector replaces it. Retirement itself still works — the
-diff-driven pass on `repowise update` marks a decision a new commit reversed,
-and `repowise decision deprecate --superseded-by` records the successor on the
-record.
+**On lineage, precisely.** Decisions have a typed-edge schema
+(`supersedes` / `refines` / `relates_to` / `conflicts_with`), but **no edges are
+written today**. The only detector that produced them scoped conflicts by
+similarity, which does not scope, so it is disabled and the edges it wrote were
+removed. Lineage stays empty until a structural detector replaces it. What does
+work: the diff-driven pass on `repowise update` marks decisions a new commit
+reversed, and `repowise decision deprecate --superseded-by` records the successor
+on the record itself. See [`DECISIONS.md`](DECISIONS.md).
 
-These structured records surface everywhere your agent already looks:
-`get_why()` for the full archaeology, governing decisions in `get_context()`, a
-`governance_risk` flag in `get_risk()` PR review, a Key Decisions section in
-`get_overview()`, and `ungoverned_hotspot` / `stale_governance` /
-`contradictory_decision` findings in the code-health layer.
+These records surface everywhere your agent already looks: `get_why()` for the
+archaeology, governing decisions in `get_context()`, a `governance_risk` flag in
+`get_risk()` PR review, a Key Decisions section in `get_overview()`, and the
+`ungoverned_hotspot` / `stale_governance` / `contradictory_decision` findings in
+the code-health layer.
 
 ```bash
-repowise decision add              # guided interactive capture (~90 seconds)
-repowise decision confirm          # review auto-proposed decisions from git history
+repowise decision add              # guided interactive capture
+repowise decision confirm          # review auto-proposed decisions
 repowise decision health           # stale, conflicting, ungoverned hotspots
 ```
 
-```
-repowise decision health
-
-  2 stale decisions
-    → "JWT over sessions" — auth/service.ts rewritten 3 months ago, decision may be outdated
-    → "EventBus in-process only" — 8 of 14 governed files changed since recorded
-
-  1 conflict
-    → payments/: two decisions with overlapping scope and contradictory rationale
-
-  1 ungoverned hotspot
-    → payments/processor.ts — 47 commits/month, no architectural decisions recorded
-```
-
-The "why" usually walks out the door: when a teammate leaves, or when you
-reopen your own repo six months later. Decision intelligence keeps it in the
-codebase.
+The "why" usually walks out the door: when a teammate leaves, or when you reopen
+your own repo six months later. This keeps it in the codebase.
 
 ---
 
 ## Code Health Intelligence
 
-repowise computes a **1–10 health score for every file** from **25 deterministic
-markers**: McCabe complexity, deep nesting, brain methods, class cohesion
-(LCOM4), god classes, native Rabin–Karp clone detection, untested hotspots,
-function-level churn, code-age volatility, ownership dispersion, change entropy,
-co-change scatter, prior-defect history, test-quality smells, and more.
+repowise scores **every file 1–10** on three co-equal signals — defect risk,
+maintainability, and performance risk — from a roster of **49 deterministic
+detectors**, of which only **26 are permitted to move the defect number**. Pure
+static analysis over tree-sitter and git data, budgeted (and CI-tested) to
+finish in **under 30 seconds on a 3,000-file repo**.
 
-**Zero LLM calls. Zero cloud requirement. Zero new runtime dependencies**:
-pure Python over tree-sitter and git data, designed to finish in under 30
-seconds on a 3,000-file repo.
+The defect weights are **calibrated offline against a real bug corpus, not
+hand-tuned**: every file scored at a commit preceding the bug window (no
+leakage), an L2-logistic fit with NLOC as an explicit control so a marker only
+earns weight for defect lift *beyond* file size. Only the learned constants
+ship; the runtime stays fully deterministic.
 
-The marker **weights are calibrated offline against a real defect corpus, not
-hand-tuned**: each file is scored at the pre-window commit (T0, no leakage) and
-an L2-logistic regression (with NLOC as an explicit control) fits each
-marker's defect lift *beyond* file size. Only the learned constants ship; the
-runtime stays fully deterministic.
+Validated leakage-free across **21 repositories, 9 languages, 2,826 files** at
+mean ROC AUC **0.737**, and **0.76–0.78** on the public PROMISE/jEdit dataset
+that played no part in calibration.
 
-The same marker stream produces three orthogonal signals: defect risk
-(the calibrated headline number), maintainability, and performance risk. These
-are co-equal views, never blended into one number. It does not stop at scoring:
-the layer closes the loop into concrete, graph-aware refactoring plans
-(see below) an agent can execute.
+It does not stop at scoring — the layer closes the loop into concrete,
+graph-aware refactoring plans an agent can execute: Extract Class, Extract
+Method, Extract Helper, Move Method, Break Cycle and Split File, each with its
+plan, recovered impact and blast radius.
 
 ```bash
 repowise health                       # KPIs + lowest-scoring files
-repowise coverage add cov.lcov   # ingest coverage, light up untested-hotspot
 repowise health --refactoring-targets # ranked by impact / effort
-repowise health --trend               # last 10 snapshots + declining/predicted-decline alerts
-repowise status                       # one-line summary in the status report
+repowise health --trend               # snapshots + declining-health alerts
 ```
 
-- **Coverage ingestion**: LCOV, Cobertura, Clover, or normalized JSON light up
-  the test-coverage markers (`untested_hotspot`, `coverage_gap`,
-  `coverage_gradient`).
-- **Trend tracking**: a rolling 50-row snapshot history powers `Declining
-  Health` and `Predicted Decline` alerts.
-- **Refactoring plans**: deterministic, structured, **graph-aware**: Extract
-  Class (LCOM4 cohesion split), Extract Helper (clone dedup), Move Method (feature
-  envy), Break Cycle (minimum feedback arc set), and Split File (modularity-gated
-  module decomposition with the import-rewrite blast radius), each carrying its
-  concrete plan, recovered impact, and blast radius. Ranked by `impact ×
-  centrality × blast radius`, on the dashboard **Refactoring** tab, via `repowise
-  health --refactoring-targets`, and via `get_health(include=["refactoring"])`. An
-  opt-in LLM pass expands any plan into generated code + a diff. See
-  [`docs/layers/REFACTORING.md`](REFACTORING.md).
-- **Per-file overrides** via `.repowise/health-rules.json`.
-
-Validated against real defect history; see
-[`docs/layers/CODE_HEALTH.md`](CODE_HEALTH.md) for the full user guide, the per-marker
-reference, and the calibration story, and
-[repowise-bench](https://github.com/repowise-dev/repowise-bench) for the
-reproducible defect-prediction and head-to-head benchmarks.
+Full guide, the calibration story and the head-to-head against CodeScene:
+[`CODE_HEALTH.md`](CODE_HEALTH.md).
 
 ---
 
-## Proactive context enrichment: hooks
+## Change Risk
 
-Most MCP tools are passive: the agent has to know to call them. repowise hooks
-are active. They inject graph context into every search automatically, so
-agents are smarter even when they don't explicitly ask for help. Hooks are
-installed automatically during `repowise init`.
-
-### PreToolUse: every search gets graph context
-
-When your AI agent runs `Grep` or `Glob`, repowise intercepts the call and
-enriches it with the top 3 related files, found via multi-signal search (symbol
-name match, file-path match, full-text search on wiki content), ranked by
-relevance then PageRank. No LLM calls. No network. Pure local SQLite queries.
-
-```
-[repowise] 3 related file(s) found:
-
-  src/core/ingestion/graph.py
-    Symbols: class:GraphBuilder, method:__init__, method:build
-    Imported by: src/core/ingestion/__init__.py
-    Uses: src/core/analysis/communities.py, src/core/analysis/execution_flows.py
-```
-
-### PostToolUse: auto-detect stale wiki
-
-After a successful `git commit`, repowise checks whether the wiki is out of date
-and notifies the agent:
-
-```
-[repowise] Wiki is stale — last indexed at commit a1b2c3d4, HEAD is now f9a0499b.
-Run `repowise update` to refresh documentation and graph context.
-```
-
-> **Related capability:** [Distill](../agent/DISTILL.md) reuses these layers' index
-> (symbol bounds, centrality, hotspots) to compress noisy command output and
-> large file reads before the agent sees them, a capability built *on* the
-> five layers, not a sixth layer.
-
----
-
-## Auto-sync: five ways to stay current
-
-repowise keeps your intelligence layers in sync with your code. Pick the method
-that fits your workflow:
-
-| Method | Command | Best for |
-|--------|---------|----------|
-| **Post-commit hook** | `repowise hook install` | Set-and-forget local development |
-| **File watcher** | `repowise watch` | Active development without committing |
-| **GitHub webhook** | Configure in repo settings | Teams, CI/CD |
-| **GitLab webhook** | Configure in project settings | Teams, CI/CD |
-| **Polling fallback** | Automatic with `repowise serve` | Safety net for missed webhooks |
+A calibrated 0–10 defect-risk score for **a whole commit or `base..head`
+range**, computed from the diff's shape against the live checkout — no index
+lookup, no model call. Distinct from `get_risk()`, which scores indexed files by
+path. Lead with `risk_percentile`, which ranks the change against sampled recent
+commits in the same repo.
 
 ```bash
-repowise hook install             # install post-commit hook (current repo)
-repowise hook install --workspace # install for all workspace repos
-repowise hook status              # check if hooks are installed
-repowise watch                    # or use the file watcher (single repo)
-repowise watch --workspace        # all workspace repos
+repowise risk HEAD
+repowise risk main..feature-branch
 ```
 
-A typical single-commit update touches 3–10 pages and completes in under 30
-seconds. Full guide: [`docs/scale/AUTO_SYNC.md`](../scale/AUTO_SYNC.md).
+Reference: [`CHANGE_RISK.md`](CHANGE_RISK.md).
 
 ---
 
-## Auto-generated CLAUDE.md
+## Test Intelligence
 
-After every `repowise init` and `repowise update`, repowise regenerates your
-`CLAUDE.md` from actual codebase intelligence, not a template. No LLM calls.
-Under 5 seconds.
+Which tests actually exercise the code you changed, which changed files have no
+guarding test at all, and per-file coverage merged across every test that
+touches it. Coverage ingests from LCOV, Cobertura, Clover or normalized JSON and
+feeds the code-health coverage markers.
 
-```bash
-repowise generate-claude-md
-```
+The practical payoff is `tests_to_run` in `get_risk()` PR mode: a
+coverage-backed list rather than a guess, so an agent runs the tests that can
+actually catch its change.
 
-The generated section includes: architecture summary, module map, hotspot
-warnings, ownership map, hidden coupling pairs, active architectural decisions,
-and dead-code candidates. A user-owned section at the top is never touched.
+Reference: [`TEST_INTELLIGENCE.md`](TEST_INTELLIGENCE.md).
 
-```markdown
-<!-- REPOWISE:START — managed automatically, do not edit -->
-## Architecture
-Monorepo with 4 packages. Entry points: api/server.ts, cli/index.ts.
+---
 
-## Hotspots — handle with care
-- payments/processor.ts — 47 commits/month, high complexity, primary owner: @sarah
-- shared/events/EventBus.ts — 23 dependents, co-changes with all service listeners
+## Bug History
 
-## Active architectural decisions
-- JWT over sessions (auth/service.ts) — stateless required for k8s horizontal scaling
-- CircuitBreaker on all external calls — after payment provider outages in Q3 2024
+Bug-fix commits attributed back to the files and functions they repaired, giving
+each file a fix count, a last-fixed age, and a "bug magnet" flag. This is why the
+generated `CLAUDE.md` orders its *files that need care* by **bug-fix history
+first, then churn** — a file that keeps breaking is a better warning than a file
+that merely changes often.
 
-## Hidden coupling (no import link, but change together)
-- auth.ts ↔ middleware/session.ts — co-changed 31 times
-<!-- REPOWISE:END -->
-```
+Reference: [`BUG_HISTORY.md`](BUG_HISTORY.md).
+
+---
+
+## Security
+
+A static security scan over the working tree **and the full history**, so a
+finding carries the commit that introduced it and its author, not just a line
+number. Findings are idempotent across re-scans and surface through
+`repowise security`, the REST API and the dashboard.
 
 ---
 
 ## Dead code detection
 
-Pure graph traversal and SQL. No LLM calls. Completes in under 10 seconds for
-any repo size.
+Pure graph traversal and SQL. No model calls.
 
 ```
 repowise dead-code
@@ -340,8 +271,99 @@ repowise dead-code
 ```
 
 Conservative by design. `safe_to_delete` requires confidence ≥ 0.70 and excludes
-dynamically-loaded patterns (`*Plugin`, `*Handler`, `*Adapter`, `*Middleware`).
-Dynamic-import detection (`importlib.import_module()`, `__import__()`) and
-framework awareness (Flask/FastAPI/Django/Rails/Laravel/TYPO3 routes and
-convention files) further reduce false positives. repowise surfaces candidates.
-Engineers decide.
+17 dynamically-loaded naming patterns (`*Plugin`, `*Handler`, `*Middleware`,
+`register_*`, `on_*`, `*_route`, `*_callback` and more). Dynamic-import
+detection and a per-language framework-convention registry further cut false
+positives. repowise surfaces candidates; engineers decide.
+
+Reference: [`DEAD_CODE.md`](DEAD_CODE.md).
+
+---
+
+## Proactive context enrichment: hooks
+
+Most MCP tools are passive — the agent has to know to call them. repowise hooks
+are active: they act on what the agent is already doing. No LLM calls, no
+network, pure local SQLite queries. Installed automatically during
+`repowise init`.
+
+There is deliberately **no unconditional pre-search injection**. An earlier
+version enriched every `Grep`/`Glob` before it ran and was removed: it added
+noise on the majority of searches where the agent had already found what it
+wanted. What ships now fires on evidence that the agent needs help:
+
+- **Zero-result rescue** — a grep found nothing, so wiki full-text, fuzzy symbol
+  and decision matches surface the closest real hit.
+- **Flood digest and triage** — a search returning far too much is replaced with
+  a compact per-file digest of match counts and anchor lines, plus the top files
+  by PageRank.
+- **Wrong-path rescue** — a failed `Read`/`Edit`/`Write` path is resolved against
+  the index to the file you almost certainly meant.
+- **Read skeleton** — an unbounded read of a large indexed file is served as its
+  skeleton with 1-indexed ranges, once per file per session.
+- **Stale-read notice** — a file was edited after this session read it earlier.
+- **Decision injection** — editing a file with a governing decision surfaces it
+  in one line.
+- **Session start** — index freshness, the trust protocol, and standing
+  decisions.
+- **Post-commit staleness** — after a successful commit, merge, rebase,
+  cherry-pick or pull, a notice if the wiki has drifted from HEAD.
+
+Claude Code and Codex are both supported.
+
+> **Related capability:** [Distill](../agent/DISTILL.md) reuses the index
+> (symbol bounds, centrality, hotspots) to compress noisy command output and
+> large reads before the agent sees them — built *on* the layers, not a layer.
+
+---
+
+## Auto-sync: five ways to stay current
+
+| Method | Command | Best for |
+|--------|---------|----------|
+| **Post-commit hook** | `repowise hook install` | Set-and-forget local development |
+| **File watcher** | `repowise watch` | Active development without committing |
+| **GitHub webhook** | Configure in repo settings | Teams, CI/CD |
+| **GitLab webhook** | Configure in project settings | Teams, CI/CD |
+| **Polling fallback** | Automatic with `repowise serve` | Safety net for missed webhooks |
+
+```bash
+repowise hook install             # post-commit hook (current repo)
+repowise hook install --workspace # all workspace repos
+repowise watch                    # or use the file watcher
+```
+
+Updates are incremental: only the pages your change actually touched are
+regenerated. Full guide: [`AUTO_SYNC.md`](../scale/AUTO_SYNC.md).
+
+---
+
+## Auto-generated CLAUDE.md
+
+After every `repowise init` and `repowise update`, repowise regenerates your
+`CLAUDE.md` from actual codebase intelligence, not a template. No LLM calls. An
+`AGENTS.md` generator shares the same pipeline.
+
+```bash
+repowise generate-claude-md
+```
+
+The generated section includes: index freshness and a `_meta` explainer, how to
+work in this repo, a **trust protocol** stating when a served result may be used
+without re-reading, the MCP tool table, an architecture summary, key modules,
+entry points, **files that need care** (ordered by bug-fix history, then churn),
+code health across all three signals, standing architectural decisions, and your
+build/test commands. A user-owned section at the top is never touched.
+
+```markdown
+<!-- REPOWISE:START — Do not edit below this line. Auto-generated by Repowise. -->
+## Architecture
+Monorepo with 4 packages. Entry points: api/server.ts, cli/index.ts.
+
+## Files that need care (bug-fix history first, then churn)
+- payments/processor.ts — 19 bug fixes, last fix 2 days ago (bug magnet); 23 commits/90d
+
+## Standing decisions (ask get_why before diverging)
+- JWT over sessions (auth/service.ts) — stateless required for k8s horizontal scaling
+<!-- REPOWISE:END -->
+```

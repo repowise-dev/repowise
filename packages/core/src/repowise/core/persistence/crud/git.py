@@ -81,13 +81,20 @@ async def get_git_metadata_bulk(
     """Return a dict of file_path → GitMetadata for the given paths."""
     if not file_paths:
         return {}
-    result = await session.execute(
-        select(GitMetadata).where(
-            GitMetadata.repository_id == repository_id,
-            GitMetadata.file_path.in_(file_paths),
+    # Batched to stay under SQLite parameter limits (999 on SQLite < 3.32);
+    # callers pass unbounded path sets.
+    out: dict[str, GitMetadata] = {}
+    unique_paths = list(dict.fromkeys(file_paths))
+    for i in range(0, len(unique_paths), _BATCH_SIZE):
+        result = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.file_path.in_(unique_paths[i : i + _BATCH_SIZE]),
+            )
         )
-    )
-    return {gm.file_path: gm for gm in result.scalars().all()}
+        for gm in result.scalars().all():
+            out[gm.file_path] = gm
+    return out
 
 
 async def get_all_git_metadata(session: AsyncSession, repository_id: str) -> dict[str, GitMetadata]:
