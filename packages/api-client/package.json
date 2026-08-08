@@ -20,6 +20,7 @@
     "./coupling": "./src/coupling.ts",
     "./dead-code": "./src/dead-code.ts",
     "./decisions": "./src/decisions.ts",
+    "./episodes": "./src/episodes.ts",
     "./external-systems": "./src/external-systems.ts",
     "./feedback": "./src/feedback.ts",
     "./files": "./src/files.ts",

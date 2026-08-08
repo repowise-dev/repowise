@@ -488,9 +488,49 @@ def _changed_file_edges(
                 "imported_names_json": json.dumps(data.get("imported_names", [])),
                 "edge_type": data.get("edge_type", "imports"),
                 "confidence": data.get("confidence", 1.0),
+                "hint_source": data.get("hint_source"),
             }
         )
     return sorted(reconcile), edges
+
+
+async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any) -> bool:
+    """True when ``graph_edges`` was written before edge cohesion was recorded.
+
+    An incremental update rewrites only the changed files' edges, so a store
+    indexed by an older build keeps that build's edges — and its resolution
+    mistakes — on every file that has not happened to change since. The health
+    engine and the server both read a graph rehydrated from those rows, so they
+    would go on reporting cycles the current engine no longer finds.
+
+    The signal is the store's own content rather than a version marker: a
+    routine update deliberately clamps ``store_format_version`` below the first
+    reindex gate, so a version comparison would refire on every run. Here, a
+    repo whose graph now has cohesion edges but whose table has no
+    ``hint_source`` anywhere is exactly a pre-cohesion store. Rewriting it
+    stamps those rows, so this answers False from then on and the full
+    reconcile happens once.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.ingestion.cohesion import is_cohesion_edge
+    from repowise.core.persistence.models import GraphEdge
+
+    try:
+        graph = graph_builder.graph()
+    except Exception:
+        return False
+    if not any(is_cohesion_edge(d) for _u, _v, d in graph.edges(data=True)):
+        return False  # nothing to record, so nothing can be missing
+
+    row = (
+        await session.execute(
+            select(GraphEdge.id)
+            .where(GraphEdge.repository_id == repo_id, GraphEdge.hint_source.is_not(None))
+            .limit(1)
+        )
+    ).first()
+    return row is None
 
 
 async def persist_incremental_edges(
@@ -513,6 +553,14 @@ async def persist_incremental_edges(
     if graph_builder is None or not parsed_files:
         return
     from repowise.core.persistence.crud import reconcile_edges_for_files
+
+    if await _edges_predate_cohesion(session, repo_id, graph_builder):
+        # Widen the reconcile to the whole parsed set, once. Same code path,
+        # so the delete-then-insert still drops edges a file no longer has —
+        # which is what clears the pre-fix resolution mistakes, an upsert
+        # alone would leave them behind.
+        changed_paths = [pf.file_info.path for pf in parsed_files]
+        logger.info("graph_edges_cohesion_backfill", repo_id=repo_id, files=len(changed_paths))
 
     reconcile_paths, edges = _changed_file_edges(graph_builder, parsed_files, changed_paths)
     if not reconcile_paths:
@@ -805,6 +853,70 @@ async def _sweep_stale_generated_pages(
     return swept
 
 
+async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: Any) -> list[str]:
+    """Delete ``scc_page`` rows whose cycle no longer exists in the graph.
+
+    The other sweeps ask "did this run *produce* this page?", which a scoped run
+    cannot answer: ``repowise update`` runs with ``file_pages_only`` and never
+    reaches level 3, so it emits no ``scc_page`` at all and every prior row
+    looks stale to that question. ``_sweep_stale_generated_pages`` therefore
+    gates on the run declaring itself authoritative, and only a keyless
+    (``deterministic``) run does.
+
+    Between them those two rules leave a cycle page immortal on the paths that
+    matter: an update never regenerates it, and a keyed full re-index of a repo
+    whose cycles all disappeared never claims authority to retire it. A user
+    upgrading into a build that fixes a cycle-detection bug keeps being served
+    the cycles it fixed.
+
+    This asks a different question — "does the graph still contain this cycle?"
+    — which the rebuilt graph answers directly and identically on every path,
+    with no dependence on what generation chose to emit or what budget it had.
+    A cycle's page id is a hash of its sorted members
+    (:func:`~repowise.core.generation.models.scc_page_slug`), so the current
+    cycle set names exactly the ids that may survive.
+
+    Returns the deleted page ids so the caller can drop them from FTS and the
+    vector store after the session closes.
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.generation.models import compute_page_id, scc_page_slug
+    from repowise.core.persistence.models import Page, PageVersion
+
+    if graph_builder is None:
+        return []
+    try:
+        sccs = graph_builder.strongly_connected_components()
+    except Exception:  # a released graph has no cycles to speak for
+        return []
+
+    valid = {
+        compute_page_id("scc_page", scc_page_slug(sorted(scc))) for scc in sccs if len(scc) > 1
+    }
+    existing = (
+        (
+            await session.execute(
+                select(Page.id).where(
+                    Page.repository_id == repo_id, Page.page_type == "scc_page"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    stale = [pid for pid in existing if pid not in valid]
+    for i in range(0, len(stale), _PRUNE_CHUNK):
+        batch = stale[i : i + _PRUNE_CHUNK]
+        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+        await session.execute(
+            delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
+        )
+    if stale:
+        logger.info("absent_cycle_pages_swept", repo_id=repo_id, count=len(stale))
+    return stale
+
+
 async def sweep_superseded_generated_pages(
     session: Any,
     repo_id: str,
@@ -949,6 +1061,7 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
                 "imported_names_json": json.dumps(data.get("imported_names", [])),
                 "edge_type": data.get("edge_type", "imports"),
                 "confidence": data.get("confidence", 1.0),
+                "hint_source": data.get("hint_source"),
             }
         )
     if edges:

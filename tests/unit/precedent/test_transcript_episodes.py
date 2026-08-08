@@ -14,6 +14,7 @@ import time
 import pytest
 
 from repowise.core.precedent.store import (
+    SOURCE_GONE_NOTE,
     TIER_GIT,
     TIER_TRANSCRIPT,
     Episode,
@@ -388,13 +389,19 @@ def test_a_quiet_session_keeps_its_episode(tmp_path):
     assert "hello" in row["body"]
 
 
-def test_a_session_whose_transcript_is_gone_loses_its_episode(tmp_path):
+def test_a_session_whose_transcript_is_gone_keeps_its_episode(tmp_path):
+    """The harness prunes transcripts on its own schedule; the episode is durable.
+
+    Measured on the machine this was written on: 1,509 transcripts, oldest 30
+    days, the age distribution stopping dead at the harness default nobody
+    sets. An episode that died with its transcript could never be older than
+    that, which is the one thing this tier claims to be.
+    """
     root = _repo(tmp_path)
     kept = _transcript(tmp_path, "kept.jsonl", [_line("user", "still here")])
     gone = _transcript(tmp_path, "gone.jsonl", [_line("user", "not for long", session="s2")])
     # One recorder across every discovered transcript, which is the production
-    # shape: presence is what the whole run saw, so a per-file recorder would
-    # have each write delete the file before it.
+    # shape: presence is what the whole run saw.
     record_transcript_episodes(root, _fold(root, kept, gone))
     assert len(_rows(root, tier=TIER_TRANSCRIPT)) == 2
 
@@ -403,8 +410,12 @@ def test_a_session_whose_transcript_is_gone_loses_its_episode(tmp_path):
     still_there.observe(kept, iter(()))
     record_transcript_episodes(root, still_there)
 
-    rows = _rows(root, tier=TIER_TRANSCRIPT)
-    assert [r["subject"] for r in rows] == [str(kept).replace("\\", "/")]
+    rows = {r["subject"]: r for r in _rows(root, tier=TIER_TRANSCRIPT)}
+    assert set(rows) == {str(kept).replace("\\", "/"), str(gone).replace("\\", "/")}
+    orphan = rows[str(gone).replace("\\", "/")]
+    # The prose it was made of survives; only the pointer is marked dead.
+    assert "not for long" in orphan["body"]
+    assert orphan["evidence"].endswith(SOURCE_GONE_NOTE)
 
 
 def test_a_run_that_discovered_nothing_deletes_nothing(tmp_path):

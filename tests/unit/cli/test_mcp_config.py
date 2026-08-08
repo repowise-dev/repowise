@@ -382,22 +382,22 @@ def test_save_root_mcp_config_preserves_user_env_block(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _post_repowise_entries(saved: dict) -> list:
+def _repowise_entries(saved: dict, event: str) -> list:
+    """``(matcher, command)`` for the repowise hooks registered on *event*."""
     return [
         (entry.get("matcher"), h["command"])
-        for entry in saved["hooks"].get("PostToolUse", [])
+        for entry in saved["hooks"].get(event, [])
         for h in entry["hooks"]
         if "repowise" in h.get("command", "")
     ]
+
+
+def _post_repowise_entries(saved: dict) -> list:
+    return _repowise_entries(saved, "PostToolUse")
 
 
 def _session_start_repowise_entries(saved: dict) -> list:
-    return [
-        (entry.get("matcher"), h["command"])
-        for entry in saved["hooks"].get("SessionStart", [])
-        for h in entry["hooks"]
-        if "repowise" in h.get("command", "")
-    ]
+    return _repowise_entries(saved, "SessionStart")
 
 
 def test_install_claude_code_hooks_creates_missing_file(
@@ -419,6 +419,17 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert _session_start_repowise_entries(saved) == [
         ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
     ]
+    assert _repowise_entries(saved, "PostToolUseFailure") == [
+        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+
+
+def test_the_failure_matcher_covers_only_tools_that_take_a_path() -> None:
+    """A Bash failure is a command line, not a path, and would wake the hook
+    for a question this surface cannot answer."""
+    matched = set(claude_config._FAILURE_MATCHER.split("|"))
+    assert matched == {"Read", "Edit", "Write", "Grep", "Glob", "NotebookEdit"}
+    assert "Bash" not in matched and "PowerShell" not in matched
 
 
 def test_install_claude_code_hooks_preserves_user_pretool_hooks(
@@ -664,8 +675,9 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                             ],
                         }
                     ],
-                    # SessionStart already present so its backfill (a separate
-                    # migration) can't mask the matcher no-op under test.
+                    # SessionStart and PostToolUseFailure already present so
+                    # their backfills (separate migrations) can't mask the
+                    # matcher no-op under test.
                     "SessionStart": [
                         {
                             "matcher": "startup|resume|clear",
@@ -677,6 +689,7 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                             ],
                         }
                     ],
+                    "PostToolUseFailure": [claude_config._failure_entry()],
                 }
             }
         ),
@@ -746,6 +759,7 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
                     "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
                 }
             ],
+            "PostToolUseFailure": [claude_config._failure_entry()],
         }
     }
     original = json.dumps(payload, indent=2) + "\n"
@@ -791,6 +805,88 @@ def test_migrate_claude_code_hooks_backfills_session_start(
     assert claude_config.migrate_claude_code_hooks() is False
 
 
+def test_migrate_backfills_the_failure_hook_for_older_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install predating PostToolUseFailure gains it on self-heal.
+
+    Without this the surface only ever reaches people who install fresh, which
+    is the smaller half of the population and the harder one to notice.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": claude_config._AUGMENT_MATCHER,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
+                        }
+                    ],
+                    "SessionStart": [claude_config._session_start_entry()],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _repowise_entries(saved, "PostToolUseFailure") == [
+        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+    assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_preserves_a_user_failure_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's own PostToolUseFailure hook is kept; the repowise entry appends."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": claude_config._AUGMENT_MATCHER,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
+                        }
+                    ],
+                    "SessionStart": [claude_config._session_start_entry()],
+                    "PostToolUseFailure": [
+                        {"hooks": [{"type": "command", "command": "echo mine"}]}
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    failure = saved["hooks"]["PostToolUseFailure"]
+    assert failure[0]["hooks"][0]["command"] == "echo mine"
+    assert _repowise_entries(saved, "PostToolUseFailure") == [
+        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+
+
 def test_migrate_claude_code_hooks_no_session_start_without_augment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -817,6 +913,7 @@ def test_migrate_claude_code_hooks_no_session_start_without_augment(
     assert claude_config.migrate_claude_code_hooks() is False
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "SessionStart" not in saved["hooks"]
+    assert "PostToolUseFailure" not in saved["hooks"]
 
 
 def test_migrate_claude_code_hooks_preserves_user_session_start(

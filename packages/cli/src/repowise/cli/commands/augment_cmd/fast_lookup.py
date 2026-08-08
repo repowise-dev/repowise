@@ -100,6 +100,42 @@ def pagerank(
     return {node_id: pr or 0.0 for node_id, pr in rows if node_id}
 
 
+def files_by_basename(
+    conn: sqlite3.Connection, repository_id: str, basename: str, limit: int = 5
+) -> list[str]:
+    """Node ids of indexed files with this basename, newest-schema first.
+
+    Capped rather than exhaustive: the caller only needs to tell one match from
+    more-than-one, and the cap keeps a common name like ``__init__.py`` from
+    materialising hundreds of rows to be counted and thrown away. The cap is
+    above two on purpose — the caller still has to drop rows whose file is no
+    longer on disk, and a cap of two lets one stale row hide the single live
+    answer behind an apparent tie.
+
+    ``LIKE`` with an explicit ``ESCAPE`` rather than ``GLOB``: a path is data,
+    not a pattern, and ``GLOB`` would read a ``[`` in a filename as a character
+    class. The exact-equality arm catches a file at the repository root, which
+    has no leading separator to match, and is spelled case-insensitively to
+    match the ``LIKE`` arm's own default rather than holding a root file to a
+    stricter rule than a nested one.
+
+    Filtering non-path nodes is left to the caller: ``node_type = 'file'`` also
+    covers resolved external packages, and ``:`` is a legal character in a
+    POSIX path, so excluding them in SQL would mean a colon test that can drop
+    a real file and manufacture a false unique.
+    """
+    if not basename:
+        return []
+    rows = conn.execute(
+        "SELECT node_id FROM graph_nodes "
+        "WHERE repository_id = ? AND node_type = 'file' "
+        "AND (lower(node_id) = lower(?) "
+        f"OR node_id LIKE ? ESCAPE '{_LIKE_ESCAPE}') LIMIT ?",
+        (repository_id, basename, f"%/{escape_like(basename)}", limit),
+    ).fetchall()
+    return [node_id for (node_id,) in rows if node_id]
+
+
 def symbols_matching(
     conn: sqlite3.Connection, repository_id: str, paths: list[str], needle: str
 ) -> list[tuple[str, str]]:
@@ -124,12 +160,21 @@ def symbols_named(
     BINARY collation unless a column says otherwise, and neither the ORM path
     nor this one asks for NOCASE. The widened rescue depends on that, since it
     generates its case variants explicitly.
+
+    Ordered because the ``LIMIT`` truncates. Unordered, the rows arrive in
+    whatever order the chosen index happens to walk, so *which* rows survive
+    the cut was the planner's choice — and adding an unrelated index to this
+    table silently changed the answer. ``(file_path, name)`` is the order the
+    ``uq_wiki_symbol`` autoindex gave for free, its key being
+    ``"<path>::<name>"``, so this pins the long-standing result rather than
+    picking a new one.
     """
     if not names:
         return []
     placeholders = ",".join("?" * len(names))
     return conn.execute(
         "SELECT name, kind, file_path, start_line FROM wiki_symbols "
-        f"WHERE repository_id = ? AND name IN ({placeholders}) LIMIT ?",
+        f"WHERE repository_id = ? AND name IN ({placeholders}) "
+        "ORDER BY file_path, name LIMIT ?",
         (repository_id, *names, limit),
     ).fetchall()

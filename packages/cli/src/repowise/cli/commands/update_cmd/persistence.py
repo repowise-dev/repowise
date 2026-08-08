@@ -475,9 +475,18 @@ async def _persist_full_update_async(
             # who re-index, and everyone else keeps being served a page the
             # product no longer has.
             try:
-                from repowise.core.pipeline.persist import sweep_retired_pages
+                from repowise.core.pipeline.persist import (
+                    sweep_absent_cycle_pages,
+                    sweep_retired_pages,
+                )
 
                 swept_page_ids = await sweep_retired_pages(session, repo_id)
+                # Cycle pages are never regenerated on this path (the ladder
+                # stops at file pages), so a cycle that no longer exists can
+                # only be retired by asking the rebuilt graph directly.
+                swept_page_ids += await sweep_absent_cycle_pages(
+                    session, repo_id, graph_builder
+                )
 
                 # Drop the embeddings before the SQL session commits, the same
                 # ordering ``init`` uses: the vector store is a separate engine,

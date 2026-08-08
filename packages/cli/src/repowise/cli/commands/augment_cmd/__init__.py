@@ -8,6 +8,8 @@ Split out of a single ~1300-line module into cohesive submodules:
 * :mod:`.read_state` — per-session Read/Edit read-intelligence state machine.
 * :mod:`.decision_inject` — relevance-ranked standing-decision injection
   (SessionStart block + edit-time governing-decision notice).
+* :mod:`.ledger` — the sessions.db efficacy ledger every surface writes to.
+* :mod:`.served_reads` — read-after-served bookkeeping (measurement only).
 * :mod:`.bash_staleness` — post-git-commit stale-wiki detection.
 * :mod:`.codex` — Codex lifecycle hooks.
 * :mod:`.command` — the Click command, stdin dispatch, and emission dedup.

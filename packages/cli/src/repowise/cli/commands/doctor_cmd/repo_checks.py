@@ -780,7 +780,20 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         codex = CodexAdapter()
         if codex.detect():
             surfaces.append(("codex", codex))
-        installed_names = [name for name, a in surfaces if a.rewrite_hook_installed()]
+        # Registered and live are different questions: an entry whose matcher
+        # predates a tool rename is registered and fires on some or none of
+        # the agent's shell tools. Say which, rather than calling all three
+        # "installed".
+        installed_names = []
+        for name, adapter in surfaces:
+            status = adapter.rewrite_hook_status()
+            if not status.installed:
+                continue
+            if not status.unmatched:
+                installed_names.append(name)
+            else:
+                misses = ", ".join(status.unmatched)
+                installed_names.append(f"{name} (matcher misses {misses})")
         if installed_names:
             commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else None
             opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False

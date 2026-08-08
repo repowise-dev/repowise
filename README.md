@@ -43,12 +43,14 @@
 
 ### Your AI agent burns most of its budget rediscovering your codebase. Index it once, and it never has to again.
 
-### −97% tokens to load a commit's context
+### One index. A dependency graph, a generated wiki, mined git history, architectural decisions, and a defect-validated health score.
 
-<sub>13,984 tokens of raw file reads become 393, measured over 30 commits, raw CSV published.
-We are also the only tool in this category that publishes what that is worth inside a real
-agent loop, where the honest number is −16% of the agent's own output tokens (n=15, p=0.035)
-and the only significant result in the field. <a href="docs/BENCHMARKS.md"><strong>See how the others did →</strong></a><br />
+<sub><strong>−31.6%</strong> of an agent's own output tokens across 43 questions (p&lt;0.0001), reached in
+3.8 tool calls where a bare agent needed 7.2 · loading one commit's context costs 393 tokens
+instead of 13,984 raw · defect-risk <strong>ROC AUC 0.737</strong> across 21 repos and 9 languages, scored
+leakage-free, and 0.76–0.78 on a public dataset that played no part in calibration · every
+layer computed with <strong>zero LLM calls</strong>. We publish the rows we lose.
+<a href="docs/BENCHMARKS.md"><strong>See how the others did →</strong></a><br />
 Free and self-hosted, runs on your machine, and the first index needs no API key.</sub>
 
 <picture>
@@ -86,9 +88,12 @@ repository, no API key and nothing uploaded.</sub>
 
 Because the exploration work is already done, that phase mostly disappears. Loading
 one commit's context through `get_context` costs **393 tokens instead of 13,984**
-raw, 35.6x fewer. In a measured agent loop the saving is more modest and more
-honest: **-15.9% of the agent's own output tokens**, and it grows with how much
-of the codebase the task touches.
+raw, 35.6x fewer. In a measured agent loop, across 43 questions on `django/django`,
+that is worth **-31.6% of the agent's own output tokens** (p&lt;0.0001), reached in
+**3.8 tool calls against a bare agent's 7.2** — roughly one answered question
+replacing six greps. The saving grows with how much of the codebase the task
+touches. CodeGraph is a genuine second here at -24.4%: we lead a field in which
+more than one tool works.
 
 **And it arrives without being asked.** Optional [hooks](docs/agent/HOOKS.md) push
 context into the session at the moment it matters: the governing architectural
@@ -112,11 +117,11 @@ queryable from the CLI, the MCP tools, and the local dashboard.
 
 | Layer | What it gives you | Edge |
 |---|---|---|
-| **◈ Graph** | Dependency graph across 17 languages · file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank and execution flows · framework-aware route→handler edges | A real graph most tools never build |
-| **◈ Git** | Hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · which files actually get bug-fixed, and how recently | Behavioural signals static analysis cannot see |
+| **◈ Graph** | Dependency graph across 18 languages · file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank and execution flows · route→handler edges across 22 frameworks | A real graph most tools never build |
+| **◈ Git** | Hotspots (decayed churn + activity floors) · ownership % · co-change pairs (hidden coupling) · bus factor · which files actually get bug-fixed, and how recently | Behavioural signals static analysis cannot see |
 | **◈ Docs** | A generated wiki page per module and file · rebuilt incrementally every commit · freshness and confidence scoring · hybrid search (full-text + vector) · selectable style and output language | Stays current instead of rotting |
-| **◈ Decisions** | Architectural decisions mined from eight sources, evidence-backed, linked to the graph nodes they govern, tracked for staleness | **★ Captured nowhere else** |
-| **★ Code health** | **25 deterministic markers**, 1 to 10 per file · three signals: defect risk · maintainability · performance · coverage ingestion · concrete refactoring plans (Extract Class / Helper, Move Method, Break Cycle, Split File) · **zero LLM, under 30s** | **★ Defect-validated, with the fix attached** |
+| **◈ Decisions** | Architectural decisions mined from five sources, evidence-backed, each traced to a verbatim source span and stamped exact / fuzzy / unverified | **★ Captured nowhere else** |
+| **★ Code health** | **49 deterministic detectors**, of which only 26 may move the number · 1 to 10 per file · three signals: defect risk · maintainability · performance · concrete refactoring plans (Extract Class / Method / Helper, Move Method, Break Cycle, Split File) · **zero LLM, under 30s** | **★ Defect-validated, with the fix attached** |
 
 **The whole wiki is generated with no LLM, then upgraded to model-written prose on
 demand.** `repowise init --no-prose` builds the graph, git, decision and health
@@ -227,24 +232,32 @@ A score that says *"this file is risky"* is where most tools stop. repowise scor
 every file, locates where the risk concentrates, and then names the specific fix.
 
 <div align="center">
-<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals, the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans your agent executes" width="100%" />
+<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: deterministic markers fan into three signals, the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans your agent executes" width="100%" />
 </div>
 
-Every file is scored 1-10 from **25 deterministic markers** (McCabe complexity, brain
+Every file is scored 1-10 by **49 deterministic detectors** (McCabe complexity, brain
 methods, LCOM4 cohesion, god classes, native Rabin-Karp clone detection, untested
 hotspots, change entropy, prior-defect history and more), split into three lenses:
-**defect risk**, **maintainability**, and **performance** (static N+1 and I/O-in-loop
-risk traced *across* files through the call graph, where file-local linters found 0 of
-the cross-function cases repowise surfaced 557 of).
+**defect risk**, **maintainability**, and **performance** — static N+1 and I/O-in-loop
+risk traced *across* files through the call graph, where file-local linters found **0**
+of the cross-function cases and repowise surfaced ~90. Only **26** of the 49 are
+permitted to move the defect number, because that is the number carrying published
+accuracy claims.
 
 > **Zero LLM calls, zero cloud, zero new runtime dependencies.** Pure Python over
-> tree-sitter and git data, **under 30 seconds** on a 3,000-file repo, with marker
-> weights **calibrated against a real defect corpus, not hand-tuned**.
+> tree-sitter and git data, **under 30 seconds** on a 3,000-file repo — a budget
+> enforced by a CI test, not an estimate. Marker weights are **calibrated against a
+> real defect corpus, not hand-tuned**: every file scored at a commit preceding the
+> bug window so nothing leaks backward, and an L2-logistic fit with file size as an
+> explicit control, so a marker only earns weight for defect lift *beyond* being big.
+> Only the learned constants ship.
 
 **It proves itself on your repo, not just on a benchmark.** After every index,
 repowise checks its own flags against your git history and reports what it found:
-*"17 of the 20 lowest-health files had a bug fix in the last 6 months, 3.6x the 23%
-baseline."* If that number is bad on your codebase, you will see it.
+*"16 of the 20 lowest-health files had a bug fix in the last 6 months, 3.3x the 24%
+baseline."* If that number is bad on your codebase, you will see it. (It is an
+association on your indexed history, not a forward prediction — the leakage-free
+version is [in the benchmarks](docs/BENCHMARKS.md#5-code-health-predicts-defects).)
 
 Then it names the fix. Not "this class is too big", but **Extract Class**, **Extract
 Helper**, **Move Method**, **Break Cycle**, **Split File**, or **Extract Method**, with
@@ -501,7 +514,7 @@ so your agent always knows how much to trust what it just read.
 | `search_codebase(query, kind?)` | Semantic search over the wiki, filterable by kind (implementation / test / config / doc), tagging each result's `search_method`. |
 | `get_risk(targets, changed_files?)` | Hotspots, dependents, co-change partners, ownership, test gaps, bug history. Pass `changed_files` for PR mode and get a `directive` block back. |
 | `get_change_risk(revspec)` | Pre-merge defect score for a whole commit or range from the shape of the diff, ranked as a percentile against recent commits, plus the tests coverage proves it touches. |
-| `get_why(query?, targets?)` | Architectural decisions, their evidence spans and the supersession lineage. Falls back to git archaeology when no decisions exist. |
+| `get_why(query?, targets?)` | Architectural decisions and their verbatim evidence spans, stamped exact / fuzzy / unverified. Falls back to git archaeology when no decisions exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates, and cross-repo consumer detection in workspace mode. |
 | `get_health(targets?, include?)` | Per-file marker scores across all three signals. `include` opens coverage, trends, per-file signals, the accuracy self-check, and structured refactoring plans. |
 
@@ -523,11 +536,13 @@ the rows we lose beside the rows we win.
   1 loss per instance. Deterministic grading, no LLM judge. *n=42, sign test
   p=0.00004.* CodeGraph scores the same on both halves to three decimals, so
   neither half is the easy one.
-- **Less work in a real agent loop.** -15.9% output tokens against a bare agent,
-  leaner on 12 of 15 questions, and the only tool in the field to reach
-  significance. *n=15, sign test p=0.035.*
-- **Agents actually call it.** Adopted in 15 of 15 cells, against CodeGraph 13,
-  Serena 4, Graphify 3, and code-review-graph 0 with 30 tools advertised.
+- **Less work in a real agent loop.** -31.6% output tokens against a bare agent,
+  leaner on 37 of 44 questions. *n=43, p&lt;0.0001.* CodeGraph is a genuine second
+  at -24.4%: more than one tool here works, and we lead the field rather than
+  being alone in it.
+- **Fewer steps to get there.** 3.8 tool calls where the bare agent needed 7.2,
+  and 3.0 files opened instead of 7.2 — the mechanism behind the token saving,
+  visible directly rather than inferred.
 
 **[The full results, the methodology, and the rows we lose →](docs/BENCHMARKS.md)**
 
@@ -551,8 +566,9 @@ agent over MCP.
 | Private repo, no cloud | ✅ | ✅ | ✅ | ❌ OSS forks only |
 | MCP tools served | 10 | 1 | 29 | 3 |
 | **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.876** | 0.610 | not in this run | not measured |
-| **The agent actually calls it** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=15)* | ✅ **15/15** | 13/15 | 4/15 | not measured |
+| **Output tokens vs a bare agent** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=43)* | ✅ **-31.6%** | -24.4% | -14.8% | not measured |
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
+| | *one-time; updates after it are incremental* | | | |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ |
@@ -562,20 +578,27 @@ agent over MCP.
 | Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP | ❌ | ❌ | ❌ |
 
 CodeGraph builds its index **22x faster than we do**, and if a call graph is all
-you need, that is the right trade. Graphify and code-review-graph were in the same
-measured field and are on the benchmarks page.
+you need, that is the right trade. With prose generation on, which is what a
+default `repowise init` actually costs, it is **135x**. Graphify and
+code-review-graph were in the same measured field and are on the benchmarks page.
+
+<sub>Measured against CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
+code-review-graph 2.3.7, on repowise `081a59fa` (between v0.37.0 and v0.38.0),
+August 2026. Unmarked rows are capability presence, not measurements.</sub>
 
 ### As a code health tool
 
 | | repowise | CodeScene |
 |---|---|---|
-| Self-hostable, open source | ✅ AGPL-3.0 | ✅ Docker |
-| Code health score (1-10) | ✅ 25 markers | ✅ 25-30 |
+| Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
+| Code health score (1-10) | ✅ 49 detectors, 26 scoring | ✅ 25-30 |
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
 | **Precision at that budget** *(measured)* | 0.580 | ✅ **0.636**, a shorter list |
-| Defect-prediction AUC, published and reproducible | ✅ 0.74 over 21 repos | ✅ Code Red study |
+| **Discrimination, ROC AUC** *(measured, paired)* | 0.731 | 0.705 — *p=0.054, not significant* |
+| Defect-prediction AUC, published and reproducible | ✅ 0.737 over 21 repos, held-out 0.76-0.78 | ✅ Code Red study |
+| Business impact (resolution time) | ❌ *we could not replicate this on open data* | ✅ Code Red study |
 | Git intelligence (hotspots, ownership, co-change) | ✅ | ✅ |
 | Pre-merge change-risk scoring | ✅ 0-10 + directives | ✅ |
 | Health trend + declining alerts | ✅ rolling snapshots | ✅ |

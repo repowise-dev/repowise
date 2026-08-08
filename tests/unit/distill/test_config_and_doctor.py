@@ -143,10 +143,18 @@ def _isolate_codex(monkeypatch):
 
 @pytest.fixture
 def no_real_hook(monkeypatch):
-    """Keep doctor away from the developer's real ~/.claude/settings.json."""
+    """Keep doctor away from the developer's real ~/.claude/settings.json.
+
+    Both entry points are stubbed on purpose. Patching the presence check
+    alone worked only while nothing else read the file, and the matcher
+    lookup does — leaving the isolation to depend on which of the two a
+    caller happens to reach first is how a suite starts passing or failing
+    on the machine that runs it.
+    """
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 
     monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: False)
+    monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_matcher", lambda self: None)
 
 
 def _rows(repo: Path) -> dict[str, tuple[bool, str]]:
@@ -195,10 +203,22 @@ def test_doctor_store_over_cap_fails(repo: Path, no_real_hook) -> None:
     assert "over cap" in rows["Omission store"][1]
 
 
+def _live_hook(monkeypatch, adapter_cls, unmatched: tuple[str, ...] = ()) -> None:
+    """Report *adapter_cls*'s rewrite hook as installed, without reading $HOME.
+
+    Patching only the presence check would leave the matcher lookup reading the
+    developer's real settings, which makes the assertion depend on the machine.
+    """
+    from repowise.cli.agent_adapters.base import RewriteHookStatus
+
+    status = RewriteHookStatus(True, "Bash|PowerShell", unmatched, True)
+    monkeypatch.setattr(adapter_cls, "rewrite_hook_status", lambda self: status)
+
+
 def test_doctor_hook_installed_with_repo_opt_out(repo: Path, monkeypatch) -> None:
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 
-    monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: True)
+    _live_hook(monkeypatch, ClaudeCodeAdapter)
     (repo / ".repowise" / "config.yaml").write_text(
         "distill:\n  commands:\n    enabled: false\n", encoding="utf-8"
     )
@@ -210,11 +230,22 @@ def test_doctor_reports_codex_surface_when_installed(repo: Path, monkeypatch) ->
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.agent_adapters.codex import CodexAdapter
 
-    monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: True)
+    _live_hook(monkeypatch, ClaudeCodeAdapter)
     monkeypatch.setattr(CodexAdapter, "detect", lambda self: True)
-    monkeypatch.setattr(CodexAdapter, "rewrite_hook_installed", lambda self: True)
+    _live_hook(monkeypatch, CodexAdapter)
     rows = _rows(repo)
     assert rows["Distill rewrite hook"][1] == "installed: claude-code, codex"
+
+
+def test_doctor_names_what_a_narrowed_matcher_misses(repo: Path, monkeypatch) -> None:
+    # An entry left behind by a tool rename is registered and rewrites only
+    # some of what the agent runs. Reporting it as plain "installed" is the
+    # answer that hides why nothing is being distilled.
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+
+    _live_hook(monkeypatch, ClaudeCodeAdapter, unmatched=("PowerShell",))
+    rows = _rows(repo)
+    assert rows["Distill rewrite hook"][1] == "installed: claude-code (matcher misses PowerShell)"
 
 
 # ---------------------------------------------------------------------------

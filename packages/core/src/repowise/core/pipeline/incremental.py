@@ -981,9 +981,19 @@ async def persist_incremental_index(
             # whose updates all come from the post-commit hook this is the only
             # place a retirement can land.
             try:
-                from repowise.core.pipeline.persist import sweep_retired_pages
+                from repowise.core.pipeline.persist import (
+                    sweep_absent_cycle_pages,
+                    sweep_retired_pages,
+                )
 
                 swept_page_ids = await sweep_retired_pages(session, repo_id)
+                # Same reasoning as the retirement sweep above: this path never
+                # regenerates a cycle page, so asking the rebuilt graph whether
+                # the cycle still exists is the only way a fixed cycle's page
+                # can ever be retired for a user who only runs `update`.
+                swept_page_ids += await sweep_absent_cycle_pages(
+                    session, repo_id, graph_builder
+                )
             except Exception as exc:
                 _skip("Retired page sweep", exc)
 

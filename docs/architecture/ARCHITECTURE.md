@@ -851,7 +851,7 @@ tracked file, it computes:
 - **Timeline** — first and last commit dates (file age)
 - **Ownership** — primary owner from `git blame` (who wrote the most lines),
   top 3 contributors by commit count
-- **Significant commits** — last 10 meaningful commit messages (filtered: no merges,
+- **Significant commits** — up to 50 meaningful commit messages (filtered: no merges,
   no dependency bumps, no chore/ci, messages > 20 chars). These explain *why*
   the code evolved this way and are included in generation prompts.
 - **Co-change partners** — files that changed in the same commit >= 3 times, even

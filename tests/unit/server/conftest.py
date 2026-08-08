@@ -32,6 +32,7 @@ def _create_test_app():
         costs,
         dead_code,
         decisions,
+        episodes,
         external_systems,
         files,
         git,
@@ -88,6 +89,7 @@ def _create_test_app():
     app.include_router(owners.router)
     app.include_router(modules.router)
     app.include_router(decisions.router)
+    app.include_router(episodes.router)
     app.include_router(external_systems.router)
     app.include_router(overview.router)
     app.include_router(refactoring.router)

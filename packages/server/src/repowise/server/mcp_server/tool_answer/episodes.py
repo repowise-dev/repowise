@@ -32,17 +32,15 @@ import asyncio
 import json
 import logging
 import re
-import time
 from pathlib import Path
 
-from repowise.core.precedent.currency import commits_since
-from repowise.core.precedent.store import (
-    SHAREABLE_TIERS,
-    TIER_STRUCTURAL,
-    EpisodeStore,
-    default_store_path,
+from repowise.core.precedent.store import EpisodeStore, default_store_path
+from repowise.server.mcp_server._budget import effective_char_budget
+from repowise.server.mcp_server._episodes import (
+    SERVED_TIERS,
+    quote_body,
+    still_true,
 )
-from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 
 _log = logging.getLogger(__name__)
 
@@ -61,37 +59,17 @@ _MAX_BODY_CHARS = 600
 #: ceiling on git queries per call is this plus one.
 _MAX_SCOPED_CANDIDATES = 4
 
-#: Tiers whose episodes are re-derived whole on every index, and for which a
-#: refreshed ``last_seen_at`` is therefore proof of currency. A tier that
-#: *accumulates* members has no such proof: re-observing that a commit happened
-#: says nothing about whether the files it changed have moved since.
-_RE_DERIVED_TIERS = frozenset({TIER_STRUCTURAL})
-
-#: The tiers this guard is willing to put in front of a reader, named rather
-#: than inherited from whatever the store happens to hold.
-#:
-#: An unnamed default is how the store's second tier reached this surface last
-#: time, and reproducing it with the third showed why that is not survivable
-#: here: with 56 of this repository's 426 sessions recorded, the guard went
-#: **silent on its own reproduction** and served a session instead. Two things
-#: compound. A session touches far more files than a fix commit, so it outranks
-#: one on the window's specificity sort; and it has no birth commit, so
-#: :func:`_still_true` never reaches the git query and can never suppress it.
-#: It wins the window and holds it.
-#:
-#: The harmlessness bar for a surfaced episode is absolute and is unmeasured
-#: for the transcript tier, which is also per-machine — two people asking one
-#: question of one repository would get different answers. Until that has been
-#: measured, this stays a shareable-tiers allowlist.
-_SERVED_TIERS = SHAREABLE_TIERS
+#: The tiers this guard is willing to put in front of a reader. Shared with
+#: every other episode reader (:mod:`repowise.server.mcp_server._episodes`),
+#: because "which tiers are shareable" is a property of the store rather than
+#: of one tool, and the first version of this constant reached the wrong answer
+#: by being local: an unnamed default let the store's second tier arrive
+#: uninvited, and with 56 of this repository's 426 sessions recorded the guard
+#: went **silent on its own reproduction** and served a session instead.
+_SERVED_TIERS = SERVED_TIERS
 
 #: Room the block needs before it is worth attaching at all.
 _BLOCK_OVERHEAD_CHARS = 400
-
-#: Seconds allowed for the one sanctioned read-time git query. Measured at
-#: 55-66 ms on a 1,000-commit repository; the timeout is for the pathological
-#: case (a cold, very large repo), where saying nothing is the right answer.
-_GIT_TIMEOUT_S = 2.0
 
 _LEAD_IN = (
     "A dated record from this checkout is attached in `episodes` — evidence "
@@ -307,90 +285,10 @@ def _answer_paths(payload: dict) -> set[str]:
 
 # -- precondition 2: still true ----------------------------------------------
 
-
-def _still_true(row: dict, *, root: Path) -> str | None:
-    """How this episode's truth was established, or None to stay silent.
-
-    Measured against the checkout's live ``HEAD``, not the indexed commit: an
-    episode is a claim about the tree on disk, and that is the tree the reader
-    is about to act on.
-
-    Three cases, and the third is the one worth reading.
-
-    *Re-observed.* Every index re-derives a structural fact that still holds,
-    so a stamp later than ``birth_at`` is proof of currency that costs no git
-    call at all. It proves nothing for a tier whose members accumulate: a git
-    episode is born at its commit and re-observed by every later index, so the
-    shortcut would fire always and the real question below would never be
-    asked. Hence :data:`_RE_DERIVED_TIERS`.
-
-    *Node-scoped.* ``git rev-list --count <birth>..HEAD -- <nodes>`` is the
-    real question, and zero is a real answer. Anything else — including a git
-    failure — means we cannot vouch for it, so it is suppressed. Precision at
-    the acting stage is close to absolute.
-
-    *Repo-wide, derived once.* Git cannot decide this one. Its scope is the
-    whole tree, so any commit at all makes the count non-zero, and the fact it
-    asserts ("the tree is not formatter-clean") is not what a commit falsifies
-    — running the formatter is. Suppressing here would retire the record on the
-    very next commit and leave a guard that only passes its own tests. So the
-    age **labels** rather than suppresses: it is served with its birth commit
-    and how far the tree has moved since, and the reader discounts it. Under
-    add-never-replace a stale episode overrides nothing, and the asymmetry runs
-    the right way — believing it costs one skipped formatter run, disbelieving
-    it costs a reformatted tree in a pull request.
-    """
-    birth_at = row.get("birth_at") or 0.0
-    last_seen = row.get("last_seen_at") or 0.0
-    recorded = _recorded_on(birth_at)
-    if last_seen > birth_at and row.get("tier") in _RE_DERIVED_TIERS:
-        return f"re-observed by a later index (recorded {recorded})"
-
-    birth_commit = row.get("birth_commit")
-    nodes = [n for n in (row.get("nodes") or []) if isinstance(n, str) and n]
-
-    if nodes:
-        if not birth_commit:
-            return f"recorded {recorded}; not re-checked since"
-        changed = _commits_since(root, birth_commit, nodes)
-        if changed is None or changed > 0:
-            return None
-        return f"nothing in its scope has changed since {_short(birth_commit)} (recorded {recorded})"
-
-    if not birth_commit:
-        return f"recorded {recorded}; a standing claim about this checkout"
-    moved = _commits_since(root, birth_commit, [])
-    if moved is None:
-        return f"recorded {recorded} at {_short(birth_commit)}; not re-checked since"
-    if moved == 0:
-        return f"recorded {recorded} at {_short(birth_commit)}, the current commit"
-    plural = "commit" if moved == 1 else "commits"
-    return (
-        f"recorded {recorded} at {_short(birth_commit)}; the tree has moved "
-        f"{moved} {plural} since and this was not re-checked"
-    )
-
-
-def _commits_since(root: Path, birth_commit: str, nodes: list[str]) -> int | None:
-    """``git rev-list --count <birth>..HEAD [-- nodes]``. None on any failure.
-
-    The one sanctioned read-time computation in this path, and it is bounded:
-    a single plumbing call with a hard timeout, measured at 55-66 ms against
-    get_answer's multi-second synthesis. The call itself lives in
-    :mod:`repowise.core.precedent.currency`, shared with the decision layer,
-    which asks the same question from a date instead of a birth commit.
-    """
-    return commits_since(root, since_commit=birth_commit, nodes=nodes, timeout=_GIT_TIMEOUT_S)
-
-
-def _recorded_on(birth_at: float) -> str:
-    if not birth_at:
-        return "at an unknown date"
-    return time.strftime("%Y-%m-%d", time.gmtime(birth_at))
-
-
-def _short(sha: str) -> str:
-    return sha[:12]
+#: The currency verdict, shared with every other episode reader. The one
+#: sanctioned read-time git query lives behind it, bounded by a timeout and by
+#: this module's candidate window.
+_still_true = still_true
 
 
 # -- emission ----------------------------------------------------------------
@@ -412,12 +310,9 @@ def _emit(
     if len(json.dumps(payload, default=str)) + _BLOCK_OVERHEAD_CHARS > effective_char_budget():
         return False
 
-    body = row.get("body") or ""
-    collector: OmissionCollector | None = None
-    if len(body) > _MAX_BODY_CHARS:
-        collector = OmissionCollector("get_answer", repo_root)
-        marker = collector.add_inline(f"episode:{row.get('kind')}", body)
-        body = body[:_MAX_BODY_CHARS].rstrip() + (f" {marker}" if marker else " …")
+    body, collector = quote_body(
+        row, tool="get_answer", repo_root=repo_root, max_chars=_MAX_BODY_CHARS
+    )
 
     entry = {
         "tier": row.get("tier"),

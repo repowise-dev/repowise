@@ -8,6 +8,7 @@ import {
   biomarkerLabel,
   biomarkerInfo,
   biomarkerDimension,
+  CATEGORY_CAP,
   CATEGORY_LABEL,
   DIMENSION_CHIP,
   DIMENSION_LABEL,
@@ -97,6 +98,11 @@ export interface HealthFileDrawerProps {
     | undefined;
 }
 
+/** Bucket for one-off file-level markers, kept pooled so a file with several
+ *  distinct singletons still reads as one collapsed row. Not a biomarker name,
+ *  and never compared against one. */
+const POOLED_FILE_KEY = "__file_level__";
+
 const TRIAGE_STATUSES: { value: string; label: string }[] = [
   { value: "open", label: "Open" },
   { value: "acknowledged", label: "Acknowledged" },
@@ -177,8 +183,16 @@ export function HealthFileDrawer({
               </span>
             );
           })()}
-          {f.function_name ? (() => {
-            const label = `${f.function_name}${f.line_start ? `:${f.line_start}` : ""}`;
+          {/* Anchor on line_start, not function_name. Gating the whole anchor on
+              the function dropped the line for every file-level marker that has
+              one — `error_handling` fires per occurrence with a precise line and
+              no function, so 34 markers on one file rendered as 34 rows whose
+              only distinguishing field was the one being withheld. That is what
+              made them read as duplicates. */}
+          {f.function_name || f.line_start != null ? (() => {
+            const label = f.function_name
+              ? `${f.function_name}${f.line_start != null ? `:${f.line_start}` : ""}`
+              : `line ${f.line_start}`;
             const lineHref =
               f.line_start != null && fileViewHrefFor
                 ? fileViewHrefFor(f.line_start)
@@ -238,25 +252,88 @@ export function HealthFileDrawer({
     );
   };
 
-  // Group findings by the function they fire on so one oversized function reads
-  // as a single collapsible group instead of N sibling rows. File-level markers
-  // (no function_name — co_change_scatter, change_entropy, …) collect into one
-  // "File-level signals" group. Sections sort by summed impact so the dominant
-  // cause leads; the worst section starts expanded.
+  // Categories the scorer held at their ceiling, per the server breakdown.
+  // `capped` is the server's verdict and is never recomputed here. The cap
+  // VALUE is only ever displayed, so it falls back to the glossary mirror the
+  // way `score-breakdown.tsx` does — older payloads carry `capped` without
+  // `cap`, and losing the chip over a missing display number helps nobody.
+  const cappedCategories = new Map<string, number | null>();
+  for (const c of breakdown?.categories ?? []) {
+    if (c.capped) cappedCategories.set(String(c.category), c.cap ?? null);
+  }
+
+  // Group findings by the function they fire on, so one oversized function
+  // reads as a single collapsible group instead of N sibling rows.
+  //
+  // Markers with no function used to pool into one "File-level signals" list,
+  // which defeated that fix for the biomarker that needs it most:
+  // `error_handling` sets no function_name and fires once per occurrence, so a
+  // single file in this repo reaches 34 sibling rows repeating one 12-word
+  // reason — worth 0.51 points, because the category caps at 0.5.
+  //
+  // So a file-level biomarker gets its own group only when it actually repeats.
+  // Splitting *every* file-level biomarker out was measurably worse: singleton
+  // groups render expanded, and 53% of files carry 2+ distinct one-off
+  // file-level markers (`dry_violation` alone fires exactly once on ~1,500
+  // files), so it turned one collapsed row into several expanded ones. The
+  // one-offs stay pooled; only the floods split.
   const findingSections = (() => {
-    const groups = new Map<string, HealthDrawerFinding[]>();
+    const byFunction = new Map<string, HealthDrawerFinding[]>();
+    const byBiomarker = new Map<string, HealthDrawerFinding[]>();
     for (const f of findings) {
-      const key = f.function_name ?? " file";
-      const bucket = groups.get(key);
+      // Two separate maps, never one keyed by a sentinel string: a C++ or Rust
+      // function_name can legitimately be `file::read`, so any "file" prefix is
+      // collidable and would silently strip that function's name from its
+      // header.
+      const map = f.function_name ? byFunction : byBiomarker;
+      const key = f.function_name ?? f.biomarker_type;
+      const bucket = map.get(key);
       if (bucket) bucket.push(f);
-      else groups.set(key, [f]);
+      else map.set(key, [f]);
     }
-    return [...groups.entries()]
-      .map(([key, group]) => {
-        const isFile = key === " file";
+
+    const pooled: HealthDrawerFinding[] = [];
+    const fileGroups: { key: string; group: HealthDrawerFinding[] }[] = [];
+    for (const [key, group] of byBiomarker) {
+      if (group.length > 1) fileGroups.push({ key, group });
+      else pooled.push(...group);
+    }
+    if (pooled.length > 0) fileGroups.push({ key: POOLED_FILE_KEY, group: pooled });
+
+    const sections = [
+      ...[...byFunction.entries()].map(([key, group]) => ({ key, group, isFile: false })),
+      ...fileGroups.map(({ key, group }) => ({ key, group, isFile: true })),
+    ];
+
+    return sections
+      .map(({ key, group, isFile }) => {
+        // Inside a single-biomarker group every marker carries the same label
+        // and the same impact, so impact cannot order them and the line is the
+        // only axis a reader can follow. Unlined markers sort last.
+        if (isFile && key !== POOLED_FILE_KEY) {
+          group.sort((a, b) => (a.line_start ?? Infinity) - (b.line_start ?? Infinity));
+        }
         const total = group.reduce((s, f) => s + f.health_impact, 0);
         const worst = group.reduce((a, b) => (b.health_impact > a.health_impact ? b : a));
-        return { key, group, isFile, total, worst };
+        // Claim the cap only when this group IS the category — otherwise the
+        // ceiling belongs to markers outside the group and naming it here
+        // misattributes it. Decided from the findings on screen rather than by
+        // matching the server's subtotal, because a host may scope the two
+        // differently (hosted excludes triaged findings from the breakdown but
+        // not from this list) and a float comparison would then silently fail.
+        const cat = biomarkerInfo(worst.biomarker_type).category;
+        const ownsCategory =
+          key !== POOLED_FILE_KEY &&
+          findings.every(
+            (f) =>
+              biomarkerInfo(f.biomarker_type).category !== cat ||
+              f.biomarker_type === worst.biomarker_type,
+          );
+        const atCap =
+          isFile && ownsCategory && cappedCategories.has(cat)
+            ? (cappedCategories.get(cat) ?? CATEGORY_CAP[cat] ?? null)
+            : null;
+        return { key, group, isFile, total, worst, atCap };
       })
       .sort((a, b) => b.total - a.total);
   })();
@@ -405,12 +482,14 @@ export function HealthFileDrawer({
                   <div className="flex flex-col">
                     {findingSections.map((s) => (
                       <FunctionFindingsGroup
-                        key={s.key}
+                        key={s.isFile ? `file:${s.key}` : `fn:${s.key}`}
                         isFile={s.isFile}
+                        pooled={s.key === POOLED_FILE_KEY}
                         functionName={s.isFile ? null : s.key}
                         findings={s.group}
                         total={s.total}
                         worst={s.worst}
+                        atCap={s.atCap}
                         // Single-marker groups have nothing to collapse; multi-
                         // marker groups start collapsed so the drawer opens as
                         // compact headers, since the leading-cause line above
@@ -430,11 +509,12 @@ export function HealthFileDrawer({
 }
 
 /**
- * One collapsible group of findings that fire on the same function (or the
- * "File-level signals" bucket when they have no function). The header names the
+ * One collapsible group of findings that fire on the same function, or — for
+ * markers with no function — on the same biomarker. The header names the
  * function plus its worst marker so a 7-marker oversized function reads as one
- * row, not seven — the P2 "looks padded" fix. Single-finding groups render
- * expanded; the caller expands the highest-impact group by default.
+ * row, not seven — the P2 "looks padded" fix. A file-level group leads with the
+ * biomarker instead, and carries a `capped` chip when the scorer is holding
+ * that category at its ceiling. Single-finding groups render expanded.
  */
 /**
  * Which symbols this file's recent bug fixes landed in, behind a disclosure.
@@ -488,18 +568,24 @@ function BugHistorySection({ signals }: { signals: FileSignals | null | undefine
 
 function FunctionFindingsGroup({
   isFile,
+  pooled,
   functionName,
   findings,
   total,
   worst,
+  atCap,
   defaultExpanded,
   renderFinding,
 }: {
   isFile: boolean;
+  /** The mixed bucket of one-off file-level markers, not a single biomarker. */
+  pooled: boolean;
   functionName: string | null;
   findings: HealthDrawerFinding[];
   total: number;
   worst: HealthDrawerFinding;
+  /** The enforced cap when this group's category is holding at it, else null. */
+  atCap: number | null;
   defaultExpanded: boolean;
   renderFinding: (f: HealthDrawerFinding) => React.ReactNode;
 }) {
@@ -527,8 +613,15 @@ function FunctionFindingsGroup({
           <ChevronRight className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" />
         )}
         {isFile ? (
-          <span className="text-sm font-medium text-[var(--color-text-primary)]">
-            File-level signals
+          <span className="min-w-0 truncate text-sm font-medium text-[var(--color-text-primary)]">
+            {pooled ? (
+              "File-level signals"
+            ) : (
+              <>
+                {worstLabel}
+                <span className="text-[var(--color-text-tertiary)]"> · file-level</span>
+              </>
+            )}
           </span>
         ) : (
           <span className="min-w-0 truncate text-sm font-medium text-[var(--color-text-primary)]">
@@ -541,6 +634,19 @@ function FunctionFindingsGroup({
             {findings.length} {findings.length === 1 ? "marker" : "markers"}
           </span>
           <span className="text-[var(--color-error)]">−{total.toFixed(2)}</span>
+          {/* Why 34 markers cost half a point. Without this the count reads as
+              the severity and the capped total looks like a bug. The
+              explanation rides in the accessible name, not a `title`: a bare
+              `title` on a span with its own text never reaches the accessible
+              name, so it would be mouse-only. */}
+          {atCap !== null ? (
+            <span
+              className="rounded-sm bg-[var(--color-bg-surface)] px-1 py-px text-[10px] font-normal text-[var(--color-text-tertiary)]"
+              aria-label={`capped: held at its ${atCap.toFixed(2)}-point ceiling, so further markers of this kind add no deduction`}
+            >
+              capped
+            </span>
+          ) : null}
         </span>
       </div>
       {expanded ? (

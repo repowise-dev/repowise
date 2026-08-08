@@ -584,7 +584,7 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
 
 ### `repowise health [PATH]`
 
-Compute per-file code-health scores from 25 deterministic markers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
+Compute per-file code-health scores from 49 deterministic detectors (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
 
 **Options:**
 
@@ -744,7 +744,7 @@ distill filters.
 |------|-------------|
 | `--by` | Grouping: `filter` (default), `day`, `source` |
 | `--since` | Only count savings since this ISO date |
-| `--model` | Pricing model for the dollar estimate (input-token rate; default `claude-sonnet-4-6`) |
+| `--model` | Pricing model for the dollar estimate (input-token rate). Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |
 

@@ -37,6 +37,10 @@ RESCUE = (
     "[repowise] No literal match for `parseYaml`. Closest indexed symbol: "
     "function `parse_yaml` in pkg/core/loader.py:12"
 )
+WRONG_PATH = (
+    "[repowise] pkg/core/fix_events.py is not in this tree. "
+    "The only indexed fix_events.py is pkg/core/ingestion/fix_events.py"
+)
 TRIAGE_V2 = (
     "[repowise] 40+ matches for `parse_yaml` across 12 files. Most likely relevant, "
     "ranked over the files your search matched:\n"
@@ -147,6 +151,11 @@ def test_ranged_read_after_a_nudge_is_ambiguous_not_acted():
     """Reading a range of a file you just read in full is ordinary edit prep.
 
     Crediting it is what turns the nudge's real 0.2% into a flattering 19.7%.
+    The suspicion that fell out of that — that 0.2% measured the judge rather
+    than the surface — was tested and did not hold: three looser readings all
+    came back at or below the base rate, and the nudge has been retired on the
+    emission side. Every skeleton_nudge case in this file now guards a
+    historical population, not a live one.
     """
     (firing,) = parse_emission(NUDGE)
     classify(firing, [_use("Read", file_path="pkg/core/thing.py", offset=40, limit=20)])
@@ -177,6 +186,65 @@ def test_rescue_counts_the_offered_symbol_as_well_as_the_file():
     (firing,) = parse_emission(RESCUE)
     classify(firing, [_use("Grep", pattern="parse_yaml")])
     assert firing.acted is True
+
+
+def test_a_wrong_path_rescue_is_acted_on_by_going_where_it_pointed():
+    (firing,) = parse_emission(WRONG_PATH)
+    assert (firing.surface, firing.category) == ("wrong_path", "rescue")
+    classify(firing, [_use("Read", file_path="/repo/pkg/core/ingestion/fix_events.py")])
+    assert (firing.acted, firing.evidence) == (True, "touched_rank0")
+
+
+def test_retrying_the_path_that_failed_is_not_acting_on_the_rescue():
+    """The attempted path shares the line with the answer and must not count.
+
+    ``parse_emission`` harvests loose path tokens from continuation lines, so
+    a rescue that ever grows a second line would silently start crediting the
+    agent for repeating the mistake. One line, one captured target.
+    """
+    (firing,) = parse_emission(WRONG_PATH)
+    assert firing.targets == ["pkg/core/ingestion/fix_events.py"]
+    classify(firing, [_use("Read", file_path="/repo/pkg/core/fix_events.py")])
+    assert firing.acted is False
+
+
+def test_a_retry_that_contains_the_answer_is_still_not_acting():
+    """Half this surface's corpus is an extra directory in front of a real
+    file, so the attempted path *contains* the resolved one. A substring judge
+    scores a verbatim retry as compliance; this is the guard against that."""
+    (firing,) = parse_emission(
+        "[repowise] packages/docs/guide.md is not in this tree. "
+        "The only indexed guide.md is docs/guide.md"
+    )
+    assert firing.targets == ["docs/guide.md"]
+    classify(firing, [_use("Read", file_path="/repo/packages/docs/guide.md")])
+    assert firing.acted is False
+    # Going where it actually pointed still counts.
+    (firing,) = parse_emission(
+        "[repowise] packages/docs/guide.md is not in this tree. "
+        "The only indexed guide.md is docs/guide.md"
+    )
+    classify(firing, [_use("Read", file_path="/repo/docs/guide.md")])
+    assert firing.acted is True
+
+
+def test_a_resolved_path_containing_a_space_is_not_truncated():
+    """An indexed path can contain a space; ``\\S+`` would keep "packages/My"
+    and substring-match nearly every later tool call in that repo."""
+    (firing,) = parse_emission(
+        "[repowise] src/config.py is not in this tree. "
+        "The only indexed config.py is packages/My App/config.py"
+    )
+    assert firing.targets == ["packages/My App/config.py"]
+
+
+def test_normalize_keeps_a_leading_dot_directory():
+    """``lstrip("./")`` strips a character set and ate the dot."""
+    (firing,) = parse_emission(
+        "[repowise] ci.yml is not in this tree. "
+        "The only indexed ci.yml is .github/workflows/ci.yml"
+    )
+    assert firing.targets == [".github/workflows/ci.yml"]
 
 
 def test_fix_history_acted_on_a_test_run_or_a_history_look():

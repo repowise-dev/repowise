@@ -27,7 +27,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|shell_command",
         "hooks": [
           {
             "type": "command",

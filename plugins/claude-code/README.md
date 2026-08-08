@@ -39,7 +39,7 @@ MCP tools and skills activate automatically.
 
 Graph (tree-sitter dependency graph, 16 languages) · Git (hotspots, ownership,
 co-change, bus factor) · Docs (LLM-generated wiki + semantic search) · Decisions
-(architectural rationale mined from eight sources) · Code Health (1–10
+(architectural rationale mined from five sources) · Code Health (1–10
 defect-validated score from deterministic markers).
 
 ### Slash commands

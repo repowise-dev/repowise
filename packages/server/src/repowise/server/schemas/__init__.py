@@ -58,6 +58,12 @@ from .decisions import (
     DecisionRecordResponse,
     DecisionStatusUpdate,
 )
+from .episodes import (
+    EpisodeCountsResponse,
+    EpisodeDetail,
+    EpisodeListResponse,
+    EpisodeSummary,
+)
 from .external_systems import (
     ExternalSystemEntry,
     ExternalSystemsResponse,
@@ -278,6 +284,10 @@ __all__ = [
     "DistillSavingsGroup",
     "DistillSavingsResponse",
     "EgoGraphResponse",
+    "EpisodeCountsResponse",
+    "EpisodeDetail",
+    "EpisodeListResponse",
+    "EpisodeSummary",
     "ExecutionFlowEntry",
     "ExecutionFlowsResponse",
     "ExternalSystemEntry",

@@ -102,3 +102,27 @@ def test_expired_cache_refetches(monkeypatch, tmp_path):
     monkeypatch.setattr(rel, "fetch_latest_version", lambda timeout=2.0: ("9.9.9", None))
     result = check_latest_version_cached("0.21.0", ttl_hours=24)
     assert result.latest_version == "9.9.9"
+
+
+def test_check_latest_version_cached_does_not_poison_on_failure(monkeypatch, tmp_path):
+    """A transient fetch failure must not pin the cache to None for the TTL."""
+    _redirect_cache(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    def _fetch(timeout=2.0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None, "offline"
+        return "9.9.9", None
+
+    monkeypatch.setattr(rel, "fetch_latest_version", _fetch)
+
+    first = check_latest_version_cached("0.21.0", ttl_hours=1)
+    assert first.latest_version is None
+    assert first.update_available is None
+
+    # Second call within TTL must retry (not serve cached None).
+    second = check_latest_version_cached("0.21.0", ttl_hours=1)
+    assert calls["n"] == 2
+    assert second.latest_version == "9.9.9"
+    assert second.update_available is True

@@ -71,6 +71,76 @@ def test_short_pushback_is_skipped():
     assert mine_events([_user("no")], REPO_PREFIX) == []
 
 
+def test_pushback_inside_a_longer_brief_is_a_correction():
+    """The gate scans sentences, not just the opening of the message.
+
+    Measured over 436 transcripts: requiring the whole message to open with a
+    lead found 62 corrections and, over the two most recent days, zero — while
+    pushback language held its long-run density. A correction now usually
+    arrives as one sentence inside a longer brief.
+    """
+    events = [
+        _user(
+            "Work on the hook track next session. Do not run uv sync in the "
+            "worktree, it triggers a numpy source build. Then open the PR."
+        )
+    ]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.kind == "user_correction"
+    assert candidate.quotes == [
+        "Do not run uv sync in the worktree, it triggers a numpy source build."
+    ]
+
+
+def test_correction_quote_is_the_sentence_not_the_message():
+    """``contradicts()`` compares one statement; give it one statement."""
+    events = [_user("Some preamble that sets up the task. Never run ruff format here.")]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.quotes == ["Never run ruff format here."]
+
+
+def test_actually_is_not_a_pushback_lead():
+    """Mid-message it is narrative as often as reversal; see PUSHBACK_LEADS.
+
+    Opens with the lead, so it fails the moment "actually" goes back on the
+    list — which the weaker phrasing of this test did not.
+    """
+    events = [_user("Actually, that produces the right total after all.")]
+    assert [c for c in mine_events(events, REPO_PREFIX) if c.kind == "user_correction"] == []
+
+
+def test_a_brief_that_corrects_still_yields_its_explicit_choices():
+    """The correction gate must not swallow the rest of a long message.
+
+    Skipping the choice gate was harmless while a correction was a short reply
+    that was only a correction; one lead sentence inside a brief is not.
+    """
+    events = [
+        _tool_call("Edit", {"file_path": f"{CWD}\\svc.py"}),
+        _user(
+            "Do not use the shared pool here. We went with per-request sessions "
+            "because the pool leaks under the test runner."
+        ),
+    ]
+    kinds = _kinds(mine_events(events, REPO_PREFIX))
+    assert "user_correction" in kinds
+    assert "explicit_choice" in kinds
+
+
+def test_two_corrections_in_one_message_are_both_quoted():
+    """One declarative opener must not discard the real correction behind it."""
+    events = [
+        _user(
+            "No releases yet. Never run the formatter here, CI only checks lint."
+        )
+    ]
+    (candidate,) = mine_events(events, REPO_PREFIX)
+    assert candidate.quotes == [
+        "No releases yet.",
+        "Never run the formatter here, CI only checks lint.",
+    ]
+
+
 def test_meta_compact_sidechain_and_tag_text_skipped():
     events = [
         _user("Don't ever do that again, use the helper because it exists", is_meta=True),

@@ -123,7 +123,7 @@ class TranscriptEpisodeRecorder:
     Presence is registered when a transcript is *shown* to the recorder, not
     when it yields events: a session already fully consumed by the cursor
     yields nothing and must still count as present, or the next write would
-    read its silence as deletion.
+    read its silence as a source that had gone away.
     """
 
     def __init__(self, repo_root: Path) -> None:
@@ -134,11 +134,11 @@ class TranscriptEpisodeRecorder:
     def note_present(self, paths: Iterable[Path]) -> None:
         """Register transcripts as existing without reading them.
 
-        Presence and reading are different claims, and conflating them deletes
-        data: a run may stop reading early on a large first sweep, but every
-        transcript it *listed* still has a session behind it. Called with the
-        whole discovery result, so a partial sweep never reads its own
-        unfinished work as sessions that have gone away.
+        Presence and reading are different claims: a run may stop reading early
+        on a large first sweep, but every transcript it *listed* still has a
+        session behind it. Called with the whole discovery result, so a partial
+        sweep never records its own unfinished work as sources that have gone
+        away.
         """
         for path in paths:
             self._present.append(self._subject(path))
@@ -354,13 +354,13 @@ def record_transcript_episodes(repo_path: Path | str, recorder: TranscriptEpisod
         pending = recorder.pending()
         if not subjects and not pending:
             # Nothing was even discovered: this run cannot vouch for the tier's
-            # membership, so it must not sweep it. Same rule as a git run that
+            # membership, so it must not annotate it. Same rule as a git run that
             # walked no window.
             return 0
         with EpisodeStore.open_for_repo(root) as store:
             prior = _prior_rows(store, [f.subject for f in pending])
             episodes = derive_transcript_episodes(recorder, root, prior)
-            store.sync_tier(
+            store.accumulate_tier(
                 tier=TIER_TRANSCRIPT,
                 kind=KIND_SESSION,
                 episodes=episodes,

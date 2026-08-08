@@ -38,7 +38,6 @@ __all__ = [
     "SkeletonResult",
     "SkeletonSymbol",
     "build_skeleton",
-    "estimate_skeleton_tokens",
 ]
 
 #: Default total token budget for smart mode (signatures + kept bodies).
@@ -185,33 +184,6 @@ def build_skeleton(
         symbol_count=len(usable),
         bodies_kept=bodies_kept,
     )
-
-
-def estimate_skeleton_tokens(
-    symbol_bounds: Sequence[tuple[int, int]],
-    *,
-    file_size_bytes: int,
-    total_lines: int | None = None,
-) -> int:
-    """Cheap skeleton-size estimate from bounds arithmetic alone.
-
-    For hook paths that must not render anything: approximates the kept
-    fraction (preamble + ~2 signature lines + 1 elision line per symbol)
-    and scales the file's chars/4 token count by it. Within ~2x of the real
-    skeleton size, which is all a "~M tokens vs K" nudge needs.
-    """
-    if not symbol_bounds or file_size_bytes <= 0:
-        return max(0, file_size_bytes // 4)
-    starts = [s for s, _ in symbol_bounds if s > 0]
-    if not starts:
-        return file_size_bytes // 4
-    lines_total = total_lines or max(e for _, e in symbol_bounds)
-    if lines_total <= 0:
-        return file_size_bytes // 4
-    preamble = min(min(starts) - 1, _PREAMBLE_KEEP_LINES)
-    kept_lines = preamble + 3 * len(symbol_bounds)  # ~2 sig lines + 1 marker
-    fraction = min(1.0, kept_lines / lines_total)
-    return max(1, int(file_size_bytes // 4 * fraction))
 
 
 # ---------------------------------------------------------------------------

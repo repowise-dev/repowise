@@ -22,6 +22,7 @@ crashes or blocks your agent.
 | **Post-commit auto-sync** | git | `repowise hook install` (or the `repowise init` prompt) | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
 | **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Live index-freshness line, core-tool trust rule, and the standing decisions relevant to this session |
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / `Bash` / `PowerShell` / repowise MCP calls | Graph context on searches, git/edit freshness, read-intelligence notices, and edit-time "governed by" decision notices |
+| **Wrong-path rescue** | Claude Code | `repowise init` | a `Read` / `Edit` / `Write` / `Grep` / `Glob` / `NotebookEdit` that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`; auto-allowed by default, set `permission: ask` to approve each one |
 | **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / UserPromptSubmit / edit / Bash | Reminds Codex to use the MCP tools and flags stale context after edits |
 
@@ -183,6 +184,40 @@ that session, and relaxes or bumps the decision's staleness accordingly, so
 guidance that stops being true stops being injected. This is the feedback loop
 behind "learns from your sessions" (see the [README](../../README.md) and
 [decisions layer](../layers/INTELLIGENCE_LAYERS.md)).
+
+---
+
+## PostToolUseFailure, the wrong-path rescue
+
+An agent that knows a file exists but guesses the wrong directory for it gets
+back "Path does not exist" and burns a turn hunting. The index already knows
+where that filename lives, so the failure is answerable at the moment it
+happens:
+
+```
+[repowise] core/git_indexer/fix_events.py is not in this tree.
+The only indexed fix_events.py is core/ingestion/git_indexer/fix_events.py
+```
+
+It speaks only when the basename resolves to **exactly one** indexed file that
+is still on disk. Everything else is silence, and each case is a distinct way
+to be confidently wrong:
+
+- **An ambiguous basename.** Naming one of a dozen `registry.py` is worse than
+  saying nothing, because the agent has no cheap way to tell a rescue from a
+  fact.
+- **A directory target.** "Which file did you mean" is not the question a
+  missing directory asks.
+- **A path in another checkout.** A sibling worktree has its own index; this
+  one has no standing to answer for it.
+- **A failure Claude Code already answered.** It prints its own "Did you mean"
+  for some of these, and repeating it is worse than silence.
+- **The path that just failed.** The index can hold a row for a file that is
+  not on disk right now, and pointing back at the failed path is the worst
+  thing this surface could say.
+
+Measured over 435 sessions in this repo: 86 path-not-found failures on the file
+tools, of which the rescue speaks to 18. The gap is the point.
 
 ---
 

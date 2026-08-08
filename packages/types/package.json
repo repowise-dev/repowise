@@ -13,6 +13,7 @@
     "./git": "./src/git.ts",
     "./docs": "./src/docs.ts",
     "./decisions": "./src/decisions.ts",
+    "./episodes": "./src/episodes.ts",
     "./dead-code": "./src/dead-code.ts",
     "./symbols": "./src/symbols.ts",
     "./chat": "./src/chat.ts",

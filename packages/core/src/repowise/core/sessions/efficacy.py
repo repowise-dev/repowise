@@ -29,6 +29,7 @@ What counts as acting, per surface
 surface       category        acted when, within the window
 ============= =============== ==================================================
 read          skeleton_nudge  a skeleton/structure call on the named file
+                              (retired; historical rows only — see below)
 read          skeleton_served n/a — the hook already did it (see below)
 read          stale_read      n/a — a warning, not a pointer
 search        triage          a named file is touched
@@ -50,6 +51,34 @@ A ranged Read after a skeleton nudge is deliberately **not** acting: reading a
 range of a file you just read in full is ordinary edit-prep and cannot be
 attributed to the nudge. It is tracked separately as
 :data:`AMBIGUOUS` evidence so the generous bound stays reportable.
+
+The nudge itself no longer fires (see ``augment_cmd/read_state.py``). Its
+judge stays because ``hook backfill`` still has to settle the firings already
+in the corpus, and because the reason it was retired is worth keeping beside
+the code that measured it.
+
+The suspicion was that the judge above is too strict, crediting only a
+structure call on a file the agent has just read in full, which the agent has
+no reason to make. So three looser readings were replayed over 516 firings
+before the surface was touched, and none of them found an effect. A structure
+call on *any* file followed 11.4% of nudges, against an 11.9% unconditioned
+base rate; ``get_context`` on a file not yet read, 2.9% against 3.4%. Both sit
+at or below chance. Read as compliance instead, which is the shape
+``read``/``reread`` uses (did the agent stop doing the thing, rather than
+start doing another), 54.8% of nudges were followed within the window by a
+second nudge, meaning another large indexed file read whole, a median of six
+tool calls later.
+
+The number that settles it is the dose. A session's *first* nudge was
+followed by another 57.1% of the time, a later one 53.4%, so being told again
+changed nothing. The judge was not the problem.
+
+One thing the replay found that no rate would have: 53.3% of firings answered
+a *ranged* Read. The unbounded-read gate belonged to the replacement, and the
+nudge sat on the branch the replacement declines, so over half of it was
+advice to be more targeted handed to a read that already was. That also means
+the ``AMBIGUOUS`` bucket below was reading the ranged form backwards about as
+often as not: for those firings the ranged read came *before* the nudge.
 
 The *replacement* rows (``skeleton_served`` and its two recovery categories,
 and ``digest_served``) are structurally unlike the rest: their text goes out as
@@ -92,7 +121,7 @@ AMBIGUOUS = "ranged_read"
 #: Surfaces this module judges. ``decision`` rows key on decision-record ids
 #: and are judged by the decision miner; ``read_enrich`` is a silent KPI with
 #: no emission to act on.
-CLASSIFIED_SURFACES = ("read", "search", "fix_history")
+CLASSIFIED_SURFACES = ("read", "search", "fix_history", "wrong_path")
 
 #: (surface, category) pairs that carry no recommended action, so an unacted
 #: firing is not a failure. Reported as a count, excluded from rates. The
@@ -113,6 +142,21 @@ NO_ACTION_EXPECTED = frozenset(
         # appended ``search``/``digest`` rows are still scored normally, and the
         # two are kept apart so a cost and a saving are never averaged.
         ("search", "digest_served"),
+    }
+)
+
+#: (surface, category) pairs whose emission has been removed. The judges below
+#: stay so a transcript backfill still settles the rows already in the corpus,
+#: but nothing new lands here, and a rate over a closed population is not an
+#: adoption rate — ``read``/``reread`` reads 100% and ``read``/``skeleton_nudge``
+#: 0.2% off populations that stopped growing, and both are indistinguishable
+#: from a live surface until they are labelled apart. Historical, not current.
+RETIRED_CATEGORIES = frozenset(
+    {
+        # Retired in the read hook; see ``augment_cmd/read_state.py``.
+        ("read", "reread"),
+        # Retired on the emission side after the dose measurement.
+        ("read", "skeleton_nudge"),
     }
 )
 
@@ -147,6 +191,8 @@ def ledger_key(surface: str, category: str, text: str) -> str:
 # the emitted text. Each capture group named below feeds the classifier:
 # ``target`` is the file or symbol the hook pointed at.
 _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    # Retired on the emission side; kept so a backfill still settles the rows
+    # already in the corpus. Nothing new lands here.
     (
         "read",
         "skeleton_nudge",
@@ -211,7 +257,26 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "digest",
         re.compile(r"^\[repowise\] Search flood — compact digest"),
     ),
+    # Deliberately one line, so ``parse_emission`` — which harvests loose path
+    # tokens from continuation lines only — cannot turn the attempted path into
+    # a target. The resolved path is the last field and is captured to end of
+    # line rather than as ``\S+``: an indexed path can contain a space, and
+    # truncating it there both stores a node id that does not exist and leaves
+    # a prefix short enough to substring-match almost anything.
+    (
+        "wrong_path",
+        "rescue",
+        re.compile(
+            r"^\[repowise\] \S+ is not in this tree\. "
+            r"The only indexed \S+ is (?P<target>.+)$"
+        ),
+    ),
 )
+
+#: The attempted path from a wrong-path rescue, for the judge below. Read off
+#: the emission rather than carried on :class:`Firing`, which has no field for
+#: "what this firing was steering the agent away from".
+_WRONG_PATH_ATTEMPTED = re.compile(r"^\[repowise\] (?P<attempted>\S+) is not in this tree\.")
 
 #: A path-shaped token, for harvesting the file lists that follow a triage
 #: header or ride inside a digest body. Both separators are accepted: triage
@@ -291,8 +356,16 @@ def parse_emission(text: str) -> list[Firing]:
 
 
 def _normalize(path: str) -> str:
-    """Repo-relative POSIX spelling, as the ledger's node ids use."""
-    return path.replace("\\\\", "/").replace("\\", "/").lstrip("./").rstrip(".,;:")
+    """Repo-relative POSIX spelling, as the ledger's node ids use.
+
+    ``removeprefix`` rather than ``lstrip``, which strips a character *set*:
+    it turned ``.github/workflows/ci.yml`` into ``github/...``, storing a node
+    id no repository has and widening the target to a substring that matches
+    more than it should.
+    """
+    return (
+        path.replace("\\\\", "/").replace("\\", "/").removeprefix("./").rstrip(".,;:")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +408,7 @@ def classify(firing: Firing, following: list[tuple[str, str]]) -> Firing:
         ("search", "rescue_wide"): _acted_rescue,
         ("search", "digest"): _acted_target,
         ("fix_history", "edit_notice"): _acted_fix_history,
+        ("wrong_path", "rescue"): _acted_wrong_path,
     }.get((firing.surface, firing.category))
     if judge is None:
         firing.acted = None
@@ -405,6 +479,23 @@ def _acted_target(firing: Firing, name: str, norm: str, raw: str) -> str:
         if target and target in norm:
             return f"touched_rank{rank}"
     return ""
+
+
+def _acted_wrong_path(firing: Firing, name: str, norm: str, raw: str) -> str:
+    """Went where it pointed — and retrying the failed path is not that.
+
+    ``_acted_target`` is an unanchored substring test, so it cannot be used
+    here alone: whenever the attempted path *contains* the resolved one (the
+    agent guessed an extra directory in front of a real file, which is half of
+    this surface's corpus), a verbatim retry of the failed path matches the
+    target and scores as compliance. Disqualifying the attempted path first is
+    what keeps the rate about the rescue rather than about the mistake.
+    """
+    m = _WRONG_PATH_ATTEMPTED.match(firing.text)
+    attempted = _normalize(m.group("attempted")) if m else ""
+    if attempted and attempted in norm:
+        return ""
+    return _acted_target(firing, name, norm, raw)
 
 
 def _acted_rescue(firing: Firing, name: str, norm: str, raw: str) -> str:

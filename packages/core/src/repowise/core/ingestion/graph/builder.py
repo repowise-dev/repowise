@@ -8,12 +8,13 @@ file under the project's 400-line ceiling.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import networkx as nx
 import structlog
 
+from ..cohesion import SAME_PACKAGE_HINT, UNIT_FANOUT_LANGUAGES
 from ..models import ParsedFile
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
@@ -101,6 +102,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._subgraph_lock = threading.Lock()
         self._file_subgraph_cache: nx.DiGraph | None = None
         self._symbol_subgraph_cache: nx.DiGraph | None = None
+        self._cycle_subgraph_cache: nx.DiGraph | None = None
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
@@ -122,6 +124,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         self.__dict__.update(state)
         self._subgraph_lock = threading.Lock()
+        # A bundle pickled by an older build predates this cache attribute, and
+        # this is an explicit cross-version process boundary — default it rather
+        # than let the first cycle_subgraph() call raise AttributeError.
+        self.__dict__.setdefault("_cycle_subgraph_cache", None)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -142,6 +148,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._execution_flow_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
+        self._cycle_subgraph_cache = None
         self._import_name_maps = None
 
     def _invalidate_subgraph_caches(self) -> None:
@@ -154,6 +161,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         """
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
+        self._cycle_subgraph_cache = None
 
     def release_graph(self) -> None:
         """Drop the in-memory NetworkX object after metrics are materialized.
@@ -326,6 +334,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             _lang = parsed.file_info.language
             _t0 = _t.monotonic()
             file_imports: set[str] = set()
+            # A unit fan-out that resolves to the importer's own package lands on
+            # its siblings; those edges are cohesion, not dependency. See
+            # repowise.core.ingestion.cohesion.
+            _unit_fanout = _lang in UNIT_FANOUT_LANGUAGES
+            _own_dir = PurePosixPath(path).parent.as_posix() if _unit_fanout else ""
             for imp in parsed.imports:
                 # Go and JVM imports name a package *directory*; fan the edge
                 # out to every file in the resolved package so sibling files
@@ -375,12 +388,24 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                         merged = list(set(existing + imp.imported_names))
                         self._graph[path][target]["imported_names"] = merged
                     else:
-                        self._graph.add_edge(
-                            path,
-                            target,
-                            edge_type="imports",
-                            imported_names=list(imp.imported_names),
-                        )
+                        edge_attrs: dict[str, Any] = {
+                            "edge_type": "imports",
+                            "imported_names": list(imp.imported_names),
+                        }
+                        # ``external:`` targets are excluded before the
+                        # directory test, not after: an external node id has no
+                        # directory, and a single-segment one such as
+                        # ``external:strings`` yields parent ``"."`` — which is
+                        # exactly _own_dir for any root-level file, so every
+                        # dot-free stdlib import from the repo root would
+                        # otherwise be stamped a same-package sibling.
+                        if (
+                            _unit_fanout
+                            and not target.startswith("external:")
+                            and PurePosixPath(target).parent.as_posix() == _own_dir
+                        ):
+                            edge_attrs["hint_source"] = SAME_PACKAGE_HINT
+                        self._graph.add_edge(path, target, **edge_attrs)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             if progress:

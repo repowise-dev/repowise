@@ -41,6 +41,12 @@ SESSIONS_DB_FILENAME = "sessions.db"
 #: backlog would grow the batched LLM pass forever.
 RAW_TTL_DAYS = 90.0
 
+#: ``PRAGMA user_version`` marking that :meth:`retire_unjudgeable_verdicts`
+#: has run on this store. A one-shot data repair, not a schema migration, so
+#: it rides the pragma rather than a table: the hook path opens this same
+#: database with raw sqlite3 and must not learn about a new one.
+_VERDICT_REPAIR_VERSION = 1
+
 #: Cap on the distinct session ids tracked per structured decision. Two is
 #: enough to promote; beyond a handful the extra ids only pad evidence.
 _MAX_SESSIONS_TRACKED = 20
@@ -565,16 +571,56 @@ class SessionStagingStore:
             (verdict, session_id, decision_id),
         )
 
+    def retire_unjudgeable_verdicts(self) -> int:
+        """Drop ``followed`` from rows nothing could have contradicted.
+
+        ``followed`` used to be the else branch of the contradiction test, so
+        every injection into a session with no mined correction earned one for
+        free, and those rows are already ``evaluated`` — the live judgement
+        never reads them again. Without this the reported rate stays pinned at
+        whatever the else branch produced, which on this machine was all 106
+        of them at 100%.
+
+        **Runs exactly once per store**, gated on ``PRAGMA user_version``
+        rather than repeated every pass, and that is not a cost decision. The
+        test it applies — the showing session mined no ``user_correction`` —
+        is only true-forever for rows written under the old rule. Run
+        perpetually it would also retire *earned* verdicts, on two paths: as
+        :data:`RAW_TTL_DAYS` prunes the corrections that justified them, and
+        as a session's only correction turns out to be a repeat of one already
+        staged under another session (see ``SessionCandidate.hash``). Either
+        way a real "followed" would decay to no-verdict and the rate would
+        understate itself a little more each quarter. Returns the number of
+        rows retired, and 0 on a store that has already had it.
+        """
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] >= _VERDICT_REPAIR_VERSION:
+            return 0
+        placeholders = ",".join("?" * len(self.DECISION_SURFACES))
+        cur = self._conn.execute(
+            f"UPDATE injections SET verdict = '' WHERE surface IN ({placeholders}) "
+            "AND verdict = 'followed' AND NOT EXISTS ("
+            "SELECT 1 FROM raw_candidates rc WHERE rc.session_id = injections.session_id "
+            "AND rc.kind = 'user_correction')",
+            self.DECISION_SURFACES,
+        )
+        # PRAGMA takes no parameters, hence the interpolation of an int constant.
+        self._conn.execute(f"PRAGMA user_version = {_VERDICT_REPAIR_VERSION}")
+        return cur.rowcount or 0
+
     def decision_feedback_totals(self) -> dict[str, int]:
         """Counts of decision injections by followed-vs-contradicted verdict.
 
         Covers :data:`DECISION_SURFACES` only — the surfaces whose rows are
         judged against the decision records rather than by the transcript
         classifier. ``pending`` is rows awaiting the next update's judgement;
-        ``no_verdict`` is rows already settled without one — a drained orphan
-        (the decision record was gone), or a row judged before this column
-        existed. Neither is recoverable, so both are reported rather than
-        quietly folded into one of the two real verdicts.
+        ``no_verdict`` is rows already settled without one — most of them
+        injections no session could have disagreed with, because no correction
+        was mined from any session that saw them (see
+        :func:`~repowise.core.sessions.miners.decisions.apply_injection_feedback`),
+        plus a drained orphan (the decision record was gone) or a row judged
+        before this column existed. None of it is recoverable, so all of it is
+        reported rather than quietly folded into one of the two real verdicts,
+        which is exactly how the followed rate came to read 100%.
         """
         placeholders = ",".join("?" * len(self.DECISION_SURFACES))
         rows = self._conn.execute(
