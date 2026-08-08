@@ -244,6 +244,10 @@ class CallResolver:
         parsed = self._parsed_files.get(file_path)
         return bool(parsed and parsed.file_info.language in ("cpp", "c"))
 
+    def _is_python(self, file_path: str) -> bool:
+        parsed = self._parsed_files.get(file_path)
+        return bool(parsed and parsed.file_info.language == "python")
+
     def _get_cpp_index(self) -> Any:
         """Lazily build a CppWorkspaceIndex via a minimal stand-in context."""
         if self._cpp_index_built:
@@ -607,6 +611,19 @@ class CallResolver:
             source_syms = self._file_symbols.get(source_file, {})
             if method_name in source_syms:
                 return ResolvedCall(caller_id, source_syms[method_name], 0.88, call.line)
+
+            # Python-specific fallback: if source_file is a package __init__.py,
+            # receiver_name might be a submodule (e.g. `from pkg import submodule`).
+            # In that case, the actual receiver file is `pkg/submodule.py` or `pkg/submodule/__init__.py`.
+            if self._is_python(file_path) and source_file.endswith("__init__.py"):
+                base_dir = source_file[:-12]  # remove "__init__.py"
+                candidate1 = f"{base_dir}{receiver_name}.py"
+                candidate2 = f"{base_dir}{receiver_name}/__init__.py"
+                for cand in (candidate1, candidate2):
+                    if cand in self._parsed_files:
+                        cand_syms = self._file_symbols.get(cand, {})
+                        if method_name in cand_syms:
+                            return ResolvedCall(caller_id, cand_syms[method_name], 0.88, call.line)
 
         # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
         # The receiver is a crate name, the target is a symbol in that crate's lib.rs
