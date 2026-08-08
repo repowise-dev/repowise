@@ -404,7 +404,7 @@ def _run_generation_phase(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, kimi, ollama, litellm, codex_cli, opencode, mock)."
+        "deepseek, kimi, minimax, ollama, litellm, codex_cli, opencode, mock)."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")
