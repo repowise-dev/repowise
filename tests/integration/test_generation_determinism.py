@@ -147,6 +147,8 @@ class TestSccSlug:
 
     def test_component_order_survives_graph_insertion_order(self):
         """GraphBuilder-level check that the component list itself is stable."""
+        import threading
+
         from repowise.core.ingestion.graph._metrics import MetricsMixin
 
         cycles = [("a.py", "b.py"), ("c.py", "d.py"), ("e.py", "f.py")]
@@ -156,7 +158,15 @@ class TestSccSlug:
             for u, v in edge_order:
                 g.add_edge(u, v)
                 g.add_edge(v, u)
-            holder = type("H", (MetricsMixin,), {})()
+            # The mixin reads the subgraph cache and its lock, both of which
+            # GraphBuilder.__init__ owns. A double that stands in for the mixin
+            # has to carry them or it is testing a state the real class never
+            # has.
+            holder = type(
+                "H",
+                (MetricsMixin,),
+                {"_cycle_subgraph_cache": None, "_subgraph_lock": threading.Lock()},
+            )()
             holder.graph = lambda: g
             holder.file_subgraph = lambda: g
             return [sorted(c) for c in holder.strongly_connected_components()]
