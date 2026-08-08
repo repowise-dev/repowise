@@ -506,7 +506,14 @@ export interface CoverageSummary {
 export interface HealthCoverageResponse {
   summary: CoverageSummary;
   files: CoverageFileRow[];
+  /** Capped by the request's `module_limit`, which is independent of `limit`. */
   modules: ModuleCoverageRow[];
+  /**
+   * How many modules exist, whatever `modules` carries — so a trimmed or
+   * declined rollup is never read as the repo having that few. Optional: the
+   * hosted backend does not send it yet.
+   */
+  modules_total?: number;
 }
 
 /* ------------------------------------------------------------------ *

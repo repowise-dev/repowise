@@ -38,6 +38,10 @@ router = APIRouter(
     dependencies=[Depends(verify_api_key)],
 )
 
+#: How many snapshots the health card's trend line plots. Also the width of the
+#: scalar window this route reads, so the read and the chart cannot drift.
+HEALTH_HISTORY_POINTS = 12
+
 
 def _index_storage_bytes(repowise_dir: Path) -> int:
     """Total on-disk size of a repo's ``.repowise/`` directory."""
@@ -373,7 +377,17 @@ async def overview_summary(
     health_summary = await crud.get_health_summary(
         session, repo_id, metrics=health_metrics, findings=findings
     )
-    snapshots = await crud.list_health_snapshots(session, repo_id)
+    # Three scopes, three reads. This payload wants the *count* of retained
+    # snapshots, the newest ``HEALTH_HISTORY_POINTS`` rows' scalars for the
+    # sparkline, and the newest two rows' per-file maps for the file-count
+    # delta — and nothing else. Loading the history as entities to get that
+    # pulled every row's ``per_file_scores_json``: 2.8 MB on this index, ~9 MB
+    # at the retention cap, for 375 KB of actual use. Capping the read at two
+    # rows instead would be wrong in two visible ways — it would flatten the
+    # sparkline and report a snapshot count of 2.
+    snapshot = await crud.get_health_snapshot_headline(
+        session, repo_id, recent=HEALTH_HISTORY_POINTS
+    )
     hotspot_health: float | None = None
     last_indexed_at: str | None = None
     deltas: dict[str, float | None] = {
@@ -381,21 +395,16 @@ async def overview_summary(
         "hotspot_health": None,
         "file_count": None,
     }
-    if snapshots:
-        latest = snapshots[-1]
-        hotspot_health = round(float(latest.hotspot_health), 2)
-        last_indexed_at = latest.taken_at.isoformat() if latest.taken_at else None
-    if len(snapshots) >= 2:
-        prev, cur = snapshots[-2], snapshots[-1]
-        deltas["average_health"] = round(float(cur.average_health) - float(prev.average_health), 2)
-        deltas["hotspot_health"] = round(float(cur.hotspot_health) - float(prev.hotspot_health), 2)
-        try:
-            prev_files = len(json.loads(prev.per_file_scores_json or "{}"))
-            cur_files = len(json.loads(cur.per_file_scores_json or "{}"))
-            if prev_files and cur_files:
-                deltas["file_count"] = cur_files - prev_files
-        except Exception:
-            pass
+    if snapshot.snapshot_count:
+        hotspot_health = round(float(snapshot.hotspot_health), 2)
+        last_indexed_at = snapshot.taken_at.isoformat() if snapshot.taken_at else None
+    if len(snapshot.recent) >= 2:
+        prev, cur = snapshot.recent[-2], snapshot.recent[-1]
+        deltas["average_health"] = round(cur.average_health - prev.average_health, 2)
+        deltas["hotspot_health"] = round(cur.hotspot_health - prev.hotspot_health, 2)
+        file_counts = await crud.get_health_snapshot_file_counts(session, repo_id, limit=2)
+        if len(file_counts) == 2 and all(file_counts):
+            deltas["file_count"] = file_counts[1] - file_counts[0]
 
     severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for f in findings:
@@ -584,14 +593,15 @@ async def overview_summary(
             "severity_breakdown": severity_breakdown,
             "defect_accuracy": defect_accuracy,
             "last_indexed_at": last_indexed_at,
-            "snapshot_count": len(snapshots),
+            # The true total, not the length of the windowed read above.
+            "snapshot_count": snapshot.snapshot_count,
             "history": [
                 {
                     "taken_at": s.taken_at.isoformat() if s.taken_at else None,
-                    "average_health": round(float(s.average_health), 2),
-                    "hotspot_health": round(float(s.hotspot_health), 2),
+                    "average_health": round(s.average_health, 2),
+                    "hotspot_health": round(s.hotspot_health, 2),
                 }
-                for s in snapshots[-12:]
+                for s in snapshot.recent
             ],
         },
         "languages": languages,

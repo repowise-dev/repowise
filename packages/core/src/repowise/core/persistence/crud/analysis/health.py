@@ -695,39 +695,121 @@ async def list_health_snapshots(
     return rows
 
 
+class HealthSnapshotScalars(NamedTuple):
+    """One snapshot's numeric columns, with no per-file map behind them."""
+
+    taken_at: datetime | None
+    average_health: float
+    hotspot_health: float
+
+
 class HealthSnapshotHeadline(NamedTuple):
-    """The three snapshot scalars a dashboard header actually reads."""
+    """The snapshot figures a dashboard header actually reads.
+
+    ``recent`` is empty unless the caller asked for it, and is ordered
+    **oldest-first** to match ``list_health_snapshots`` — a trend line reads
+    left to right, and the newest row is ``recent[-1]``.
+    """
 
     hotspot_health: float | None
     taken_at: datetime | None
     snapshot_count: int
+    recent: tuple[HealthSnapshotScalars, ...] = ()
 
 
 async def get_health_snapshot_headline(
-    session: AsyncSession, repository_id: str
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    recent: int = 0,
 ) -> HealthSnapshotHeadline:
     """Latest snapshot's ``hotspot_health`` / ``taken_at``, plus how many exist.
 
     ``list_health_snapshots`` hydrates whole entities, and every row carries a
     ``per_file_scores_json`` blob sized by the repo's file count — on this
-    codebase that is ~186 KB each, 2.2 MB across the retained history. A caller
-    that only needs the header scalars was reading all of it to use two floats.
+    codebase that is ~186 KB each, 2.8 MB across the retained history and ~9 MB
+    at ``HEALTH_SNAPSHOT_RETENTION``. A caller that only needs scalars was
+    reading all of it to use a handful of floats.
 
-    Two columns, no JSON. Callers that genuinely need the per-file maps (the
-    trend routes, the file drawer's sparkline) should keep using
-    ``list_health_snapshots``.
+    Pass ``recent=N`` for the newest N rows' scalars as well — a sparkline and a
+    delta-vs-previous both want a bounded window of numbers, not the history.
+    ``snapshot_count`` is always the **true** total, independent of ``recent``,
+    so a capped window can never be mistaken for the whole history.
+
+    No JSON column is touched. Callers that genuinely need the per-file maps
+    (the trend routes, the file drawer's sparkline) should keep using
+    ``list_health_snapshots``; a caller that needs only their *sizes* wants
+    ``get_health_snapshot_file_counts``.
     """
     rows = (
         await session.execute(
-            select(HealthSnapshot.hotspot_health, HealthSnapshot.taken_at)
+            select(
+                HealthSnapshot.hotspot_health,
+                HealthSnapshot.taken_at,
+                HealthSnapshot.average_health,
+            )
             .where(HealthSnapshot.repository_id == repository_id)
             .order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
         )
     ).all()
     if not rows:
         return HealthSnapshotHeadline(None, None, 0)
-    hotspot_health, taken_at = rows[-1]
-    return HealthSnapshotHeadline(float(hotspot_health), taken_at, len(rows))
+    hotspot_health, taken_at, _ = rows[-1]
+    window = rows[-recent:] if recent > 0 else []
+    return HealthSnapshotHeadline(
+        float(hotspot_health),
+        taken_at,
+        len(rows),
+        tuple(
+            HealthSnapshotScalars(r_taken_at, float(r_avg), float(r_hotspot))
+            for r_hotspot, r_taken_at, r_avg in window
+        ),
+    )
+
+
+async def get_health_snapshot_file_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int = 2,
+) -> list[int]:
+    """How many files the newest *limit* snapshots scored, oldest-first.
+
+    The only thing the overview's ``file_count`` delta wants out of
+    ``per_file_scores_json`` is its key count, and it compares two rows. Loading
+    the whole retained history to measure two of its maps read 2.8 MB to use
+    375 KB of it.
+
+    Ordering matches ``list_health_snapshots`` exactly, so "the newest two"
+    cannot mean different rows here than there.
+
+    Anything that is not a ``{path: score}`` object counts 0 — unparseable, but
+    also a bare JSON array or string, which ``len()`` would happily measure into
+    a file count meaning nothing. The caller reads 0 as "unknown" and omits the
+    delta rather than publishing a number it cannot justify. This is deliberately
+    stricter than the ``len(json.loads(...))`` it replaced;
+    ``save_health_snapshot`` only ever writes an object, so it can only bite on
+    rows that did not come from it.
+    """
+    if limit <= 0:
+        return []
+    rows = (
+        await session.execute(
+            select(HealthSnapshot.per_file_scores_json)
+            .where(HealthSnapshot.repository_id == repository_id)
+            .order_by(HealthSnapshot.taken_at.desc(), HealthSnapshot.id.desc())
+            .limit(limit)
+        )
+    ).all()
+    counts: list[int] = []
+    for (blob,) in reversed(rows):
+        try:
+            parsed = json.loads(blob or "{}")
+        except (TypeError, ValueError):
+            counts.append(0)
+            continue
+        counts.append(len(parsed) if isinstance(parsed, dict) else 0)
+    return counts
 
 
 async def upsert_health_findings(
