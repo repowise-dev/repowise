@@ -137,3 +137,49 @@ def test_normalize_exec_rg_to_search_codebase():
         )
         == "search_codebase"
     )
+
+
+def test_normalize_handles_mcp_function_call_and_output() -> None:
+    tool_call = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "search_codebase",
+                "namespace": "mcp__repowise",
+                "arguments": json.dumps({"query": "signup"}),
+                "call_id": "call_mcp_1",
+            },
+        }
+    )
+
+    tool_output = json.dumps(
+        {
+            "timestamp": "2026-07-17T16:46:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_mcp_1",
+                "output": (
+                    'Wall time: 0.1 seconds\n'
+                    'Output:\n'
+                    '{"result":{"results":[{"file":"app.py"}]}}'
+                ),
+            },
+        }
+    )
+
+    call_event = ADAPTER.normalize(tool_call)
+    output_event = ADAPTER.normalize(tool_output)
+
+    assert call_event is not None
+    assert call_event.tool_uses[0].id == "call_mcp_1"
+    assert call_event.tool_uses[0].name == "search_codebase"
+    assert call_event.tool_uses[0].input["query"] == "signup"
+    assert call_event.tool_uses[0].input["path"] == "app.py"
+    assert output_event is not None
+    assert output_event.tool_results[0].tool_use_id == "call_mcp_1"
+
+    # The output should bind the returned file to the original tool call.
+    assert call_event.tool_uses[0].input["path"] == "app.py"

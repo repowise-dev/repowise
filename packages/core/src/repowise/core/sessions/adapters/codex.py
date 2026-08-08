@@ -248,12 +248,12 @@ class CodexAdapter(HarnessAdapter):
             self._tool_calls[tool_id] = tool
             event.tool_uses.append(tool)
             return
-        
+
         if payload_type == "function_call_output":
             output = payload.get("output")
             text = _extract_text(None, None, output, None)
 
-            if(text ):
+            if text:
                 event.text = text
 
             call_id = payload.get("call_id")
@@ -261,7 +261,27 @@ class CodexAdapter(HarnessAdapter):
             if not isinstance(call_id, str):
                 return
 
-            self._tool_calls.pop(call_id, None)
+            tool = self._tool_calls.pop(call_id, None)
+
+            if tool is not None and tool.name == "search_codebase" and isinstance(output, str):
+                    start = output.find("{")
+                    if start != -1:
+                        try:
+                            parsed = json.loads(output[start:])
+                        except ValueError:
+                            parsed = None
+
+                        if isinstance(parsed, dict):
+                            results = parsed.get("result", {}).get("results", [])
+
+                            if isinstance(results, list) and results:
+                                first = results[0]
+
+                                if isinstance(first, dict):
+                                    file_path = first.get("file")
+
+                                    if isinstance(file_path, str) and file_path:
+                                        tool.input["path"] = file_path
 
             event.tool_results.append(
                 ToolResult(
