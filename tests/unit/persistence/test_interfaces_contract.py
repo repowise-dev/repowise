@@ -210,3 +210,23 @@ async def test_job_store_find_resumable_filters_by_state(job_store):
 @pytest.mark.asyncio
 async def test_job_store_get_unknown_returns_none(job_store):
     assert await job_store.get_job("does-not-exist") is None
+
+
+@pytest.mark.asyncio
+async def test_find_completed_phases_survives_many_non_completed_jobs(job_store):
+    """Completed phases must be found even when many newer non-completed jobs exist."""
+    from repowise.core.pipeline.checkpoint import find_completed_phases
+
+    repo_id = job_store._test_repo_id  # type: ignore[attr-defined]
+    completed_phases = {f"done-{i}" for i in range(3)}
+    for phase in completed_phases:
+        job = await job_store.create_job(repository_id=repo_id, phase=phase)
+        await job_store.update_state(job.id, JobState.COMPLETED)
+
+    # Crowd the store with newer running jobs (beyond the default list_jobs limit).
+    for i in range(105):
+        job = await job_store.create_job(repository_id=repo_id, phase=f"running-{i}")
+        await job_store.update_state(job.id, JobState.RUNNING)
+
+    done = await find_completed_phases(job_store, repository_id=repo_id)
+    assert done == completed_phases
