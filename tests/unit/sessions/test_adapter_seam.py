@@ -108,6 +108,7 @@ def test_registration_adds_exactly_one_name(toy: ToyAdapter) -> None:
     assert registered_adapters() == ["claude_code", "codex", "toy"]
     assert get_adapter("toy").name == "toy"
 
+
 def test_unknown_harness_is_a_lookup_error() -> None:
     with pytest.raises(LookupError):
         get_adapter("no_such_harness")

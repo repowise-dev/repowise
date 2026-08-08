@@ -27,7 +27,25 @@ from repowise.core.sessions.events import Event, ToolResult, ToolUse
 
 _TOOL_CALL_RE = re.compile(r"tools\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _SHELL_COMMAND_RE = re.compile(r'"command"\s*:\s*"([^"]*)"')
-_PATH_RE = re.compile(r"(?m)^([^\r\n]+(?:\\|/)[^\r\n]+)$")
+#: ``rg`` prints ``path:line:text`` for a content match and a bare path for
+#: ``--files``. Only the leading path is a file; the rest is the matched line.
+_RG_MATCH_RE = re.compile(r"^(?P<path>[^:]+(?::[^:\\/]*[\\/][^:]*)?):\d+:")
+#: Lines the exec wrapper prints around a command's real output.
+_EXEC_NOISE = ("Script ", "Exit code:", "Wall time", "Output:")
+
+
+def _tool_calls_prefilter(raw: str) -> bool:
+    return (
+        '"type":"custom_tool_call"' in raw
+        or '"type":"custom_tool_call_output"' in raw
+        or '"type":"function_call"' in raw
+        or '"type":"function_call_output"' in raw
+    )
+
+
+def _turns_prefilter(raw: str) -> bool:
+    return '"type":"event_msg"' in raw or '"type":"response_item"' in raw
+
 
 @register_adapter
 class CodexAdapter(HarnessAdapter):
@@ -38,8 +56,16 @@ class CodexAdapter(HarnessAdapter):
     def __init__(self):
         self._tool_calls: dict[str, ToolUse] = {}
         self._current_session: str | None = None
+        self._current_cwd: str | None = None
 
     def discover(self, repo_root: Path, *, projects_root: Path | None = None) -> list[Path]:
+        """Every Codex rollout, not just this repo's.
+
+        Codex files its sessions by date rather than by project, so the
+        transcript path carries no repo. The repo a line belongs to is on the
+        ``cwd`` threaded out of ``session_meta``, which is what the miners
+        scope on, so returning the full set here is correct rather than lazy.
+        """
         root = projects_root if projects_root is not None else Path.home() / ".codex" / "sessions"
         if not root.is_dir():
             return []
@@ -85,10 +111,17 @@ class CodexAdapter(HarnessAdapter):
         if entry_kind == "session_meta":
             event.text = ""
             self._current_session = event.session_id
+            self._current_cwd = event.cwd
             return event
 
         if event.session_id is None:
             event.session_id = self._current_session
+        # Codex writes cwd once, in session_meta. The miners scope every event
+        # on its own cwd, so a line without one counts toward whichever repo is
+        # being mined; threading it is what keeps one project's sessions out of
+        # another's decisions.
+        if event.cwd is None:
+            event.cwd = self._current_cwd
 
         text = _extract_text(
             entry.get("text"), payload.get("message"), payload.get("content"), payload.get("output")
@@ -99,55 +132,32 @@ class CodexAdapter(HarnessAdapter):
         if entry_kind == "response_item" and isinstance(payload, dict):
             self._fill_response_item(event, payload)
 
-        for tool_call in entry.get("tool_calls") or []:
-            if not isinstance(tool_call, dict):
-                continue
-            tool_id = tool_call.get("id")
-            name = tool_call.get("name")
-            if isinstance(tool_id, str) and isinstance(name, str):
-                tool_input = payload.get("input")
-
-                normalized_input = tool_input if isinstance(tool_input, (dict, str)) else {}
-                event.tool_uses.append(
-                    ToolUse(
-                        id=tool_id,
-                        name=_normalize_tool_name(name, normalized_input),
-                        input=normalized_input,
-                    )
-                )
-
         return event
 
     def prefilter(self, intent: str) -> RawPrefilter | None:
-        if intent == INTENT_SHELL_CALLS:
-            return lambda raw: (
-                '"type":"custom_tool_call"' in raw
-                or '"type":"custom_tool_call_output"' in raw
-            )
-
-        if intent == INTENT_TOOL_CALLS:
-            return lambda raw: (
-                '"type":"custom_tool_call"' in raw
-                or '"type":"custom_tool_call_output"' in raw
-                or '"type":"function_call"' in raw
-                or '"type":"function_call_output"' in raw
-            )
+        # Both call shapes carry shell work, so both gates admit both. Codex
+        # wraps a shell command in an `exec` custom_tool_call *and* calls
+        # `shell_command` as a plain function_call; on real rollouts the second
+        # is the larger half, so a shell gate that reads only the first drops
+        # most of what it exists to find. Substring tests on the raw string,
+        # never a parse: see HarnessAdapter.prefilter.
+        if intent in (INTENT_SHELL_CALLS, INTENT_TOOL_CALLS):
+            return _tool_calls_prefilter
 
         if intent == INTENT_TURNS:
-            return lambda raw: (
-                '"type":"event_msg"' in raw
-                or '"type":"response_item"' in raw
-            )
+            return _turns_prefilter
 
         return None
 
     def begin_file(self, path: Path | None = None) -> None:
         self._tool_calls.clear()
         self._current_session = None
+        self._current_cwd = None
 
     def end_file(self) -> None:
         self._tool_calls.clear()
         self._current_session = None
+        self._current_cwd = None
 
     def _fill_response_item(self, event: Event, payload: dict[str, Any]) -> None:
         """Handles response_item entries in Codex transcripts, and converts them to either text, tool uses or tool results
@@ -202,12 +212,9 @@ class CodexAdapter(HarnessAdapter):
 
             if tool is not None and tool.name == "search_codebase":
                 rewritten = _rewrite_search_output(output)
-
-                results = rewritten["result"]["results"]
-                if results:
-                    tool.input["path"] = results[0]["file"]
-
-                output = json.dumps(rewritten)
+                if rewritten is not None:
+                    _bind_first_file(tool, rewritten["result"]["results"])
+                    output = json.dumps(rewritten)
 
             event.tool_results.append(
                 ToolResult(
@@ -217,6 +224,7 @@ class CodexAdapter(HarnessAdapter):
                     payload=output,
                 )
             )
+            return
 
         if payload_type == "function_call":
             tool_id = payload.get("call_id")
@@ -263,25 +271,11 @@ class CodexAdapter(HarnessAdapter):
 
             tool = self._tool_calls.pop(call_id, None)
 
+            # An MCP search arrives as {"query": ...} with no path key, so
+            # event_files() would bind the record to nothing. The result names
+            # the file; lift the first one onto the call that asked for it.
             if tool is not None and tool.name == "search_codebase" and isinstance(output, str):
-                    start = output.find("{")
-                    if start != -1:
-                        try:
-                            parsed = json.loads(output[start:])
-                        except ValueError:
-                            parsed = None
-
-                        if isinstance(parsed, dict):
-                            results = parsed.get("result", {}).get("results", [])
-
-                            if isinstance(results, list) and results:
-                                first = results[0]
-
-                                if isinstance(first, dict):
-                                    file_path = first.get("file")
-
-                                    if isinstance(file_path, str) and file_path:
-                                        tool.input["path"] = file_path
+                _bind_first_file(tool, _mcp_search_results(output))
 
             event.tool_results.append(
                 ToolResult(
@@ -294,40 +288,76 @@ class CodexAdapter(HarnessAdapter):
             return
 
 
-def _rewrite_search_output(output: list[dict[str, str]]) -> dict:
-    """Convert rg --files output into the MCP search_codebase result shape."""
+def _bind_first_file(tool: ToolUse, results: list[dict[str, str]]) -> None:
+    """Point *tool* at the first file its search returned.
 
-    texts = []
-    for block in output:
-        if isinstance(block, dict):
-            text = block.get("text")
-            if isinstance(text, str):
-                texts.append(text)
+    ``event_files`` reads ``FILE_INPUT_KEYS`` off a tool's input, and a search
+    call names a query rather than a file, so without this a search that found
+    something binds a decision record to nothing. Only fills a key that is not
+    already there: an explicit argument outranks an inferred one.
+    """
+    if not isinstance(tool.input, dict) or tool.input.get("path"):
+        return
+    for result in results:
+        file_path = result.get("file") if isinstance(result, dict) else None
+        if isinstance(file_path, str) and file_path:
+            tool.input["path"] = file_path
+            return
 
-    full_text = "\n".join(texts)
 
-    results = []
+def _mcp_search_results(output: str) -> list[dict[str, str]]:
+    """The ``results`` list out of an MCP tool's output, or empty.
 
-    for line in full_text.splitlines():
-        line = line.strip()
-        if not line:
+    The MCP transport wraps its JSON in timing prose (``Wall time: ...``,
+    ``Output:``, then the object), so parse from the first brace rather than
+    from the first character.
+    """
+    start = output.find("{")
+    if start == -1:
+        return []
+    try:
+        parsed = json.loads(output[start:])
+    except ValueError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    result = parsed.get("result")
+    results = result.get("results") if isinstance(result, dict) else None
+    return [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
+
+
+def _rewrite_search_output(output: Any) -> dict | None:
+    """``rg`` output as the MCP ``search_codebase`` result shape, or None.
+
+    None rather than an empty envelope when the output is not the block list
+    this understands: overwriting a real tool result with ``{"results": []}``
+    loses the output, and ``normalize`` may not raise on content it cannot
+    read, which a bare iteration over a non-list would.
+
+    Only the leading path of an ``rg`` line becomes a file. ``rg`` prints
+    ``path:line:text`` for a content match, and taking the whole line would
+    hand the decision miner a "file" that does not exist.
+    """
+    if not isinstance(output, list):
+        return None
+
+    texts = [
+        block["text"]
+        for block in output
+        if isinstance(block, dict) and isinstance(block.get("text"), str)
+    ]
+
+    results: list[dict[str, str]] = []
+    for raw_line in "\n".join(texts).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(_EXEC_NOISE):
             continue
+        match = _RG_MATCH_RE.match(line)
+        candidate = match.group("path") if match else line
+        if "/" in candidate or "\\" in candidate:
+            results.append({"file": candidate.replace("\\", "/")})
 
-        if (
-            line.startswith("Script ")
-            or line.startswith("Exit code:")
-            or line.startswith("Wall time")
-            or line == "Output:"
-        ):
-            continue
-
-        results.append({"file": line.replace("\\", "/")})
-
-    return {
-        "result": {
-            "results": results,
-        }
-    }
+    return {"result": {"results": results}}
 
 
 def _normalize_tool_name(name: str, tool_input: dict[str, Any]) -> str:
