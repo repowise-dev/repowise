@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
+from pathlib import Path
 
 import click
 import pytest
@@ -204,3 +206,79 @@ class TestSingleRepoTrigger:
         calls = self._fire(monkeypatch, tmp_path, index_only=True)
 
         assert calls[0]["index_only"] is True
+
+
+class TestReleaseOwnUpdateLock:
+    """``run_update`` only gives the single-flight lock back at process exit.
+
+    Fine for a one-shot CLI run; for a watcher it means the second save finds
+    a live lock owned by its own PID and defers, and every save after the
+    first is a no-op for the rest of the session.
+    """
+
+    def test_a_lock_this_process_owns_is_released(self, tmp_path) -> None:
+        from repowise.core.update_lock import try_acquire_update_lock, update_lock_path
+
+        assert try_acquire_update_lock(tmp_path, "abc123") is None
+        assert update_lock_path(tmp_path).exists()
+
+        watch_cmd._release_own_update_lock(tmp_path)
+
+        assert not update_lock_path(tmp_path).exists()
+
+    def test_another_process_lock_is_left_alone(self, tmp_path) -> None:
+        import json
+
+        from repowise.core.update_lock import update_lock_path
+
+        lock = update_lock_path(tmp_path)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        # A live PID that is not ours: PID 1-style payloads are probed for
+        # liveness, so use this process's parent-agnostic marker instead —
+        # any pid we do not own must survive.
+        lock.write_text(
+            json.dumps({"pid": os.getpid() + 1, "target_commit": "x", "started_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        watch_cmd._release_own_update_lock(tmp_path)
+
+        assert lock.exists()
+
+    def test_no_lock_is_not_an_error(self, tmp_path) -> None:
+        watch_cmd._release_own_update_lock(tmp_path)
+
+
+class TestEventPaths:
+    """Which paths a filesystem event contributes."""
+
+    class _Event:
+        def __init__(self, src_path: str, dest_path: str | None = None) -> None:
+            self.src_path = src_path
+            self.dest_path = dest_path
+
+    def test_a_plain_write(self, tmp_path) -> None:
+        event = self._Event(str(tmp_path / "src" / "app.py"))
+
+        assert watch_cmd._event_paths(event, tmp_path) == {str(Path("src") / "app.py")}
+
+    def test_an_atomic_save_is_seen_through_its_destination(self, tmp_path) -> None:
+        # JetBrains IDEs, Vim and many Windows editors save by writing a temp
+        # file and renaming it over the target. Reading src_path alone drops
+        # the save entirely.
+        event = self._Event(
+            str(tmp_path / "app.py~RF1a2b.TMP"),
+            dest_path=str(tmp_path / "app.py"),
+        )
+
+        assert watch_cmd._event_paths(event, tmp_path) == {"app.py"}
+
+    def test_paths_outside_the_root_are_dropped_not_raised(self, tmp_path) -> None:
+        event = self._Event(str(tmp_path.parent / "elsewhere" / "app.py"))
+
+        assert watch_cmd._event_paths(event, tmp_path) == set()
+
+    def test_ignored_paths_contribute_nothing(self, tmp_path) -> None:
+        event = self._Event(str(tmp_path / ".repowise" / "state.json"))
+
+        assert watch_cmd._event_paths(event, tmp_path) == set()

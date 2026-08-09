@@ -90,6 +90,12 @@ class RepoUpdateResult:
     # KG; None means the persisted block is still current. State-file writes
     # stay with the caller (_update_one), so the block rides on the result.
     kg_state: dict[str, Any] | None = None
+    # Repo-relative paths this run indexed from the working tree rather than
+    # from a commit. Persisted as state.json "working_tree_paths" so the next
+    # run can tell which of them have since been reverted or deleted — working
+    # tree state has no ``last_sync_commit`` to diff against. None on the
+    # commit-anchored path, which leaves the stored list alone.
+    working_tree_paths: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -360,15 +366,30 @@ async def _incremental_repo_update(
     head = get_head_commit(repo_path) or "HEAD"
 
     detector = ChangeDetector(repo_path)
+    working_tree_diffs: list = []
+    working_tree_paths: list[str] | None = None
+    if include_working_tree:
+        working_tree_diffs = detector.get_working_tree_changes()
+        dirty = {fd.path for fd in working_tree_diffs}
+        # Re-diff anything the last run indexed from the working tree that no
+        # longer diverges from HEAD, so a reverted edit or a deleted untracked
+        # file stops being served. See ``stale_working_tree_diffs``.
+        working_tree_diffs += detector.stale_working_tree_diffs(
+            state.get("working_tree_paths") or [], dirty
+        )
+        working_tree_paths = sorted(dirty)
+
     file_diffs = merge_file_diffs(
         detector.get_changed_files(base_ref, head),
-        detector.get_working_tree_changes() if include_working_tree else [],
+        working_tree_diffs,
     )
     if not file_diffs:
         # New commits but nothing the index cares about changed (merge/empty
         # commits, or every change excluded). Report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
-        return RepoUpdateResult(alias=alias, updated=True)
+        return RepoUpdateResult(
+            alias=alias, updated=True, working_tree_paths=working_tree_paths
+        )
 
     # Per-repo config, like the single-repo update path. The workspace-level
     # ``exclude_patterns`` (when provided) apply on top.
@@ -465,6 +486,7 @@ async def _incremental_repo_update(
         file_count=file_count,
         symbol_count=sum(len(pf.symbols) for pf in parsed_files),
         kg_state=kg_state,
+        working_tree_paths=working_tree_paths,
     )
 
 
@@ -768,6 +790,8 @@ async def update_workspace(
                 state["last_sync_commit"] = new_head
                 if result.kg_state:
                     state["knowledge_graph"] = result.kg_state
+                if result.working_tree_paths is not None:
+                    state["working_tree_paths"] = result.working_tree_paths
                 # Stamp the config fingerprint so the drift check in
                 # update_single_repo_index stays calibrated (and legacy repos
                 # without one stop re-triggering the full re-index).

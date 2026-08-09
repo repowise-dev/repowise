@@ -405,6 +405,95 @@ class TestUpdateWorkingTree:
         assert outcome is UpdateOutcome.REGENERATED
         assert "uncommitted_addition" in self._symbol_names(git_work_repo)
 
+    def _wt_update(self, repo, *, release_lock=True):
+        """One watcher-style update. Mirrors ``_watch_single_repo``'s trigger,
+        lock release included — in-process repeat runs need it."""
+        from repowise.cli.commands.update_cmd.command import run_update
+        from repowise.cli.commands.watch_cmd import _release_own_update_lock
+
+        try:
+            return run_update(
+                path=str(repo),
+                provider_name=None,
+                model=None,
+                since=None,
+                reasoning=None,
+                cascade_budget=None,
+                dry_run=False,
+                workspace=False,
+                no_workspace=True,
+                repo_alias=None,
+                index_only=True,
+                include_working_tree=True,
+            )
+        finally:
+            if release_lock:
+                _release_own_update_lock(repo)
+
+    def _page_status(self, repo, path):
+        import sqlite3
+
+        con = sqlite3.connect(repo / ".repowise" / "wiki.db")
+        try:
+            row = con.execute(
+                "select freshness_status from wiki_pages where id = ?", (f"file_page:{path}",)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
+
+    def test_deleted_uncommitted_work_is_tombstoned(self, runner, git_work_repo):
+        """Working-tree state has no ``last_sync_commit`` to diff against: a
+        path stops being reported the moment it stops diverging from HEAD, so
+        without explicit tracking nothing would ever mention a deleted
+        untracked file again and its page would be served forever."""
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._dirty(git_work_repo)
+        self._wt_update(git_work_repo)
+        assert "uncommitted_addition" in self._symbol_names(git_work_repo)
+        assert self._page_status(git_work_repo, "new_module.py") != "tombstone"
+
+        (git_work_repo / "new_module.py").unlink()
+        self._wt_update(git_work_repo)
+
+        assert self._page_status(git_work_repo, "new_module.py") == "tombstone"
+
+    def test_the_lock_is_not_left_held_between_runs(self, runner, git_work_repo):
+        """The watcher is one long-lived process. ``run_update`` only drops
+        the single-flight lock at process exit, so without the watcher's own
+        release every save after the first would defer."""
+        from repowise.cli.commands.update_cmd.command import UpdateOutcome
+
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._dirty(git_work_repo)
+        assert self._wt_update(git_work_repo) is UpdateOutcome.REGENERATED
+
+        (git_work_repo / "second_module.py").write_text(
+            "def second_addition():\n    return 2\n", encoding="utf-8"
+        )
+        # Without the release this is DEFERRED — the lock is held by this very
+        # process — and nothing after the first save is ever indexed.
+        assert self._wt_update(git_work_repo) is UpdateOutcome.REGENERATED
+        assert "second_addition" in self._symbol_names(git_work_repo)
+
+    def test_without_the_release_a_repeat_run_defers(self, runner, git_work_repo):
+        """Pins the failure mode the release exists for."""
+        from repowise.cli.commands.update_cmd.command import UpdateOutcome
+
+        runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
+        self._dirty(git_work_repo)
+        self._wt_update(git_work_repo, release_lock=False)
+
+        assert self._wt_update(git_work_repo) is UpdateOutcome.DEFERRED
+
     def test_commit_anchored_update_is_unchanged(self, runner, git_work_repo):
         """The default stays commit-to-commit: hooks and webhooks must not
         start indexing whatever half-finished edit happens to be on disk."""

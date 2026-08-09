@@ -390,7 +390,7 @@ trigger an update.
 | `--debounce` | Delay in ms after last change (default: 2000) |
 | `--workspace` / `-w` | Watch all workspace repos |
 | `--no-workspace` | Force single-repo mode |
-| `--index-only` | Skip LLM page regeneration on every trigger |
+| `--index-only` | Skip LLM page regeneration on every trigger (workspace mode is index-only either way) |
 | `--verbose` / `-v` | Show debug logs from the pipeline and triggered updates |
 
 ```bash

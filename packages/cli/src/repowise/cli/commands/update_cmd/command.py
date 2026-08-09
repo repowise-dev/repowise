@@ -763,11 +763,24 @@ def run_update(
     from repowise.core.ingestion import ChangeDetector
 
     detector = ChangeDetector(repo_path)
-    working_tree_diffs = detector.get_working_tree_changes() if include_working_tree else []
-    if working_tree_diffs:
-        console.print(
-            f"[dim]Uncommitted changes: [bold]{len(working_tree_diffs)}[/bold] file(s)[/dim]"
+    working_tree_diffs: list = []
+    if include_working_tree:
+        working_tree_diffs = detector.get_working_tree_changes()
+        dirty_paths = {fd.path for fd in working_tree_diffs}
+        # Work the last working-tree run indexed that is no longer diverging
+        # from HEAD: a reverted edit, or a deleted file that was only ever
+        # untracked. Nothing else would ever mention those paths again, so
+        # without this the index keeps serving content that is gone.
+        working_tree_diffs += detector.stale_working_tree_diffs(
+            state.get("working_tree_paths") or [], dirty_paths
         )
+        # Carried on ``state`` from here so every save_state below persists it,
+        # including the early-return paths.
+        state["working_tree_paths"] = sorted(dirty_paths)
+        if working_tree_diffs:
+            console.print(
+                f"[dim]Uncommitted changes: [bold]{len(working_tree_diffs)}[/bold] file(s)[/dim]"
+            )
 
     if (
         head

@@ -113,6 +113,18 @@ class TestGetWorkingTreeChanges:
 
         assert ChangeDetector(tmp_path).get_working_tree_changes() == []
 
+    def test_tracked_changes_the_index_would_skip_are_dropped(self, repo: Path) -> None:
+        # A tracked lockfile churning must not mark the repo dirty: it would
+        # drive a full graph rebuild with nothing to index at the end of it.
+        (repo / "uv.lock").write_text("v = 1\n", encoding="utf-8")
+        r = gitpython.Repo(repo)
+        r.index.add(["uv.lock"])
+        r.index.commit("add lock")
+        r.close()
+        (repo / "uv.lock").write_text("v = 2\n", encoding="utf-8")
+
+        assert ChangeDetector(repo).get_working_tree_changes() == []
+
 
 class TestHasWorkingTreeChanges:
     def test_false_on_a_clean_tree(self, repo: Path) -> None:
@@ -133,6 +145,19 @@ class TestHasWorkingTreeChanges:
         (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
 
         assert has_working_tree_changes(repo) is False
+
+    def test_agrees_with_the_detector_on_ignorable_tracked_churn(self, repo: Path) -> None:
+        # The two must not disagree: a "clean" verdict here followed by a
+        # non-empty diff there is how a staleness gate skips real work.
+        (repo / "uv.lock").write_text("v = 1\n", encoding="utf-8")
+        r = gitpython.Repo(repo)
+        r.index.add(["uv.lock"])
+        r.index.commit("add lock")
+        r.close()
+        (repo / "uv.lock").write_text("v = 2\n", encoding="utf-8")
+
+        assert has_working_tree_changes(repo) is False
+        assert ChangeDetector(repo).get_working_tree_changes() == []
 
     def test_false_on_a_non_git_directory(self, tmp_path: Path) -> None:
         assert has_working_tree_changes(tmp_path) is False
@@ -164,6 +189,41 @@ class TestMergeFileDiffs:
         merged = merge_file_diffs([_diff("a.py", "modified")], [_diff("b.py", "added")])
 
         assert {d.path for d in merged} == {"a.py", "b.py"}
+
+    def test_a_deletion_loses_to_a_later_source_that_has_the_file(self) -> None:
+        # Committed `git rm foo.py`, then recreated in the working tree.
+        # Keeping the deletion would tombstone a file that exists on disk.
+        merged = merge_file_diffs([_diff("foo.py", "deleted")], [_diff("foo.py", "added")])
+
+        assert [d.status for d in merged] == ["added"]
+
+    def test_a_deletion_still_wins_over_a_later_deletion(self) -> None:
+        commit_side = _diff("foo.py", "deleted")
+        merged = merge_file_diffs([commit_side], [_diff("foo.py", "deleted")])
+
+        assert merged == [commit_side]
+
+
+class TestStaleWorkingTreeDiffs:
+    """Undoing working-tree work the index has already taken in."""
+
+    def test_a_deleted_untracked_file_comes_back_as_a_deletion(self, repo: Path) -> None:
+        # Indexed while it existed; now gone, and nothing else would ever
+        # mention it again.
+        diffs = ChangeDetector(repo).stale_working_tree_diffs(["gone.py"], set())
+
+        assert [(d.path, d.status) for d in diffs] == [("gone.py", "deleted")]
+
+    def test_a_reverted_edit_is_re_read_from_disk(self, repo: Path) -> None:
+        # main.py was indexed with an uncommitted edit that has since been
+        # reverted: the index holds symbols the file no longer has.
+        diffs = ChangeDetector(repo).stale_working_tree_diffs(["main.py"], set())
+
+        assert [(d.path, d.status) for d in diffs] == [("main.py", "modified")]
+        assert [s.name for s in diffs[0].new_parsed.symbols] == ["alpha"]
+
+    def test_paths_still_dirty_are_left_alone(self, repo: Path) -> None:
+        assert ChangeDetector(repo).stale_working_tree_diffs(["main.py"], {"main.py"}) == []
 
 
 class TestIsCandidateSourcePath:

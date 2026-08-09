@@ -873,6 +873,12 @@ def is_candidate_source_path(rel_path: str) -> bool:
     consulting our blocklists) and the file watcher (which must not wake an
     update for ``.git/index.lock`` or a ``node_modules`` write). Both were
     reading the blocklists' intent by hand and drifting from it.
+
+    One known false negative: an extensionless script that :class:`FileTraverser`
+    accepts by shebang is rejected here, because deciding that means reading the
+    file and this must stay a pure path test. Such a file is indexed on a full
+    run and by any commit that touches it; only the two path-only sources above
+    miss it.
     """
     parts = Path(rel_path.replace("\\", "/")).parts
     if not parts:

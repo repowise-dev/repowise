@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -32,6 +33,53 @@ _SELF_WRITTEN_FILES: frozenset[str] = frozenset({"CLAUDE.md", "AGENTS.md", ".mcp
 #: ``.repowise``, ``.git`` and ``.vscode`` need no entry — they are already
 #: blocked by the traversal blocklist :func:`is_candidate_source_path` reads.
 _SELF_WRITTEN_DIRS: frozenset[str] = frozenset({".claude", ".codex", ".cursor", ".gemini"})
+
+
+def _event_paths(event: object, repo_path: Path) -> set[str]:
+    """The watchable repo-relative paths a filesystem event touched.
+
+    Both ends of a move are considered. Editors that save atomically (the
+    JetBrains IDEs, Vim with ``backupcopy=no``, plenty of Windows tools) write
+    a temp file and rename it over the target, which arrives as one move event
+    whose ``src_path`` is the temp name — looking only there means the save
+    that matters is filtered out as junk and never wakes an update.
+
+    Paths outside the watched root are dropped rather than raising: an
+    unguarded ``relative_to`` here used to take watchdog's dispatcher thread
+    down with it, leaving ``watch`` apparently running but permanently deaf.
+    """
+    found: set[str] = set()
+    for attr in ("src_path", "dest_path"):
+        raw = getattr(event, attr, None)
+        if not raw:
+            continue
+        try:
+            rel = str(Path(raw).relative_to(repo_path))
+        except ValueError:
+            continue
+        if is_watchable_path(rel):
+            found.add(rel)
+    return found
+
+
+def _release_own_update_lock(repo_path: Path) -> None:
+    """Drop the repo's single-flight update lock if this process owns it.
+
+    ``run_update`` takes that lock and only gives it back through ``atexit``,
+    which is correct for the one-shot CLI runs every other caller makes and
+    wrong for a watcher: the process outlives the update, so the *next* save
+    finds a lock whose PID is alive (its own), reports "another update is
+    already running", and defers. Every save after the first would be a no-op
+    for the rest of the session.
+
+    Ownership is checked rather than assumed, so a lock a genuinely concurrent
+    ``repowise update`` holds is never deleted out from under it.
+    """
+    from repowise.core.update_lock import read_update_lock, release_update_lock
+
+    payload = read_update_lock(repo_path)
+    if payload is not None and payload.get("pid") == os.getpid():
+        release_update_lock(repo_path)
 
 
 def is_watchable_path(rel_path: str) -> bool:
@@ -114,26 +162,20 @@ def _watch_single_repo(
                 )
             except Exception as e:
                 console.print(f"[red]Update failed: {e}[/red]")
+            finally:
+                _release_own_update_lock(repo_path)
 
     class RepowiseHandler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal timer
             if event.is_directory:
                 return
-            try:
-                rel = str(Path(event.src_path).relative_to(repo_path))
-            except ValueError:
-                # An event outside the watched root (a symlinked directory,
-                # a short-path form of the same drive). Unrelatable, so not
-                # ours to act on — and an uncaught ValueError here used to
-                # take the dispatcher thread down with it, leaving `watch`
-                # apparently running but permanently deaf.
-                return
-            if not is_watchable_path(rel):
+            watched = _event_paths(event, repo_path)
+            if not watched:
                 return
 
             with lock:
-                changed_paths.add(rel)
+                changed_paths.update(watched)
                 if timer is not None:
                     timer.cancel()
                 timer = threading.Timer(debounce_ms / 1000.0, _on_trigger)
@@ -243,16 +285,13 @@ def _watch_workspace(
         def on_any_event(self, event):
             if event.is_directory:
                 return
-            try:
-                rel = str(Path(event.src_path).relative_to(self._repo_path))
-            except ValueError:
-                return
-            if not is_watchable_path(rel):
+            watched = _event_paths(event, self._repo_path)
+            if not watched:
                 return
 
             alias = self._alias
             with repo_locks[alias]:
-                repo_changed[alias].add(rel)
+                repo_changed[alias].update(watched)
                 old_timer = repo_timers[alias]
                 if old_timer is not None:
                     old_timer.cancel()
@@ -325,7 +364,8 @@ def _watch_workspace(
     help=(
         "Skip LLM page regeneration on every trigger. A watched repo fires an "
         "update per save, so on a repo indexed with docs that is a model call "
-        "per save; this keeps the index, graph and health current for free."
+        "per save; this keeps the index, graph and health current for free. "
+        "Workspace mode is index-only either way."
     ),
 )
 @click.option(
