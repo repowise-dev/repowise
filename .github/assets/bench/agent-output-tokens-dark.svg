@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="324" viewBox="0 0 720 324" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-label="Work saved in a real agent loop">
+<rect width="720" height="324" fill="none"/>
+<text x="0" y="20" font-size="15" font-weight="650" fill="#E2E8F0">Work saved in a real agent loop</text>
+<text x="0" y="40" font-size="12" fill="#94A3B8">Output tokens the agent itself writes to reach an answer. Lower is better.</text>
+<text x="186" y="78" text-anchor="end" font-size="12.5" font-weight="650" fill="#E2E8F0">repowise</text>
+<rect x="196" y="62" width="396" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="62" width="270.8" height="24" rx="3" fill="#F59520"/>
+<text x="654" y="78" text-anchor="end" font-size="12.5" font-weight="650" fill="#E2E8F0">1,250</text>
+<text x="716" y="78" text-anchor="end" font-size="12.5" font-weight="650" fill="#E2E8F0">-31.6%</text>
+<text x="186" y="116" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">CodeGraph</text>
+<rect x="196" y="100" width="396" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="100" width="299.6" height="24" rx="3" fill="#334155"/>
+<text x="654" y="116" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">1,383</text>
+<text x="716" y="116" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">-24.4%</text>
+<text x="186" y="154" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">Serena</text>
+<rect x="196" y="138" width="396" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="138" width="335.8" height="24" rx="3" fill="#334155"/>
+<text x="654" y="154" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">1,550</text>
+<text x="716" y="154" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">-14.8%</text>
+<text x="186" y="192" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">Graphify</text>
+<rect x="196" y="176" width="396" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="176" width="359.2" height="24" rx="3" fill="#334155"/>
+<text x="654" y="192" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">1,658</text>
+<text x="716" y="192" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">-8.9%</text>
+<text x="186" y="230" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">code-review-graph</text>
+<rect x="196" y="214" width="396" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="214" width="370.4" height="24" rx="3" fill="#334155"/>
+<text x="654" y="230" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">1,710</text>
+<text x="716" y="230" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">-6.0%</text>
+<text x="186" y="268" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">bare agent (control)</text>
+<rect x="196" y="252" width="396" height="24" rx="3" fill="#18202E"/>
+<rect x="196" y="252" width="396.0" height="24" rx="3" fill="none" stroke="#64748B" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="654" y="268" text-anchor="end" font-size="12.5" font-weight="400" fill="#E2E8F0">1,828</text>
+<text x="716" y="268" text-anchor="end" font-size="12.5" font-weight="400" fill="#94A3B8">baseline</text>
+<text x="0" y="316" font-size="11" fill="#94A3B8">48 questions on django/django under Codex (gpt-5.6-sol), n=43 completed by all six arms. repowise p &lt; 0.0001.</text>
+</svg>

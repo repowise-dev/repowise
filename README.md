@@ -43,14 +43,24 @@
 
 ### Your AI agent burns most of its budget rediscovering your codebase. Index it once, and it never has to again.
 
-### One index. A dependency graph, a generated wiki, mined git history, architectural decisions, and a defect-validated health score.
+<table align="center">
+<tr>
+<td align="center" width="250"><h2>#1 of 6</h2></td>
+<td align="center" width="250"><h2>−31.6%</h2></td>
+<td align="center" width="250"><h2>97%</h2></td>
+</tr>
+<tr>
+<td align="center" valign="top"><sub><strong>at finding the right files.</strong><br />0.876 file coverage against the<br />next tool's 0.610, on a <strong>sealed</strong><br />42-instance split. <em>p=0.00004</em></sub></td>
+<td align="center" valign="top"><sub><strong>of your agent's own output tokens,</strong><br />reached in 3.8 tool calls where a<br />bare agent needed 7.2. <em>n=43,<br />p&lt;0.0001, leaner on 37 of 44</em></sub></td>
+<td align="center" valign="top"><sub><strong>fewer tokens to load a commit.</strong><br />393 instead of 13,984 raw, counted<br />with deterministic tiktoken across<br />30 commits. <em>35.6x, pooled</em></sub></td>
+</tr>
+</table>
 
-<sub><strong>−31.6%</strong> of an agent's own output tokens across 43 questions (p&lt;0.0001), reached in
-3.8 tool calls where a bare agent needed 7.2 · loading one commit's context costs 393 tokens
-instead of 13,984 raw · defect-risk <strong>ROC AUC 0.737</strong> across 21 repos and 9 languages, scored
-leakage-free, and 0.76–0.78 on a public dataset that played no part in calibration · every
-layer computed with <strong>zero LLM calls</strong>. We publish the rows we lose.
-<a href="docs/BENCHMARKS.md"><strong>See how the others did →</strong></a><br />
+<sub>Measured head to head against the open-source agent-context field, on instances held out
+from every improvement round. Defect risk validated separately at <strong>ROC AUC 0.737</strong>
+across 21 repos and 9 languages, leakage-free. Every layer computed with <strong>zero LLM
+calls</strong>. <strong>We publish the rows we lose</strong>, and we are the slowest indexer here.
+<a href="docs/BENCHMARKS.md"><strong>All of it, including the losses →</strong></a><br />
 Free and self-hosted, runs on your machine, and the first index needs no API key.</sub>
 
 <picture>
@@ -527,9 +537,20 @@ opt-in tools, and the full reference: **[docs/agent/MCP_TOOLS.md →](docs/agent
 
 ## Measured against the field
 
-Three numbers, each with its sample size and its test. The tools here are the
-open-source agent-context tools we ran head to head, and the full page carries
-the rows we lose beside the rows we win.
+Six open-source agent-context tools, the same repositories, the same pinned
+commits, the same questions, each one given its own full advertised tool surface.
+The full page carries the rows we lose beside the rows we win.
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/file-coverage-dark.svg" />
+  <img src=".github/assets/bench/file-coverage.svg" alt="File coverage on 42 sealed ContextBench instances: repowise get_answer 0.876, repowise search_codebase 0.742, CodeGraph 0.610, Graphify 0.546, code-review-graph 0.445, cocoindex 0.361" width="100%" />
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/agent-output-tokens-dark.svg" />
+  <img src=".github/assets/bench/agent-output-tokens.svg" alt="Output tokens an agent writes to reach an answer across 43 django questions on Codex: repowise 1,250, CodeGraph 1,383, Serena 1,550, Graphify 1,658, code-review-graph 1,710, bare agent 1,828" width="100%" />
+</picture>
+</div>
 
 - **Finds the right files.** 0.876 file coverage against CodeGraph's 0.610 on a
   **sealed** 42-instance split, held out from every improvement round. 19 wins,
