@@ -926,6 +926,7 @@ async def persist_incremental_index(
     git_decay_map: dict | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
+    failed_steps: list[str] | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + symbols + git + dead-code + health).
 
@@ -936,6 +937,22 @@ async def persist_incremental_index(
     ``degraded`` (when supplied) collects a one-line entry for every
     best-effort step that failed, so the caller can render an honest
     completion report instead of silently claiming success.
+
+    ``failed_steps`` (when supplied) collects the names of the failed steps
+    whose input was *this commit range* rather than the whole repo. Those are
+    the only failures a later run cannot heal on its own: their data is scoped
+    to a range the sync pointer is about to move past, so the caller records
+    them as a repair marker and re-covers the range next update.
+
+    The test for membership is "would widening the next run's diff base repair
+    this, and would nothing else". Steps that re-derive the whole repo every
+    run are deliberately absent (graph nodes, the sweeps, the page tree,
+    related pages, the knowledge graph, the deleted-file prune): they heal
+    themselves on the next update, and marking them would let a permanently
+    broken one pin the repair window open. So is the commit capture, which
+    looks range-scoped and is not: it bounds its walk by the newest
+    ``committed_at`` already in the table, so a run it skipped is re-walked by
+    the next one whatever the diff base says.
     """
     from repowise.core.persistence import (
         create_engine,
@@ -948,10 +965,12 @@ async def persist_incremental_index(
 
     log = log or _noop_log
 
-    def _skip(step: str, exc: Exception) -> None:
+    def _skip(step: str, exc: Exception, *, range_scoped: bool = False) -> None:
         log(f"[yellow]{step} skipped: {exc}[/yellow]")
         if degraded is not None:
             degraded.append(f"{step}: {exc}")
+        if range_scoped and failed_steps is not None:
+            failed_steps.append(step)
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
@@ -968,13 +987,6 @@ async def persist_incremental_index(
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             repo_id = repo.id
 
-            if current_graph_file_paths:
-                try:
-                    from repowise.core.pipeline.persist import _prune_stale_file_rows
-
-                    await _prune_stale_file_rows(session, repo_id, current_graph_file_paths, set())
-                except Exception as exc:
-                    _skip("Stale row prune", exc)
 
             # Delete rows of pages retired since this index was built. This
             # path never regenerates a repo-wide page, so nothing else here
@@ -1012,7 +1024,7 @@ async def persist_incremental_index(
                         session, repo_id, tombstone_candidates(file_diffs)
                     )
                 except Exception as exc:
-                    _skip("Tombstone marking", exc)
+                    _skip("Tombstone marking", exc, range_scoped=True)
 
             # Placement depends on the whole page set, which on an incremental
             # run lives in the store rather than in the pages just generated.
@@ -1040,7 +1052,7 @@ async def persist_incremental_index(
                     )
                     await recompute_git_percentiles(session, repo_id)
                 except Exception as exc:
-                    _skip("Git persist", exc)
+                    _skip("Git persist", exc, range_scoped=True)
 
                 try:
                     await persist_incremental_commits(session, repo_id, repo_path)
@@ -1057,13 +1069,13 @@ async def persist_incremental_index(
                         session, repo_id, dead_code_report.findings, file_paths=changed_paths
                     )
                 except Exception as exc:
-                    _skip("Dead-code persist", exc)
+                    _skip("Dead-code persist", exc, range_scoped=True)
 
             if partial_health_report is not None:
                 try:
                     await persist_partial_health(session, repo_id, partial_health_report)
                 except Exception as exc:
-                    _skip("Health persist", exc)
+                    _skip("Health persist", exc, range_scoped=True)
 
             # Re-persist graph_nodes so symbol-level PageRank /
             # betweenness / community ids stay in sync with the
@@ -1088,7 +1100,7 @@ async def persist_incremental_index(
 
                 await persist_incremental_symbols(session, repo_id, parsed_files, changed_paths)
             except Exception as exc:
-                _skip("Symbol persist", exc)
+                _skip("Symbol persist", exc, range_scoped=True)
 
             # Refresh graph_edges for the changed files. The full-init path was
             # historically the only writer of edges, so adjacency froze at the
@@ -1102,7 +1114,7 @@ async def persist_incremental_index(
                     session, repo_id, graph_builder, parsed_files, changed_paths
                 )
             except Exception as exc:
-                _skip("Graph edges persist", exc)
+                _skip("Graph edges persist", exc, range_scoped=True)
 
             # Refresh related-pages metadata across the whole wiki. LLM-free,
             # so even index-only updates heal pages generated before the
@@ -1138,7 +1150,7 @@ async def persist_incremental_index(
                 try:
                     await refresh_external_systems(session, repo_id, repo_path, file_diffs, log=log)
                 except Exception as exc:
-                    _skip("External systems refresh", exc)
+                    _skip("External systems refresh", exc, range_scoped=True)
 
             # One-shot drain of proposals from the removed code_comment
             # harvest (#751). Runs on the index-only path too, because the
@@ -1152,6 +1164,61 @@ async def persist_incremental_index(
                 await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
             except Exception as exc:
                 _skip("Decision purge", exc)
+
+            # Drop file-scoped rows for files that have actually been deleted.
+            # Without this an incremental update tombstones the deleted file's
+            # page and leaves everything else: graph nodes, edges, metrics,
+            # symbols, health rows and git metadata all keep serving a file
+            # that is gone. The liveness question is asked of the filesystem
+            # and git, never of this run's parse, so a transient read failure
+            # cannot masquerade as a deletion (see prune_deleted_file_rows).
+            #
+            # Last in the session on purpose. Everything above upserts rather
+            # than deleting, and the git step in particular indexes the changed
+            # *paths*, which includes the deleted ones: pruning first left a
+            # fresh git_metadata row for every file this run watched disappear.
+            # Running last means the prune has the final say on what the store
+            # claims exists.
+            try:
+                from repowise.core.pipeline.persist import prune_deleted_file_rows
+
+                live_hint = set(
+                    current_graph_file_paths
+                    if current_graph_file_paths is not None
+                    else {pf.file_info.path for pf in parsed_files or []}
+                )
+                # Plus every file node the rebuilt graph still holds, which is
+                # the only reliable way to know a node names no file at all.
+                # Framework and resolver passes mint file-shaped nodes for
+                # things that were never on disk: `external:` imports,
+                # `framework:` anchors, and Spring's `META-INF/services/<iface>`
+                # SPI source, which carries no prefix to recognise it by. All
+                # of them fail every liveness test there is, so a prune that
+                # asked only about disk and git would delete them and take
+                # their edges with them, and only *changed* files' edges are
+                # rebuilt afterwards. A node this run's graph build still
+                # contains is live by construction, whatever it names.
+                #
+                # Deliberately not guarded: a graph this run cannot read is a
+                # run that has no business deciding what was deleted, and the
+                # outer handler skips the prune entirely.
+                graph = graph_builder.graph()
+                live_hint |= {
+                    node
+                    for node, data in graph.nodes(data=True)
+                    if data.get("node_type", "file") == "file"
+                }
+                pruned, refusals = await prune_deleted_file_rows(
+                    session, repo_id, repo_path, live_hint=live_hint
+                )
+                if pruned:
+                    log(f"Pruned rows for [cyan]{pruned}[/cyan] deleted file(s)")
+                for refusal in refusals:
+                    log(f"[yellow]{refusal}[/yellow]")
+                    if degraded is not None:
+                        degraded.append(refusal)
+            except Exception as exc:
+                _skip("Deleted-file prune", exc)
 
         # After the session closes: on SQLite the full-text index shares the
         # database file, so writing to it while the session holds a write lock
@@ -1175,7 +1242,13 @@ async def persist_incremental_index(
                 if swept_page_ids:
                     await fts.delete_many(swept_page_ids)
             except Exception as exc:
-                _skip("Tombstone full-text removal", exc)
+                # Range-scoped for the tombstone half: mark_tombstone_pages
+                # re-marks and re-returns pages that are already tombstones, so
+                # a widened re-run regenerates these ids and retries the delete.
+                # The swept half is not repairable this way, because the sweeps
+                # deleted those rows and a later run finds nothing to sweep.
+                # Tagging still recovers strictly more than not tagging.
+                _skip("Tombstone full-text removal", exc, range_scoped=True)
 
         # Ceiling: the swept pages' *vector* embeddings survive this path.
         # There is no store here to delete them from, and building one would

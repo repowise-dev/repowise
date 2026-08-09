@@ -730,6 +730,39 @@ def run_update(
             emitter.error(message)
         raise click.ClickException(message)
 
+    # Re-cover a range a previous update failed to fully persist. The pointer
+    # advanced past it anyway (so every other reader stays current), and the
+    # marker is what stops that from stranding the range's data forever. An
+    # explicit --since is the user naming their own base and wins outright.
+    #
+    # Index-only only, because that is the pointer the marker is written
+    # against. In docs mode ``base_ref`` is ``last_docs_commit``, which
+    # normally trails ``last_sync_commit``, so the marker would read as a
+    # *descendant* of the base and be given up on as "no longer part of this
+    # branch's history" — dropping a valid repair and saying something untrue
+    # about why. Left alone here, it is repaired by the next index-only run.
+    if since is None and resolved_index_only:
+        from .persistence import resolve_repair_base
+
+        repaired_ref, give_up = resolve_repair_base(repo_path, state, base_ref, head)
+        if give_up is not None:
+            console.print(
+                f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
+                "Run [bold]repowise init --force[/bold] to rebuild the index.[/yellow]"
+            )
+            # Dropped in memory only. Writing it here would persist state on a
+            # --dry-run, and would do it before the single-flight lock below,
+            # where a concurrent update is exactly what the lock exists to
+            # stop. Every save_state past the lock carries the cleared marker
+            # because they all build on this dict.
+            state.pop("pending_repair", None)
+        elif repaired_ref != base_ref:
+            console.print(
+                f"[dim]Re-covering commits an earlier update did not finish "
+                f"persisting (from {repaired_ref[:8]}).[/dim]"
+            )
+            base_ref = repaired_ref
+
     # A config.yaml / health-rules.json change warrants a full health re-score
     # even when git is unchanged. A missing prior fingerprint is backfilled, not
     # treated as a change. ``config_changed`` gates every "nothing to do" path.
@@ -1002,6 +1035,15 @@ def run_update(
             "config_fingerprint": curr_config_fp,
             "renderer_fingerprint": curr_renderer_fp,
         }
+        # base_ref has already been widened to any unrepaired range by this
+        # point, so no changed files means the range holds nothing left to
+        # re-cover. Clearing here is also what stops a marker whose range is
+        # permanently empty from being carried, and re-announced, forever.
+        # Gated exactly as the widening above is: with --since or in docs mode
+        # this base is a different range that says nothing about the marker's,
+        # and clearing on it would drop a repair that never happened.
+        if since is None and resolved_index_only:
+            persisted.pop("pending_repair", None)
         if not resolved_index_only and head:
             persisted["last_docs_commit"] = head
         save_state(repo_path, persisted)

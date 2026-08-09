@@ -237,6 +237,112 @@ def heal_commit_offsets(repo_path: Any) -> None:
         run_async(_run())
 
 
+# A repair window that has grown past this many commits stopped being a repair
+# and became a re-index: the diff it forces every update to walk is no longer
+# change-sized. Bounding it is what stops a step that fails on every run from
+# pinning the window open forever.
+_REPAIR_MAX_COMMITS = 500
+
+
+def record_repair_marker(new_state: dict, prior_state: dict, failed_steps: list[str]) -> None:
+    """Record, or clear, the commit range this update failed to fully persist.
+
+    ``last_sync_commit`` advances whether or not the persist steps succeeded, so
+    a failed step used to take its commit range with it: nothing ever revisited
+    those commits, and their git metadata, health rows, symbols or edges were
+    skipped permanently and announced exactly once in the completion panel. The
+    marker keeps the *old* pointer so the next update diffs from there and
+    re-covers the range, while the pointer itself stays current for every other
+    reader of the state file.
+
+    Carrying the oldest unrepaired commit forward rather than the newest is the
+    part that makes it hold: three failed runs in a row still have to re-cover
+    all three ranges, not just the last one.
+
+    Only range-scoped failures land here (see ``persist_incremental_index``),
+    so a repo-wide step that fails on every single run cannot keep the marker
+    alive: it heals itself on the next update instead.
+    """
+    if not failed_steps:
+        new_state.pop("pending_repair", None)
+        return
+    prior = prior_state.get("pending_repair")
+    if not isinstance(prior, dict):  # a hand-edited or truncated state file
+        prior = {}
+    from_commit = prior.get("from_commit") or prior_state.get("last_sync_commit")
+    if not from_commit:
+        # Nothing to diff back to (a first index, or a state file with no
+        # pointer). Widening from an unknown base is not something we can do
+        # safely, so leave no marker rather than a broken one.
+        new_state.pop("pending_repair", None)
+        return
+    # Union, not replace: the marker names one range, so it has to name
+    # everything still unrepaired in it. Run 1 failing the git persist and run 2
+    # failing only the health persist leaves both unrepaired over the same span.
+    prior_steps = prior.get("steps")
+    prior_steps = prior_steps if isinstance(prior_steps, list) else []
+    new_state["pending_repair"] = {
+        "from_commit": from_commit,
+        "steps": sorted({*prior_steps, *failed_steps}),
+    }
+
+
+def resolve_repair_base(
+    repo_path: Any, state: dict, base_ref: str, head: str | None
+) -> tuple[str, str | None]:
+    """Widen *base_ref* back to an unrepaired range, or report giving up on it.
+
+    Returns ``(base_ref, give_up_reason)``. The reason is non-None exactly when
+    the marker should be dropped without being honoured, and it is written for
+    the user rather than the log.
+
+    Three things have to hold before the marker is honoured, and each one closes
+    a way this could go wrong:
+
+    * the recorded commit still resolves and is an *ancestor* of the current
+      base, so honouring it can only ever move the diff backwards. Without the
+      ancestry check a rebase, a branch switch or a docs-mode base that is
+      already older would let the marker move the base *forward* and skip the
+      very commits it exists to re-cover;
+    * the range is still bounded (see ``_REPAIR_MAX_COMMITS``);
+    * it differs from the base we already have, so a marker that has effectively
+      caught up costs nothing.
+    """
+    import subprocess
+
+    marker = state.get("pending_repair")
+    from_commit = marker.get("from_commit") if isinstance(marker, dict) else None
+    if not from_commit or from_commit == base_ref:
+        return base_ref, None
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(repo_path), *args], capture_output=True, timeout=30, text=True
+        )
+
+    try:
+        if _git("merge-base", "--is-ancestor", from_commit, base_ref).returncode != 0:
+            # Non-zero covers both "not an ancestor" (rebased, force-pushed,
+            # branch switched) and "cannot resolve that object" (gc'd, or a
+            # shallow clone that never fetched it), and git does not
+            # distinguish them by exit code. Say both rather than assert one.
+            return base_ref, (
+                f"the recorded commit {from_commit[:8]} is not an ancestor of this "
+                "branch's history, or is not present in this clone"
+            )
+        counted = _git("rev-list", "--count", f"{from_commit}..{head or 'HEAD'}")
+        if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
+            return base_ref, (
+                f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
+                "a re-index rather than a repair"
+            )
+    except Exception:
+        # git being unavailable is not a reason to widen blindly.
+        return base_ref, None
+
+    return from_commit, None
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,
@@ -273,6 +379,10 @@ def _persist_index_only_update(
     from repowise.core.pipeline.incremental import persist_incremental_index
 
     degraded = degraded if degraded is not None else []
+    # Failures whose input was this commit range, kept apart from ``degraded``
+    # (which also collects repo-wide and non-DB failures) because only these
+    # strand data the advancing sync pointer would otherwise skip forever.
+    failed_steps: list[str] = []
     run_async(
         persist_incremental_index(
             repo_path,
@@ -287,6 +397,7 @@ def _persist_index_only_update(
             git_decay_map=git_decay_map,
             log=console.print,
             degraded=degraded,
+            failed_steps=failed_steps,
         )
     )
     from repowise.cli.helpers import config_fingerprint
@@ -325,6 +436,15 @@ def _persist_index_only_update(
         # here is exactly the cost the mode exists to avoid.
         "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
     }
+    # Before save_state, and reading ``state`` (the pre-update dict) for the old
+    # pointer: this is what keeps a degraded run recoverable now that the
+    # pointer below advances to head regardless.
+    record_repair_marker(new_state, state, failed_steps)
+    if failed_steps:
+        console.print(
+            "[yellow]Some data for this commit range was not persisted; "
+            "the next update will re-cover it.[/yellow]"
+        )
     if "last_docs_commit" not in state and "last_sync_commit" in state:
         new_state["last_docs_commit"] = state["last_sync_commit"]
     if knowledge_graph_result is not None:
