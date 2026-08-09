@@ -373,6 +373,14 @@ Pass `--refresh-ui` to skip (1) and (2) and force (3).
 
 Watch for file changes and auto-update wiki pages. Press `Ctrl+C` to stop.
 
+Unlike the post-commit hook, this indexes **uncommitted** work: staged,
+unstaged and untracked files all reach the index, so what you see in the wiki
+matches what is on disk rather than what you last committed.
+
+Writes inside `.repowise/`, `.git/`, `node_modules/`, build output and the
+files repowise manages itself (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`) never
+trigger an update.
+
 **Options:**
 
 | Flag | Description |
@@ -382,16 +390,20 @@ Watch for file changes and auto-update wiki pages. Press `Ctrl+C` to stop.
 | `--debounce` | Delay in ms after last change (default: 2000) |
 | `--workspace` / `-w` | Watch all workspace repos |
 | `--no-workspace` | Force single-repo mode |
-| `--repo` | Watch a single workspace repo by alias |
+| `--index-only` | Skip LLM page regeneration on every trigger |
 | `--verbose` / `-v` | Show debug logs from the pipeline and triggered updates |
 
 ```bash
 repowise watch                           # single repo (auto-detects)
 repowise watch --debounce 5000           # 5s debounce
 repowise watch --workspace               # all workspace repos
-repowise watch --repo backend            # just one
+repowise watch --index-only              # no model calls per save
 repowise watch --verbose                 # show pipeline debug logs
 ```
+
+On a repo indexed with docs, every trigger is a page regeneration with a model
+behind it. `--index-only` keeps the index, graph and health current for free
+and leaves the prose to a later `repowise update`.
 
 ---
 

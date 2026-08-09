@@ -538,6 +538,7 @@ def run_update(
     verbose: bool = False,
     progress: str = "rich",
     skip_cross_repo_hooks: bool = False,
+    include_working_tree: bool = False,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -546,6 +547,14 @@ def run_update(
     ``skip_cross_repo_hooks`` is set only by the workspace docs flow, which
     calls this per repo and then runs the cross-repo hooks once over every
     updated repo instead of once per repo.
+
+    ``include_working_tree`` folds uncommitted work (staged, unstaged and
+    untracked) into the change set on top of the commit range. Off by default,
+    because every other caller is anchored to a commit — the post-commit hook,
+    a webhook, a manual sync — and indexing a half-finished edit under those is
+    not what the user asked for. ``repowise watch`` sets it: watching for file
+    saves and then only ever diffing commit-to-commit is what made the watcher
+    a no-op until you committed.
     """
     start = time.monotonic()
 
@@ -747,7 +756,26 @@ def run_update(
     curr_renderer_fp = _current_renderer_fingerprint(repo_path)
     renderer_changed = prev_renderer_fp is not None and prev_renderer_fp != curr_renderer_fp
 
-    if head and head == base_ref and not config_changed and not renderer_changed:
+    # Uncommitted work, when the caller asked for it. Computed before the
+    # "already up to date" gate below, because on a watched repo that gate is
+    # exactly what the change set has to get past: with no new commits,
+    # ``head == base_ref`` is the normal state, not an idle one.
+    from repowise.core.ingestion import ChangeDetector
+
+    detector = ChangeDetector(repo_path)
+    working_tree_diffs = detector.get_working_tree_changes() if include_working_tree else []
+    if working_tree_diffs:
+        console.print(
+            f"[dim]Uncommitted changes: [bold]{len(working_tree_diffs)}[/bold] file(s)[/dim]"
+        )
+
+    if (
+        head
+        and head == base_ref
+        and not config_changed
+        and not renderer_changed
+        and not working_tree_diffs
+    ):
         console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
         # but the pages are still unwritten. Point at the command that writes
@@ -941,10 +969,12 @@ def run_update(
     if emitter is not None:
         emitter.stage("detect_changes")
 
-    from repowise.core.ingestion import ChangeDetector
+    from repowise.core.ingestion.change_detector import merge_file_diffs
 
-    detector = ChangeDetector(repo_path)
-    file_diffs = detector.get_changed_files(base_ref, head or "HEAD")
+    file_diffs = merge_file_diffs(
+        detector.get_changed_files(base_ref, head or "HEAD"),
+        working_tree_diffs,
+    )
 
     if not file_diffs and not config_changed and not renderer_changed:
         console.print("[green]No changed files detected.[/green]")

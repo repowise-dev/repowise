@@ -28,7 +28,7 @@ from .models import (
     compute_content_hash,
 )
 from .parser import LANGUAGE_CONFIGS, ASTParser, LanguageConfig, parse_file
-from .traverser import FileTraverser, TraversalStats
+from .traverser import FileTraverser, TraversalStats, is_candidate_source_path
 from .tsconfig_resolver import TsconfigResolver, wire_tsconfig_resolver
 
 __all__ = [
@@ -62,6 +62,7 @@ __all__ = [
     "TraversalStats",
     "TsconfigResolver",
     "compute_content_hash",
+    "is_candidate_source_path",
     "parse_file",
     "wire_tsconfig_resolver",
 ]

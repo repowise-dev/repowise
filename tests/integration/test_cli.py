@@ -354,6 +354,76 @@ class TestUpdateIndexOnly:
         assert state1["last_sync_commit"] != base_commit
 
 
+class TestUpdateWorkingTree:
+    """``repowise watch``'s change source: work that is on disk, not in git.
+
+    Without this the watcher was decorative — it fired an update on every save
+    and the update diffed commit-to-commit, which on a repo with no new commits
+    is empty by definition, so it printed "Already up to date" and returned.
+    """
+
+    def _symbol_names(self, repo):
+        import sqlite3
+
+        con = sqlite3.connect(repo / ".repowise" / "wiki.db")
+        try:
+            return {row[0] for row in con.execute("select name from wiki_symbols")}
+        finally:
+            con.close()
+
+    def _dirty(self, repo):
+        (repo / "new_module.py").write_text(
+            "def uncommitted_addition():\n    return 1\n", encoding="utf-8"
+        )
+
+    def test_uncommitted_work_is_indexed(self, runner, git_work_repo):
+        from repowise.cli.commands.update_cmd.command import UpdateOutcome, run_update
+
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        assert "uncommitted_addition" not in self._symbol_names(git_work_repo)
+
+        self._dirty(git_work_repo)
+
+        outcome = run_update(
+            path=str(git_work_repo),
+            provider_name=None,
+            model=None,
+            since=None,
+            reasoning=None,
+            cascade_budget=None,
+            dry_run=False,
+            workspace=False,
+            no_workspace=True,
+            repo_alias=None,
+            index_only=True,
+            include_working_tree=True,
+        )
+
+        assert outcome is UpdateOutcome.REGENERATED
+        assert "uncommitted_addition" in self._symbol_names(git_work_repo)
+
+    def test_commit_anchored_update_is_unchanged(self, runner, git_work_repo):
+        """The default stays commit-to-commit: hooks and webhooks must not
+        start indexing whatever half-finished edit happens to be on disk."""
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._dirty(git_work_repo)
+
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+
+        assert r1.exit_code == 0, r1.output
+        assert "Already up to date" in r1.output
+        assert "uncommitted_addition" not in self._symbol_names(git_work_repo)
+
+
 class TestUpdateConfigChangeDetection:
     def _state(self, repo):
         import json

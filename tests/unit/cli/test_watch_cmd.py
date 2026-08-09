@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 import click
 import pytest
 from click.testing import CliRunner
@@ -77,4 +80,127 @@ def test_watch_forwards_logging_mode_to_single_repo_updates(
     )
 
     assert result.exit_code == 0
-    assert calls == [(tmp_path, "demo-provider", "demo-model", 750, expected_verbose)]
+    assert calls == [(tmp_path, "demo-provider", "demo-model", 750, expected_verbose, False)]
+
+
+def test_watch_forwards_index_only(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(watch_cmd, "configure_cli_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        watch_cmd,
+        "resolve_command_target",
+        lambda **_kwargs: CommandTarget(mode="single", repo_path=tmp_path),
+    )
+    monkeypatch.setattr(watch_cmd, "_watch_single_repo", lambda *args: calls.append(args))
+
+    result = CliRunner().invoke(cli, ["watch", "--index-only"])
+
+    assert result.exit_code == 0
+    assert calls == [(tmp_path, None, None, 2000, False, True)]
+
+
+class TestIsWatchablePath:
+    """Which filesystem events are worth waking an update for."""
+
+    @pytest.mark.parametrize("path", ["src/app.py", "packages/ui/index.ts", "README.md"])
+    def test_source_files_wake_an_update(self, path: str) -> None:
+        assert watch_cmd.is_watchable_path(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # The traversal blocklist: an `npm install` or a build must not
+            # mean thousands of triggers.
+            "node_modules/left-pad/index.js",
+            "dist/bundle.js",
+            ".git/index.lock",
+            ".repowise/state.json",
+            "uv.lock",
+        ],
+    )
+    def test_ignored_paths(self, path: str) -> None:
+        assert watch_cmd.is_watchable_path(path) is False
+
+    @pytest.mark.parametrize(
+        "path",
+        ["CLAUDE.md", "AGENTS.md", ".mcp.json", ".claude/CLAUDE.md", ".cursor/mcp.json"],
+    )
+    def test_files_repowise_writes_itself_do_not_retrigger(self, path: str) -> None:
+        # Every update re-stamps these. Treating them as user edits would make
+        # each update schedule the next one, forever.
+        assert watch_cmd.is_watchable_path(path) is False
+
+    def test_windows_separators(self) -> None:
+        assert watch_cmd.is_watchable_path(r"src\app.py") is True
+        assert watch_cmd.is_watchable_path(r".claude\CLAUDE.md") is False
+
+
+class TestSingleRepoTrigger:
+    """What the debounced trigger actually runs."""
+
+    def _fire(self, monkeypatch: pytest.MonkeyPatch, tmp_path, **watch_kwargs):
+        """Start the watcher, touch a file, and return run_update's kwargs."""
+        calls: list[dict] = []
+        done = threading.Event()
+
+        def fake_run_update(**kwargs):
+            calls.append(kwargs)
+            done.set()
+
+        monkeypatch.setattr(
+            "repowise.cli.commands.update_cmd.command.run_update", fake_run_update
+        )
+        monkeypatch.setattr(watch_cmd, "ensure_repowise_dir", lambda _p: None)
+
+        started = threading.Event()
+
+        class _Clock:
+            """Stands in for the ``time`` module inside watch_cmd only.
+
+            The watcher's idle loop is ``while True: time.sleep(1)``; this lets
+            the test break out of it once the update has been observed, instead
+            of leaving an Observer thread running for the rest of the session.
+            """
+
+            @staticmethod
+            def sleep(_seconds: float) -> None:
+                started.set()
+                time.sleep(0.01)
+                if done.is_set():
+                    raise KeyboardInterrupt
+
+        monkeypatch.setattr(watch_cmd, "time", _Clock)
+
+        watcher = threading.Thread(
+            target=watch_cmd._watch_single_repo,
+            args=(tmp_path, None, None, 50, False),
+            kwargs=watch_kwargs,
+            daemon=True,
+        )
+        watcher.start()
+        assert started.wait(5), "watcher never started"
+
+        (tmp_path / "touched.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+        assert done.wait(10), "no update was triggered by the file change"
+        watcher.join(timeout=10)
+        return calls
+
+    def test_a_file_save_runs_an_update_over_the_working_tree(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        calls = self._fire(monkeypatch, tmp_path)
+
+        assert len(calls) == 1
+        # The bug this guards: watch fired an update per save, and the update
+        # only ever diffed commit-to-commit, so nothing the watcher saw was
+        # ever indexed until the user committed.
+        assert calls[0]["include_working_tree"] is True
+        assert calls[0]["path"] == str(tmp_path)
+        assert calls[0]["index_only"] is False
+
+    def test_index_only_is_passed_through(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        calls = self._fire(monkeypatch, tmp_path, index_only=True)
+
+        assert calls[0]["index_only"] is True

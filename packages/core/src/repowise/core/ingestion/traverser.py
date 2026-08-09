@@ -181,6 +181,12 @@ _BLOCKED_FILENAME_PATTERNS: list[str] = [
     "*.lock",
 ]
 
+#: ``_BLOCKED_FILENAME_PATTERNS`` compiled once. Matched against a bare
+#: filename, so it is equally usable from :func:`is_candidate_source_path`.
+_BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
+    "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
+)
+
 # Generated file markers (checked in first 512 bytes)
 _GENERATED_MARKERS: tuple[str, ...] = (
     "Code generated",
@@ -266,9 +272,7 @@ class FileTraverser:
         self._extra_ignore_filename = extra_ignore_filename
         self._gitignore = _load_gitignore_spec(self.repo_root)
         self._extra_ignore = _load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
-        self._blocked_patterns = pathspec.PathSpec.from_lines(
-            "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
-        )
+        self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
         self._extra_exclude = _compile_gitignore(patterns)
         # Per-directory ignore cache: absolute dir path -> PathSpec built from
@@ -853,6 +857,39 @@ def _parse_gitmodules(repo_root: Path) -> frozenset[str]:
     except Exception:
         log.warning("Failed to parse .gitmodules", path=str(gitmodules))
         return frozenset()
+
+
+def is_candidate_source_path(rel_path: str) -> bool:
+    """Whether *rel_path* is shaped like a file this repo would index.
+
+    Path-shape only: the directory blocklist, the blocked extensions/filename
+    patterns, and the known-language extension map. No disk access, no
+    gitignore, no binary/size/generated checks — so a ``True`` answer means
+    "worth handing to the pipeline", never "will be indexed". :class:`FileTraverser`
+    still applies the full test on the files it walks.
+
+    It exists for the two change sources that only ever see a path: the
+    working-tree diff (untracked files, which ``git`` reports without
+    consulting our blocklists) and the file watcher (which must not wake an
+    update for ``.git/index.lock`` or a ``node_modules`` write). Both were
+    reading the blocklists' intent by hand and drifting from it.
+    """
+    parts = Path(rel_path.replace("\\", "/")).parts
+    if not parts:
+        return False
+    if any(part in _BLOCKED_DIRS for part in parts[:-1]):
+        return False
+
+    name = parts[-1]
+    if name in SPECIAL_FILENAMES:
+        return True
+
+    suffix = Path(name).suffix.lower()
+    if suffix in _BLOCKED_EXTENSIONS:
+        return False
+    if _BLOCKED_FILENAME_SPEC.match_file(name):
+        return False
+    return suffix in EXTENSION_TO_LANGUAGE
 
 
 def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
