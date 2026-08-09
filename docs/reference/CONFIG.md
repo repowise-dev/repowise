@@ -635,7 +635,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout in seconds |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
-| `OLLAMA_EMBEDDING_TIMEOUT` | Ollama embed request timeout in seconds (default: `30`); raise it for long pages on slow local models |
+| `OLLAMA_EMBEDDING_TIMEOUT` | Ollama embed request timeout in seconds (default: `30`); raise it for long pages on slow local models. A non-numeric value makes the CLI fall back to the mock embedder and print a warning naming the variable |
 
 ### Server and database
 
