@@ -507,9 +507,9 @@ code-health merge-gate judges it on.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
 | `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
-| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode` and `_meta` always survive. |
+| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta` and each kept list's `*_total` sibling always survive. The `include` block names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. `signals` has no top-level key (it merges into `metrics[].signals`), so it is reported in `unknown_only_keys` — name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
-| `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50) |
+| `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 
 **Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
 (hotspot health, average health, worst performer, maintainability / performance
@@ -530,8 +530,21 @@ named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `known_modules`), so an empty `findings` list means healthy and nothing else. A
 target set that resolves to nothing still answers in targeted mode rather than
 falling back to the repo dashboard. Every capped list carries a `*_total`
-sibling, and `_meta.health_analyzed_at` dates the health pass, which is separate
-from indexing and can lag it.
+sibling — including under `only`, which retains it automatically — and
+`_meta.health_analyzed_at` dates the health pass, which is separate from
+indexing and can lag it.
+
+**Test material is bucketed, not hidden.** Every metric row carries `is_test`
+(distinct from `has_test_file`: "is this file a test" vs "is this file tested").
+In dashboard mode the ranked finding lists are split — `top_findings` /
+`findings` carry production findings, `test_findings` carries the test half, and
+`top_findings_total + test_findings_total` is the whole open set. Defect risk in
+a test asks a different question from defect risk in the code it covers, and at
+the default limit a quarter of the headline list was describing the test suite.
+Targeted mode is never split: you named the files, so you get their findings.
+KPIs, `worst_files` and `high_leverage_files` deliberately still include test
+files — excluding them would move the repo's headline score, which is a scoring
+change, not a display one.
 
 **Leverage, not just lowness.** `average_health` is NLOC-weighted (the number the
 badge and dashboard surface), so a few large low-scoring files hold it down. To
@@ -577,7 +590,11 @@ The opt-in enrichments:
   `include=["biomarkers", "performance"]`.
 - **`refactoring`** also emits `suggestion_legend`: `biomarker_type` → the prose
   suggestion for that type, once per response rather than per finding. Join on
-  `biomarker_type`.
+  `biomarker_type`. It covers every biomarker in the response's ranked finding
+  head regardless of projection. Note it explains the **findings**, not the
+  plans it ships beside — the two sets differ (no plan kind is sourced from
+  `coverage_gradient`), and `directive.plan_addresses_reason` is what reports
+  that gap.
 
 **When to use:** Before opening a PR, to self-check the files you changed
 (`targets=[...], include=["signals"]`) and confirm you are not regressing the
@@ -594,7 +611,9 @@ get_health(include=["accuracy", "churn_complexity"])
 get_health(include=["biomarkers", "performance"])     # only performance findings
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(targets=["module:src.api"], include=["trend", "refactoring"])
-get_health(include=["accuracy"], only=["defect_accuracy"])   # the block, without the dashboard again
+get_health(include=["accuracy"], only=["accuracy"])   # the block, without the dashboard again
+get_health(only=["top_findings"])                     # + top_findings_total, automatically
+get_health(only=["kpis"], limit=0)                    # headline numbers, no rows at all
 ```
 
 ---

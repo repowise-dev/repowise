@@ -533,6 +533,32 @@ async def get_graph_nodes_by_ids(
     return out
 
 
+async def get_test_file_paths(
+    session: AsyncSession,
+    repository_id: str,
+) -> set[str]:
+    """Relative paths of every file the ingester classified as test material.
+
+    One narrow read of the flag ingestion already decided per file (#1103 made
+    ``is_test`` the single canonical answer to "is this a test"). For a file
+    node ``node_id`` *is* the repo-relative path, so the result joins straight
+    onto ``HealthFileMetric.file_path`` / ``HealthFinding.file_path`` with no
+    denormalized column and no migration.
+
+    ``node_type == "file"`` is required, not incidental: symbol nodes carry
+    ``is_test`` too and their ``node_id`` is a ``"<path>::<name>"`` composite,
+    which would never match a file path but would inflate the read.
+    """
+    result = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+            GraphNode.is_test.is_(True),
+        )
+    )
+    return {row[0] for row in result.all()}
+
+
 async def get_community_members(
     session: AsyncSession,
     repository_id: str,

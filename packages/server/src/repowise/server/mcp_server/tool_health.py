@@ -25,6 +25,7 @@ from repowise.core.persistence.crud import (
     get_git_metadata_bulk,
     get_node_degree_counts_bulk,
     get_refactoring_suggestions,
+    get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
     sort_metrics_worst_first,
@@ -100,6 +101,19 @@ def _serialize_refactoring(r: Any) -> dict[str, Any]:
     }
 
 
+# ``include`` and ``only`` were different vocabularies: the block a caller
+# switches on with ``include=["biomarkers"]`` lands under the key ``findings``,
+# so the obvious ``only=["biomarkers"]`` projected it away again. Alias the three
+# that have a 1:1 key rather than make the caller learn two names for one block.
+# ``signals`` is deliberately absent — it has no top-level key to alias to, it
+# merges into ``metrics[].signals``, so it stays reported in ``unknown_only_keys``.
+_ONLY_ALIASES = {
+    "biomarkers": "findings",
+    "accuracy": "defect_accuracy",
+    "refactoring": "refactoring_plans",
+}
+
+
 def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
     """True when *row* belongs to one of *dimensions* (empty set -> everything).
 
@@ -138,13 +152,24 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
     return leads
 
 
-def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -> dict[str, Any]:
+def _serialize_metric(
+    m: HealthFileMetric,
+    lead: dict[str, Any] | None = None,
+    *,
+    is_test: bool = False,
+) -> dict[str, Any]:
     return {
         "file_path": m.file_path,
         "score": round(m.score, 2),
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
         "nloc": m.nloc,
+        # Two different questions, deliberately both present: ``has_test_file``
+        # is "does something test this file", ``is_test`` is "is this file
+        # itself test material". Defect risk in a test reads differently from
+        # defect risk in the code it covers, and nothing in the payload used to
+        # say which one you were looking at.
+        "is_test": is_test,
         "has_test_file": m.has_test_file,
         "line_coverage_pct": m.line_coverage_pct,
         "branch_coverage_pct": m.branch_coverage_pct,
@@ -170,21 +195,32 @@ def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -
     }
 
 
-def _serialize_coverage_row(row: Any) -> dict[str, Any]:
-    try:
-        covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
-    except Exception:
-        covered = []
-    return {
+def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str, Any]:
+    """One coverage row. ``covered_lines=False`` omits the per-line array.
+
+    The narrow form is not the wide form minus a key: a row read with
+    ``include_covered_lines=False`` carries no ``covered_lines_json`` at all, so
+    touching it would raise rather than merely waste the parse.
+    """
+    out: dict[str, Any] = {
         "file_path": row.file_path,
         "source_format": row.source_format,
         "line_coverage_pct": row.line_coverage_pct,
         "branch_coverage_pct": row.branch_coverage_pct,
-        "covered_lines": covered,
-        "total_coverable_lines": row.total_coverable_lines,
-        "ingested_at": row.ingested_at.isoformat() if row.ingested_at else None,
-        "ingested_commit_sha": row.ingested_commit_sha,
     }
+    # Inserted here rather than appended, so the wide form stays byte-identical
+    # to what callers already receive.
+    if covered_lines:
+        try:
+            out["covered_lines"] = (
+                json.loads(row.covered_lines_json) if row.covered_lines_json else []
+            )
+        except Exception:
+            out["covered_lines"] = []
+    out["total_coverable_lines"] = row.total_coverable_lines
+    out["ingested_at"] = row.ingested_at.isoformat() if row.ingested_at else None
+    out["ingested_commit_sha"] = row.ingested_commit_sha
+    return out
 
 
 def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
@@ -494,14 +530,25 @@ async def get_health(
             one dimension).
         only: keep just these top-level keys. ``include`` adds blocks, ``only``
             subtracts them — pass ``["directive"]`` for the cheapest useful call.
+            The matching ``*_total`` is retained automatically, and the
+            ``include`` block names are accepted as aliases for the keys they
+            produce (``biomarkers``→``findings``, ``accuracy``→
+            ``defect_accuracy``, ``refactoring``→``refactoring_plans``).
+            ``signals`` has no top-level key of its own — it merges into
+            ``metrics[].signals``, so name ``metrics``.
         repo: usually omitted.
         limit: max rows in every ranked list (capped at 50); each carries a
-            ``*_total`` sibling so truncation is never silent.
+            ``*_total`` sibling so truncation is never silent. ``0`` means no
+            rows — the totals still report the true counts.
     """
     started = perf_counter()
-    limit = min(max(limit, 1), 50)
+    # ``0`` means none, matching the ``module_limit`` convention on the REST
+    # coverage route. It used to clamp up to 1, so the documented way to ask for
+    # "the totals, none of the rows" silently returned a row.
+    limit = min(max(limit, 0), 50)
     include_set = set(include or [])
-    only_set = set(only or [])
+    only_list = [_ONLY_ALIASES.get(k, k) for k in (only or [])]
+    only_set = set(only_list)
 
     def wants(block: str) -> bool:
         """True when ``block`` survives the ``only`` projection.
@@ -523,6 +570,7 @@ async def get_health(
     # The serialized-rows read is the expensive optional one; skip it when no
     # block that carries findings survives the projection.
     wants_findings = wants("findings") or wants("top_findings")
+    wants_test_findings = wants("test_findings")
 
     # Split ``module:foo`` targets out of the path list. A target that
     # matches one or more modules is expanded into the set of files
@@ -544,6 +592,11 @@ async def get_health(
             HealthFileMetric.repository_id == repository.id
         )
         exclude_spec = _get_exclude_spec(ctx.path)
+        # Test material, from the flag ingestion already decided per file. Read
+        # unconditionally because every serialized metric row reports it: an
+        # agent looking at a low-scoring file needs to know whether it is a test
+        # before it reads the score as a defect signal. One narrow indexed read.
+        test_paths = await get_test_file_paths(session, repository.id)
         indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
         all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
         # Paths the index knows about but the exclude config drops. Kept so an
@@ -585,6 +638,13 @@ async def get_health(
         # ORM object to emit ``limit`` of them measured 262ms on this repo, and
         # that cost is linear in finding count, so it grows with the repo the
         # dashboard is describing.
+        #
+        # ``test_finding_rows`` is the dashboard-only test bucket (see the split
+        # below). Targeted mode never fills it: the caller named the files, so
+        # partitioning what they explicitly asked about would be answering a
+        # different question than the one they asked.
+        test_finding_rows: list[Any] = []
+        test_findings_total = 0
         if scoped:
             finding_rows = filter_rows_by_attr(
                 list(
@@ -605,6 +665,7 @@ async def get_health(
             lead_rows: list[Any] = finding_rows
             emitted = [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
             finding_rows = emitted[:limit]
+            legend_rows: list[Any] = finding_rows
         else:
             # Narrow read over every open finding: the four attributes
             # ``_leads_by_file`` reads, plus ``dimension`` for the perf headline
@@ -632,32 +693,64 @@ async def get_health(
             # because the caller asked to *see* one dimension.
             lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
             emitted = [r for r in lead_rows if _in_dimensions(r, dimension_filter)]
+            # Test material goes in its own bucket rather than competing for
+            # the repo's headline finding list. Measured on this repo, 5 of the
+            # top 20 open findings by impact sit on test files (2 of the top 5),
+            # so at the default limit a quarter of the most-read list described
+            # the test suite. Splitting keeps both readable: a thrashing test
+            # suite is a real signal some teams want, it is just not the same
+            # question as "where is the defect risk in this codebase".
+            #
+            # Split *before* the cap, so each list is the top ``limit`` of its
+            # own population — capping first and partitioning after would give
+            # the smaller bucket whatever happened to land in the head.
+            prod_emitted = [r for r in emitted if r.file_path not in test_paths]
+            test_emitted = [r for r in emitted if r.file_path in test_paths]
+            # Both heads, in one list, decided here rather than downstream: the
+            # legend has to be a pure function of the ranked set so no
+            # projection can change what a surviving key contains.
+            legend_rows: list[Any] = prod_emitted[:limit] + test_emitted[:limit]
             # Fetch the head by id rather than re-running the ranked query with
             # an over-fetch margin. The margin had to cover every exclusion in
             # the table, so a repo excluding a large subtree turned the "capped"
             # read back into a near-full one; by id it is exactly ``limit`` rows
             # whatever the exclude config or dimension filter say.
-            head_ids = [r.id for r in emitted[:limit]]
+            head_ids = [r.id for r in prod_emitted[:limit]]
+            test_head_ids = [r.id for r in test_emitted[:limit]] if wants_test_findings else []
             finding_rows = []
-            if head_ids and wants_findings:
+            if not wants_findings:
+                head_ids = []
+            # One read for both heads — the split is a partition of the same
+            # ranked set, so paying two round-trips for it would be the N+1 this
+            # tool flags in itself.
+            wanted_ids = head_ids + test_head_ids
+            if wanted_ids:
                 by_id = {
                     f.id: f
                     for f in (
                         await session.execute(
-                            select(HealthFinding).where(HealthFinding.id.in_(head_ids))
+                            select(HealthFinding).where(HealthFinding.id.in_(wanted_ids))
                         )
                     )
                     .scalars()
                     .all()
                 }
-                # Re-imposed from ``head_ids``; ``IN`` does not preserve order.
+                # Re-imposed from the id lists; ``IN`` does not preserve order.
                 finding_rows = [by_id[i] for i in head_ids if i in by_id]
+                test_finding_rows = [by_id[i] for i in test_head_ids if i in by_id]
+            test_findings_total = len(test_emitted)
 
         # Counts the rows this response is about: the post-exclusion open set,
         # narrowed to the requested dimensions when one was asked for. Reporting
         # the unfiltered total beside a filtered list is what made an empty
         # ``findings`` read as "nothing here" rather than "nothing shown".
-        findings_total = len(emitted)
+        #
+        # In dashboard mode this counts the *production* half, because that is
+        # the list it sits beside; ``test_findings_total`` counts the other half
+        # and the two still sum to the whole open set. Same rule #1337 settled
+        # for the dimension filter: a total describes the list it is a sibling
+        # of, never a wider set the caller cannot see.
+        findings_total = len(emitted if scoped else prod_emitted)
 
         # Worst-first order, placed here because ranking needs the summed
         # deduction per file and ``lead_rows`` is the first point that carries
@@ -740,8 +833,17 @@ async def get_health(
             coverage_rows = filter_rows_by_attr(
                 # ``effective_targets``, not ``targets`` — a raw ``module:foo``
                 # target is not a file path and matched nothing here.
+                #
+                # Only targeted mode serializes ``covered_lines``. The dashboard
+                # used to read every ``covered_lines_json`` blob, ``json.loads``
+                # each one, and then strip the field back out with a dict
+                # comprehension — 466,874 B of parse per call for a key it never
+                # emitted. Decline the column at the read instead.
                 await load_coverage_for_repo(
-                    session, repository.id, file_paths=list(effective_targets) if scoped else None
+                    session,
+                    repository.id,
+                    file_paths=list(effective_targets) if scoped else None,
+                    include_covered_lines=scoped,
                 ),
                 "file_path",
                 exclude_spec,
@@ -855,6 +957,14 @@ async def get_health(
                 if source:
                     plan_biomarkers_by_path.setdefault(path, set()).add(source)
 
+    # KPIs deliberately keep test files in. Excluding them is not a display
+    # choice, it is a scoring change: measured across this workspace, dropping
+    # test material moves NLOC-weighted ``average_health`` 7.52 -> 6.87 here,
+    # 7.07 -> 6.27 on the backend repo and 7.59 -> 7.46 on the frontend. Test
+    # files score *better* than production code, so excluding them would make
+    # every repo's headline drop overnight with no defect having been found.
+    # The calibrated numbers stay where they are; the split above is about which
+    # findings compete for a ranked list, not about what the score means.
     kpis = _compute_kpis(
         metric_rows if scoped else all_metrics,
         performance_findings=perf_findings_count,
@@ -864,7 +974,7 @@ async def get_health(
     if scoped:
         metric_payload: list[dict[str, Any]] = []
         for m in metric_rows:
-            row = _serialize_metric(m, leads.get(m.file_path))
+            row = _serialize_metric(m, leads.get(m.file_path), is_test=m.file_path in test_paths)
             if m.file_path in signals_by_path:
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
@@ -937,13 +1047,28 @@ async def get_health(
             # long tail" reframe that turns a repo-wide number into a short list.
             "gap_analysis": gap,
             "worst_files": [
-                _serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]
+                _serialize_metric(m, leads.get(m.file_path), is_test=m.file_path in test_paths)
+                for m in metric_rows[:limit]
             ],
+            # Both ranked file lists deliberately keep test files in place, and
+            # both now say which rows are tests. Measured on this repo, 0 of the
+            # top 25 by the worst-first comparator are test material, so there
+            # is no crowding here to fix — and dropping them would quietly
+            # change which files the repo's "worst" are. The crowding is in the
+            # *finding* lists, which is where the split below happens.
+            "worst_files_total": len(metric_rows),
             "high_leverage_files": [
-                _serialize_metric(m, leads.get(m.file_path)) for m in by_leverage[:limit]
+                _serialize_metric(m, leads.get(m.file_path), is_test=m.file_path in test_paths)
+                for m in by_leverage[:limit]
             ],
+            "high_leverage_files_total": len(by_leverage),
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
             "top_findings_total": findings_total,
+            # The test half of the same ranked set, in its own bucket so a
+            # thrashing test suite stays visible without competing with
+            # production defect risk for the most-read list.
+            "test_findings": [_serialize_finding(f) for f in test_finding_rows[:limit]],
+            "test_findings_total": test_findings_total,
             # Worst-first, so the cap keeps the modules worth looking at. On a
             # monorepo the tail is dozens of single-file buckets.
             "modules": all_modules[:limit],
@@ -970,6 +1095,11 @@ async def get_health(
         # worth reading.
         result["findings"] = [_serialize_finding(f) for f in finding_rows[:limit]]
         result["findings_total"] = findings_total
+        # Same production/test split as ``top_findings``: this block only ever
+        # fires in dashboard mode (targeted mode set ``findings`` above), so it
+        # is describing the repo, not a file the caller named.
+        result["test_findings"] = [_serialize_finding(f) for f in test_finding_rows[:limit]]
+        result["test_findings_total"] = test_findings_total
 
     if "refactoring" in include_set:
         # Structured refactoring plans (the concrete split groups / evidence /
@@ -1044,12 +1174,13 @@ async def get_health(
     if "coverage" in include_set:
         # Drop the bulky covered-lines arrays from dashboard mode; full
         # detail is available in targeted mode.
-        if targets:
+        if scoped:
             coverage_payload = [_serialize_coverage_row(r) for r in coverage_rows]
         else:
+            # Built narrow, not built wide and subtracted from. These rows came
+            # back without the column at all (see the read above).
             coverage_payload = [
-                {k: v for k, v in _serialize_coverage_row(r).items() if k != "covered_lines"}
-                for r in coverage_rows[:limit]
+                _serialize_coverage_row(r, covered_lines=False) for r in coverage_rows[:limit]
             ]
         # ``ingested_at`` is a datetime on the summary too — coerce.
         if coverage_summary.get("ingested_at") is not None:
@@ -1070,12 +1201,24 @@ async def get_health(
     # One entry per biomarker type actually present in the findings this
     # response carries. Built last so the dimension filter above has already
     # narrowed the rows the caller will join against.
-    if "refactoring" in include_set:
-        present_types = {
-            row.get("biomarker_type")
-            for field in ("findings", "top_findings")
-            for row in result.get(field) or ()
-        }
+    if "refactoring" in include_set and wants("suggestion_legend"):
+        # Built from the ranked rows themselves, not from the serialized blocks
+        # in ``result``. It used to read ``result["findings"]`` /
+        # ``["top_findings"]``, which the ``only`` projection's ``wants()``
+        # gating can skip building — so
+        # ``only=["refactoring_plans","suggestion_legend"]`` returned an empty
+        # legend and adding ``top_findings`` back to ``only`` refilled it. A
+        # projection is supposed to subtract keys, never change what a surviving
+        # key contains.
+        #
+        # Scope note, and it is a real limitation rather than an oversight: the
+        # legend explains the *findings*, while it ships beside
+        # ``refactoring_plans``. Those are different sets — no plan kind is
+        # sourced from ``coverage_gradient``, the lead biomarker on this repo's
+        # ten worst files — so a legend entry can describe a biomarker the plans
+        # do not address. ``directive.plan_addresses_reason`` is what reports
+        # that mismatch; the legend is not the place to paper over it.
+        present_types = {getattr(r, "biomarker_type", None) for r in legend_rows}
         result["suggestion_legend"] = {
             bt: suggestion_for(bt) for bt in sorted(t for t in present_types if t)
         }
@@ -1086,12 +1229,21 @@ async def get_health(
     # ``_meta`` always survive — a response the caller cannot orient in is not
     # a saving.
     if only:
-        keep = set(only) | {"mode"}
+        # Every capped list's ``*_total`` sibling survives with it. The tool
+        # documents "each carries a ``*_total`` sibling so truncation is never
+        # silent", and the projection was quietly breaking exactly that promise:
+        # ``only=["modules"]`` at ``limit=50`` returned 50 of 116 modules with
+        # no ``modules_total`` to say so. Retaining it is not the caller's job —
+        # a caller who knew to ask for the total would not need the guarantee.
+        keep = set(only_list) | {"mode"} | {f"{k}_total" for k in only_list}
         # A key that does not exist in this response is named rather than
         # quietly yielding an empty one — same rule as ``unresolved`` above.
         # A misspelled projection is otherwise indistinguishable from a block
-        # the repo genuinely has no data for.
-        unknown = sorted(k for k in only if k not in result)
+        # the repo genuinely has no data for. Reported against what the caller
+        # actually passed, so an alias resolving to a present key is not "unknown".
+        unknown = sorted(
+            raw for raw, resolved in zip(only, only_list, strict=True) if resolved not in result
+        )
         result = {k: v for k, v in result.items() if k in keep}
         if unknown:
             result["unknown_only_keys"] = unknown
