@@ -1037,15 +1037,24 @@ async def get_health(
             t = file_trend(snapshots, m.file_path)
             if not t.points:
                 continue
-            trends.append(
-                {
-                    "file_path": t.file_path,
-                    "series": [round(p.score, 2) for p in t.points],
-                    "current": t.current,
-                    "delta": t.delta,
-                    "declining": t.declining,
-                }
-            )
+            series = [round(p.score, 2) for p in t.points]
+            entry: dict[str, Any] = {
+                "file_path": t.file_path,
+                "series": series,
+                "current": t.current,
+                "delta": t.delta,
+                "declining": t.declining,
+            }
+            # The score floors at 1.0, so a file deep enough to sit on it keeps
+            # a flat series however much of the work gets done. Where a
+            # snapshot recorded the real depth, carry the series that can still
+            # move — and only there, so the files the floor never touches pay
+            # nothing for it.
+            unclamped = [round(p.unclamped_score, 2) for p in t.points]
+            if unclamped != series:
+                entry["unclamped_series"] = unclamped
+                entry["unclamped_delta"] = t.unclamped_delta
+            trends.append(entry)
         if trends:
             result["trends"] = trends
         if module_targets:

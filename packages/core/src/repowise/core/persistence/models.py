@@ -1249,6 +1249,13 @@ class HealthSnapshot(Base):
     worst_performer_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     worst_performer_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     per_file_scores_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # ``{path: total_deduction}`` for the files whose score is held at the
+    # floor, and only those — everywhere else the deduction is exactly
+    # ``10 - score``, so this carries what the clamp destroys and nothing more.
+    # A sibling column rather than a richer value inside ``per_file_scores_json``
+    # because that blob's ``{path: score}`` shape is parsed by three readers,
+    # two of which would fail quietly if a value became a dict.
+    per_file_deductions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
 
 class CoverageFile(Base):

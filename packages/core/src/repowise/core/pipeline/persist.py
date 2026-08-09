@@ -1202,6 +1202,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     decisions/governance are idempotent. Intended to run once the analysis
     phase has fully completed.
     """
+    from repowise.core.analysis.health.trends import snapshot_file_maps
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         recompute_decision_staleness,
@@ -1247,6 +1248,9 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # Snapshot the run for trend tracking (rolling delete inside).
         kpis = hr.kpis or {}
         try:
+            scores_map, deductions_map = snapshot_file_maps(
+                hr.metrics or [], hr.findings or []
+            )
             await save_health_snapshot(
                 session,
                 repo_id,
@@ -1254,7 +1258,8 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 average_health=float(kpis.get("average_health", 10.0)),
                 worst_performer_path=kpis.get("worst_performer_path"),
                 worst_performer_score=kpis.get("worst_performer_score"),
-                per_file_scores={m.file_path: round(float(m.score), 2) for m in hr.metrics or []},
+                per_file_scores=scores_map,
+                per_file_deductions=deductions_map,
             )
         except Exception as _snap_err:
             logger.warning("health_snapshot_skipped", error=str(_snap_err))

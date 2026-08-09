@@ -69,6 +69,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
     returns rather than crashing the CLI.
     """
     from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.health.trends import snapshot_file_maps
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
@@ -103,6 +104,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
             kpis = getattr(report, "kpis", {}) or {}
             metrics = getattr(report, "metrics", []) or []
             try:
+                scores_map, deductions_map = snapshot_file_maps(metrics, findings)
                 await save_health_snapshot(
                     session,
                     repo_id,
@@ -110,7 +112,8 @@ def _persist_health(repo_path: object, *, report: object) -> None:
                     average_health=float(kpis.get("average_health", 10.0)),
                     worst_performer_path=kpis.get("worst_performer_path"),
                     worst_performer_score=kpis.get("worst_performer_score"),
-                    per_file_scores={m.file_path: round(float(m.score), 2) for m in metrics},
+                    per_file_scores=scores_map,
+                    per_file_deductions=deductions_map,
                 )
             except Exception as exc:
                 console.print(f"[yellow]Snapshot write skipped: {exc}[/yellow]")

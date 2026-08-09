@@ -636,6 +636,7 @@ async def save_health_snapshot(
     worst_performer_path: str | None,
     worst_performer_score: float | None,
     per_file_scores: dict[str, float] | None = None,
+    per_file_deductions: dict[str, float] | None = None,
     taken_at: datetime | None = None,
 ) -> HealthSnapshot:
     """Append a snapshot; prune oldest rows past ``HEALTH_SNAPSHOT_RETENTION``.
@@ -643,6 +644,12 @@ async def save_health_snapshot(
     Returns the inserted row. Per-file scores are stored compactly as
     ``{path: score}`` JSON (no per-finding detail — that lives in
     ``HealthFinding`` rows; snapshots are a thin history layer).
+
+    ``per_file_deductions`` is the same shape for the files whose score is held
+    at the floor, where the stored score has stopped carrying information.
+    Build both with ``trends.snapshot_file_maps`` rather than by hand: a repo
+    whose writers disagree gets a history that changes depth depending on which
+    command last wrote it.
     """
     snap = HealthSnapshot(
         id=_new_uuid(),
@@ -655,6 +662,7 @@ async def save_health_snapshot(
             float(worst_performer_score) if worst_performer_score is not None else None
         ),
         per_file_scores_json=json.dumps(per_file_scores or {}, separators=(",", ":")),
+        per_file_deductions_json=json.dumps(per_file_deductions or {}, separators=(",", ":")),
     )
     session.add(snap)
     await session.flush()

@@ -28,6 +28,13 @@ import { TrendChart } from "./trend-chart";
 import { TrendSlopeChart } from "./trend-slope-chart";
 import { deltaColor, formatDelta, scoreTextColor } from "./tokens";
 
+/**
+ * How many slopes the chart draws. Passed explicitly rather than left to
+ * `TrendSlopeChart`'s default so the sentence above the chart and the chart
+ * itself cannot report different numbers.
+ */
+const SLOPE_MAX = 18;
+
 export function TrendView({
   data,
   isLoading,
@@ -131,7 +138,30 @@ export function TrendView({
               : "No file changed score between the last two snapshots."}
           </p>
         ) : (
-          <TrendSlopeChart points={data.file_deltas} />
+          <>
+            {/* Two caps sit between the response and the picture — the server
+                slices its list, and the chart draws the largest few of what
+                arrives. Naming the drawn count against the true total is the
+                difference between "these are the changes" and "these are the
+                biggest of N". */}
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              {(() => {
+                const drawn = Math.min(SLOPE_MAX, data.file_deltas.length);
+                // Without a server-sent total there is no way to know whether
+                // the list arrived complete, so claim only what is drawn.
+                // Saying "all N" off the response length would be a flat lie
+                // against a backend that caps at N and does not report it.
+                if (data.file_deltas_total == null) {
+                  return `Showing the ${drawn} largest ${drawn === 1 ? "change" : "changes"}.`;
+                }
+                const total = data.file_deltas_total;
+                return drawn < total
+                  ? `Showing the ${drawn} largest of ${total} files that changed.`
+                  : `All ${total} ${total === 1 ? "file that changed" : "files that changed"}.`;
+              })()}
+            </p>
+            <TrendSlopeChart points={data.file_deltas} max={SLOPE_MAX} />
+          </>
         )}
       </section>
     </div>
