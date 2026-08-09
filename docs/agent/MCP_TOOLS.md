@@ -507,7 +507,7 @@ code-health merge-gate judges it on.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
 | `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
-| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta` and each kept list's `*_total` sibling always survive. The `include` block names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. `signals` has no top-level key (it merges into `metrics[].signals`), so it is reported in `unknown_only_keys` — name `metrics` instead. |
+| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta` and each kept list's `*_total` sibling always survive. The `include` block names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. `signals` has no top-level key (it merges into `metrics[].signals`), so it is reported in `unknown_only_keys` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 
@@ -590,8 +590,10 @@ The opt-in enrichments:
   `include=["biomarkers", "performance"]`.
 - **`refactoring`** also emits `suggestion_legend`: `biomarker_type` → the prose
   suggestion for that type, once per response rather than per finding. Join on
-  `biomarker_type`. It covers every biomarker in the response's ranked finding
-  head regardless of projection. Note it explains the **findings**, not the
+  `biomarker_type`. It is keyed off the ranked finding head and does not vary
+  with `only`, so it can carry an entry for a block a projection dropped —
+  extra rows in a lookup table, never a missing one. Note it explains the
+  **findings**, not the
   plans it ships beside — the two sets differ (no plan kind is sourced from
   `coverage_gradient`), and `directive.plan_addresses_reason` is what reports
   that gap.

@@ -751,7 +751,7 @@ async def test_only_signals_is_reported_rather_than_answered_empty(setup_mcp, he
 
 
 @pytest.mark.asyncio
-async def test_suggestion_legend_survives_a_projection(setup_mcp, health_data):
+async def test_suggestion_legend_survives_a_projection(setup_mcp, health_data_with_tests):
     """A projection subtracts keys; it must not change what a kept key holds.
 
     Regression: the legend was built from ``result["findings"]`` /
@@ -760,6 +760,12 @@ async def test_suggestion_legend_survives_a_projection(setup_mcp, health_data):
     ``suggestion_legend: {}``, and adding ``top_findings`` back to ``only``
     refilled it — a performance optimization that had silently become a
     content change.
+
+    Deliberately on the fixture that *has* test material. The legend derives
+    from the production and test heads, so on a fixture with no test files
+    every projection agrees for the wrong reason and this test cannot fail —
+    which is exactly what happened when the ``is_test`` read was later gated
+    for performance and silently dropped ``suggestion_legend`` from the gate.
     """
     from repowise.server.mcp_server import get_health
 
@@ -796,8 +802,30 @@ async def test_limit_zero_means_no_rows_not_one_row(setup_mcp, health_data):
     # Totals are unaffected: the cap is a display decision, not a filter.
     assert result["worst_files_total"] == 2
     assert result["top_findings_total"] == (await get_health())["top_findings_total"]
-    # The directive is not a ranked list and still answers.
-    assert result["directive"]["fix_first"]
+
+
+@pytest.mark.asyncio
+async def test_the_directive_is_identical_at_every_limit(setup_mcp, health_data):
+    """``limit`` caps ranked lists. The directive is not one, so it must not move.
+
+    Regression, and it was introduced by making ``limit=0`` reachable: the
+    per-file lead reduction was scoped to ``metric_rows[:limit] |
+    by_leverage[:limit]``, so at ``limit=0`` the directive's own candidates had
+    no lead. ``fix_first`` survived (it reads ``by_leverage[0]``, not the
+    leads), which is exactly why asserting ``fix_first`` alone was not enough —
+    ``reason`` fell back to "scores N", ``plan_note`` vanished, and
+    ``plan_addresses_reason`` became an unconditional ``False``: a wrong claim
+    rather than a missing one.
+    """
+    from repowise.server.mcp_server import get_health
+
+    baseline = (await get_health())["directive"]
+    assert baseline["reason"]
+    for limit in (0, 1, 2, 50):
+        directive = (await get_health(limit=limit))["directive"]
+        assert directive == baseline, f"directive moved at limit={limit}"
+    # And through the projection that makes it the cheapest call.
+    assert (await get_health(only=["directive"], limit=0))["directive"] == baseline
 
 
 # ---------------------------------------------------------------------------

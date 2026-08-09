@@ -113,6 +113,11 @@ _ONLY_ALIASES = {
     "refactoring": "refactoring_plans",
 }
 
+# Files the directive reduces over: ``fix_first`` plus the two in ``then``. Named
+# because three separate places have to agree on it — the plan lookup, the lead
+# set the directive reads, and the directive itself — and they are far apart.
+_DIRECTIVE_CANDIDATES = 3
+
 
 def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
     """True when *row* belongs to one of *dimensions* (empty set -> everything).
@@ -513,33 +518,28 @@ async def get_health(
     ``weighted_deficit``, not ``score``: the score floors at 1.0 and cannot
     separate the worst band.
 
-    Three co-equal dimensions per file: ``score`` (defect risk, the headline),
-    ``maintainability_score``, and ``performance_score`` (static I/O-in-loop /
-    N+1 risk, never blended into the defect headline). Each finding carries its
-    ``dimension``.
+    Three dimensions per file: ``score`` (defect risk, the headline),
+    ``maintainability_score``, ``performance_score`` (static I/O-in-loop / N+1
+    risk, never blended in). Each finding carries its ``dimension``. Dashboard
+    mode buckets test material: ``top_findings`` is production,
+    ``test_findings`` the rest, each row says ``is_test``.
 
     Args:
-        targets: file paths or ``module:<name>``. Empty → dashboard mode. Any
+        targets: file paths or ``module:<name>``. Empty → dashboard mode. A
             target matching nothing is named in ``unresolved`` with a reason
             (``not_indexed`` → run ``repowise update`` | ``no_such_path`` |
-            ``excluded`` | ``no_such_module``), so an empty ``findings`` means
-            healthy and nothing else.
-        include: opt-in blocks: ``biomarkers`` | ``refactoring`` | ``trend`` |
-            ``coverage`` | ``accuracy`` | ``signals`` | ``churn_complexity`` |
-            ``performance``/``defect``/``maintainability`` (filter findings to
-            one dimension).
-        only: keep just these top-level keys. ``include`` adds blocks, ``only``
-            subtracts them — pass ``["directive"]`` for the cheapest useful call.
-            The matching ``*_total`` is retained automatically, and the
-            ``include`` block names are accepted as aliases for the keys they
-            produce (``biomarkers``→``findings``, ``accuracy``→
-            ``defect_accuracy``, ``refactoring``→``refactoring_plans``).
-            ``signals`` has no top-level key of its own — it merges into
-            ``metrics[].signals``, so name ``metrics``.
+            ``excluded`` | ``no_such_module``), so empty ``findings`` means
+            healthy.
+        include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
+            ``accuracy`` | ``signals`` | ``churn_complexity`` |
+            ``performance``/``defect``/``maintainability`` (dimension).
+        only: keep just these top-level keys — ``["directive"]`` is the cheapest
+            useful call. Each kept list's ``*_total`` is retained too, and the
+            ``include`` names work as aliases. Unmatched keys land in
+            ``unknown_only_keys``.
         repo: usually omitted.
-        limit: max rows in every ranked list (capped at 50); each carries a
-            ``*_total`` sibling so truncation is never silent. ``0`` means no
-            rows — the totals still report the true counts.
+        limit: max rows per ranked list (max 50, ``0`` for none); each carries
+            a ``*_total`` sibling so truncation is never silent.
     """
     started = perf_counter()
     # ``0`` means none, matching the ``module_limit`` convention on the REST
@@ -571,6 +571,25 @@ async def get_health(
     # block that carries findings survives the projection.
     wants_findings = wants("findings") or wants("top_findings")
     wants_test_findings = wants("test_findings")
+    # Everything downstream of the test/production split, in one place.
+    #
+    # Keep this list exhaustive. The read it gates is not free (the column list
+    # is narrow but the predicate is not indexed, so it scans this repo's graph
+    # nodes — ~55 ms warm on a 35k-node index), and ``only=["directive"]`` /
+    # ``["kpis"]`` / ``["modules"]`` serialize no metric row and no finding.
+    # But a *missing* entry here is worse than the read: it makes the split
+    # collapse for that projection, which is the same "a projection changed
+    # what a surviving key holds" defect this change exists to close. Adding
+    # ``suggestion_legend`` was not optional — the legend derives from the split
+    # heads, and leaving it out silently reverted that fix.
+    needs_test_paths = (
+        wants_findings
+        or wants_test_findings
+        or wants("worst_files")
+        or wants("high_leverage_files")
+        or wants("metrics")
+        or ("refactoring" in include_set and wants("suggestion_legend"))
+    )
 
     # Split ``module:foo`` targets out of the path list. A target that
     # matches one or more modules is expanded into the set of files
@@ -592,11 +611,11 @@ async def get_health(
             HealthFileMetric.repository_id == repository.id
         )
         exclude_spec = _get_exclude_spec(ctx.path)
-        # Test material, from the flag ingestion already decided per file. Read
-        # unconditionally because every serialized metric row reports it: an
-        # agent looking at a low-scoring file needs to know whether it is a test
-        # before it reads the score as a defect signal. One narrow indexed read.
-        test_paths = await get_test_file_paths(session, repository.id)
+        # Test material, from the flag ingestion already decided per file.
+        # Gated on ``needs_test_paths`` — see the note at its definition.
+        test_paths: set[str] = set()
+        if needs_test_paths:
+            test_paths = await get_test_file_paths(session, repository.id)
         indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
         all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
         # Paths the index knows about but the exclude config drops. Kept so an
@@ -694,12 +713,14 @@ async def get_health(
             lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
             emitted = [r for r in lead_rows if _in_dimensions(r, dimension_filter)]
             # Test material goes in its own bucket rather than competing for
-            # the repo's headline finding list. Measured on this repo, 5 of the
-            # top 20 open findings by impact sit on test files (2 of the top 5),
-            # so at the default limit a quarter of the most-read list described
-            # the test suite. Splitting keeps both readable: a thrashing test
-            # suite is a real signal some teams want, it is just not the same
-            # question as "where is the defect risk in this codebase".
+            # the repo's headline finding list. Measured on this repo, **2 of
+            # the top 5** open findings by impact sit on test files, and 4-5 of
+            # the top 20 — the top-20 figure is tie-dependent (ranks 14+ are all
+            # at impact 2.16), which is itself the point: a fifth of the
+            # most-read list was the test suite, decided partly by tie-break.
+            # Splitting keeps both readable. A thrashing test suite is a real
+            # signal some teams want; it is just not the same question as
+            # "where is the defect risk in this codebase".
             #
             # Split *before* the cap, so each list is the top ``limit`` of its
             # own population — capping first and partitioning after would give
@@ -914,6 +935,14 @@ async def get_health(
             )
             printed = {m.file_path for m in metric_rows[:limit]}
             printed |= {m.file_path for m in by_leverage[:limit]}
+            # The directive's three candidates, unconditionally — it reads
+            # ``by_leverage[:3]`` and is not a ranked list, so its leads must not
+            # depend on ``limit``. Before ``limit=0`` existed this was covered by
+            # the clamp to 1 only by accident; at 0 the lead set came back empty
+            # and the directive degraded to a fallback ``reason`` ("scores 1.0")
+            # *and* asserted ``plan_addresses_reason: false`` on every file —
+            # a wrong claim rather than a missing one.
+            printed |= {m.file_path for m in by_leverage[:_DIRECTIVE_CANDIDATES]}
             lead_source = [r for r in lead_rows if r.file_path in printed]
         leads = _leads_by_file(lead_source)
 
@@ -935,7 +964,7 @@ async def get_health(
         plan_biomarkers_by_path: dict[str, set[str]] = {}
         plan_count_by_path: dict[str, int] = {}
         if not scoped and wants("directive") and by_leverage:
-            directive_paths = [m.file_path for m in by_leverage[:3]]
+            directive_paths = [m.file_path for m in by_leverage[:_DIRECTIVE_CANDIDATES]]
             for path, source in (
                 await session.execute(
                     select(
