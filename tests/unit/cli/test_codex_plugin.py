@@ -4,12 +4,13 @@ import json
 import re
 from pathlib import Path
 
+from repowise.cli.agent_adapters import adapter_for
 from repowise.cli.agent_adapters.codex import (
+    EDIT_TOOL_MATCHER,
     SHELL_TOOL_MATCHER,
     SHELL_TOOL_NAMES,
     CodexAdapter,
 )
-from repowise.cli.commands.augment_cmd.command import _SHELL_TOOL_NAMES
 
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_ROOT = ROOT / "plugins" / "codex"
@@ -46,7 +47,7 @@ def test_codex_plugin_hooks_match_supported_codex_events() -> None:
     assert hooks["SessionStart"][0]["matcher"] == "startup|resume|clear"
     assert [entry["matcher"] for entry in hooks["PostToolUse"]] == [
         SHELL_TOOL_MATCHER,
-        "apply_patch|Edit|Write",
+        EDIT_TOOL_MATCHER,
     ]
 
     commands = [
@@ -78,8 +79,9 @@ def test_codex_shell_matcher_covers_the_names_codex_actually_sends() -> None:
     for name in ("Bash", "shell_command"):
         assert name in SHELL_TOOL_NAMES
         assert name in SHELL_TOOL_MATCHER.split("|")
-        # The augment dispatch routes it to the shell handler...
-        assert name in _SHELL_TOOL_NAMES
+        # The augment dispatch routes it to the shell handler, off the same
+        # adapter the registry hands that dispatcher for `--client codex`...
+        assert name in adapter_for("codex").shell_tool_names
         # ...and the rewrite hook accepts rather than declines it.
         payload = json.dumps(
             {

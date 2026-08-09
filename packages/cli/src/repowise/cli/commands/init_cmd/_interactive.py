@@ -86,11 +86,14 @@ def offer_distill_rewrite_hook(
         # is "hooks may compact what your agent sees", not three features.
         # Every surface a yes covers has to be named, or it is not consent.
         console_obj.print(
-            "  [dim]Also shrinks two big tool results, both reversible: a "
-            "whole-file Read comes back as a skeleton, and a grep matching many "
-            "files comes back as a per-file summary. Each names the line numbers "
-            "to get the rest. Toggle later: `repowise hook read-skeleton`, "
-            "`repowise hook search-digest`.[/dim]"
+            "  [dim]Also shrinks three big tool results, all reversible: a "
+            "whole-file Read comes back as a skeleton, a grep matching many "
+            "files comes back as a per-file summary, and re-reading a file you "
+            "already read — unchanged, unedited — comes back as a one-line "
+            "pointer instead of the content. Each says how to get the rest, and "
+            "reading again always returns it. Toggle later: "
+            "`repowise hook read-skeleton`, `repowise hook search-digest`, "
+            "`repowise hook read-reread`.[/dim]"
         )
         try:
             flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)

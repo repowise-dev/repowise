@@ -171,6 +171,36 @@ satisfies Claude Code's read-before-edit precondition, so an `Edit` (especially
 with `replace_all`) or a `Write` could touch bodies it never saw. Editing such a
 file raises a one-line warning, once per file, until the file is read in full.
 
+**Re-reads of unchanged files.** With `hooks.read_reread: true` — same consent,
+toggled afterwards with `repowise hook read-reread install | uninstall |
+status` — a `Read` of a file the session already read comes back as a short
+notice naming that earlier read, instead of the content. The content is already
+in context a few tool calls up, so sending it twice buys nothing.
+
+The gate is arithmetic rather than a judgement: the same range must have been
+served, no `Edit` or `Write` may have come between, and the bytes must hash the
+same. When they do not, the agent gets the file *and* a line saying it changed
+on disk without an edit in this session — a `git checkout`, a formatter, another
+agent. That is worth more than the bytes were, because nothing else in the
+session can discover it.
+
+Two rules bound how wrong this can be. It is **never applied twice in a row for
+the same file**, so if a context compaction dropped the earlier copy, one more
+Read always returns the content; the notice says exactly that. And a Read that
+any surface replaced records no content observation at all, so the agent is
+never told it already has bytes that a skeleton stood in for. Savings appear
+under the `read_reread` filter, and a repo with it off still gets the
+counterfactual.
+
+**Searches that time out.** On Windows a `Glob` can exhaust ripgrep's 20-second
+budget and return nothing at all — not "no matches", nothing, after twenty
+seconds of waiting. A glob is a path query and the index already holds every
+path, so repowise answers it offline at the moment the failure happens, naming
+the matching paths and counting any it did not list. The win here is wall clock
+rather than tokens. Brace expansion (`{a,b}`) is declined rather than
+half-matched, and zero indexed matches stays silent: the index having nothing to
+say is not the tree having no such file.
+
 **Edit-time "governed by" decisions.** When the agent edits a file governed by an
 architectural decision (via `decision_node_links`), it gets a one-line notice
 with the rationale, at most once per session per decision and only a few times

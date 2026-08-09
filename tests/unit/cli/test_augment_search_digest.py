@@ -14,8 +14,9 @@ from unittest.mock import patch
 
 import pytest
 
-from repowise.cli.commands import augment_cmd
-from repowise.cli.commands.augment_cmd import search_digest
+from repowise.cli.agent_adapters import adapter_for
+from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+from repowise.cli.commands.augment_cmd import replacement, search_digest
 from repowise.cli.commands.augment_cmd.search import _handle_search_post
 
 # A real multi-file flood: 60 matches over 6 files, the shape `group_search_matches`
@@ -55,7 +56,7 @@ def _fire(cwd, tool_output=None, client=None, pattern="compute_value"):
         tool_input={"pattern": pattern},
         tool_output=tool_output if tool_output is not None else dict(GREP_CONTENT_FLOOD),
         cwd=str(cwd),
-        client=client,
+        adapter=adapter_for(client),
     )
 
 
@@ -113,11 +114,9 @@ class TestCapabilityGate:
         assert _fire(opted_in, client=None).replacement is not None
 
     def test_old_client_build_falls_back_to_appending(self, opted_in) -> None:
+        """Protocol yes, installed build no. Both questions are the adapter's."""
         with patch.object(
-            augment_cmd.search_digest, "replaces_tool_output", return_value=True
-        ), patch(
-            "repowise.cli.commands.augment_cmd.read_skeleton.supports_updated_output",
-            return_value=False,
+            ClaudeCodeAdapter, "supports_updated_output", return_value=False
         ):
             result = _fire(opted_in)
         assert result.replacement is None
@@ -172,29 +171,45 @@ class TestWorthItGates:
         assert made.saved_tokens > 0
 
 
-class TestAsGrepOutput:
+class TestGrepWirePayload:
+    """The shared payload builder, on Grep's own output schema."""
+
+    def _wire(self, tool_response, text="x"):
+        return replacement.wire_payload("Grep", tool_response, text)
+
     def test_rejects_non_content_modes(self) -> None:
-        assert search_digest.as_grep_output({"mode": "files_with_matches"}, "x") is None
-        assert search_digest.as_grep_output({"filenames": []}, "x") is None
+        assert self._wire({"mode": "files_with_matches"}) is None
+        assert self._wire({"filenames": []}) is None
 
     def test_rejects_non_dict(self) -> None:
-        assert search_digest.as_grep_output("a string", "x") is None
-        assert search_digest.as_grep_output(None, "x") is None
+        assert self._wire("a string") is None
+        assert self._wire(None) is None
 
     def test_rejects_content_mode_without_content(self) -> None:
-        assert search_digest.as_grep_output({"mode": "content", "numLines": 3}, "x") is None
+        assert self._wire({"mode": "content", "numLines": 3}) is None
+
+    def test_rejects_a_tool_with_no_builder(self) -> None:
+        """An unknown tool cannot be replaced: guessing its envelope is how a
+        replacement gets rejected invisibly while the ledger records a saving."""
+        assert replacement.wire_payload("Bash", dict(GREP_CONTENT_FLOOD), "x") is None
 
     def test_leaves_search_facts_alone(self) -> None:
-        out = search_digest.as_grep_output(dict(GREP_CONTENT_FLOOD), "one\ntwo")
+        out = self._wire(dict(GREP_CONTENT_FLOOD), "one\ntwo")
         assert out["totalLines"] == GREP_CONTENT_FLOOD["totalLines"]
         assert out["numFiles"] == GREP_CONTENT_FLOOD["numFiles"]
         assert out["numLines"] == 2
 
 
-class TestReplacesToolOutput:
+class TestCanReplace:
+    """Whether a harness may be handed a replacement is the adapter's answer."""
+
     @pytest.mark.parametrize("client", [None, "claude", "claude-code"])
     def test_clients_that_can_replace(self, client) -> None:
-        assert search_digest.replaces_tool_output(client) is True
+        assert replacement.can_replace(adapter_for(client)) is True
 
     def test_codex_cannot(self) -> None:
-        assert search_digest.replaces_tool_output("codex") is False
+        assert replacement.can_replace(adapter_for("codex")) is False
+
+    def test_an_unknown_marker_resolves_to_the_default_adapter(self) -> None:
+        """A hook must never fail on a payload; capability is still checked."""
+        assert adapter_for("some-future-agent").name == "claude-code"

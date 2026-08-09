@@ -60,6 +60,12 @@ import tempfile
 # import at module scope. (No pathlib: it costs double-digit milliseconds
 # of interpreter startup, which this hook pays on every Bash call.)
 from repowise.cli.agent_adapters.base import RewriteResult
+
+# Free at module scope, and it has to be here rather than lazy: this module's
+# import is where the ledger's clock starts, so a firing's recorded cost covers
+# the whole invocation. Its own scope is ``os`` and ``time`` — sqlite3 is
+# deferred into the writer, so a command that bails never opens a database.
+from repowise.cli.hook_ledger import BAILED, REWRITTEN
 from repowise.cli.shell_lexer import (
     SAFE_FINAL_TOOLS,
     analyze_pipeline,
@@ -563,6 +569,23 @@ _PS_ALIAS_TOKENS = frozenset(
 )
 
 
+#: Why a command was not rewritten. One of these lands in the ledger for every
+#: shell command the hook sees, so the shape of what passes through stops being
+#: guesswork: an ``updatedInput`` rewrite is invisible in a transcript, and so
+#: is a bail, which means the hook's whole population was previously unmeasured.
+#:
+#: ``no_repo`` is recorded for completeness and can never actually be written —
+#: a command outside a repowise repo has no ledger to write to. Naming it is
+#: cheaper than leaving a reader to wonder where those went.
+BAIL_SHAPE = "shape"  # shell syntax the wrapper cannot preserve
+BAIL_UNRECOGNIZED = "unrecognized"  # not a command family we distill
+BAIL_PS_ALIAS = "ps_alias"  # PowerShell alias that would not survive a wrap
+BAIL_NO_REPO = "no_repo"  # cwd is not inside a repowise repo
+BAIL_DISABLED = "disabled"  # this repo turned command rewriting off
+BAIL_FAMILY_OFF = "family_off"  # this family specifically is off
+BAIL_PERMISSION = "permission"  # agent cannot honour the decided posture
+
+
 def decide(
     command: str, cwd: str, shell: str = "posix", source: str | None = None
 ) -> RewriteResult | None:
@@ -571,42 +594,55 @@ def decide(
     *source* overrides the ledger tag for agents with their own surface
     (``hook-codex``); by default it derives from the shell dialect.
     """
+    return _decide(command, cwd, shell, source)[0]
+
+
+def _decide(
+    command: str, cwd: str, shell: str = "posix", source: str | None = None
+) -> tuple[RewriteResult | None, str, str | None]:
+    """:func:`decide`, plus why it said no and which repo it was asked about.
+
+    Split out rather than folded in because the hook has to *count* itself: the
+    outcome and the repo root are what a ledger row needs, and the public
+    ``decide`` contract is a result or None. On a rewrite the reason is the
+    distill family, so one column carries both distributions.
+    """
     split = _split_safe_tail(command) if command else None
     chain: tuple[str, ...] = ()
     if split is not None:
         head_command, needs_inner_shell = split
         family = _classify_head(head_command)
         if family is None:
-            return None
+            return None, BAIL_UNRECOGNIZED, _find_repo_root(cwd)
         if shell == "powershell":
             first = _normalize(head_command).split(None, 1)[0]
             if first in _PS_ALIAS_TOKENS:
-                return None
+                return None, BAIL_PS_ALIAS, _find_repo_root(cwd)
     elif command and shell != "powershell":
         # A chain is POSIX shell syntax by construction (`&&`, `;`, `|`), so
         # it is only ever offered to the POSIX dialect.
         chain = _chain_families(command) or ()
         if not chain:
-            return None
+            return None, BAIL_SHAPE, _find_repo_root(cwd)
         family, needs_inner_shell = chain[0], True
     else:
-        return None
+        return None, BAIL_SHAPE, _find_repo_root(cwd)
 
     # Only act inside repos that opted into repowise; the hook is installed
     # globally, but a repo without .repowise/ gets untouched commands.
     repo_root = _find_repo_root(cwd)
     if repo_root is None:
-        return None
+        return None, BAIL_NO_REPO, None
 
     enabled, permission, families = _load_commands_config(repo_root)
     if not enabled:
-        return None
+        return None, BAIL_DISABLED, repo_root
     # Every family the command touches has to be allowed, not just the one
     # that names the rewrite: otherwise `git_diff: off` would be bypassable
     # by chaining a git diff behind anything still on.
     for touched in chain or (family,):
         if families.get(touched) in _OFF_VALUES:
-            return None
+            return None, BAIL_FAMILY_OFF, repo_root
     family_setting = families.get(family)
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
@@ -621,13 +657,19 @@ def decide(
     # inner shell reads the token back byte for byte; `$` already bailed, so
     # nothing in it re-expands.
     wrapped = _single_quote(command.strip()) if needs_inner_shell else command.strip()
-    return RewriteResult(
-        command=f"repowise distill --source {source} {wrapped}",
-        permission=permission,
-        reason=(
-            f"repowise distill: compact {family} rendering; full output stays "
-            f"recoverable via `repowise expand <ref>`"
+    # The reason on a rewrite is the family: one ledger column then carries
+    # both distributions, what we rewrite and what we decline.
+    return (
+        RewriteResult(
+            command=f"repowise distill --source {source} {wrapped}",
+            permission=permission,
+            reason=(
+                f"repowise distill: compact {family} rendering; full output stays "
+                f"recoverable via `repowise expand <ref>`"
+            ),
         ),
+        family,
+        repo_root,
     )
 
 
@@ -637,20 +679,21 @@ def _select_adapter(argv: list[str]):
     Each agent's hook config registers its own flavor (Codex hooks run
     ``repowise-rewrite --agent codex``) — the payloads are near-identical
     JSON, so argv is the only reliable discriminator.
+
+    Resolution goes through the shared registry rather than a name test here.
+    This used to be its own ``if agent == "codex"`` ladder, which meant adding
+    a harness was a registration *and* an edit in this file — the thing the
+    registry exists to stop.
     """
+    from repowise.cli.agent_adapters import adapter_for
+
     agent = ""
     for i, arg in enumerate(argv):
         if arg == "--agent" and i + 1 < len(argv):
             agent = argv[i + 1]
         elif arg.startswith("--agent="):
             agent = arg.split("=", 1)[1]
-    if agent == "codex":
-        from repowise.cli.agent_adapters.codex import CodexAdapter
-
-        return CodexAdapter()
-    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
-
-    return ClaudeCodeAdapter()
+    return adapter_for(agent)
 
 
 def main() -> None:
@@ -658,20 +701,51 @@ def main() -> None:
         adapter = _select_adapter(sys.argv[1:])
         request = adapter.parse_hook_payload(sys.stdin.read())
         if request is not None:
-            source = "hook-codex" if adapter.name == "codex" else None
-            result = decide(request.command, request.cwd, request.shell, source=source)
+            source = adapter.savings_source
+            result, reason, repo_root = _decide(
+                request.command, request.cwd, request.shell, source=source
+            )
+            outcome = BAILED
             # An agent that can't honor the decided posture gets a
             # passthrough, never a silently escalated rewrite (Codex has no
             # ask-with-mutation — only families set to `allow` rewrite).
-            if result is not None and result.permission in adapter.rewrite_permissions:
-                sys.stdout.write(adapter.render_response(result))
-                sys.stdout.flush()
+            if result is not None:
+                if result.permission in adapter.rewrite_permissions:
+                    sys.stdout.write(adapter.render_response(result))
+                    sys.stdout.flush()
+                    outcome = REWRITTEN
+                else:
+                    reason = BAIL_PERMISSION
+            _count_decision(repo_root, request.session_id, outcome, reason)
     except (SystemExit, KeyboardInterrupt):
         raise
     except BaseException:
         # A hook failure must never surface in the agent transcript.
         pass
     sys.exit(0)
+
+
+def _count_decision(repo_root: str | None, session_id: str, outcome: str, reason: str) -> None:
+    """Record what this invocation decided. After stdout, and never fatal.
+
+    Deferred past the response for the reason every ledger write here is: the
+    agent must not wait on accounting. Skipped entirely outside a repowise repo
+    — there is no sidecar to write to — and skipped when the harness offered no
+    session id, because a row nothing can be attributed to is not worth the
+    write.
+
+    This is the only instrument this hook has. A rewrite leaves no trace in a
+    transcript, and neither does a passthrough, so without these counters the
+    busiest surface in the system reports nothing at all.
+    """
+    if not repo_root or not session_id:
+        return
+    try:
+        from repowise.cli.hook_ledger import record_rewrite
+
+        record_rewrite(repo_root, session_id, outcome=outcome, reason=reason)
+    except Exception:
+        return
 
 
 if __name__ == "__main__":

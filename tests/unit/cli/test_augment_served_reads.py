@@ -14,8 +14,8 @@ import sqlite3
 from pathlib import Path
 
 from repowise.cli.commands.augment_cmd import served_reads
-from repowise.cli.commands.augment_cmd.ledger import _claim_ledger
 from repowise.cli.commands.augment_cmd.search import _log_search_firing
+from repowise.cli.hook_ledger import _claim_ledger
 
 _TARGET = "src/core/models.py"
 

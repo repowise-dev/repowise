@@ -436,10 +436,13 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
             globals_shown += 1
     if not shown:
         return None
-    from .ledger import _record_injections
+    from repowise.cli.hook_ledger import _record_injections
 
-    _record_injections(repo_path, session_id, [d["id"] for d in shown], node_id="")
-    return "\n".join(lines)
+    block = "\n".join(lines)
+    _record_injections(
+        repo_path, session_id, [d["id"] for d in shown], node_id="", chars=len(block)
+    )
+    return block
 
 
 # ---------------------------------------------------------------------------
@@ -523,15 +526,11 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
         conn.close()
 
     shown.append(decision["id"])
-    if session_id:
-        from .ledger import _claim_injection
 
-        claimed, session_total = _claim_injection(
-            repo_path, session_id, decision["id"], rel
-        )
-        if not claimed or session_total > _MAX_EDIT_NOTICES:
-            return None
-
+    # Built before the claim, not after: the claim records what this emission
+    # costs, and the cost model sums that column. A row claimed at zero chars
+    # is an injection the net reports as free. Building first is a handful of
+    # string operations on a path that has already done a database query.
     why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
     if _echoes_title(decision["title"], why):
         why = ""  # legacy rows echo the title into decision/rationale
@@ -540,7 +539,17 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
         line += f" because {why}"
     if sessions_n >= 2:
         line += f" (confirmed across {sessions_n} sessions)"
-    return line + "."
+    line += "."
+
+    if session_id:
+        from repowise.cli.hook_ledger import _claim_injection
+
+        claimed, session_total = _claim_injection(
+            repo_path, session_id, decision["id"], rel, chars=len(line)
+        )
+        if not claimed or session_total > _MAX_EDIT_NOTICES:
+            return None
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -628,8 +637,9 @@ def _edit_fix_history_notice(repo_path: Path, rel: str, session_id: str) -> str 
     line += "."
 
     if session_id:
+        from repowise.cli.hook_ledger import _claim_ledger
+
         from ._shared import _ledger_key
-        from .ledger import _claim_ledger
 
         claimed, shown = _claim_ledger(
             repo_path,

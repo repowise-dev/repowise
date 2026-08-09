@@ -196,6 +196,10 @@ The existing PostToolUse hook complements this passively:
   (opt-in: `hooks.read_skeleton`). The advisory version of this — a one-line
   nudge naming the skeleton's token cost — was retired after 516 firings
   showed no effect above the base rate.
+- **Re-read collapse** — a `Read` of a file this session already read, at the
+  same range, with no intervening edit and an identical content hash, is served
+  as a short notice naming the earlier read (opt-in: `hooks.read_reread`).
+  Never applied twice in a row, so one more Read always returns the content.
 - **Stale-read notice** — after an `Edit`/`Write`, a later `Read` of the same
   file warns that earlier excerpts predate the edit.
 - **Search digest** — grep floods (≥50 lines) get a compact grouped-by-file

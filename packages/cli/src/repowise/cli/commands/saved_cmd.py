@@ -135,9 +135,11 @@ def saved_command(
         show_footer=True,
         caption=(
             "Covers the 'repowise distill' command/hook path, MCP "
-            "counterfactual savings (mcp:<tool>), and the Read hook serving a "
-            "skeleton in place of a whole file (read_skeleton / hook-read); "
-            "group by source to split them."
+            "counterfactual savings (mcp:<tool>), and the hooks that replace a "
+            "tool result: a Read served as a skeleton (read_skeleton), an "
+            "unchanged re-read served as a pointer (read_reread), and a search "
+            "flood served as a digest (search_digest). Group by filter or "
+            "source to split them."
         ),
     )
     table.add_column(group_by.capitalize(), style="cyan", footer="[bold]TOTAL[/bold]")
@@ -168,10 +170,100 @@ def saved_command(
     )
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
     _print_mcp_truncation_line(db_path, since_ts)
+    _print_net(start, saved, since_ts)
     _print_missed_summary_line(start, missed_days)
     _print_reread_summary_line(start, missed_days)
     _print_forgone_read_skeleton_line(start, db_path, since_ts)
     console.print()
+
+
+def _print_net(start: Path, saved_tokens: int, since_ts: float | None = None) -> None:
+    """Gross saved, gross spent, net — and the net may be negative.
+
+    This is the only line here that can answer "is this worth mounting". The
+    table above counts credits and structurally cannot report a loss, which
+    made every figure it printed an advertisement rather than a measurement.
+
+    Three honesty rules are load-bearing.
+
+    **The two sides have to cover the same window.** The debit side cannot be
+    windowed: the resident prefix is a property of the file as it is now, not
+    of any date range. So under ``--since`` this prints nothing at all rather
+    than setting a windowed credit against an all-time cost, which produced a
+    confident negative that was an artifact of the window and nothing else.
+
+    **Sessions that predate the debit ledger have no cost rows**, so a net
+    across them credits savings whose cost was never recorded.
+
+    **The debit total is a lower bound**: some real costs are not computable
+    from local data. They are named rather than dropped, so the net reads as
+    "no better than this".
+    """
+    if since_ts is not None:
+        console.print(
+            "\n  [dim]No net under --since: savings can be windowed by date and the "
+            "resident cost of the CLAUDE.md block cannot, so the two would not "
+            "describe the same period. Run without --since for the net.[/dim]"
+        )
+        return
+    try:
+        from repowise.cli.helpers import find_repowise_repo_root
+        from repowise.core.sessions.efficacy import advisory_cost
+        from repowise.core.sessions.footprint import measure
+        from repowise.core.sessions.staging import SessionStagingStore, default_store_path
+
+        repo_root = find_repowise_repo_root(start) or start
+        advisory_chars = advisory_firings = 0
+        if default_store_path(repo_root).exists():
+            store = SessionStagingStore.open_default(repo_root)
+            try:
+                advisory_chars, advisory_firings = advisory_cost(store.efficacy_rows())
+            finally:
+                store.close()
+        footprint = measure(
+            repo_root,
+            advisory_chars=advisory_chars,
+            advisory_firings=advisory_firings,
+        )
+    except Exception:
+        return
+    if not footprint.debits:
+        return
+
+    amp = footprint.amplification
+    multiplier = amp.ratio if amp.known else 1.0
+    billed_saved = int(saved_tokens * multiplier)
+    net = billed_saved - footprint.billed_total
+    colour = "green" if net > 0 else "red"
+
+    console.print()
+    console.print("  [bold]Net[/bold] [dim](billed tokens, after amplification)[/dim]")
+    console.print(f"    gross saved   [green]{billed_saved:>12,}[/green]")
+    console.print(f"    gross spent   [yellow]{footprint.billed_total:>12,}[/yellow]")
+    console.print(f"    net           [{colour}]{net:>12,}[/{colour}]")
+    for debit in footprint.debits:
+        console.print(
+            f"      [dim]{debit.label}: {debit.billed_tokens:,} "
+            f"({debit.raw_tokens:,} raw — {debit.detail})[/dim]"
+        )
+    if amp.known:
+        console.print(
+            f"      [dim]amplification {amp.ratio:.1f}x, measured over {amp.sessions} "
+            f"sessions at a median {amp.calls} API calls each. It is a function of "
+            "session length, not a constant.[/dim]"
+        )
+    else:
+        console.print(
+            "      [dim]no cache figures on disk, so nothing was amplified and "
+            "both sides are raw tokens.[/dim]"
+        )
+    for missing in footprint.unmeasured:
+        console.print(f"      [dim]not counted as a cost: {missing}.[/dim]")
+    console.print(
+        "      [dim]Savings recorded before the cost side existed have no debit "
+        "rows behind them, so this net is a ceiling on how good the trade is, "
+        "never a floor.[/dim]"
+    )
 
 
 #: One entry per replacing hook surface: the savings-ledger source that tags
@@ -193,6 +285,13 @@ _FORGONE_SURFACES = (
         "digest-served searches",
         "search",
         "repowise hook search-digest install",
+    ),
+    (
+        "hook-read",
+        "read_reread",
+        "collapsed re-reads",
+        "re-read",
+        "repowise hook read-reread install",
     ),
 )
 
@@ -262,9 +361,17 @@ def _print_forgone_read_skeleton_line(start: Path, db_path: Path, since_ts: floa
         try:
             con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
             try:
-                where, params = " WHERE source = ?", (source,)
+                # Filtered on the surface's *filter*, not its source: the
+                # skeleton and the re-read collapse share ``hook-read``, so a
+                # source-only sum would report each one's counterfactual twice.
+                # Rows predating the ``filter`` column carry '' and land under
+                # the surface that was the only one writing when they were made.
+                legacy = " OR (filter = '' AND source = ?)" if flag == "read_skeleton" else ""
+                params: tuple = (flag, source) if legacy else (flag,)
+                where = f" WHERE (filter = ?{legacy})"
                 if since_ts is not None:
-                    where, params = " WHERE source = ? AND created_at >= ?", (source, since_ts)
+                    where += " AND created_at >= ?"
+                    params = (*params, since_ts)
                 items, raw, distilled = con.execute(
                     "SELECT COUNT(DISTINCT path), COALESCE(SUM(raw_tokens),0), "
                     f"COALESCE(SUM(distilled_tokens),0) FROM forgone_savings{where}",

@@ -298,7 +298,7 @@ async def test_drained_orphan_is_counted_as_neither_side(session, tmp_path):
 
 def test_hook_written_injections_table_is_schema_compatible(tmp_path):
     """The hook's raw CREATE TABLE and the staging schema must agree."""
-    from repowise.cli.commands.augment_cmd.ledger import _record_injections
+    from repowise.cli.hook_ledger import _record_injections
 
     # Hook writes first (cold sidecar), store opens the same DB afterwards.
     _record_injections(tmp_path, "sess-1", ["d1"], node_id="src/a.py")

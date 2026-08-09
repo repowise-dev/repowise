@@ -252,8 +252,26 @@ means every key below is off.
 ```yaml
 hooks:
   read_skeleton: false           # serve large indexed files as skeletons
+  read_reread: false             # serve unchanged re-reads as a pointer
+  search_digest: false           # serve multi-file grep floods as a digest
 ```
 
+- `read_reread` lets the PostToolUse Read hook answer a *repeat* Read with a
+  short notice instead of the content, when the same range was already served
+  this session, no `Edit`/`Write` came between, and the bytes hash the same.
+  The notice names the earlier read and the tool call it happened on.
+  Savings land in `repowise saved` under the `read_reread` filter.
+  - **Nothing is guessed.** The decision is a hash comparison over what the
+    agent was actually served. A file whose content differs is served in full,
+    with a line saying it changed on disk and not through an edit in this
+    session — which is worth more than the bytes, since nothing else in the
+    session can discover that.
+  - **Never twice in a row for the same file.** The premise is that the earlier
+    copy is still in the agent's context, and a context compaction removes it.
+    That is not detectable from a hook, so reading again always returns the
+    content, and the notice says so.
+  - Requires Claude Code 2.1.218+; older clients are left untouched.
+    `REPOWISE_HOOK_READ_REREAD=1` overrides the file for one session.
 - `read_skeleton` lets the PostToolUse Read hook return the *skeleton* of a
   file instead of the file, for an unbounded Read of a large indexed file, once
   per file per session. Signatures stay; bodies become `... N lines (a-b)`

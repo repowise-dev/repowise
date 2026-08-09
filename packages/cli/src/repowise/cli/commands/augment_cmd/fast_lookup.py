@@ -136,6 +136,20 @@ def files_by_basename(
     return [node_id for (node_id,) in rows if node_id]
 
 
+def file_nodes(conn: sqlite3.Connection, repository_id: str, limit: int = 20000) -> list[str]:
+    """Every indexed file path in this repo, for answering a path query offline.
+
+    Capped rather than exhaustive: the caller matches a glob against these and
+    then shows a handful, so a repo large enough to hit the cap is one whose
+    answer was going to be truncated anyway.
+    """
+    rows = conn.execute(
+        "SELECT node_id FROM graph_nodes WHERE repository_id = ? AND node_type = 'file' LIMIT ?",
+        (repository_id, limit),
+    ).fetchall()
+    return [node_id for (node_id,) in rows if node_id]
+
+
 def symbols_matching(
     conn: sqlite3.Connection, repository_id: str, paths: list[str], needle: str
 ) -> list[tuple[str, str]]:

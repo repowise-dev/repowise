@@ -18,11 +18,17 @@ if TYPE_CHECKING:
 class RewriteRequest:
     """Agent-agnostic view of one shell command an agent is about to run."""
 
-    __slots__ = ("command", "cwd", "shell")
+    __slots__ = ("command", "cwd", "session_id", "shell")
 
-    def __init__(self, command: str, cwd: str, shell: str = "posix") -> None:
+    def __init__(
+        self, command: str, cwd: str, shell: str = "posix", session_id: str = ""
+    ) -> None:
         self.command = command
         self.cwd = cwd
+        #: The agent's session id, carried solely so the rewrite hook can
+        #: count itself in the ledger. Empty means "not offered by this
+        #: harness", and an unattributable count is not written at all.
+        self.session_id = session_id
         #: ``"posix"`` or ``"powershell"`` — which shell dialect the agent
         #: will run the command under. PowerShell commands get extra
         #: classifier bailouts (PS aliases like ``ls`` don't survive a
@@ -122,16 +128,33 @@ def unmatched_tool_names(matcher: str | None, names: frozenset[str]) -> tuple[st
 
 
 class AgentAdapter(ABC):
-    """Everything agent-specific about the command-rewrite hook.
+    """Everything agent-specific about repowise's hooks, in one declaration.
 
     Implementations translate between one agent's hook protocol and the
-    agent-agnostic :class:`RewriteRequest`/:class:`RewriteResult` pair, and
-    own that agent's hook install/uninstall. The classification logic in
-    :mod:`repowise.cli.rewrite_hook` never sees a hook payload.
+    agent-agnostic :class:`RewriteRequest`/:class:`RewriteResult` pair, own
+    that agent's hook install/uninstall, and **answer the capability questions
+    the hook surfaces would otherwise ask about a client by name**. The
+    classification logic in :mod:`repowise.cli.rewrite_hook` and the
+    PostToolUse surfaces in :mod:`repowise.cli.commands.augment_cmd` never see
+    a hook payload and never branch on ``client == "codex"``.
+
+    That last part is why the capability class variables below exist. There
+    are now three surfaces that replace a tool result, and each one asking
+    "which client is this, and can it honour ``updatedToolOutput``?" for
+    itself is three copies of an answer that belongs to the adapter. Adding a
+    fourth harness should be one registration here, not a new branch in three
+    modules.
     """
 
     #: Stable adapter identifier (e.g. ``"claude-code"``).
     name: ClassVar[str]
+
+    #: Savings-ledger ``source`` tag for commands this agent's rewrite hook
+    #: wrapped, so ``repowise saved --by source`` can tell harnesses apart.
+    #: None means "derive it from the shell dialect", which is what the
+    #: original harness does (``hook-bash`` / ``hook-powershell``). Declared
+    #: here rather than tested for by name at the call site.
+    savings_source: ClassVar[str | None] = None
 
     #: Permission postures this agent's hook protocol can actually honor for
     #: a rewritten command. Claude Code supports ask-with-mutation; an agent
@@ -140,11 +163,42 @@ class AgentAdapter(ABC):
     #: rather than silently escalating them to an unprompted rewrite.
     rewrite_permissions: ClassVar[frozenset[str]] = frozenset({"ask", "allow"})
 
+    #: Whether this agent's PostToolUse protocol has a field that *replaces*
+    #: a tool result at all. Codex's carries a context string and nothing
+    #: else, so a replacement handed to it is dropped on the floor, and
+    #: dropped **silently**, which is how a surface can record served rows
+    #: while every agent still sees the original bytes. Default False: a
+    #: harness is assumed unable to replace until its adapter says otherwise,
+    #: because the cost of assuming wrong is a ledger full of savings that
+    #: never happened.
+    replaces_tool_output: ClassVar[bool] = False
+
     #: Tool names this agent uses to run a shell command. The installed hook's
     #: matcher is derived from this set and checked back against it, so an
     #: upstream rename cannot leave a matcher and a gate disagreeing in
     #: silence. Empty means the adapter declines to say.
     shell_tool_names: ClassVar[frozenset[str]] = frozenset()
+
+    #: Tool names that read a file, edit one, and search the tree. The
+    #: PostToolUse dispatcher routes on these rather than on literals, so a
+    #: harness that calls its editor ``apply_patch`` needs no branch of its
+    #: own. Empty means this agent has no such tool, which is a real answer
+    #: and not an omission: an agent that reaches the shell to search has no
+    #: search tool to register a matcher against, and registering one anyway
+    #: buys a surface that can never fire.
+    read_tool_names: ClassVar[frozenset[str]] = frozenset()
+    edit_tool_names: ClassVar[frozenset[str]] = frozenset()
+    search_tool_names: ClassVar[frozenset[str]] = frozenset()
+
+    def supports_updated_output(self) -> bool:
+        """Whether the *installed build* of this agent can honour a replacement.
+
+        Separate from :attr:`replaces_tool_output`, which is about the
+        protocol: an agent whose protocol has the field may still be running a
+        release that predates it. Only an adapter that answers True to both is
+        handed a replacement. Default False, matching the class default above.
+        """
+        return False
 
     @abstractmethod
     def detect(self) -> bool:

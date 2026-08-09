@@ -526,9 +526,11 @@ def _run_generation_phase(
         "(tests, builds, git, searches) run through `repowise distill`; a "
         "whole-file Read comes back as a skeleton (`hooks.read_skeleton`); a "
         "grep matching many files comes back as a per-file digest "
-        "(`hooks.search_digest`). One consent, and this flag decides all three "
-        "without a prompt. Default: ask when interactive, skip otherwise. In "
-        "workspace mode the verdict applies to every selected repo."
+        "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
+        "back as a pointer to the earlier read (`hooks.read_reread`). One "
+        "consent, and this flag decides all four without a prompt. Default: "
+        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "applies to every selected repo."
     ),
 )
 @click.option(

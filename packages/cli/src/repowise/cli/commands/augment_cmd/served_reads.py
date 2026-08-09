@@ -64,7 +64,7 @@ def _log_read_after_served(
         return
     start, end = window
     if _served_covers(repo_path, session_id, rel, start, end):
-        from .ledger import _claim_ledger
+        from repowise.cli.hook_ledger import _claim_ledger
 
         _claim_ledger(
             repo_path,
