@@ -68,6 +68,7 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
@@ -1553,6 +1554,10 @@ def init_command(
         )
         # Fingerprint after config writes so the first update doesn't false-positive.
         base_state["config_fingerprint"] = config_fingerprint(repo_path)
+        # Index-only is the keyless default, so this is where most installs get
+        # their stamp. Without it `health_analyzer_changed` reads absent-as-
+        # unchanged and the version trigger never fires for them.
+        base_state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
         # Index-only still renders the full concept tree (deterministically, from
         # templates), so the store has the current capability — stamp the terminal
         # version rather than clamping it below the reindex gate and falsely

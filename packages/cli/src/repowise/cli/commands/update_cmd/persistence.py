@@ -17,6 +17,7 @@ from typing import Any
 import structlog
 
 from repowise.cli.helpers import console, run_async, save_state
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
 from .incremental import _build_repo_graph
 
@@ -195,9 +196,15 @@ def _persist_index_only_update(
     git_decay_map: dict | None = None,
     exclude_patterns: list[str] | None = None,
     head_ts: float | None = None,
+    force_full_rescore: bool = False,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
+
+    ``force_full_rescore`` runs the full health re-score regardless of the
+    periodic gate. Set by the config-changed caller, which relies on this path
+    rather than re-scoring separately and returning — doing that advanced
+    ``last_sync_commit`` past commits it never indexed.
 
     DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
     state-file updates and console reporting stay here. Best-effort steps
@@ -229,16 +236,26 @@ def _persist_index_only_update(
     # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
     # DB, so re-score every file's findings against the decayed inputs. Gated to
     # ~weekly since only the findings (not their cheap git inputs) lag here.
+    # ``force_full_rescore`` is the config-changed caller: a config edit
+    # invalidates every persisted score, and the partial health update above
+    # only reached the changed files.
     last_full_rescore_at = state.get("last_full_rescore_at")
-    if full_rescore_due(state, head_ts) and run_decay_health_rescore(
+    health_analyzer_version = state.get("health_analyzer_version")
+    if (force_full_rescore or full_rescore_due(state, head_ts)) and run_decay_health_rescore(
         repo_path, graph_builder, parsed_files or [], exclude_patterns or []
     ):
-        last_full_rescore_at = head_ts
+        # Only the time gate reads this, and it treats a non-numeric value as
+        # "never re-scored", so leave a real stamp alone rather than writing
+        # None over it when git gave us no timestamp.
+        if head_ts is not None:
+            last_full_rescore_at = head_ts
+        health_analyzer_version = HEALTH_ANALYZER_VERSION
 
     new_state = {
         **state,
         "last_sync_commit": head,
         "last_full_rescore_at": last_full_rescore_at,
+        "health_analyzer_version": health_analyzer_version,
         "config_fingerprint": config_fingerprint(repo_path),
         # Record the renderer this run rendered with. Without this an index-only
         # update that regenerated stale file pages leaves the stored fingerprint
@@ -1025,7 +1042,13 @@ def _run_full_health_rescore(
 
     save_state(
         repo_path,
-        {**state, "last_sync_commit": head, "config_fingerprint": curr_fingerprint},
+        {
+            **state,
+            "last_sync_commit": head,
+            "config_fingerprint": curr_fingerprint,
+            # These rows were just rewritten by this analyzer.
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+        },
     )
     elapsed = time.monotonic() - start
     console.print(f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s")
@@ -1050,12 +1073,37 @@ def _full_rescore_interval_days() -> float:
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
-def full_rescore_due(state: dict, head_ts: float | None) -> bool:
-    """Whether a periodic idle-file health re-score is due this update (#728).
+def health_analyzer_changed(state: dict) -> bool:
+    """Whether the stored health rows were written by a different analyzer.
 
-    Absent ``head_ts`` (git unavailable) → not due. Absent stamp (never
-    re-scored, or legacy state) → due, to establish the recovered baseline.
+    A legacy state file with no stamp is **not** a change: the rows it wrote
+    are no more suspect than any other pre-upgrade rows, and treating absence
+    as drift would re-score every existing install once on upgrade for no
+    stated defect. They pick the stamp up on their first re-score from any
+    other trigger.
     """
+    stored = state.get("health_analyzer_version")
+    return stored is not None and stored != HEALTH_ANALYZER_VERSION
+
+
+def full_rescore_due(state: dict, head_ts: float | None) -> bool:
+    """Whether a full health re-score is due this update.
+
+    Two independent triggers:
+
+    * the analyzer changed since these rows were written — re-score now, so a
+      correction lands on the next update rather than waiting out the timer;
+    * the periodic idle-file cadence (#728).
+
+    The version check is deliberately ahead of the ``head_ts`` guard: an
+    analyzer change invalidates the rows whether or not git is readable.
+
+    Absent ``head_ts`` (git unavailable) → the time gate cannot fire. Absent
+    time stamp (never re-scored, or legacy state) → due, to establish the
+    recovered baseline.
+    """
+    if health_analyzer_changed(state):
+        return True
     if head_ts is None:
         return False
     last = state.get("last_full_rescore_at")

@@ -57,6 +57,28 @@ from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 
 log = structlog.get_logger(__name__)
 
+# Bump when a change to this analyzer makes already-persisted health rows wrong
+# — a new or removed biomarker, a changed attribution rule, a different finding
+# shape. ``repowise update`` compares it against the value stored in state.json
+# and re-scores on mismatch (see ``update_cmd.persistence.full_rescore_due``),
+# instead of waiting out the 7-day decay timer.
+#
+# Reach, stated honestly: the gate is only consulted once an update reaches the
+# incremental path, so this lands on the next update that has changed files. A
+# repo with no new commits returns at the "already up to date" branch and picks
+# the correction up on its next commit; workspace members and the hosted
+# indexer do not run this path at all. That is the same reach the decay timer
+# already has — this extends that trigger rather than adding a wider one.
+#
+# Deliberately *not* folded into ``config_fingerprint``: that fingerprint means
+# "this repo's config content changed", and a workspace update answers drift in
+# it by full-re-indexing every member repo. An analyzer change invalidates the
+# scores, not the parse or the git index, so it routes to the re-score alone.
+#
+# Not a licence to move a calibrated scoring weight — those are frozen
+# independently of this stamp.
+HEALTH_ANALYZER_VERSION = 1
+
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
 _EXTRACT_METHOD_SOURCES = frozenset({"large_method", "brain_method", "complex_method"})

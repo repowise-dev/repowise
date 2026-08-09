@@ -25,6 +25,7 @@ from repowise.cli.helpers import (
     stamp_offered_slots,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.models import count_stub_fallbacks
 
@@ -389,4 +390,8 @@ def save_full_state_and_config(
 
     # Re-save state with the fingerprint now that config.yaml is written.
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    # This index's health rows were written by the current analyzer, so start
+    # tracking it here — otherwise a fresh install carries no stamp and the
+    # first analyzer change after it cannot tell it needs a re-score.
+    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
     save_state(repo_path, state, full_index=True)

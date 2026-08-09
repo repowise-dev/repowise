@@ -44,6 +44,7 @@ from repowise.cli.helpers import (
     save_state,
     stamp_offered_slots,
 )
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
 
 
@@ -517,6 +518,10 @@ def upgrade_to_full(
     # every registered onboarding slot against whole-repo signals, so after it
     # there is nothing left for the notice to report.
     stamp_offered_slots(state, enabled=config.enable_onboarding)
+    # This run re-ran health analysis over the whole repo, so its rows come
+    # from the current analyzer. Without the stamp the next plain `update`
+    # would read a stale version and pay a redundant full re-score.
+    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
     save_state(repo_path, state, full_index=True)
     if embedder_name and embedder_name != cfg.get("embedder"):
         from repowise.cli.helpers import save_config_partial

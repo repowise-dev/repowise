@@ -408,10 +408,44 @@ class TestUpdateConfigChangeDetection:
         # Fingerprint must NOT advance, so a real update still re-scores later.
         assert self._state(git_work_repo)["config_fingerprint"] == fp_before
 
-    def test_config_change_with_source_diffs_runs_full_rescore(self, runner, git_work_repo):
-        """A config change must take the full re-score path even when there are
-        also source-file commits (not the partial update)."""
+    # The no-diffs half of the branch — which keeps its early return — is
+    # already covered by test_init_stores_fingerprint_and_update_detects_config_change
+    # above, which asserts exactly the same three things.
+
+    @pytest.mark.parametrize("mode", ["index-only", "docs"])
+    def test_config_change_with_source_diffs_still_indexes_the_commits(
+        self, runner, git_work_repo, mode
+    ):
+        """A config change must never advance the sync pointer past commits it
+        did not index.
+
+        The config branch used to re-score health and return early, skipping the
+        graph rebuild, git re-index, dead-code and page regeneration — and then
+        ``_run_full_health_rescore`` saved ``last_sync_commit=head`` anyway. In
+        index-only mode ``base_ref`` *is* ``last_sync_commit``, so the very next
+        update saw ``base_ref == head``, said "Already up to date", and the
+        commit's files stayed out of the index until a manual ``--full``.
+
+        Parameterized because the two modes lose different amounts: index-only
+        loses the commits permanently, while docs mode self-heals on the next
+        update via its separate ``last_docs_commit`` pointer — but skips the git
+        re-index on the run itself either way, which is what this asserts.
+        """
+        import json
+
+        # Docs mode regenerates pages, so it needs a provider; ``mock`` is the
+        # registered test one and keeps this a CLI test, not a provider test.
+        args = ["--index-only"] if mode == "index-only" else ["--docs", "--provider", "mock"]
         runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
+
+        # Switch the *periodic* re-score gate off. `init` writes no
+        # ``last_full_rescore_at``, so without this the #728 time gate is due on
+        # the very first update and fires the full re-score on its own — which
+        # would let this test pass even with the config-forced re-score deleted.
+        state_file = git_work_repo / ".repowise" / "state.json"
+        seeded = json.loads(state_file.read_text(encoding="utf-8"))
+        seeded["last_full_rescore_at"] = 9e18  # far future: never "due"
+        state_file.write_text(json.dumps(seeded), encoding="utf-8")
 
         # New source commit AND a config change in the same update window.
         (git_work_repo / "new_module.py").write_text("def f():\n    return 1\n", encoding="utf-8")
@@ -421,12 +455,31 @@ class TestUpdateConfigChangeDetection:
             '{"disabled_biomarkers": ["ungoverned_hotspot"]}', encoding="utf-8"
         )
 
-        result = runner.invoke(
-            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
-        )
+        result = runner.invoke(cli, ["update", str(git_work_repo), *args], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert "Config files changed" in result.output
-        assert "health re-score complete" in result.output.lower()
+        # The re-score still happens — it just runs off the graph the
+        # incremental path already built instead of a second traverse. With the
+        # time gate seeded off above, this line can only come from the
+        # config-forced re-score, so it pins that the force is wired to the
+        # path this mode actually takes (they are different code).
+        assert "Health re-score:" in result.output
+
+        # git_metadata is the decisive table: the standalone re-score rebuilds
+        # and persists the graph itself, so graph_nodes / health_file_metrics
+        # carry the new file either way and prove nothing. Only the git
+        # re-index — churn, ownership, co-change — is genuinely skipped by the
+        # early return, and it is 0 rows there.
+        db = git_work_repo / ".repowise" / "wiki.db"
+        assert (
+            _db_scalar(db, "SELECT COUNT(*) FROM git_metadata WHERE file_path = 'new_module.py'")
+            == 1
+        ), "the config branch returned before the git re-index reached the commit's files"
+
+        # And nothing is left pending: a second update has no work to find.
+        r2 = runner.invoke(cli, ["update", str(git_work_repo), *args], catch_exceptions=False)
+        assert r2.exit_code == 0, r2.output
+        assert "Already up to date" in r2.output
 
 
 class TestUpdatePreservesDeadCode:

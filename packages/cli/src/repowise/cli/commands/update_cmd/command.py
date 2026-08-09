@@ -985,6 +985,17 @@ def run_update(
         # Full re-score (not the partial update) so unchanged files pick up the
         # new rules/excludes instead of being left stale.
         console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
+
+    # A config change with commits still to index must NOT stop here. The
+    # standalone re-score below advances ``last_sync_commit`` to head, and in
+    # index-only mode ``base_ref`` *is* ``last_sync_commit`` — so returning
+    # early would move the pointer past commits this run never indexed, losing
+    # their churn / ownership / co-change / page state until a manual --full.
+    # (Docs mode limped on because ``last_docs_commit`` stayed put.) With
+    # changed files present we fall through to the normal incremental path and
+    # force the full re-score at its existing hook, which reuses the graph that
+    # path already builds — same re-score, no second traverse.
+    if config_changed and not file_diffs:
         if dry_run:
             console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
             if emitter is not None:
@@ -1006,6 +1017,11 @@ def run_update(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+        # No stamp_head_commit here, which is the behaviour this branch has
+        # always had: the re-score's `upsert_repository` re-reads HEAD from
+        # disk and advances the row itself. It re-reads rather than being told,
+        # so it is a no-op in a linked worktree or a non-git checkout — both
+        # pre-existing, and neither is what this change is about.
         _refresh_editor_stamp(repo_path, agents_md)
         consume_update_pending(repo_path, head)
         if emitter is not None:
@@ -1204,6 +1220,7 @@ def run_update(
                 git_decay_map=git_decay_map,
                 exclude_patterns=exclude_patterns,
                 head_ts=head_ts,
+                force_full_rescore=config_changed,
             )
         except Exception as exc:
             if emitter is not None:
@@ -1693,12 +1710,25 @@ def run_update(
     # DB, so re-score every file's findings against the decayed inputs. Reuses
     # the already-built graph (no second rebuild); gated to ~weekly. Stamped into
     # ``state`` below via the final save_state.
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     from .persistence import full_rescore_due, run_decay_health_rescore
 
-    if full_rescore_due(state, head_ts) and run_decay_health_rescore(
+    # ``config_changed`` forces the same re-score off this path's graph rather
+    # than letting the config branch above run a standalone one and return: a
+    # config edit invalidates every persisted score, and the partial health
+    # update only reaches the changed files. Reusing this hook is what makes
+    # falling through cost nothing extra — the graph is already built.
+    if (config_changed or full_rescore_due(state, head_ts)) and run_decay_health_rescore(
         repo_path, graph_builder, parsed_files, exclude_patterns
     ):
-        state["last_full_rescore_at"] = head_ts
+        # Only the time gate reads this stamp, and it treats a non-numeric
+        # value as "never re-scored". A forced re-score with git unavailable
+        # has no timestamp to record, so leave a real stamp alone rather than
+        # writing None over it.
+        if head_ts is not None:
+            state["last_full_rescore_at"] = head_ts
+        state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
 
     # ---- Editor project files (best-effort) ----
     _refresh_editor_stamp(repo_path, agents_md, degraded)
