@@ -121,3 +121,43 @@ class TestInitStampsTheCadence:
             "last_full_rescore_at": head_ts,
         }
         assert full_rescore_due(state, head_ts) is True
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "repowise.cli.commands.init_cmd.command",
+        "repowise.cli.commands.init_cmd.persistence",
+    ],
+)
+def test_init_never_stamps_the_cadence_for_a_run_that_scored_nothing(module_name):
+    """The stamp says "these rows are current", so it must not outrun the rows.
+
+    The health phase swallows its own failures and returns ``None``
+    (``pipeline/phases/analysis.py``), and a ``None`` report persists nothing
+    (``pipeline/persist.py``, ``if getattr(result, "health_report", None)``). An
+    unconditional stamp would then suppress the first update's re-score, which
+    is the only thing that would have written the missing rows, for a repo-week
+    and indefinitely on an idle repo, since the cadence is anchored to HEAD's
+    committer time rather than wall clock. Both update-side writers already
+    stamp only on a re-score that returned True; init has to match.
+
+    Source-level for the same reason ``test_page_tree_wiring`` is: the failure
+    is "somebody added a stamp and did not know the rule", the rows only exist
+    after a real pipeline run, and an unconditional stamp raises nothing and
+    reads as working right up until a health failure makes it permanent.
+    """
+    import inspect
+
+    lines = inspect.getsource(__import__(module_name, fromlist=["*"])).splitlines()
+    assert any("last_full_rescore_at" in line for line in lines), (
+        f"{module_name} no longer stamps the cadence at all, so a fresh index is "
+        "back to being re-scored by the update right after it"
+    )
+    sources = [line for line in lines if "= head_commit_ts(" in line]
+    assert sources, f"{module_name} no longer resolves a stamp value"
+    for line in sources:
+        assert "health_report" in line, (
+            f"{module_name} resolves the cadence stamp without checking that this "
+            f"run produced a health report: {line.strip()}"
+        )

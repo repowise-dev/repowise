@@ -427,8 +427,9 @@ def _head_commit_ts(repo_path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
     Lives in ``cli.helpers`` so ``init`` stamps the re-score gate in the units
-    this path reads back; kept as a module attribute here because the update
-    tests patch it by this name.
+    this path reads back. Kept as a thin module-level name because this module
+    is where the gate is evaluated, and a caller reading ``_head_commit_ts``
+    here should not have to know it resolves elsewhere.
     """
     from repowise.cli.helpers import head_commit_ts
 

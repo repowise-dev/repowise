@@ -285,9 +285,11 @@ async def _persist_async(
             # tombstones this session cannot see — so it is strictly the better
             # placed of the two, and doing it twice only pays for a repo-wide
             # page read that the second pass immediately repeats. Same reason as
-            # the related-pages backfill above. The cost of deferring: if the
-            # process dies between the two sessions, this run's pages sit
-            # unplaced until the next update re-renders and re-places them.
+            # the related-pages backfill above. The cost of deferring is
+            # atomicity: placement no longer commits in the same session as the
+            # pages, so if the process dies between the two, this run's pages
+            # sit unplaced until the next update. Recovery needs nothing to
+            # re-render, since that rebuild runs unconditionally.
 
             # Real DB total, not an accumulation: regeneration upserts, so
             # adding len(generated_pages) each run inflates the count forever.

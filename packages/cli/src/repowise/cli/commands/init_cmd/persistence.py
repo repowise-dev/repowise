@@ -398,9 +398,15 @@ def save_full_state_and_config(
     # This run just scored every file, so the periodic re-score cadence starts
     # now. Without the stamp the gate reads "never re-scored" and the very next
     # update re-scores the whole repo that init had only just finished scoring.
-    # None (no git) is left unstamped: the gate cannot fire without a head_ts
-    # either, so there is nothing to suppress.
-    _head_ts = head_commit_ts(repo_path)
+    #
+    # Only when there really is a report. The health phase swallows its own
+    # failures and returns None, and nothing is persisted for a None report, so
+    # stamping there would suppress the first update's re-score - the only thing
+    # that would have repopulated the missing rows. Same rule the two
+    # update-side writers follow: they stamp only on a re-score that returned
+    # True. None (no git) is left unstamped too: the gate cannot fire without a
+    # head_ts either, so there is nothing to suppress.
+    _head_ts = head_commit_ts(repo_path) if getattr(result, "health_report", None) else None
     if _head_ts is not None:
         state["last_full_rescore_at"] = _head_ts
     save_state(repo_path, state, full_index=True)

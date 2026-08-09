@@ -129,7 +129,10 @@ def _vector_dims(repo_path: Path) -> tuple[int | None, int | None]:
     ``import lancedb`` (1.7s measured, versus 0.09s for the connect and schema
     read it exists for), and ``assess_store`` runs on every ``update`` including
     the no-op path a post-commit hook fires on. Keyless repos resolve the mock
-    here and never pay it. The order is free to change because both guards are
+    here and never pay it. A repo that does pin a real embedder now builds it
+    where it used to short-circuit, which imports that provider's module, but
+    that replaces the lancedb import rather than adding to it. The order is
+    free to change because both guards are
     conjuncts of one predicate: past ``stored == MockEmbedder.dimensions``, the
     ``current == stored`` refusal below is exactly ``current == 8``, so neither
     guard reads the other's value.
