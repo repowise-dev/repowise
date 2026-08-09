@@ -107,12 +107,18 @@ export function extractHelperOccurrences(plan: RefactoringPlan): ExtractHelperOc
   });
 }
 
+/** Where the shared helper should live — a directory.
+ *
+ *  `directory` is the only namespace a plan carries. Plans stored before that
+ *  also carried `module`, a graph community label that named a directory the
+ *  occurrences did not live in, so it is read last and only as a salvage for an
+ *  old row with no `directory`. */
 export function helperSite(plan: RefactoringPlan): string | null {
   const site = plan.plan?.suggested_site as Record<string, unknown> | undefined;
   if (!site) return null;
-  const module = typeof site.module === "string" ? site.module : null;
   const dir = typeof site.directory === "string" ? site.directory : null;
-  return module ?? dir;
+  const legacyModule = typeof site.module === "string" ? site.module : null;
+  return dir ?? legacyModule;
 }
 
 export interface ExtractHelperDetail {

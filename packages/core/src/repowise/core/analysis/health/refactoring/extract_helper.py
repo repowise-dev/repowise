@@ -42,6 +42,7 @@ from typing import Any
 
 from ....test_paths import is_test_related_path
 from .models import RefactoringContext, RefactoringSuggestion
+from .naming import identifier_slug
 from .registry import RefactoringDetector, effort_bucket, register
 
 # The biomarker this detector answers — the recovered impact is read off it.
@@ -230,7 +231,7 @@ class ExtractHelperDetector(RefactoringDetector):
         impact = self._impact_for_block(anchor_region, impact_lookup)
         is_intra = len(occ_files) == 1
 
-        suggested_site = self._suggested_site(ctx, occ_files)
+        suggested_site = self._suggested_site(occ_files)
         snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
         plan = {
             "occurrences": [{"file": f, "line_start": s, "line_end": e} for f, s, e in occurrences],
@@ -270,24 +271,42 @@ class ExtractHelperDetector(RefactoringDetector):
             source_biomarker=_SOURCE_BIOMARKER,
         )
 
-    def _suggested_site(
-        self, ctx: RefactoringContext, occ_files: list[str]
-    ) -> dict[str, str | None]:
-        """Where the shared helper should live: the community centroid of the
-        occurrences (the module most of them belong to), with the shared
-        directory as a fallback when no community labels exist."""
-        module = None
-        if ctx.module_map:
-            counts: dict[str, int] = {}
-            for f in occ_files:
-                mod = ctx.module_map.get(f)
-                if mod:
-                    counts[mod] = counts.get(mod, 0) + 1
-            if counts:
-                # Centroid = most-shared module; ties broken lexicographically
-                # so the site is deterministic.
-                module = min(counts, key=lambda m: (-counts[m], m))
-        return {"module": module, "directory": _common_directory(occ_files)}
+    @staticmethod
+    def _suggested_site(occ_files: list[str]) -> dict[str, str | None]:
+        """Where the shared helper should live: the deepest directory every
+        occurrence shares.
+
+        One namespace, and it is the filesystem — because the field's job is to
+        name a place a file can go. This used to lead with a graph *community*
+        label under the key ``module``, alongside the directory, and that was
+        wrong twice over:
+
+        - **A label is not a location.** Censused over the 963 stored
+          ``extract_helper`` plans on this repo's own index, 905 carried a
+          label and **905 of 905 named a directory that no occurrence lives
+          in** — ``module: "ui"`` for a block shared by ``packages/api-client``,
+          ``packages/types`` and ``packages/ui``. Acting on it files shared code
+          into a package two thirds of its callers are not in.
+        - **The namespace depended on the writer.** ``module_map`` is populated
+          only by the full-index path; the incremental, re-score and
+          ``repowise health`` paths leave it empty, so the same clone got
+          ``"ui"`` or ``None`` depending on which pass last wrote the row. That
+          is exactly the defect the ``module`` column was fixed for; the
+          refactoring payload had kept it.
+
+        The honest answer is sometimes a shallow one — a block shared across
+        three packages has no home better than ``packages`` — and saying so is
+        the point. A nicer-reading label that names the wrong package is worse
+        advice, not better.
+
+        Deliberately *not* ``package_roots.module_for``, the shipped definition
+        of the ``module`` column: that answers "which bucket does this file
+        report under", and for placement the shared directory is strictly more
+        specific (for a block confined to ``.../providers/llm`` it is that
+        directory, where ``module_for`` would say ``packages/core``). Package
+        attribution is a rollup axis; this is a destination.
+        """
+        return {"directory": _common_directory(occ_files)}
 
     @staticmethod
     def _snippet_for(
@@ -384,28 +403,20 @@ def _suggested_name(suggested_site: dict[str, str | None]) -> str:
 
     Precision-first: without semantics we cannot name the block for what it
     *does*, so we anchor the name to where the helper will live (the shared
-    module or directory leaf) and suffix ``_helper``. It is an editable
-    starting point (the UI frames it that way), not a claim about behaviour, so
-    it stays deterministic and never guesses intent. Falls back to
-    ``shared_helper`` when the site has no usable label.
+    directory leaf) and suffix ``_helper``. It is an editable starting point
+    (the UI frames it that way), not a claim about behaviour, so it stays
+    deterministic and never guesses intent. Falls back to ``shared_helper``
+    when the site has no usable label.
+
+    Reads ``directory`` only. Plans stored before that key became the sole
+    namespace still carry a ``module`` community label, and it is precisely the
+    one that produced names like ``repowise_helper`` -- the repo naming its own
+    helper -- so it is not consulted as a fallback. ``directory`` was correct on
+    those rows too, which is why dropping the label needs no migration.
     """
-    label = suggested_site.get("module") or suggested_site.get("directory") or ""
+    label = suggested_site.get("directory") or ""
     leaf = label.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    # Keep identifier-safe characters only; collapse the rest to single
-    # underscores so a path leaf like ``api-client`` becomes ``api_client``.
-    cleaned: list[str] = []
-    prev_us = False
-    for ch in leaf.lower():
-        if ch.isalnum():
-            cleaned.append(ch)
-            prev_us = False
-        elif not prev_us:
-            cleaned.append("_")
-            prev_us = True
-    slug = "".join(cleaned).strip("_")
-    # A leading digit is not a valid identifier start in most languages.
-    if slug and slug[0].isdigit():
-        slug = f"_{slug}"
+    slug = identifier_slug(leaf)
     if not slug:
         return "shared_helper"
     return slug if slug.endswith("helper") else f"{slug}_helper"

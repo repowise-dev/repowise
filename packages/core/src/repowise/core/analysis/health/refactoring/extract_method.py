@@ -16,14 +16,21 @@ no suggestion.
 Plan shape (open dict, no migration):
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str | None}`` -- the lines to lift,
-  the inferred signature, and an optional name (left ``None`` for the codegen /
-  LLM step to choose).
+  "returns": [str, ...], "suggested_name": str}`` -- the lines to lift, the
+  inferred signature, and a deterministic starting name (see
+  ``_suggested_name``). Always a string: the field used to be a hardcoded
+  ``None`` here while Extract Helper computed one, so its meaning depended on
+  which detector wrote the plan and every surface fell through to a generic
+  "helper".
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity the residual method sheds.
-- ``blast_radius`` = ``{"callers_count": int}`` -- extraction is local (a new
-  private helper, the public method's signature is unchanged), so callers do
-  not change; carried for the surfaces' consistency.
+- ``blast_radius`` = ``{"scope": "local"}`` -- extraction is local (a new
+  private helper, the public method's signature is unchanged), so nothing
+  outside the file moves. This is a *categorical* statement, not a count: it
+  replaced ``{"callers_count": 0}``, a hardcoded literal that no consumer could
+  tell apart from a measured zero. Every other detector's blast radius is
+  measured, so this one says in its own vocabulary that there is nothing to
+  measure.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 from ..complexity.languages import get_language_map
 from ..dataflow import find_extractions
 from .models import RefactoringContext, RefactoringSuggestion
+from .naming import identifier_slug
 from .registry import RefactoringDetector, effort_bucket, register
 
 if TYPE_CHECKING:
@@ -77,7 +85,7 @@ class ExtractMethodDetector(RefactoringDetector):
                         "span": {"start": best.start_line, "end": best.end_line},
                         "params": list(best.params),
                         "returns": list(best.returns),
-                        "suggested_name": None,
+                        "suggested_name": self._suggested_name(analysis, best),
                     },
                     evidence={
                         "slice_nloc": best.slice_nloc,
@@ -85,7 +93,7 @@ class ExtractMethodDetector(RefactoringDetector):
                     },
                     impact_delta=round(float(impact), 3),
                     effort_bucket=effort_bucket(best.slice_nloc),
-                    blast_radius={"callers_count": 0},
+                    blast_radius={"scope": "local"},
                     confidence=self._confidence(best),
                     source_biomarker=source,
                 )
@@ -115,6 +123,37 @@ class ExtractMethodDetector(RefactoringDetector):
                 best_impact = impact
                 best_source = getattr(f, "biomarker_type", "")
         return best_impact, best_source
+
+    @staticmethod
+    def _suggested_name(analysis: FunctionAnalysis, extraction: Extraction) -> str:
+        """A deterministic starting name for the lifted helper.
+
+        Same posture as Extract Helper (see ``naming``): anchor the name to
+        something the plan already knows rather than guess what the block does.
+        The slice's OUT value is that anchor when there is exactly one -- a span
+        whose single product is ``average`` is, by construction, the code that
+        computes it, so ``compute_average`` describes it without inferring
+        intent. With no single OUT (a void slice, or several) the only certain
+        anchor left is the function the span came out of, which at least names
+        the helper for its context. Measured over the 854 stored plans on this
+        repo's index, 545 (64%) come from the OUT value and 309 from the
+        enclosing function.
+
+        **Not unique within a file, by design.** Two functions in one file can
+        each produce a value with the same name, and both spans then get the
+        same ``compute_*``: 28 of those 854 plans, across 14 files, collide with
+        a sibling that way (the fallback branch does not collide, since there is
+        one plan per function). Uniqueness would need a per-file suffix, which
+        would renumber existing names whenever a new plan appeared and churn
+        every persisted row. The name is a starting point every surface frames
+        as editable, so the surfaces say to rename on a clash instead.
+        """
+        if len(extraction.returns) == 1:
+            slug = identifier_slug(extraction.returns[0])
+            if slug:
+                return f"compute_{slug}"
+        slug = identifier_slug(analysis.name)
+        return f"{slug}_helper" if slug else "extracted_helper"
 
     @staticmethod
     def _confidence(extraction: Extraction) -> str:

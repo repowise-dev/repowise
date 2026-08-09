@@ -179,7 +179,10 @@ def _render_extract_helper_plans_console(plans: list[dict]) -> None:
         ev = p["evidence"]
         occ = p["plan"].get("occurrences", [])
         site = p["plan"].get("suggested_site", {}) or {}
-        where = site.get("module") or site.get("directory") or "a shared module"
+        # ``directory`` first: it is the only namespace new plans carry, and on
+        # plans stored before that it was the correct one anyway (``module`` held
+        # a community label naming a directory the occurrences were not in).
+        where = site.get("directory") or site.get("module") or "a shared module"
         co = ev.get("co_change_count", 0)
         console.print(
             f"\n[cyan]{ev.get('duplicated_lines')} duplicated lines[/cyan] across "
@@ -200,7 +203,10 @@ def _render_extract_helper_plans_md(plans: list[dict]) -> None:
         ev = p["evidence"]
         occ = p["plan"].get("occurrences", [])
         site = p["plan"].get("suggested_site", {}) or {}
-        where = site.get("module") or site.get("directory") or "a shared module"
+        # ``directory`` first: it is the only namespace new plans carry, and on
+        # plans stored before that it was the correct one anyway (``module`` held
+        # a community label naming a directory the occurrences were not in).
+        where = site.get("directory") or site.get("module") or "a shared module"
         click.echo(
             f"- **{ev.get('duplicated_lines')} duplicated lines** across "
             f"{len(occ)} sites — extract a helper near `{where}`:"

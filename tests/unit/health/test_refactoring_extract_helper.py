@@ -336,26 +336,53 @@ def test_confidence_medium_when_dormant():
 # ---- suggested site ------------------------------------------------------
 
 
-def test_suggested_site_community_centroid():
-    pair = _pair("api/a.py", "core/b.py", 10, 25, 40, 55)
-    module_map = {"api/a.py": "api", "core/b.py": "api"}
+def _site_for(module_map: dict[str, str] | None) -> dict:
+    """The suggested site for one fixed cross-package clone, under *module_map*.
+
+    The occurrences deliberately live in different top-level packages, so the
+    only honest shared directory is the shallow ``pkg`` -- the case where a
+    community label reads nicer and is wrong.
+    """
+    pair = _pair("pkg/api/a.py", "pkg/core/b.py", 10, 25, 40, 55)
     s = next(
         s
-        for s in detect_refactorings(_ctx("api/a.py", [pair], module_map=module_map))
+        for s in detect_refactorings(_ctx("pkg/api/a.py", [pair], module_map=module_map))
         if s.refactoring_type == "extract_helper"
     )
-    assert s.plan["suggested_site"]["module"] == "api"
+    return s.plan
 
 
-def test_suggested_site_directory_fallback():
+def test_suggested_site_is_the_shared_directory_only():
+    plan = _site_for(None)
+    assert plan["suggested_site"] == {"directory": "pkg"}
+    assert plan["suggested_name"] == "pkg_helper"
+
+
+def test_suggested_site_ignores_a_hostile_community_label():
+    """The load-bearing property: the plan no longer depends on which write
+    path produced it.
+
+    ``module_map`` is populated by the full-index path alone -- the incremental,
+    re-score and ``repowise health`` paths leave it empty -- so a label-derived
+    site made the payload's namespace a function of the last writer. Here the
+    label ``ui`` is on *neither* occurrence's path, which is the shape measured
+    on the real index (905 of 905 labelled plans named a directory no
+    occurrence lived in). A detector that still read it would answer ``ui``.
+    """
+    hostile = {"pkg/api/a.py": "ui", "pkg/core/b.py": "ui"}
+    assert _site_for(hostile) == _site_for(None)
+    assert "module" not in _site_for(hostile)["suggested_site"]
+    assert _site_for(hostile)["suggested_name"] == "pkg_helper"
+
+
+def test_suggested_site_prefers_the_deepest_shared_directory():
     pair = _pair("pkg/sub/a.py", "pkg/sub/b.py", 10, 25, 40, 55)
     s = next(
         s
         for s in detect_refactorings(_ctx("pkg/sub/a.py", [pair]))
         if s.refactoring_type == "extract_helper"
     )
-    assert s.plan["suggested_site"]["module"] is None
-    assert s.plan["suggested_site"]["directory"] == "pkg/sub"
+    assert s.plan["suggested_site"] == {"directory": "pkg/sub"}
 
 
 def test_common_directory_helper():
@@ -443,17 +470,25 @@ def test_suggested_name_from_directory():
 
 
 def test_suggested_name_helper_unit():
-    assert _suggested_name({"module": "api", "directory": None}) == "api_helper"
-    # module wins over directory
-    assert _suggested_name({"module": "core", "directory": "pkg/sub"}) == "core_helper"
+    assert _suggested_name({"directory": "api"}) == "api_helper"
     # path leaf, hyphens normalised
-    assert _suggested_name({"module": None, "directory": "web/api-client"}) == "api_client_helper"
+    assert _suggested_name({"directory": "web/api-client"}) == "api_client_helper"
     # leading digit made identifier-safe
-    assert _suggested_name({"module": "3d", "directory": None}) == "_3d_helper"
+    assert _suggested_name({"directory": "3d"}) == "_3d_helper"
     # already ends in helper -> no double suffix
-    assert _suggested_name({"module": "render_helper", "directory": None}) == "render_helper"
+    assert _suggested_name({"directory": "render_helper"}) == "render_helper"
     # no usable label -> stable fallback
-    assert _suggested_name({"module": None, "directory": None}) == "shared_helper"
+    assert _suggested_name({"directory": None}) == "shared_helper"
+
+
+def test_suggested_name_ignores_a_legacy_community_label():
+    """A plan stored before the community label was dropped still carries
+    ``module``. It is the key that produced names like ``repowise_helper`` --
+    the repo naming its own helper -- so it must not be revived as a fallback;
+    ``directory`` was the correct value on those rows and is what wins."""
+    assert _suggested_name({"module": "core", "directory": "pkg/sub"}) == "sub_helper"
+    # Even with no directory at all, the label is not consulted.
+    assert _suggested_name({"module": "repowise", "directory": None}) == "shared_helper"
 
 
 # ---- determinism ---------------------------------------------------------

@@ -60,11 +60,11 @@ web).
 |-------|---------|
 | `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` \| `split_file` \| `extract_method` |
 | `file_path`, `target_symbol`, `line_start`, `line_end` | What the refactoring acts on. |
-| `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`, or the method-extraction `span` + `params` + `returns`. |
+| `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`, or the method-extraction `span` + `params` + `returns` + `suggested_name`. |
 | `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size, or the split's `modularity` + `symbol_count` + `group_count` + intra/cut edge counts. |
 | `impact_delta` | The health score the refactoring would recover (the deduction of the marker it answers); `0` for the graph-native types that answer no marker. |
 | `effort_bucket` | `S` \| `M` \| `L` \| `XL`, from the target's size. |
-| `blast_radius` | What else must move: the callers, co-change partners, and importing files. |
+| `blast_radius` | What else must move: the callers, co-change partners, and importing files. Extract Method carries `{"scope": "local"}` instead — extraction adds a private helper and changes no signature, so nothing outside the file moves and there is no count to make. |
 | `confidence` | `low` \| `medium` \| `high` (drives the `min_confidence` surface gate). |
 | `source_biomarker` | The finding this answers (e.g. `low_cohesion`, `god_class`, `dry_violation`). |
 
