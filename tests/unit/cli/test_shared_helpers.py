@@ -77,6 +77,84 @@ def test_build_embedder_falls_back_to_mock() -> None:
     assert isinstance(providers.build_embedder("mock"), MockEmbedder)
 
 
+def test_build_embedder_fallback_carries_reason() -> None:
+    """A silent mock fallback records why, so call sites can warn (R1)."""
+    embedder = providers.build_embedder("definitely-not-a-backend")
+    assert getattr(embedder, "fallback_reason", None)
+    assert "definitely-not-a-backend" in embedder.fallback_reason
+
+
+def test_build_embedder_mock_request_has_no_reason() -> None:
+    """An explicit mock request is not a degradation (R1)."""
+    embedder = providers.build_embedder("mock")
+    assert getattr(embedder, "fallback_reason", None) is None
+
+
+def test_build_embedder_bad_timeout_names_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OLLAMA_EMBEDDING_TIMEOUT=abc degrades to mock with the var named (R2)."""
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "abc")
+    embedder = providers.build_embedder("ollama")
+    assert isinstance(embedder, MockEmbedder)
+    assert "OLLAMA_EMBEDDING_TIMEOUT" in embedder.fallback_reason
+    assert "abc" in embedder.fallback_reason
+
+
+def test_build_embedder_bad_dims_names_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OLLAMA_EMBEDDING_DIMS=abc degrades to mock with the var named (R2)."""
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_DIMS", "abc")
+    embedder = providers.build_embedder("ollama")
+    assert isinstance(embedder, MockEmbedder)
+    assert "OLLAMA_EMBEDDING_DIMS" in embedder.fallback_reason
+    assert "abc" in embedder.fallback_reason
+
+
+def test_embedder_degraded_warning_none_when_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No warning for explicit mock, success, or config that loads (R3)."""
+    from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    assert providers.embedder_degraded_warning(providers.build_embedder("mock"), "mock") is None
+    real = providers.build_embedder("ollama")
+    assert isinstance(real, OllamaEmbedder)
+    assert providers.embedder_degraded_warning(real, "ollama") is None
+
+
+def test_embedder_degraded_warning_text_for_fallback() -> None:
+    """A degraded request surfaces a Warning line naming the embedder (R3)."""
+    embedder = providers.build_embedder("definitely-not-a-backend")
+    warning = providers.embedder_degraded_warning(embedder, "definitely-not-a-backend")
+    assert warning is not None
+    assert "Warning" in warning
+    assert "definitely-not-a-backend" in warning
+
+
+def test_embedder_degraded_warning_config_load_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A corrupt config.yaml warns instead of silently unpinning (R1)."""
+    # Some server-path tests write REPOWISE_EMBEDDER straight into os.environ;
+    # the override would early-return past the config read under test.
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+
+    def _boom(_path):
+        raise ValueError("bad yaml")
+
+    monkeypatch.setattr("repowise.cli.helpers.load_config", _boom)
+    try:
+        providers.resolve_embedder_for_repo("/nonexistent/repo")
+        embedder = providers.build_embedder("mock")
+        warning = providers.embedder_degraded_warning(embedder, "mock")
+        assert warning is not None
+        assert "config.yaml" in warning
+        assert "bad yaml" in warning
+    finally:
+        providers._config_load_error = None
+
+
 def test_build_embedder_supports_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
     from repowise.core.providers.embedding.ollama import OllamaEmbedder
 

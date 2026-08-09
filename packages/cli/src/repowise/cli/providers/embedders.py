@@ -5,6 +5,25 @@ from __future__ import annotations
 import os
 from typing import Any
 
+# Set by :func:`resolve_embedder_for_repo` when the repo's ``config.yaml``
+# cannot be read. Surfaced by :func:`embedder_degraded_warning` so a corrupt
+# pin file warns instead of silently unpinning (issue #852).
+_config_load_error: str | None = None
+
+
+def _as_int_or_raise(env_name: str, raw: str) -> int:
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{env_name} must be an integer, got '{raw}'") from None
+
+
+def _as_float_or_raise(env_name: str, raw: str) -> float:
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{env_name} must be a number, got '{raw}'") from None
+
 
 def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
@@ -21,13 +40,21 @@ def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
         if base_url:
             kwargs["base_url"] = base_url
         if dimensions:
-            kwargs["dimensions"] = int(dimensions)
+            dims_env = "OLLAMA_EMBEDDING_DIMS" if os.environ.get("OLLAMA_EMBEDDING_DIMS") else "REPOWISE_EMBEDDING_DIMS"
+            kwargs["dimensions"] = _as_int_or_raise(dims_env, dimensions)
         if timeout:
-            kwargs["timeout"] = float(timeout)
+            timeout_env = (
+                "OLLAMA_EMBEDDING_TIMEOUT"
+                if os.environ.get("OLLAMA_EMBEDDING_TIMEOUT")
+                else "REPOWISE_EMBEDDING_TIMEOUT"
+            )
+            kwargs["timeout"] = _as_float_or_raise(timeout_env, timeout)
     elif embedder_name == "gemini":
         dimensions = os.environ.get("REPOWISE_EMBEDDING_DIMS")
         if dimensions:
-            kwargs["output_dimensionality"] = int(dimensions)
+            kwargs["output_dimensionality"] = _as_int_or_raise(
+                "REPOWISE_EMBEDDING_DIMS", dimensions
+            )
     if model:
         kwargs["model"] = model
     return kwargs
@@ -119,11 +146,39 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     override = os.environ.get("REPOWISE_EMBEDDER", "").strip().lower()
     if override:
         return override
+    global _config_load_error
     try:
         pinned = load_config(Path(repo_path)).get("embedder")
-    except Exception:
+        _config_load_error = None
+    except Exception as exc:
+        _config_load_error = str(exc)
         pinned = None
     return str(pinned) if pinned else resolve_embedder(None)
+
+
+def embedder_degraded_warning(embedder: Any, requested: str) -> str | None:
+    """Return a user-facing warning when *embedder* silently degraded.
+
+    ``None`` when nothing went wrong: an explicit ``mock`` request, a real
+    embedder built successfully, or an auto-detected default. Mirrors the
+    server's ``_embedder_status`` envelope semantics (issue #324) so the CLI
+    surfaces the same degradation instead of running semantic search on mock
+    vectors with no signal (issue #852).
+    """
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    reason = getattr(embedder, "fallback_reason", None)
+    if requested != "mock" and isinstance(embedder, MockEmbedder) and reason:
+        return (
+            f"[yellow]Warning:[/yellow] {requested} embedder unavailable — "
+            f"falling back to mock: {reason}"
+        )
+    if _config_load_error:
+        return (
+            f"[yellow]Warning:[/yellow] Could not read the embedder pin from "
+            f".repowise/config.yaml: {_config_load_error}"
+        )
+    return None
 
 
 def build_embedder(embedder_name_resolved: str) -> Any:
@@ -131,7 +186,9 @@ def build_embedder(embedder_name_resolved: str) -> Any:
 
     Shared by the generation flows and the decision semantic-dedup wiring so
     the same backend selection logic isn't duplicated. Real providers fall
-    back to the deterministic mock when their SDK/credentials are unavailable.
+    back to the deterministic mock when their SDK/credentials are unavailable;
+    the failure reason rides on the returned instance so callers can surface
+    it instead of silently running semantic search on mock vectors (#852).
     """
     from repowise.core.providers.embedding.base import MockEmbedder
     from repowise.core.providers.embedding.registry import get_embedder
@@ -140,5 +197,7 @@ def build_embedder(embedder_name_resolved: str) -> Any:
         return MockEmbedder()
     try:
         return get_embedder(embedder_name_resolved, **_embedder_kwargs(embedder_name_resolved))
-    except Exception:
-        return MockEmbedder()
+    except Exception as exc:
+        fallback = MockEmbedder()
+        fallback.fallback_reason = f"{embedder_name_resolved}: {exc}"
+        return fallback
