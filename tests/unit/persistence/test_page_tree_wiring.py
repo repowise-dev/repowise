@@ -26,8 +26,23 @@ _PERSIST_PATHS = [
     ("repowise.core.pipeline.incremental", "the incremental index"),
     ("repowise.core.pipeline.scoped_generation", "a scoped regeneration"),
     ("repowise.cli.commands.update_cmd.persistence", "the docs update"),
-    ("repowise.cli.commands.update_cmd.deterministic", "the template update"),
     ("repowise.cli.commands.upgrade_flow", "the fast-to-full upgrade"),
+]
+
+# The template update (``update_cmd.deterministic``) writes pages and does NOT
+# rebuild, which is the one exemption to the rule above. It is allowed because
+# its caller runs ``persist_incremental_index`` unconditionally straight after
+# it, in the same command, and that rebuild sees strictly more than this one
+# could (it runs after the sweeps and tombstones). The exemption is not taken on
+# trust: ``test_the_template_update_defers_to_the_persist_that_follows_it`` below
+# asserts the call ordering that makes it safe, so deleting or reordering that
+# caller fails here rather than silently unplacing every re-rendered page.
+_DEFERRED_PATHS = [
+    (
+        "repowise.cli.commands.update_cmd.deterministic",
+        "the template update",
+        "repowise.cli.commands.update_cmd.command",
+    ),
 ]
 
 
@@ -45,7 +60,34 @@ def test_persist_path_rebuilds_the_tree(module_name: str, description: str):
 
 def test_the_writer_list_is_not_silently_empty():
     """Guards the parametrisation itself."""
-    assert len(_PERSIST_PATHS) >= 6
+    assert len(_PERSIST_PATHS) + len(_DEFERRED_PATHS) >= 6
+
+
+@pytest.mark.parametrize("module_name,description,caller_name", _DEFERRED_PATHS)
+def test_the_template_update_defers_to_the_persist_that_follows_it(
+    module_name: str, description: str, caller_name: str
+):
+    """A deferred writer is only safe while its caller still rebuilds after it.
+
+    Two things have to hold, and both are checked: the writer really does not
+    rebuild (otherwise the exemption is stale and the work is being done twice
+    again), and the caller invokes it *before* the persist that does rebuild.
+    Reordering those two calls, or dropping the second, silently leaves every
+    re-rendered page unplaced — exactly the failure this module exists for.
+    """
+    writer = inspect.getsource(__import__(module_name, fromlist=["*"]))
+    assert "rebuild_page_tree(" not in writer, (
+        f"{description} ({module_name}) rebuilds the tree after all, so it no "
+        "longer belongs in the deferred list — move it back to _PERSIST_PATHS"
+    )
+
+    caller = inspect.getsource(__import__(caller_name, fromlist=["*"]))
+    writes = caller.index("persist_deterministic_pages(\n")
+    rebuilds = caller.index("_persist_index_only_update(\n")
+    assert writes < rebuilds, (
+        f"{caller_name} no longer runs the rebuilding persist after "
+        f"{description}, so its pages never get placed"
+    )
 
 
 def test_the_scoped_path_sweeps_superseded_rows():

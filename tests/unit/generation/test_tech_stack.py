@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from repowise.core.generation.editor_files import tech_stack as tech_stack_mod
 from repowise.core.generation.editor_files.tech_stack import (
     detect_build_commands,
     detect_tech_stack,
@@ -264,6 +265,66 @@ def test_malformed_composer_does_not_crash(tmp_path):
     (tmp_path / "composer.json").write_text("{ not valid json", encoding="utf-8")
     names = [i.name for i in detect_tech_stack(tmp_path)]
     assert "PHP" in names  # PHP language still added (file existed)
+
+
+# ---------------------------------------------------------------------------
+# detect_tech_stack memoisation
+# ---------------------------------------------------------------------------
+
+
+def test_a_repeat_scan_of_an_unchanged_tree_does_not_rewalk(tmp_path, monkeypatch):
+    """One ``repowise update`` asks twice; the second must be free.
+
+    The bounded .csproj walk is the whole cost of a scan (0.18s on hugo, 0.47s
+    on PowerToys, measured), and the graph's framework edges and the
+    knowledge-graph refresh both ask for the same repo in the same run.
+    """
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+
+    walks = []
+    real = tech_stack_mod._find_dotnet_projects
+    monkeypatch.setattr(
+        tech_stack_mod,
+        "_find_dotnet_projects",
+        lambda p: (walks.append(p), real(p))[1],
+    )
+
+    first = detect_tech_stack(tmp_path)
+    second = detect_tech_stack(tmp_path)
+
+    assert [i.name for i in first] == [i.name for i in second]
+    assert "Go" in [i.name for i in first]
+    assert len(walks) == 1
+
+
+def test_editing_a_manifest_re_detects(tmp_path):
+    """The memo must not outlive the answer it cached."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    assert "Django" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["django>=5.0"]\n', encoding="utf-8"
+    )
+    assert "Django" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_adding_a_manifest_re_detects(tmp_path):
+    """A root add moves the directory mtime, which is part of the key."""
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+    assert "Docker" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    assert "Docker" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_the_caller_cannot_corrupt_the_memo(tmp_path):
+    """Callers get their own list, so a mutation cannot poison the next reader."""
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+
+    first = detect_tech_stack(tmp_path)
+    first.clear()
+
+    assert [i.name for i in detect_tech_stack(tmp_path)] == ["Go"]
 
 
 def test_detects_ruff_from_pyproject(tmp_path):

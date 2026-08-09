@@ -469,6 +469,59 @@ def test_mock_pin_never_proposes_re_embedding_a_real_store(
     assert _vector_dims(tmp_path) == (None, None)
 
 
+def test_a_mock_pin_never_reads_the_stored_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keyless default must not open LanceDB to learn nothing.
+
+    Reading the stored width costs an ``import lancedb`` (1.7s measured, versus
+    0.09s for the connect and schema read it is there for), and ``assess_store``
+    runs on every ``update`` including the no-op path a post-commit hook fires
+    on. A mock pin can never produce a verdict, so the read is pure waste and
+    the guards are ordered to skip it. Asserting the call count rather than the
+    timing: this is the invariant, the seconds are its consequence.
+    """
+    from repowise.cli.upgrade import _vector_dims
+
+    _write_config(tmp_path, embedder="mock")
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+
+    calls: list[Path] = []
+
+    def _spy(lance_dir):
+        calls.append(lance_dir)
+        return 8
+
+    monkeypatch.setattr("repowise.cli.providers.vector_store.existing_vector_dim", _spy)
+
+    assert _vector_dims(tmp_path) == (None, None)
+    assert calls == []
+
+
+def test_a_real_pin_still_reads_the_stored_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The saving must not have been bought by skipping the check that matters."""
+    from repowise.cli.upgrade import _vector_dims
+
+    _write_config(tmp_path, embedder="openai")
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+
+    calls: list[Path] = []
+
+    def _spy(lance_dir):
+        calls.append(lance_dir)
+        return 8
+
+    monkeypatch.setattr("repowise.cli.providers.vector_store.existing_vector_dim", _spy)
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+    )
+
+    assert _vector_dims(tmp_path) == (8, 1536)
+    assert len(calls) == 1
+
+
 async def test_auto_reembed_refuses_to_run_with_a_mock_embedder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

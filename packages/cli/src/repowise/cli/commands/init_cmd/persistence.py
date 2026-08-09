@@ -17,6 +17,7 @@ from repowise.cli._repo_session import open_repo_db
 from repowise.cli.helpers import (
     config_fingerprint,
     get_head_commit,
+    head_commit_ts,
     load_config,
     load_state,
     run_async,
@@ -394,4 +395,12 @@ def save_full_state_and_config(
     # tracking it here — otherwise a fresh install carries no stamp and the
     # first analyzer change after it cannot tell it needs a re-score.
     state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    # This run just scored every file, so the periodic re-score cadence starts
+    # now. Without the stamp the gate reads "never re-scored" and the very next
+    # update re-scores the whole repo that init had only just finished scoring.
+    # None (no git) is left unstamped: the gate cannot fire without a head_ts
+    # either, so there is nothing to suppress.
+    _head_ts = head_commit_ts(repo_path)
+    if _head_ts is not None:
+        state["last_full_rescore_at"] = _head_ts
     save_state(repo_path, state, full_index=True)

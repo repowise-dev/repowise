@@ -494,6 +494,28 @@ def get_head_commit(repo_path: Path) -> str | None:
     return _core_head(Path(repo_path))
 
 
+def head_commit_ts(repo_path: Path) -> float | None:
+    """Committer timestamp of the repo's HEAD, or None when git is unavailable.
+
+    Anchors the periodic idle-file health re-score gate (#728) to repo time
+    rather than wall clock, so the cadence is deterministic under
+    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+
+    Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
+    the same units the gate reads it back in.
+    """
+    try:
+        import git
+
+        repo = git.Repo(repo_path, search_parent_directories=True)
+        try:
+            return float(repo.head.commit.committed_date)
+        finally:
+            repo.close()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Config (provider / model / embedder persisted after init)
 # ---------------------------------------------------------------------------

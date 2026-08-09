@@ -742,6 +742,37 @@ class TestUpdateConfigChangeDetection:
         assert "Config files changed" in r2.output
         assert "health re-score complete" in r2.output.lower()
 
+    def test_init_stamps_the_rescore_cadence_so_the_next_update_skips_it(
+        self, runner, git_work_repo
+    ):
+        """A fresh index must not be re-scored by the update right after it.
+
+        ``init`` scores every file. Until it stamped ``last_full_rescore_at``,
+        the first update read the missing stamp as "never re-scored" and scored
+        every file again — about 30s on a 2k-file repo, on every fresh install.
+        Asserted against HEAD's committer timestamp rather than "is present",
+        because the gate compares it to exactly that and a wall-clock value
+        would drift under ``REPOWISE_GIT_WINDOW_ANCHOR``.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        import subprocess
+
+        head_ts = float(
+            subprocess.check_output(
+                ["git", "log", "-1", "--format=%ct"], cwd=git_work_repo, text=True
+            ).strip()
+        )
+        assert self._state(git_work_repo)["last_full_rescore_at"] == head_ts
+
+        # And the gate agrees, which is the behaviour the stamp exists for.
+        from repowise.cli.commands.update_cmd.persistence import full_rescore_due
+
+        assert full_rescore_due(self._state(git_work_repo), head_ts) is False
+
     def test_dry_run_does_not_rescore_or_advance_fingerprint(self, runner, git_work_repo):
         """`update --dry-run` after a config change must not mutate state/DB."""
 
@@ -792,10 +823,11 @@ class TestUpdateConfigChangeDetection:
         args = ["--index-only"] if mode == "index-only" else ["--docs", "--provider", "mock"]
         runner.invoke(cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False)
 
-        # Switch the *periodic* re-score gate off. `init` writes no
-        # ``last_full_rescore_at``, so without this the #728 time gate is due on
-        # the very first update and fires the full re-score on its own — which
-        # would let this test pass even with the config-forced re-score deleted.
+        # Switch the *periodic* re-score gate off, so a passing run can only be
+        # the config-forced re-score. ``init`` now stamps ``last_full_rescore_at``
+        # itself, which already suppresses the #728 time gate here; this seeding
+        # stays because "far future" is the stronger statement of the two and it
+        # is what makes the assertion below about the *config* trigger alone.
         state_file = git_work_repo / ".repowise" / "state.json"
         seeded = json.loads(state_file.read_text(encoding="utf-8"))
         seeded["last_full_rescore_at"] = 9e18  # far future: never "due"

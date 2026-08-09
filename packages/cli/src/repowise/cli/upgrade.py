@@ -124,15 +124,21 @@ def _vector_dims(repo_path: Path) -> tuple[int | None, int | None]:
     it truly is) and cannot be wrong (no real embedder emits 8 dimensions).
     Re-embedding *down* to the mock is never proposed either — it destroys a
     working index and gains nothing.
+
+    The pin is checked before the table. Reading the stored width costs an
+    ``import lancedb`` (1.7s measured, versus 0.09s for the connect and schema
+    read it exists for), and ``assess_store`` runs on every ``update`` including
+    the no-op path a post-commit hook fires on. Keyless repos resolve the mock
+    here and never pay it. The order is free to change because both guards are
+    conjuncts of one predicate: past ``stored == MockEmbedder.dimensions``, the
+    ``current == stored`` refusal below is exactly ``current == 8``, so neither
+    guard reads the other's value.
     """
     from repowise.core.providers.embedding.base import MockEmbedder
 
     from .providers.embedders import build_embedder, resolve_embedder_for_repo
     from .providers.vector_store import existing_vector_dim
 
-    stored = existing_vector_dim(repo_path / REPOWISE_DIR / "lancedb")
-    if stored != MockEmbedder.dimensions:
-        return None, None
     try:
         embedder = build_embedder(resolve_embedder_for_repo(repo_path))
     except Exception:
@@ -140,7 +146,10 @@ def _vector_dims(repo_path: Path) -> tuple[int | None, int | None]:
     if isinstance(embedder, MockEmbedder):
         return None, None
     current = getattr(embedder, "dimensions", None)
-    if not isinstance(current, int) or current <= 0 or current == stored:
+    if not isinstance(current, int) or current <= 0 or current == MockEmbedder.dimensions:
+        return None, None
+    stored = existing_vector_dim(repo_path / REPOWISE_DIR / "lancedb")
+    if stored != MockEmbedder.dimensions:
         return None, None
     return stored, current
 

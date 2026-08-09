@@ -72,3 +72,52 @@ class TestFullRescoreDue:
         through to the ``head_ts`` guard rather than short-circuiting True."""
         state = {"health_analyzer_version": HEALTH_ANALYZER_VERSION}
         assert full_rescore_due(state, None) is False
+
+    @pytest.mark.parametrize("stamp", [None, "", "not-a-number"])
+    def test_a_missing_or_unusable_stamp_is_due(self, stamp):
+        """"Never re-scored" has to establish the baseline rather than skip it.
+
+        This is why ``init`` stamps: the branch is correct, and a fresh index
+        that left it unset walked straight into it (see
+        ``test_a_fresh_index_is_not_due_for_a_re_score``).
+        """
+        state = {"health_analyzer_version": HEALTH_ANALYZER_VERSION}
+        if stamp is not None:
+            state["last_full_rescore_at"] = stamp
+        assert full_rescore_due(state, 1_000_000.0) is True
+
+
+class TestInitStampsTheCadence:
+    """A fresh index must not be re-scored by the update that follows it.
+
+    ``init`` scores every file, then the first ``update`` used to find no
+    ``last_full_rescore_at``, read it as "never re-scored", and score every file
+    again — about 30s on a 2k-file repo, on every fresh install.
+    """
+
+    def test_a_fresh_index_is_not_due_for_a_re_score(self):
+        head_ts = 1_000_000.0
+        # Exactly what init now writes.
+        state = {
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+            "last_full_rescore_at": head_ts,
+        }
+        assert full_rescore_due(state, head_ts) is False
+
+    def test_the_cadence_still_comes_due_later(self):
+        """Stamping starts the clock, it does not stop it."""
+        head_ts = 1_000_000.0
+        state = {
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+            "last_full_rescore_at": head_ts,
+        }
+        assert full_rescore_due(state, head_ts + (8 * 86400.0)) is True
+
+    def test_an_analyzer_bump_still_forces_it(self):
+        """The stamp must not be able to suppress the version trigger."""
+        head_ts = 1_000_000.0
+        state = {
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION - 1,
+            "last_full_rescore_at": head_ts,
+        }
+        assert full_rescore_due(state, head_ts) is True

@@ -426,20 +426,13 @@ def _renderer_inputs(repo_path):
 def _head_commit_ts(repo_path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
-    Anchors the periodic idle-file health re-score gate (#728) to repo time
-    rather than wall clock, so the cadence is deterministic under
-    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    Lives in ``cli.helpers`` so ``init`` stamps the re-score gate in the units
+    this path reads back; kept as a module attribute here because the update
+    tests patch it by this name.
     """
-    try:
-        import git
+    from repowise.cli.helpers import head_commit_ts
 
-        repo = git.Repo(repo_path, search_parent_directories=True)
-        try:
-            return float(repo.head.commit.committed_date)
-        finally:
-            repo.close()
-    except Exception:
-        return None
+    return head_commit_ts(repo_path)
 
 
 def _current_renderer_fingerprint(repo_path) -> str:

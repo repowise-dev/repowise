@@ -16,7 +16,7 @@ from typing import Any
 
 import structlog
 
-from repowise.cli.helpers import console, run_async, save_state
+from repowise.cli.helpers import console, head_commit_ts, run_async, save_state
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
 from .incremental import _build_repo_graph
@@ -1101,16 +1101,20 @@ def _run_full_health_rescore(
         console.print(f"[yellow]Health re-score failed: {exc}[/yellow]")
         return
 
-    save_state(
-        repo_path,
-        {
-            **state,
-            "last_sync_commit": head,
-            "config_fingerprint": curr_fingerprint,
-            # These rows were just rewritten by this analyzer.
-            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
-        },
-    )
+    # Same full-replace re-score the periodic gate runs, so it restarts the same
+    # cadence. Left unstamped when git is unreadable: the gate cannot fire
+    # without a head_ts either.
+    new_state = {
+        **state,
+        "last_sync_commit": head,
+        "config_fingerprint": curr_fingerprint,
+        # These rows were just rewritten by this analyzer.
+        "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+    }
+    rescored_at = head_commit_ts(repo_path)
+    if rescored_at is not None:
+        new_state["last_full_rescore_at"] = rescored_at
+    save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     console.print(f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s")
 

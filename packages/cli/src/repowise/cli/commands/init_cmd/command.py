@@ -34,6 +34,7 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_head_commit,
+    head_commit_ts,
     load_config,
     load_state,
     resolve_max_file_pages,
@@ -1560,6 +1561,14 @@ def init_command(
         # their stamp. Without it `health_analyzer_changed` reads absent-as-
         # unchanged and the version trigger never fires for them.
         base_state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        # This run just scored every file, so the periodic re-score cadence
+        # starts now. Without the stamp the gate reads "never re-scored" and the
+        # very next update re-scores the whole repo init had only just scored.
+        # None (no git) is left unstamped: the gate cannot fire without a
+        # head_ts either, so there is nothing to suppress.
+        _head_ts = head_commit_ts(repo_path)
+        if _head_ts is not None:
+            base_state["last_full_rescore_at"] = _head_ts
         # Index-only still renders the full concept tree (deterministically, from
         # templates), so the store has the current capability — stamp the terminal
         # version rather than clamping it below the reindex gate and falsely

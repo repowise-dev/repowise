@@ -279,14 +279,15 @@ async def _persist_async(
             except Exception as exc:
                 degraded.append(f"Stale-page decay: {exc}")
 
-            # Placement depends on the whole page set, which on an incremental
-            # run lives in the store rather than in the pages just generated.
-            try:
-                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
-
-                await rebuild_page_tree(session, repo_id)
-            except Exception as exc:
-                degraded.append(f"Page tree rebuild: {exc}")
+            # No page-tree rebuild here. ``persist_incremental_index`` runs one
+            # unconditionally right after this call returns (see the caller in
+            # ``update_cmd/command.py``), and it runs it *after* the sweeps and
+            # tombstones this session cannot see — so it is strictly the better
+            # placed of the two, and doing it twice only pays for a repo-wide
+            # page read that the second pass immediately repeats. Same reason as
+            # the related-pages backfill above. The cost of deferring: if the
+            # process dies between the two sessions, this run's pages sit
+            # unplaced until the next update re-renders and re-places them.
 
             # Real DB total, not an accumulation: regeneration upserts, so
             # adding len(generated_pages) each run inflates the count forever.
