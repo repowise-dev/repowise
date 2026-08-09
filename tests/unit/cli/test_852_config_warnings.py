@@ -54,6 +54,30 @@ def _invoke_ok(args: list[str]) -> Result:
     return result
 
 
+def _indexed_repo(tmp_path: Path) -> Path:
+    """A fully indexed repo whose store dir exists (semantic search surface)."""
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    repo = _make_git_repo(tmp_path)
+    asyncio.run(index_repo_full(repo))
+    # A mock-embedder index writes no LanceDB dir; create one so the semantic
+    # path enters the try block.
+    (repo / ".repowise" / "lancedb").mkdir()
+    return repo
+
+
+def _indexed_with_new_commit(tmp_path: Path) -> Path:
+    """An indexed repo plus one new commit, synced for an llm-mode update."""
+    from repowise.cli.helpers import save_state
+
+    repo = _indexed_repo(tmp_path)
+    save_state(repo, {"last_sync_commit": _git(repo, "rev-parse", "HEAD"), "docs_mode": "llm"})
+    (repo / "c.py").write_text("def gamma():\n    return 3\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add c.py")
+    return repo
+
+
 # ---------------------------------------------------------------------------
 # Update path
 # ---------------------------------------------------------------------------
@@ -62,20 +86,10 @@ def _invoke_ok(args: list[str]) -> Result:
 def test_update_warns_embedder_degradation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A requested ollama embedder with a malformed timeout degrades to mock;
     the update must surface it in the degraded panel (R3/R4)."""
-    repo = _make_git_repo(tmp_path)
-    _index_full(repo)
-
-    base = _git(repo, "rev-parse", "HEAD")
-    from repowise.cli.helpers import save_state
-
     # docs_mode "llm" routes the update through the full path, which builds
     # the decision vector store (the surface #852 wants covered); the mock
     # provider keeps the run free.
-    save_state(repo, {"last_sync_commit": base, "docs_mode": "llm"})
-
-    (repo / "c.py").write_text("def gamma():\n    return 3\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "add c.py")
+    repo = _indexed_with_new_commit(tmp_path)
 
     # The update reads the embedder from the config pin, not the env.
     (repo / ".repowise" / "config.yaml").write_text("embedder: ollama\n")
@@ -97,17 +111,7 @@ def test_update_warns_vector_store_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed vector-store build degrades visibly (plan U2 scenario 2)."""
-    repo = _make_git_repo(tmp_path)
-    _index_full(repo)
-
-    base = _git(repo, "rev-parse", "HEAD")
-    from repowise.cli.helpers import save_state
-
-    save_state(repo, {"last_sync_commit": base, "docs_mode": "llm"})
-
-    (repo / "c.py").write_text("def gamma():\n    return 3\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "add c.py")
+    repo = _indexed_with_new_commit(tmp_path)
 
     import repowise.cli.providers as providers_mod
 
@@ -247,13 +251,8 @@ def test_search_semantic_warns_and_falls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failing semantic search warns before the FTS fallback (R7)."""
-    from repowise.core.pipeline.full_index import index_repo_full
-
-    repo = _make_git_repo(tmp_path)
-    asyncio.run(index_repo_full(repo))
-    # A mock-embedder index writes no LanceDB dir; create one so the semantic
-    # path enters the try block, then make the store search fail.
-    (repo / ".repowise" / "lancedb").mkdir()
+    # Make the store search fail.
+    repo = _indexed_repo(tmp_path)
 
     async def _boom(*_args, **_kwargs):
         raise RuntimeError("vector store on fire")
@@ -273,11 +272,7 @@ def test_search_warns_on_degraded_embedder(
 ) -> None:
     """A pinned embedder that degrades to mock warns in search, even when the
     store query itself would succeed (the #852 headline case)."""
-    from repowise.core.pipeline.full_index import index_repo_full
-
-    repo = _make_git_repo(tmp_path)
-    asyncio.run(index_repo_full(repo))
-    (repo / ".repowise" / "lancedb").mkdir()
+    repo = _indexed_repo(tmp_path)
 
     (repo / ".repowise" / "config.yaml").write_text("embedder: ollama\n")
     monkeypatch.setenv("REPOWISE_EMBEDDER", "ollama")
@@ -294,11 +289,7 @@ def test_search_semantic_empty_results_do_not_fall_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An empty-but-real semantic result must not warn or fall back to FTS."""
-    from repowise.core.pipeline.full_index import index_repo_full
-
-    repo = _make_git_repo(tmp_path)
-    asyncio.run(index_repo_full(repo))
-    (repo / ".repowise" / "lancedb").mkdir()
+    repo = _indexed_repo(tmp_path)
 
     async def _empty(*_args, **_kwargs):
         return []
