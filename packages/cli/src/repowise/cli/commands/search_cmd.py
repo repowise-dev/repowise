@@ -164,8 +164,11 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
                 results = await store.search(query, limit=limit)
                 await store.close()
                 return results
-            except Exception:
-                pass
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Warning:[/yellow] Semantic search unavailable — "
+                    f"{exc}; using full-text search."
+                )
 
         # Fallback to FTS
         from repowise.core.persistence import FullTextSearch, create_engine
@@ -284,8 +287,11 @@ def _collect_semantic(repo_path, query: str, limit: int):
                 results = await store.search(query, limit=limit)
                 await store.close()
                 return results
-            except Exception:
-                pass
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Warning:[/yellow] Semantic search unavailable — "
+                    f"{exc}; using full-text search."
+                )
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)

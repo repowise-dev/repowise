@@ -1069,7 +1069,11 @@ def _full_rescore_interval_days() -> float:
         try:
             return max(0.0, float(raw))
         except ValueError:
-            pass
+            console.print(
+                f"[yellow]Warning:[/yellow] REPOWISE_FULL_RESCORE_INTERVAL_DAYS "
+                f"must be a number, got '{raw}'; using the "
+                f"{_FULL_RESCORE_INTERVAL_DAYS}-day default."
+            )
     return _FULL_RESCORE_INTERVAL_DAYS
 
 

@@ -1465,7 +1465,7 @@ def run_update(
 
     # Build the shared vector store once: reused by the supersession detector
     # below and by the decision upsert in _persist (semantic dedup + search).
-    decision_vector_store = _build_update_vector_store(repo_path, cfg)
+    decision_vector_store = _build_update_vector_store(repo_path, cfg, degraded)
 
     # --- Two-pass decision evolution (Phase 3C), BEFORE page regeneration ----
     # Cross-reference the diff + new commit bodies against existing decisions

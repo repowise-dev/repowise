@@ -12,7 +12,9 @@ from typing import Any
 from repowise.cli.helpers import console, run_async
 
 
-def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
+def _build_update_vector_store(
+    repo_path: Any, cfg: dict, degraded: list[str] | None = None
+) -> Any | None:
     """Build the shared page/decision vector store for the update path.
 
     Phase-2 follow-up + Phase-3 requirement: ``repowise update`` historically
@@ -21,14 +23,27 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     runs. We mirror ``init``'s store construction (LanceDB at
     ``.repowise/lancedb`` so previously-embedded decisions are matchable; the
     in-memory store is a degraded fallback that only sees this run's vectors).
-    Returns ``None`` on any failure — the decision upsert still works without it.
+    Returns ``None`` on any failure — the decision upsert still works without
+    it — but the failure and any embedder degradation land in ``degraded`` so
+    the completion panel surfaces them instead of a silent no-op (issue #852).
     """
     try:
-        from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
+        from repowise.cli.providers import (
+            build_embedder,
+            build_vector_store,
+            embedder_degraded_warning,
+            resolve_embedder,
+        )
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")))
+        embedder_name = resolve_embedder(cfg.get("embedder"))
+        embedder = build_embedder(embedder_name)
+        warning = embedder_degraded_warning(embedder, embedder_name)
+        if warning is not None and degraded is not None:
+            degraded.append(f"Embedder: {embedder_name} unavailable — falling back to mock")
         return build_vector_store(repo_path, embedder)
-    except Exception:
+    except Exception as exc:
+        if degraded is not None:
+            degraded.append(f"Decision vector store: {exc}")
         return None
 
 

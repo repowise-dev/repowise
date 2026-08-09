@@ -44,7 +44,11 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
+from repowise.cli.providers import build_embedder as _build_embedder
 from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers.embedders import (
+    embedder_degraded_warning as _embedder_degraded_warning,
+)
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
@@ -1136,8 +1140,23 @@ def init_command(
                 )
             ):
                 decision_provider = resolve_provider(provider_name, model, repo_path)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Only a named or configured provider failure is worth surfacing
+            # (#852); a keyless non-tty run intentionally proceeds with no
+            # provider and must not be told "decision extraction failed".
+            if provider_name or any(
+                os.environ.get(k)
+                for k in (
+                    "GEMINI_API_KEY",
+                    "GOOGLE_API_KEY",
+                    "OPENAI_API_KEY",
+                    "ANTHROPIC_API_KEY",
+                )
+            ):
+                console.print(
+                    f"[yellow]Warning:[/yellow] Decision extraction unavailable — "
+                    f"{exc}. Index-only proceeds without it."
+                )
 
         has_provider = decision_provider is not None
         if is_interactive:
@@ -1196,6 +1215,14 @@ def init_command(
                 f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
             )
         console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]")
+        # A requested real embedder that silently degraded to mock would run
+        # semantic search on mock vectors with no signal (issue #852). Build
+        # once here so the header can warn; the generation phase rebuilds it.
+        degraded_warning = _embedder_degraded_warning(
+            _build_embedder(embedder_name_resolved), embedder_name_resolved
+        )
+        if degraded_warning:
+            console.print(f"  {degraded_warning}")
         if language != "en":
             console.print(f"  Language: [cyan]{language}[/cyan]")
         if resolved_reasoning != "auto":
