@@ -150,32 +150,42 @@ async def _semantic_results(repo_path, query: str, limit: int) -> list | None:
 
     ``None`` means "semantic search is unavailable" — no store, or a store
     that failed — and the caller falls back to full-text. An empty list is a
-    real (empty) result, not a fallback trigger. A failing store warns once
-    instead of silently returning nothing (issue #852).
+    real (empty) result, not a fallback trigger. A degraded embedder or a
+    failing store warns instead of silently returning nothing (issue #852).
     """
     from pathlib import Path
 
     lance_dir = Path(repo_path) / ".repowise" / "lancedb"
     if not lance_dir.exists():
         return None
+    store = None
     try:
         from repowise.cli.providers.embedders import (
             build_embedder,
+            embedder_degraded_warning,
             resolve_embedder_for_repo,
         )
         from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-        embedder = build_embedder(resolve_embedder_for_repo(repo_path))
+        embedder_name = resolve_embedder_for_repo(repo_path)
+        embedder = build_embedder(embedder_name)
+        warning = embedder_degraded_warning(embedder, embedder_name)
+        if warning is not None:
+            console.print(warning)
         store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-        results = await store.search(query, limit=limit)
-        await store.close()
-        return results
+        return await store.search(query, limit=limit)
     except Exception as exc:
         console.print(
             f"[yellow]Warning:[/yellow] Semantic search unavailable — "
             f"{exc}; using full-text search."
         )
         return None
+    finally:
+        if store is not None:
+            from contextlib import suppress
+
+            with suppress(Exception):
+                await store.close()
 
 
 def _search_semantic(repo_path, query: str, limit: int) -> None:

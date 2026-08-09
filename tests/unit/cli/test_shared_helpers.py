@@ -114,6 +114,27 @@ def test_build_embedder_bad_dims_names_env_var(monkeypatch: pytest.MonkeyPatch) 
     assert "abc" in embedder.fallback_reason
 
 
+def test_build_embedder_fallback_dims_var_names_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REPOWISE_EMBEDDING_DIMS (the fallback var) is the one named (R2)."""
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "abc")
+    embedder = providers.build_embedder("ollama")
+    assert isinstance(embedder, MockEmbedder)
+    assert "REPOWISE_EMBEDDING_DIMS" in embedder.fallback_reason
+
+
+def test_build_embedder_gemini_bad_dims_names_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bad REPOWISE_EMBEDDING_DIMS on the gemini path names the var (R2)."""
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "abc")
+    embedder = providers.build_embedder("gemini")
+    assert isinstance(embedder, MockEmbedder)
+    assert "REPOWISE_EMBEDDING_DIMS" in embedder.fallback_reason
+
+
 def test_embedder_degraded_warning_none_when_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     """No warning for explicit mock, success, or config that loads (R3)."""
     from repowise.core.providers.embedding.ollama import OllamaEmbedder

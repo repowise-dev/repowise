@@ -82,8 +82,41 @@ def test_update_warns_embedder_degradation(tmp_path: Path, monkeypatch: pytest.M
 
     assert result.exit_code == 0, result.output
     assert "degraded step(s)" in result.output
-    assert "ollama embedder unavailable" in result.output
+    assert "Embedder: ollama" in result.output
     assert "OLLAMA_EMBEDDING_TIMEOUT" in result.output
+    assert "[yellow]Warning:[/yellow]" not in result.output
+
+
+def test_update_warns_vector_store_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed vector-store build degrades visibly (plan U2 scenario 2)."""
+    repo = _make_git_repo(tmp_path)
+    _index_full(repo)
+
+    base = _git(repo, "rev-parse", "HEAD")
+    from repowise.cli.helpers import save_state
+
+    save_state(repo, {"last_sync_commit": base, "docs_mode": "llm"})
+
+    (repo / "c.py").write_text("def gamma():\n    return 3\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add c.py")
+
+    import repowise.cli.providers as providers_mod
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("store exploded")
+
+    monkeypatch.setattr(providers_mod, "build_vector_store", _boom)
+
+    result = CliRunner().invoke(
+        cli, ["update", str(repo), "--no-workspace", "--provider", "mock"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "degraded step(s)" in result.output
+    assert "Decision vector store" in result.output
 
 
 def test_full_rescore_interval_warns_on_invalid_env(
@@ -137,6 +170,22 @@ def test_init_header_warns_embedder_degradation(
     assert "OLLAMA_EMBEDDING_TIMEOUT" in result.output
 
 
+def test_init_auto_detected_embedder_degradation_stays_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An embedder auto-detected from an API key that the run would downgrade
+    to mock by policy must not read as a failure warning (R8)."""
+    repo = _make_git_repo(tmp_path)
+
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-test")
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "abc")
+
+    result = CliRunner().invoke(cli, ["init", str(repo), "--provider", "mock", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "embedder unavailable" not in result.output
+
+
 def test_init_index_only_warns_named_provider_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -165,6 +214,26 @@ def test_init_index_only_keyless_stays_quiet(
     must not warn (R8: additive warnings only)."""
     repo = _make_git_repo(tmp_path)
     result = CliRunner().invoke(cli, ["init", str(repo), "--index-only", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Decision extraction unavailable" not in result.output
+
+
+def test_init_index_only_keyless_provider_failure_stays_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even when provider resolution fails, a keyless run must not be told
+    decision extraction failed — it never intended to run it."""
+    repo = _make_git_repo(tmp_path)
+
+    import repowise.cli.commands.init_cmd.command as init_cmd
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(init_cmd, "resolve_provider", _boom)
+
+    result = CliRunner().invoke(cli, ["init", str(repo), "--index-only", "--yes"])
+
     assert result.exit_code == 0, result.output
     assert "Decision extraction unavailable" not in result.output
 
@@ -198,3 +267,50 @@ def test_search_semantic_warns_and_falls_back(
     assert result.exit_code == 0, result.output
     assert "Semantic search unavailable" in result.output
     assert "full-text" in result.output
+
+
+def test_search_warns_on_degraded_embedder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pinned embedder that degrades to mock warns in search, even when the
+    store query itself would succeed (the #852 headline case)."""
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    repo = _make_git_repo(tmp_path)
+    asyncio.run(index_repo_full(repo))
+    (repo / ".repowise" / "lancedb").mkdir()
+
+    (repo / ".repowise" / "config.yaml").write_text("embedder: ollama\n")
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "ollama")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "abc")
+
+    result = CliRunner().invoke(cli, ["search", "alpha", str(repo), "--mode", "semantic"])
+
+    assert result.exit_code == 0, result.output
+    assert "ollama embedder unavailable" in result.output
+    assert "OLLAMA_EMBEDDING_TIMEOUT" in result.output
+
+
+def test_search_semantic_empty_results_do_not_fall_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty-but-real semantic result must not warn or fall back to FTS."""
+    from repowise.core.pipeline.full_index import index_repo_full
+
+    repo = _make_git_repo(tmp_path)
+    asyncio.run(index_repo_full(repo))
+    (repo / ".repowise" / "lancedb").mkdir()
+
+    async def _empty(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore.search", _empty
+    )
+
+    result = CliRunner().invoke(cli, ["search", "alpha", str(repo), "--mode", "semantic"])
+
+    assert result.exit_code == 0, result.output
+    assert "Warning" not in result.output
+    assert "No results found." in result.output

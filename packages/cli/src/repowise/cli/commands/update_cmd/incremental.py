@@ -28,18 +28,19 @@ def _build_update_vector_store(
     the completion panel surfaces them instead of a silent no-op (issue #852).
     """
     try:
-        from repowise.cli.providers import (
-            build_embedder,
-            build_vector_store,
-            embedder_degraded_warning,
-            resolve_embedder,
-        )
+        from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
+        from repowise.core.providers.embedding.base import MockEmbedder
 
         embedder_name = resolve_embedder(cfg.get("embedder"))
         embedder = build_embedder(embedder_name)
-        warning = embedder_degraded_warning(embedder, embedder_name)
-        if warning is not None and degraded is not None:
-            degraded.append(warning)
+        # Plain "<Step>: <reason>" entry so the panel and the --progress json
+        # done event stay machine-parseable (no rich markup, no retry promise).
+        if (
+            isinstance(embedder, MockEmbedder)
+            and embedder.fallback_reason
+            and degraded is not None
+        ):
+            degraded.append(f"Embedder: {embedder.fallback_reason}")
         return build_vector_store(repo_path, embedder)
     except Exception as exc:
         if degraded is not None:

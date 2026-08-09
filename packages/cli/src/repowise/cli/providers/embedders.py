@@ -135,10 +135,13 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
 
     from repowise.cli.helpers import load_config
 
+    global _config_load_error
     override = os.environ.get("REPOWISE_EMBEDDER", "").strip().lower()
     if override:
+        # The override skips the pin read; clear any earlier repo's config
+        # failure so it cannot leak into a later warning (issue #852).
+        _config_load_error = None
         return override
-    global _config_load_error
     try:
         pinned = load_config(Path(repo_path)).get("embedder")
         _config_load_error = None
@@ -152,24 +155,25 @@ def embedder_degraded_warning(embedder: Any, requested: str) -> str | None:
     """Return a user-facing warning when *embedder* silently degraded.
 
     ``None`` when nothing went wrong: an explicit ``mock`` request, a real
-    embedder built successfully, or an auto-detected default. Mirrors the
-    server's ``_embedder_status`` envelope semantics (issue #324) so the CLI
-    surfaces the same degradation instead of running semantic search on mock
-    vectors with no signal (issue #852).
+    embedder built successfully, or an embedder that resolved from
+    auto-detection. Mirrors the server's ``_embedder_status`` envelope
+    semantics (issue #324) so the CLI surfaces the same degradation instead
+    of running semantic search on mock vectors with no signal (issue #852).
+
+    The config-load error is consumed on every call so a stale pin failure
+    from an earlier repo cannot leak into a later warning.
     """
     from repowise.core.providers.embedding.base import MockEmbedder
 
     global _config_load_error
+    config_error = _config_load_error
+    _config_load_error = None
     if requested != "mock" and isinstance(embedder, MockEmbedder) and embedder.fallback_reason:
         return (
             f"[yellow]Warning:[/yellow] {requested} embedder unavailable — "
             f"falling back to mock: {embedder.fallback_reason}"
         )
-    if _config_load_error:
-        # One-shot: consumed here so a stale pin error cannot leak into a
-        # later call that resolved a different repo (issue #852).
-        config_error = _config_load_error
-        _config_load_error = None
+    if config_error:
         return (
             f"[yellow]Warning:[/yellow] Could not read the embedder pin from "
             f".repowise/config.yaml: {config_error}"

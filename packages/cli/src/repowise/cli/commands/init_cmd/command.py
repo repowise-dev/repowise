@@ -1161,6 +1161,16 @@ def init_command(
                 console.print(
                     f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
                 )
+        # Index-only still embeds pages when the user named an embedder; a
+        # silently degraded one would write a store no later run can read
+        # (issue #852). Same request gate as the main header.
+        index_only_embedder = resolve_embedder(embedder_name)
+        if _embedder_was_requested(embedder_name):
+            index_only_warning = _embedder_degraded_warning(
+                _build_embedder(index_only_embedder), index_only_embedder
+            )
+            if index_only_warning:
+                console.print(f"  {index_only_warning}")
     else:
         # No prompt here. ``is_interactive`` (line ~800) is already false only
         # when the user passed --provider, --index-only or --yes, or stdin is
@@ -1211,11 +1221,14 @@ def init_command(
         # A requested real embedder that silently degraded to mock would run
         # semantic search on mock vectors with no signal (issue #852). Build
         # once here so the header can warn; the generation phase rebuilds it.
-        degraded_warning = _embedder_degraded_warning(
-            _build_embedder(embedder_name_resolved), embedder_name_resolved
-        )
-        if degraded_warning:
-            console.print(f"  {degraded_warning}")
+        # Gated on an explicit request: an embedder auto-detected from an API
+        # key that the run downgrades to mock by policy is not a failure.
+        if _embedder_was_requested(embedder_name):
+            degraded_warning = _embedder_degraded_warning(
+                _build_embedder(embedder_name_resolved), embedder_name_resolved
+            )
+            if degraded_warning:
+                console.print(f"  {degraded_warning}")
         if language != "en":
             console.print(f"  Language: [cyan]{language}[/cyan]")
         if resolved_reasoning != "auto":
