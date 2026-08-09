@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from repowise.cli.main import cli
 
@@ -47,6 +47,13 @@ def _index_full(repo: Path) -> None:
     asyncio.run(index_repo_full(repo))
 
 
+def _invoke_ok(args: list[str]) -> Result:
+    """Run the CLI and fail the test unless it exits 0."""
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Update path
 # ---------------------------------------------------------------------------
@@ -76,11 +83,10 @@ def test_update_warns_embedder_degradation(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "abc")
 
-    result = CliRunner().invoke(
-        cli, ["update", str(repo), "--no-workspace", "--provider", "mock"]
+    result = _invoke_ok(
+        ["update", str(repo), "--no-workspace", "--provider", "mock"]
     )
 
-    assert result.exit_code == 0, result.output
     assert "degraded step(s)" in result.output
     assert "Embedder: ollama" in result.output
     assert "OLLAMA_EMBEDDING_TIMEOUT" in result.output
@@ -110,11 +116,10 @@ def test_update_warns_vector_store_failure(
 
     monkeypatch.setattr(providers_mod, "build_vector_store", _boom)
 
-    result = CliRunner().invoke(
-        cli, ["update", str(repo), "--no-workspace", "--provider", "mock"]
+    result = _invoke_ok(
+        ["update", str(repo), "--no-workspace", "--provider", "mock"]
     )
 
-    assert result.exit_code == 0, result.output
     assert "degraded step(s)" in result.output
     assert "Decision vector store" in result.output
 
@@ -162,9 +167,8 @@ def test_init_header_warns_embedder_degradation(
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "abc")
 
-    result = CliRunner().invoke(cli, ["init", str(repo), "--provider", "mock", "--yes"])
+    result = _invoke_ok(["init", str(repo), "--provider", "mock", "--yes"])
 
-    assert result.exit_code == 0, result.output
     assert "Embedder: ollama" in result.output
     assert "Warning" in result.output
     assert "OLLAMA_EMBEDDING_TIMEOUT" in result.output
@@ -180,9 +184,8 @@ def test_init_auto_detected_embedder_degradation_stays_quiet(
     monkeypatch.setenv("GEMINI_API_KEY", "sk-test")
     monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "abc")
 
-    result = CliRunner().invoke(cli, ["init", str(repo), "--provider", "mock", "--yes"])
+    result = _invoke_ok(["init", str(repo), "--provider", "mock", "--yes"])
 
-    assert result.exit_code == 0, result.output
     assert "embedder unavailable" not in result.output
 
 
@@ -200,9 +203,8 @@ def test_init_index_only_warns_named_provider_failure(
 
     monkeypatch.setattr(init_cmd, "resolve_provider", _boom)
 
-    result = CliRunner().invoke(cli, ["init", str(repo), "--index-only", "--provider", "ollama"])
+    result = _invoke_ok(["init", str(repo), "--index-only", "--provider", "ollama"])
 
-    assert result.exit_code == 0, result.output
     assert "Decision extraction unavailable" in result.output
     assert "provider exploded" in result.output
 
@@ -213,8 +215,7 @@ def test_init_index_only_keyless_stays_quiet(
     """A keyless non-tty index-only run is the intended no-provider flow and
     must not warn (R8: additive warnings only)."""
     repo = _make_git_repo(tmp_path)
-    result = CliRunner().invoke(cli, ["init", str(repo), "--index-only", "--yes"])
-    assert result.exit_code == 0, result.output
+    result = _invoke_ok(["init", str(repo), "--index-only", "--yes"])
     assert "Decision extraction unavailable" not in result.output
 
 
@@ -232,9 +233,8 @@ def test_init_index_only_keyless_provider_failure_stays_quiet(
 
     monkeypatch.setattr(init_cmd, "resolve_provider", _boom)
 
-    result = CliRunner().invoke(cli, ["init", str(repo), "--index-only", "--yes"])
+    result = _invoke_ok(["init", str(repo), "--index-only", "--yes"])
 
-    assert result.exit_code == 0, result.output
     assert "Decision extraction unavailable" not in result.output
 
 
@@ -262,9 +262,8 @@ def test_search_semantic_warns_and_falls_back(
         "repowise.core.persistence.vector_store.LanceDBVectorStore.search", _boom
     )
 
-    result = CliRunner().invoke(cli, ["search", "alpha", str(repo), "--mode", "semantic"])
+    result = _invoke_ok(["search", "alpha", str(repo), "--mode", "semantic"])
 
-    assert result.exit_code == 0, result.output
     assert "Semantic search unavailable" in result.output
     assert "full-text" in result.output
 
@@ -285,9 +284,8 @@ def test_search_warns_on_degraded_embedder(
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     monkeypatch.setenv("OLLAMA_EMBEDDING_TIMEOUT", "abc")
 
-    result = CliRunner().invoke(cli, ["search", "alpha", str(repo), "--mode", "semantic"])
+    result = _invoke_ok(["search", "alpha", str(repo), "--mode", "semantic"])
 
-    assert result.exit_code == 0, result.output
     assert "ollama embedder unavailable" in result.output
     assert "OLLAMA_EMBEDDING_TIMEOUT" in result.output
 
@@ -309,8 +307,7 @@ def test_search_semantic_empty_results_do_not_fall_back(
         "repowise.core.persistence.vector_store.LanceDBVectorStore.search", _empty
     )
 
-    result = CliRunner().invoke(cli, ["search", "alpha", str(repo), "--mode", "semantic"])
+    result = _invoke_ok(["search", "alpha", str(repo), "--mode", "semantic"])
 
-    assert result.exit_code == 0, result.output
     assert "Warning" not in result.output
     assert "No results found." in result.output
