@@ -133,12 +133,12 @@ def build_embedder(embedder_name_resolved: str) -> Any:
     the same backend selection logic isn't duplicated. Real providers fall
     back to the deterministic mock when their SDK/credentials are unavailable.
     """
-    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.base import KeylessEmbedder
     from repowise.core.providers.embedding.registry import get_embedder
 
     if embedder_name_resolved == "mock":
-        return MockEmbedder()
+        return KeylessEmbedder()
     try:
         return get_embedder(embedder_name_resolved, **_embedder_kwargs(embedder_name_resolved))
     except Exception:
-        return MockEmbedder()
+        return KeylessEmbedder()

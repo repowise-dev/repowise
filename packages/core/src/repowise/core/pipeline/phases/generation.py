@@ -68,7 +68,7 @@ async def run_generation(
         PageGenerator,
     )
     from repowise.core.persistence.vector_store import InMemoryVectorStore
-    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.base import KeylessEmbedder
 
     # Attach cost tracker to LLM client if available
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
@@ -84,7 +84,7 @@ async def run_generation(
     assembler = ContextAssembler(config)
 
     # Resolve embedder and vector store
-    embedder_impl = embedder if embedder is not None else MockEmbedder()
+    embedder_impl = embedder if embedder is not None else KeylessEmbedder()
 
     if vector_store is None:
         vector_store = InMemoryVectorStore(embedder_impl)

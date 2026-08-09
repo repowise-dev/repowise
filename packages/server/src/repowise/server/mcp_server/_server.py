@@ -20,7 +20,7 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
-from repowise.core.providers.embedding.base import MockEmbedder
+from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server.mcp_server import _state
 
 _log = __import__("logging").getLogger("repowise.mcp")
@@ -195,7 +195,7 @@ def _resolve_embedder():
             "requested": name or None,
             "degraded": False,
         }
-        return MockEmbedder()
+        return KeylessEmbedder()
 
     try:
         embedder = get_embedder(name, **_embedder_kwargs(name))
@@ -219,7 +219,7 @@ def _resolve_embedder():
             "degraded": True,
             "reason": reason,
         }
-        return MockEmbedder()
+        return KeylessEmbedder()
 
 
 async def _cancel_task(task: asyncio.Task) -> None:
@@ -304,7 +304,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         _state._decision_store = vector_store
     except Exception:
         _log.exception("Failed to load vector stores — falling back to MockEmbedder")
-        _fallback = InMemoryVectorStore(embedder=MockEmbedder())
+        _fallback = InMemoryVectorStore(embedder=KeylessEmbedder())
         _state._vector_store = _fallback
         _state._decision_store = _fallback
     finally:
@@ -491,7 +491,7 @@ async def _lifespan(server: FastMCP):
     # Seed InMemory placeholder so tools that don't need vector search
     # can start immediately, before the background load completes.
     # decision_store is repointed to the same store — no separate table.
-    _placeholder = InMemoryVectorStore(embedder=MockEmbedder())
+    _placeholder = InMemoryVectorStore(embedder=KeylessEmbedder())
     _state._vector_store = _placeholder
     _state._decision_store = _placeholder
 

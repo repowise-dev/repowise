@@ -36,6 +36,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import Page
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.mcp_server._answer_pipeline import question_vector, vector_search
 from repowise.server.mcp_server._flow_path import _is_plumbing, _load_file_adjacency
 
@@ -164,6 +165,12 @@ async def _relevance_order(
     embedded; the lexical arm has no use for it and ignores it.
     """
     if searcher is None or not pool:
+        return []
+    # Checked here and not only inside ``vector_search``: on a keyless index
+    # ``question_vector`` returns None, which routes to the ``else`` arm below
+    # and would reach the store directly, re-embedding the question on the way
+    # to vectors that cannot rank. The guard has to sit above the branch.
+    if not store_has_semantic_vectors(searcher):
         return []
     try:
         if vector is not None:

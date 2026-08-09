@@ -27,7 +27,7 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.models import GenerationJob
 from repowise.core.persistence.search import FullTextSearch
-from repowise.core.providers.embedding.base import MockEmbedder
+from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
     blast_radius,
@@ -124,7 +124,7 @@ def _build_embedder():
     logger.warning(
         "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, or ollama for real RAG"
     )
-    return MockEmbedder()
+    return KeylessEmbedder()
 
 
 @asynccontextmanager

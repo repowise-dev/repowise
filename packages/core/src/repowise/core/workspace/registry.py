@@ -169,7 +169,7 @@ class RepoRegistry:
         )
         from repowise.core.persistence.search import FullTextSearch
         from repowise.core.persistence.vector_store import InMemoryVectorStore
-        from repowise.core.providers.embedding.base import MockEmbedder
+        from repowise.core.providers.embedding.base import KeylessEmbedder
 
         db_url = get_db_url(f"sqlite:///{db_path.as_posix()}")
 
@@ -188,7 +188,7 @@ class RepoRegistry:
         # Seed placeholder vector stores.
         # decision_store is repointed to the shared page store — decisions are
         # embedded under the "decision:" namespace, no separate LanceDB table.
-        embedder = self._embedder_factory() if self._embedder_factory else MockEmbedder()
+        embedder = self._embedder_factory() if self._embedder_factory else KeylessEmbedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
         vs_ready = asyncio.Event()

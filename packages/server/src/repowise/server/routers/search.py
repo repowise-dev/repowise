@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.deps import (
     get_fts,
     get_vector_store,
@@ -64,10 +65,19 @@ async def search(
       - Workspace mode without ``repo_id``: fans out across every loaded
         repo's index and merges results by score.
     """
-    if search_type == "fulltext":
+    # A keyless index has no semantic vectors, so a semantic request is served
+    # lexically rather than refused. Returning nothing would read as "not in the
+    # codebase"; returning that store's nearest neighbours would be worse still,
+    # because on it they are noise. Full-text is what the mode actually offers,
+    # and what the docs already promise it offers.
+    if search_type == "fulltext" or not store_has_semantic_vectors(vector_store):
         results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
     else:
         results = await _semantic(request, query, limit, repo_id=repo_id, primary_vs=vector_store)
+        if results is None:
+            # The scoped repo turned out to be keyless even though the primary
+            # store is not. Serve it lexically, same as the whole-index case.
+            results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
 
     return [_to_response(r) for r in results]
 
@@ -127,9 +137,12 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
         if repo_id.startswith("ws:"):
             return []
         vs = await resolve_repo_vector_store(request.app.state, repo_id)
-        if vs is None:
-            return await primary_vs.search(query, limit=limit)
-        return await vs.search(query, limit=limit)
+        target = primary_vs if vs is None else vs
+        # None, not [], so the caller can serve this repo lexically. An empty
+        # list here would be indistinguishable from "nothing matched".
+        if not store_has_semantic_vectors(target):
+            return None
+        return await target.search(query, limit=limit)
 
     if ws_config is None:
         # Single-repo mode. Startup resolves the primary store from the same
@@ -170,7 +183,11 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
                 vs = await resolve_repo_vector_store(request.app.state, rid)
             except Exception:
                 vs = None
-        if vs is not None:
+        # A keyless repo is skipped here rather than searched, so it reaches the
+        # FTS fallback below. Its vector leg never returns empty (mock scores
+        # sit near 0.75 for anything), so without this the noise window would
+        # permanently suppress the fallback for that repo.
+        if vs is not None and store_has_semantic_vectors(vs):
             try:
                 per_repo = await vs.search(query, limit=limit)
             except Exception:

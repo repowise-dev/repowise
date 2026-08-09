@@ -18,6 +18,7 @@ from repowise.core.persistence.models import (
     GitMetadata,
 )
 from repowise.core.precedent.currency import describe_decision_currency
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
@@ -511,10 +512,15 @@ def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str])
 
 
 async def _semantic_decision_results(ctx: Any, query: str) -> list:
-    """Semantic search of the page store, filtered to the decision: namespace."""
+    """Semantic search of the page store, filtered to the decision: namespace.
+
+    Empty on a keyless index: there is no lexical fallback here, and a window of
+    arbitrary decisions is worse than none for a tool whose whole job is
+    explaining why a specific thing is the way it is.
+    """
     decision_results: list = []
     with contextlib.suppress(Exception):
-        if ctx.vector_store is not None:
+        if ctx.vector_store is not None and store_has_semantic_vectors(ctx.vector_store):
             _raw = await ctx.vector_store.search(query, limit=50)
             decision_results = [
                 r for r in _raw if getattr(r, "page_id", "").startswith(DECISION_VECTOR_PREFIX)
@@ -523,11 +529,21 @@ async def _semantic_decision_results(ctx: Any, query: str) -> list:
 
 
 async def _semantic_doc_results(ctx: Any, query: str) -> list:
-    """Semantic search over documentation, falling back to FTS."""
+    """Semantic search over documentation, falling back to FTS.
+
+    A keyless index takes the FTS path directly rather than going through a
+    vector store that cannot rank, which is the same answer the ``except``
+    branch already produces for an unusable store.
+    """
+    if not store_has_semantic_vectors(getattr(ctx, "vector_store", None)):
+        doc_results: list = []
+        with contextlib.suppress(Exception):
+            doc_results = await ctx.fts.search(query, limit=3)
+        return doc_results
     try:
         return await ctx.vector_store.search(query, limit=3)
     except Exception:
-        doc_results: list = []
+        doc_results = []
         with contextlib.suppress(Exception):
             doc_results = await ctx.fts.search(query, limit=3)
         return doc_results
