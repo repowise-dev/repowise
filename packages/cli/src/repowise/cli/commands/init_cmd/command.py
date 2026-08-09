@@ -1125,34 +1125,27 @@ def init_command(
     no_provider = False
 
     if index_only:
+        configured_keys = any(
+            os.environ.get(k)
+            for k in (
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+            )
+        )
         try:
             if (
                 provider_name
                 or (sys.stdin.isatty() is False)
-                or any(
-                    os.environ.get(k)
-                    for k in (
-                        "GEMINI_API_KEY",
-                        "GOOGLE_API_KEY",
-                        "OPENAI_API_KEY",
-                        "ANTHROPIC_API_KEY",
-                    )
-                )
+                or configured_keys
             ):
                 decision_provider = resolve_provider(provider_name, model, repo_path)
         except Exception as exc:
             # Only a named or configured provider failure is worth surfacing
             # (#852); a keyless non-tty run intentionally proceeds with no
             # provider and must not be told "decision extraction failed".
-            if provider_name or any(
-                os.environ.get(k)
-                for k in (
-                    "GEMINI_API_KEY",
-                    "GOOGLE_API_KEY",
-                    "OPENAI_API_KEY",
-                    "ANTHROPIC_API_KEY",
-                )
-            ):
+            if provider_name or configured_keys:
                 console.print(
                     f"[yellow]Warning:[/yellow] Decision extraction unavailable — "
                     f"{exc}. Index-only proceeds without it."

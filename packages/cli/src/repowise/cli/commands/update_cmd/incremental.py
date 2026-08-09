@@ -39,7 +39,7 @@ def _build_update_vector_store(
         embedder = build_embedder(embedder_name)
         warning = embedder_degraded_warning(embedder, embedder_name)
         if warning is not None and degraded is not None:
-            degraded.append(f"Embedder: {embedder_name} unavailable — falling back to mock")
+            degraded.append(warning)
         return build_vector_store(repo_path, embedder)
     except Exception as exc:
         if degraded is not None:

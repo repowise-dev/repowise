@@ -145,30 +145,46 @@ def _search_fulltext(repo_path, query: str, limit: int) -> None:
     _display_results(results, f"Full-text search: '{query}'")
 
 
+async def _semantic_results(repo_path, query: str, limit: int) -> list | None:
+    """Semantic results from the repo's LanceDB store, else ``None``.
+
+    ``None`` means "semantic search is unavailable" — no store, or a store
+    that failed — and the caller falls back to full-text. An empty list is a
+    real (empty) result, not a fallback trigger. A failing store warns once
+    instead of silently returning nothing (issue #852).
+    """
+    from pathlib import Path
+
+    lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+    if not lance_dir.exists():
+        return None
+    try:
+        from repowise.cli.providers.embedders import (
+            build_embedder,
+            resolve_embedder_for_repo,
+        )
+        from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+        embedder = build_embedder(resolve_embedder_for_repo(repo_path))
+        store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
+        results = await store.search(query, limit=limit)
+        await store.close()
+        return results
+    except Exception as exc:
+        console.print(
+            f"[yellow]Warning:[/yellow] Semantic search unavailable — "
+            f"{exc}; using full-text search."
+        )
+        return None
+
+
 def _search_semantic(repo_path, query: str, limit: int) -> None:
     async def _run():
-        from pathlib import Path
-
-        # Try LanceDB first (populated during repowise init)
-        lance_dir = Path(repo_path) / ".repowise" / "lancedb"
-        if lance_dir.exists():
-            try:
-                from repowise.cli.providers.embedders import (
-                    build_embedder,
-                    resolve_embedder_for_repo,
-                )
-                from repowise.core.persistence.vector_store import LanceDBVectorStore
-
-                embedder = build_embedder(resolve_embedder_for_repo(repo_path))
-                store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                results = await store.search(query, limit=limit)
-                await store.close()
-                return results
-            except Exception as exc:
-                console.print(
-                    f"[yellow]Warning:[/yellow] Semantic search unavailable — "
-                    f"{exc}; using full-text search."
-                )
+        # Try LanceDB first (populated during repowise init); a missing or
+        # failing store falls back to FTS below.
+        results = await _semantic_results(repo_path, query, limit)
+        if results is not None:
+            return results
 
         # Fallback to FTS
         from repowise.core.persistence import FullTextSearch, create_engine
@@ -269,29 +285,11 @@ def _collect_fulltext(repo_path, query: str, limit: int):
 
 def _collect_semantic(repo_path, query: str, limit: int):
     async def _run():
-        from pathlib import Path
+        results = await _semantic_results(repo_path, query, limit)
+        if results is not None:
+            return results
 
         from repowise.core.persistence import FullTextSearch, create_engine
-
-        lance_dir = Path(repo_path) / ".repowise" / "lancedb"
-        if lance_dir.exists():
-            try:
-                from repowise.cli.providers.embedders import (
-                    build_embedder,
-                    resolve_embedder_for_repo,
-                )
-                from repowise.core.persistence.vector_store import LanceDBVectorStore
-
-                embedder = build_embedder(resolve_embedder_for_repo(repo_path))
-                store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                results = await store.search(query, limit=limit)
-                await store.close()
-                return results
-            except Exception as exc:
-                console.print(
-                    f"[yellow]Warning:[/yellow] Semantic search unavailable — "
-                    f"{exc}; using full-text search."
-                )
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)

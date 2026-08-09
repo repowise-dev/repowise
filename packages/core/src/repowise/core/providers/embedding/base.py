@@ -57,6 +57,10 @@ class MockEmbedder:
     """
 
     dimensions: int = 8
+    # Set by the CLI's ``build_embedder`` when a requested real embedder fell
+    # back to the mock (issue #852); callers surface it as a warning. Declared
+    # here so the attribute is part of the type instead of a dynamic add-on.
+    fallback_reason: str | None = None
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         results: list[list[float]] = []

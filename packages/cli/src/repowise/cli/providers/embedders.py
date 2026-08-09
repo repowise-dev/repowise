@@ -31,24 +31,16 @@ def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
     if embedder_name == "ollama":
         model = os.environ.get("OLLAMA_EMBEDDING_MODEL") or model
         base_url = os.environ.get("OLLAMA_BASE_URL")
-        dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
-            "REPOWISE_EMBEDDING_DIMS"
-        )
-        timeout = os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") or os.environ.get(
-            "REPOWISE_EMBEDDING_TIMEOUT"
-        )
         if base_url:
             kwargs["base_url"] = base_url
-        if dimensions:
-            dims_env = "OLLAMA_EMBEDDING_DIMS" if os.environ.get("OLLAMA_EMBEDDING_DIMS") else "REPOWISE_EMBEDDING_DIMS"
-            kwargs["dimensions"] = _as_int_or_raise(dims_env, dimensions)
-        if timeout:
-            timeout_env = (
-                "OLLAMA_EMBEDDING_TIMEOUT"
-                if os.environ.get("OLLAMA_EMBEDDING_TIMEOUT")
-                else "REPOWISE_EMBEDDING_TIMEOUT"
-            )
-            kwargs["timeout"] = _as_float_or_raise(timeout_env, timeout)
+        for env_name in ("OLLAMA_EMBEDDING_DIMS", "REPOWISE_EMBEDDING_DIMS"):
+            if (dimensions := os.environ.get(env_name)):
+                kwargs["dimensions"] = _as_int_or_raise(env_name, dimensions)
+                break
+        for env_name in ("OLLAMA_EMBEDDING_TIMEOUT", "REPOWISE_EMBEDDING_TIMEOUT"):
+            if (timeout := os.environ.get(env_name)):
+                kwargs["timeout"] = _as_float_or_raise(env_name, timeout)
+                break
     elif embedder_name == "gemini":
         dimensions = os.environ.get("REPOWISE_EMBEDDING_DIMS")
         if dimensions:
@@ -167,16 +159,20 @@ def embedder_degraded_warning(embedder: Any, requested: str) -> str | None:
     """
     from repowise.core.providers.embedding.base import MockEmbedder
 
-    reason = getattr(embedder, "fallback_reason", None)
-    if requested != "mock" and isinstance(embedder, MockEmbedder) and reason:
+    global _config_load_error
+    if requested != "mock" and isinstance(embedder, MockEmbedder) and embedder.fallback_reason:
         return (
             f"[yellow]Warning:[/yellow] {requested} embedder unavailable — "
-            f"falling back to mock: {reason}"
+            f"falling back to mock: {embedder.fallback_reason}"
         )
     if _config_load_error:
+        # One-shot: consumed here so a stale pin error cannot leak into a
+        # later call that resolved a different repo (issue #852).
+        config_error = _config_load_error
+        _config_load_error = None
         return (
             f"[yellow]Warning:[/yellow] Could not read the embedder pin from "
-            f".repowise/config.yaml: {_config_load_error}"
+            f".repowise/config.yaml: {config_error}"
         )
     return None
 

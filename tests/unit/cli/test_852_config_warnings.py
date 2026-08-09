@@ -82,7 +82,8 @@ def test_update_warns_embedder_degradation(tmp_path: Path, monkeypatch: pytest.M
 
     assert result.exit_code == 0, result.output
     assert "degraded step(s)" in result.output
-    assert "Embedder: ollama unavailable" in result.output
+    assert "ollama embedder unavailable" in result.output
+    assert "OLLAMA_EMBEDDING_TIMEOUT" in result.output
 
 
 def test_full_rescore_interval_warns_on_invalid_env(
