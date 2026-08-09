@@ -200,9 +200,12 @@ _GENERATED_MARKERS: tuple[str, ...] = (
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Manifest files that indicate a package root (for monorepo detection)
-_MANIFEST_FILES: frozenset[str] = frozenset(
-    {"pyproject.toml", "package.json", "Cargo.toml", "go.mod"}
-)
+# Registry-derived, so registering a language grants its repos monorepo
+# detection with no edit here. This was a hardcoded four (pyproject.toml,
+# package.json, Cargo.toml, go.mod), which is why a Maven, Ruby or Scala
+# monorepo reported no packages at all. .NET still does: its package file is
+# the ``.csproj`` glob, which an exact-filename list cannot express.
+_MANIFEST_FILES: frozenset[str] = _LANG_REGISTRY.package_manifest_filenames()
 
 # Entry-point evidence, all registry-derived: exact filenames (Main.kt,
 # config.ru), "*"-prefixed filename suffixes (OTP's <name>_app.erl), and
@@ -289,17 +292,14 @@ class FileTraverser:
         self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
         self._include_submodules = include_submodules
         self._include_nested_repos = include_nested_repos
-        # Dotted-module targets of pyproject console scripts. A CLI entry
-        # module (``repowise-augment = "repowise.cli.augment_hook:main"``)
-        # has no in-repo importer, so without this it reads as unreachable
-        # unless its filename happens to match an entry-stem heuristic.
-        console_scripts = _collect_console_scripts(
-            self.repo_root,
-            prune_nested_git=not (include_submodules or include_nested_repos),
-        )
-        self._console_script_names = console_scripts.names
-        self._console_script_modules = console_scripts.modules
-        self._distributions = console_scripts.distributions
+        # Console-script tables are read lazily: collecting them walks the
+        # tree parsing every pyproject.toml, which measured at 2.0s of a 2.3s
+        # construction on this repo — and callers that only want the boundary
+        # test (:meth:`package_root_dirs`, :meth:`dir_chain_skipped`) never
+        # need them. Building one per `repowise update` is the reason this is
+        # not eager.
+        self._console_scripts: ConsoleScriptTables | None = None
+        self._console_scripts_prune_nested = not (include_submodules or include_nested_repos)
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
         log.info(
@@ -310,6 +310,36 @@ class FileTraverser:
             submodules_skipped=0 if include_submodules else len(self._submodule_paths),
             include_nested_repos=include_nested_repos,
         )
+
+    # ------------------------------------------------------------------
+    # Console scripts (lazy — see __init__)
+    # ------------------------------------------------------------------
+
+    def _console_script_tables(self) -> ConsoleScriptTables:
+        """Dotted-module targets of pyproject console scripts, read once.
+
+        A CLI entry module (``repowise-augment =
+        "repowise.cli.augment_hook:main"``) has no in-repo importer, so
+        without this it reads as unreachable unless its filename happens to
+        match an entry-stem heuristic.
+        """
+        if self._console_scripts is None:
+            self._console_scripts = _collect_console_scripts(
+                self.repo_root, prune_nested_git=self._console_scripts_prune_nested
+            )
+        return self._console_scripts
+
+    @property
+    def _console_script_names(self) -> frozenset[str]:
+        return self._console_script_tables().names
+
+    @property
+    def _console_script_modules(self) -> frozenset[str]:
+        return self._console_script_tables().modules
+
+    @property
+    def _distributions(self) -> frozenset[str]:
+        return self._console_script_tables().distributions
 
     # ------------------------------------------------------------------
     # Public API
@@ -576,7 +606,7 @@ class FileTraverser:
                 rel_pkg = rel_pkg_path.as_posix()
                 if rel_pkg in seen_paths:
                     continue
-                if self._dir_chain_skipped(rel_pkg_path):
+                if self.dir_chain_skipped(rel_pkg_path):
                     continue
                 seen_paths.add(rel_pkg)
                 lang = _primary_language_in(pkg_dir, prune_nested_git=prune_nested)
@@ -596,17 +626,41 @@ class FileTraverser:
         packages.sort(key=lambda p: p.path)
         return packages, len(packages) > 1
 
-    def _dir_chain_skipped(self, rel_dir: Path) -> bool:
+    def package_root_dirs(self) -> set[str]:
+        """Every directory holding a package manifest, at any depth.
+
+        Shares :func:`.package_roots.scan_package_roots` with health's module
+        attribution, and this traverser's own skip semantics, so the two agree
+        on what a package is. Distinct from :meth:`get_repo_structure`'s
+        ``packages``, which stops at depth 2 and pays for language and
+        entry-point detection per package.
+        """
+        from .package_roots import scan_package_roots
+
+        return scan_package_roots(self.repo_root, is_pruned=self.dir_chain_skipped)
+
+    def dir_chain_skipped(self, rel_dir: Path) -> bool:
         """True if *rel_dir* (or any ancestor) would be pruned by ``_walk``.
 
         Reuses :meth:`_should_skip_dir` level by level so monorepo package
         detection has exactly the same boundary semantics as file traversal
         (blocked dirs, submodules, nested git repos, gitignore/excludes).
+
+        That includes each level's *nested* ignore spec, which this used to
+        omit: ``_should_skip_dir`` takes the containing directory's spec as an
+        argument and got ``None`` here, so a directory ignored by a nested
+        ``.gitignore`` was reported as walkable even though ``_walk`` prunes
+        it. On this repo that let ``packages/vscode/.vscode-test`` — a
+        downloaded VS Code archive ignored by ``packages/vscode/.gitignore`` —
+        through, carrying 500 vendored ``package.json`` files with it.
         """
         cur = Path()
         for part in rel_dir.parts:
+            parent_abs = self.repo_root / cur
             cur = cur / part
-            if self._should_skip_dir(part, cur, self.repo_root / cur):
+            if self._should_skip_dir(
+                part, cur, self.repo_root / cur, self._get_dir_ignore(parent_abs)
+            ):
                 return True
         return False
 

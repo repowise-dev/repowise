@@ -345,6 +345,7 @@ def run_partial_analysis(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
             duplication_cache_dir=Path(repo_path) / ".repowise",
+            repo_root=repo_path,
         )
         _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
         if _health_changed:

@@ -220,6 +220,43 @@ async def save_health_metrics(
         await session.flush()
 
 
+async def backfill_module_attribution(
+    session: AsyncSession,
+    repository_id: str,
+    package_roots: set[str],
+) -> int:
+    """Recompute every metric row's ``module`` from the repo layout.
+
+    Returns the number of rows changed, so a caller can stay silent when there
+    was nothing to correct.
+
+    ``module`` is a pure function of ``(file_path, package_roots)`` — no parse,
+    no symbols, no git, no model — so correcting it never needs the rows
+    rewritten by a re-score, let alone a re-index. That is the whole point:
+    a directory label must not cost users an indexing run.
+
+    Idempotent by construction, and it converges with the indexer rather than
+    fighting it: both call the same :func:`module_for` over the same
+    disk-scanned roots, so a full index writing a *different* value would mean
+    the two disagree about the repo layout, and running this again would flip
+    it back rather than settle.
+    """
+    from ....ingestion.package_roots import module_for
+
+    result = await session.execute(
+        select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
+    )
+    changed = 0
+    for row in result.scalars().all():
+        expected = module_for(row.file_path, package_roots)
+        if row.module != expected:
+            row.module = expected
+            changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
 async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any:
     repo = await session.get(Repository, repository_id)
     if repo is None:

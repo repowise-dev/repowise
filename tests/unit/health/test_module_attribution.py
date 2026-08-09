@@ -10,8 +10,6 @@ change: 1,355 of 3,263 files reported a module they do not live in.
 from __future__ import annotations
 
 from repowise.core.analysis.health.engine import (
-    _PACKAGE_MANIFESTS,
-    _fallback_module,
     _module_for,
     _package_roots,
 )
@@ -30,28 +28,24 @@ def test_package_roots_are_read_from_manifests_in_the_file_list():
     assert roots == {"packages/core", "packages/ui"}
 
 
-def test_every_listed_manifest_is_one_the_traverser_actually_emits():
-    """The list is bounded by what reaches ``parsed_files``, not by what exists.
+def test_the_file_list_fallback_only_sees_manifests_the_traverser_emits():
+    """Why the file list is a fallback and the disk scan is the real answer.
 
-    The analyzer only ever sees traversed files, and the traverser drops any
-    file whose language it cannot detect — ``go.mod``, ``pom.xml``,
-    ``build.gradle``, ``Gemfile`` and ``setup.cfg`` among them. Listing those
-    would be dead entries that read as support for Go, Maven and Ruby
-    monorepos. This pins the constraint so the list cannot quietly grow past it.
+    The analyzer's ``parsed_files`` only carry manifests the traverser could
+    language-detect, and it drops 18 of them — ``go.mod``, ``pom.xml``,
+    ``build.gradle``, ``Gemfile``, ``build.sbt`` among them. Deriving roots
+    from that list therefore cannot see a Go, Maven, Groovy-Gradle, Ruby or
+    Scala package, which is exactly the gap ``scan_package_roots`` closes.
     """
-    import tempfile
-    from pathlib import Path
+    from repowise.core.ingestion.package_roots import package_manifest_names
 
-    from repowise.core.ingestion.traverser import FileTraverser
-
-    root = Path(tempfile.mkdtemp())
-    for i, name in enumerate(sorted(_PACKAGE_MANIFESTS)):
-        pkg = root / f"pkg{i}"
-        pkg.mkdir()
-        (pkg / name).write_text("{}\n" if name.endswith("json") else "x = 1\n", encoding="utf-8")
-
-    emitted = {p.path.replace("\\", "/").rsplit("/", 1)[-1] for p in FileTraverser(root).traverse()}
-    assert emitted >= _PACKAGE_MANIFESTS, sorted(_PACKAGE_MANIFESTS - emitted)
+    dropped = {"go.mod", "pom.xml", "build.gradle", "Gemfile", "build.sbt"}
+    # They are package manifests...
+    assert dropped <= package_manifest_names()
+    # ...but a file list can only offer what the traverser emitted, and these
+    # never arrive, so the fallback yields nothing for them.
+    assert _package_roots({f"svc/{name}" for name in dropped}) == {"svc"}
+    assert _package_roots({"svc/main.go", "libs/Main.java"}) == set()
 
 
 def test_a_repo_root_manifest_is_not_a_package_root():
@@ -93,8 +87,12 @@ def test_no_manifests_anywhere_is_exactly_the_old_behaviour():
     a Next.js frontend): zero nested manifests, so both keep the attribution
     they already had.
     """
-    for path in ("app/routers/files.py", "src/components/x.tsx", "tests/unit/a.py"):
-        assert _module_for(path, set()) == _fallback_module(path)
+    for path, top_level in (
+        ("app/routers/files.py", "app"),
+        ("src/components/x.tsx", "src"),
+        ("tests/unit/a.py", "tests"),
+    ):
+        assert _module_for(path, set()) == top_level
 
 
 def test_root_level_files_have_no_module():
@@ -142,6 +140,108 @@ def test_the_engine_wires_real_package_roots_through_to_the_metric(tmp_path):
     modules = _analyze(tmp_path, module_map=None)
     assert modules["packages/core/thing.py"] == "packages/core"
     assert modules["packages/ui/widget.py"] == "packages/ui"
+
+
+def test_the_engine_reads_package_roots_off_disk_not_the_file_list(tmp_path):
+    """The case the whole change exists for, and the only one that proves it.
+
+    A ``pyproject.toml`` fixture cannot: the traverser emits it, so the file
+    list and the disk scan agree and the analyzer looks correct either way.
+    ``go.mod`` is dropped as a file, so its package is visible only to the
+    scan — if the engine falls back to ``parsed_files`` this returns
+    ``services``, the top-level container, which is the bug.
+    """
+    from repowise.core.analysis.health import HealthAnalyzer
+    from repowise.core.ingestion.parser import parse_file
+    from repowise.core.ingestion.traverser import FileTraverser
+
+    for rel, body in (
+        ("services/api/go.mod", "module example.com/api\n\ngo 1.22\n"),
+        ("services/api/main.go", "package main\n\nfunc main() {}\n"),
+        # Nested module inside another: the deepest-first loop's reason to exist.
+        ("services/api/internal/tools/go.mod", "module example.com/api/tools\n"),
+        ("services/api/internal/tools/tool.go", "package tools\n\nfunc T() {}\n"),
+        # No manifest anywhere above it -> top-level fallback, unchanged.
+        ("scripts/deploy.py", "def deploy():\n    return 1\n"),
+    ):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+
+    parsed = [
+        parse_file(f, (tmp_path / f.path).read_bytes()) for f in FileTraverser(tmp_path).traverse()
+    ]
+    report = HealthAnalyzer(None, parsed_files=parsed, repo_root=tmp_path).analyze()
+    modules = {m.file_path: m.module for m in report.metrics}
+
+    assert modules["services/api/main.go"] == "services/api"
+    assert modules["services/api/internal/tools/tool.go"] == "services/api/internal/tools"
+    assert modules["scripts/deploy.py"] == "scripts"
+
+
+def test_without_a_repo_root_the_engine_still_produces_the_old_answer(tmp_path):
+    """The fallback is a degradation, not a failure.
+
+    In-memory callers and hosted paths that cannot supply a checkout must keep
+    working; they just cannot see a manifest the traverser dropped.
+    """
+    from repowise.core.analysis.health import HealthAnalyzer
+    from repowise.core.ingestion.parser import parse_file
+    from repowise.core.ingestion.traverser import FileTraverser
+
+    for rel, body in (
+        ("services/api/go.mod", "module example.com/api\n"),
+        ("services/api/main.go", "package main\n\nfunc main() {}\n"),
+    ):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+
+    parsed = [
+        parse_file(f, (tmp_path / f.path).read_bytes()) for f in FileTraverser(tmp_path).traverse()
+    ]
+    report = HealthAnalyzer(None, parsed_files=parsed).analyze()
+    modules = {m.file_path: m.module for m in report.metrics}
+
+    assert modules["services/api/main.go"] == "services"
+
+
+def test_every_analyzer_call_site_supplies_a_repo_root():
+    """The convergence claim rests on this, and nothing else asserts it.
+
+    ``module`` is written by four paths — full index, incremental update,
+    ``_rescore_health_from_db`` and ``repowise health`` — and corrected by a
+    fifth, the ``repowise update`` repair. They agree only because all five
+    scan the same repo off disk. Drop ``repo_root`` at one analyzer call site
+    and that path silently reverts to the file-list fallback: on a Go monorepo
+    it writes ``services`` while the repair writes ``services/api``, so every
+    update from then on reports files corrected and the two never settle.
+
+    Asserted on the call sites because the failure is an *omitted* keyword —
+    there is no value to observe, and a test that constructs the analyzer
+    directly (as the rest of this file does) cannot see the omission at all.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    import repowise.cli.commands.health_cmd.command as health_cmd
+    import repowise.cli.commands.update_cmd.persistence as rescore
+    import repowise.core.pipeline.incremental as incremental
+    import repowise.core.pipeline.phases.analysis as full_index
+
+    for module in (full_index, incremental, rescore, health_cmd):
+        source = _Path(module.__file__).read_text(encoding="utf-8")
+        calls = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "HealthAnalyzer"
+        ]
+        assert calls, f"no HealthAnalyzer call found in {module.__name__}"
+        for call in calls:
+            kwargs = {kw.arg for kw in call.keywords}
+            assert "repo_root" in kwargs, f"{module.__name__}:{call.lineno} omits repo_root"
 
 
 def test_a_community_map_can_no_longer_change_the_answer(tmp_path):

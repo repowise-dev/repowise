@@ -31,6 +31,12 @@ from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
     distinct_commits_in_range,
 )
+
+# Package attribution lives in one place, shared with the traverser and with
+# the `repowise update` backfill, so all three agree on what a package is.
+from ...ingestion.package_roots import module_for as _module_for
+from ...ingestion.package_roots import package_roots_from_paths as _package_roots
+from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
@@ -107,92 +113,6 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
-def _fallback_module(rel_path: str) -> str | None:
-    """Top-level directory as a stand-in module label.
-
-    Returns ``None`` for root-level files so the rollup endpoint doesn't
-    create a phantom "" bucket.
-    """
-    norm = rel_path.replace("\\", "/")
-    if "/" not in norm:
-        return None
-    head = norm.split("/", 1)[0]
-    return head or None
-
-
-# Files that mark a directory as the root of a distributable package.
-#
-# Every name here is one the traverser actually emits. That is the binding
-# constraint, not the set of manifests that exist: the analyzer sees
-# ``parsed_files``, and the traverser drops any file whose language it cannot
-# detect. Verified by running ``FileTraverser`` over a directory holding one of
-# each — ``go.mod``, ``pom.xml``, ``build.gradle``, ``Gemfile``, ``setup.cfg``
-# and ``*.csproj`` are all dropped, so listing them here would be dead entries
-# that read as support. Go, Maven, Groovy-Gradle, Ruby and .NET repos therefore
-# fall back to the top-level directory, which is exactly what they get today —
-# no regression, just no improvement until the traverser yields those files.
-#
-# Kept conservative besides: a false root fragments the rollup, and the
-# top-level fallback is already reasonable. ``requirements.txt`` is deliberately
-# absent — it appears in subdirectories that are not packages.
-_PACKAGE_MANIFESTS = frozenset(
-    {
-        "package.json",
-        "pyproject.toml",
-        "setup.py",
-        "Cargo.toml",
-        "build.gradle.kts",
-        "composer.json",
-    }
-)
-
-
-def _package_roots(all_paths: set[str]) -> set[str]:
-    """Directories holding a package manifest, from the analyzed file list.
-
-    A manifest at the repo root is ignored: it would put every file in one
-    bucket, which is the degenerate case this exists to avoid.
-    """
-    roots: set[str] = set()
-    for p in all_paths:
-        norm = p.replace("\\", "/")
-        if "/" not in norm:
-            continue
-        head, base = norm.rsplit("/", 1)
-        if base in _PACKAGE_MANIFESTS:
-            roots.add(head)
-    return roots
-
-
-def _module_for(rel_path: str, package_roots: set[str]) -> str | None:
-    """The package boundary a file belongs to.
-
-    ``module`` is the directory/package axis and nothing else. It used to be
-    ``community_label or top_level_dir``, which mixed two namespaces in one
-    field: graph community labels are semantic clusters named after a member
-    directory, so a file could report a module it does not live in (measured on
-    this repo: 1,355 of 3,263 files, e.g. every ``packages/api-client`` source
-    file reporting ``tests/unit``). Worse, only the full-index path ever passed
-    a community map — the incremental, re-score and ``repowise health`` paths
-    did not — so which namespace a row carried depended on which code path last
-    wrote it.
-
-    The top-level directory alone is not enough either: on a monorepo it buckets
-    69% of this repo under ``packages``. So prefer the deepest enclosing package
-    manifest and fall back to the top-level directory, which is exactly the old
-    behaviour on a repo with no nested packages.
-    """
-    norm = rel_path.replace("\\", "/")
-    if "/" not in norm:
-        return None
-    if package_roots:
-        parts = norm.split("/")
-        # Deepest first, so a nested package wins over the one containing it.
-        for i in range(len(parts) - 1, 0, -1):
-            candidate = "/".join(parts[:i])
-            if candidate in package_roots:
-                return candidate
-    return _fallback_module(norm)
 
 
 def _read_source_lines(abs_path: str) -> list[str] | None:
@@ -379,6 +299,7 @@ class HealthAnalyzer:
         coverage_map: dict[str, dict[str, Any]] | None = None,
         module_map: dict[str, str] | None = None,
         duplication_cache_dir: Any | None = None,
+        repo_root: Any | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -398,6 +319,39 @@ class HealthAnalyzer:
         # repo's ``.repowise``). None disables caching — the duplication
         # pass then re-tokenizes everything, exactly as before.
         self.duplication_cache_dir = duplication_cache_dir
+        # Checkout root, used only to read package boundaries off disk. None
+        # falls back to inferring them from the analyzed file list, which sees
+        # only the manifests the traverser emitted.
+        self.repo_root = repo_root
+        self._package_roots_cache: set[str] | None = None
+
+    def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
+        """Package roots for this repo, decided once per analyzer.
+
+        One answer for every file, so ``module`` is a property of the repo
+        layout rather than of whichever code path happens to be running — the
+        defect this replaced was four call sites disagreeing.
+
+        Read off disk when a ``repo_root`` is known, because the analyzed file
+        list only carries manifests the traverser could language-detect, and it
+        drops ``go.mod``, ``pom.xml``, ``build.gradle``, ``Gemfile``,
+        ``build.sbt`` and a dozen more. Falls back to the file list otherwise
+        (in-memory callers and tests), which is the previous behaviour.
+        """
+        if self._package_roots_cache is not None:
+            return self._package_roots_cache
+        roots: set[str] | None = None
+        if self.repo_root is not None:
+            try:
+                roots = _scan_package_roots(self.repo_root)
+            except OSError as exc:
+                # An unreadable tree must not fail the health pass; the file
+                # list still gives the pre-existing answer.
+                log.debug("health_package_root_scan_failed", error=str(exc))
+        if roots is None:
+            roots = _package_roots(analyzed_paths)
+        self._package_roots_cache = roots
+        return roots
 
     def analyze(
         self,
@@ -429,10 +383,7 @@ class HealthAnalyzer:
         # signal (cheap, deterministic, conservative).
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         path_basenames = _path_basenames(analyzed_paths)
-        # One scan of the file list decides the package boundaries for every
-        # file, so ``module`` is a property of the repo layout rather than of
-        # whichever code path happens to be running.
-        package_roots = _package_roots(analyzed_paths)
+        package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -595,10 +546,7 @@ class HealthAnalyzer:
 
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         path_basenames = _path_basenames(analyzed_paths)
-        # One scan of the file list decides the package boundaries for every
-        # file, so ``module`` is a property of the repo layout rather than of
-        # whichever code path happens to be running.
-        package_roots = _package_roots(analyzed_paths)
+        package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 

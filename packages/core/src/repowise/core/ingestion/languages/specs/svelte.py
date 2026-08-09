@@ -24,6 +24,8 @@ SPEC = LanguageSpec(
     # imported, so they anchor reachability for everything they pull in.
     entry_point_patterns=("+page.svelte", "+layout.svelte", "+error.svelte", "App.svelte"),
     manifest_files=("package.json", "svelte.config.js"),
+    # Framework config, not a package declaration — package.json is the root.
+    build_config_manifests=("svelte.config.js",),
     lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
     blocked_dirs=("node_modules", ".svelte-kit", "dist", "build"),
     # Svelte 5 runes and the template builtins. These are compiler intrinsics,

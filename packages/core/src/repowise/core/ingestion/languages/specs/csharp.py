@@ -39,6 +39,19 @@ SPEC = LanguageSpec(
         "nuget.config",
         "NuGet.Config",
     ),
+    # None of these declare a package — the .csproj does. They are MSBuild /
+    # NuGet settings that sit at a solution root and are re-declared under
+    # tests/, templates/ and misc/, so treating them as package roots would
+    # fragment a .NET repo's module rollup (135 such directories measured
+    # across the repos censused when this field landed).
+    build_config_manifests=(
+        "Directory.Build.props",
+        "Directory.Build.targets",
+        "Directory.Packages.props",
+        "global.json",
+        "nuget.config",
+        "NuGet.Config",
+    ),
     lock_files=("packages.lock.json",),
     generated_suffixes=(
         ".g.cs",

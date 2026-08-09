@@ -50,6 +50,7 @@ from .incremental import (
 from .mode import _resolve_index_only_mode
 from .persistence import (
     _persist_index_only_update,
+    _repair_module_attribution,
     _run_full_health_rescore,
     heal_commit_offsets,
     stamp_head_commit,
@@ -781,6 +782,12 @@ def run_update(
             console.print(
                 f"[dim]Uncommitted changes: [bold]{len(working_tree_diffs)}[/bold] file(s)[/dim]"
             )
+
+    # Before the early return, so a repo with no new commits still picks this
+    # up. A module label is a pure function of the repo layout, so correcting
+    # it must not wait on a re-score (7-day decay) or cost an indexing run.
+    if not dry_run:
+        _repair_module_attribution(repo_path)
 
     if (
         head

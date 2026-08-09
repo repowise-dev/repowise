@@ -513,6 +513,97 @@ class TestUpdateWorkingTree:
         assert "uncommitted_addition" not in self._symbol_names(git_work_repo)
 
 
+class TestModuleAttributionRepair:
+    """A wrong ``module`` corrects itself on a plain update, quiet repo included.
+
+    ``module`` is persisted, so changing how it is derived only reaches stored
+    rows when something rewrites them. The alternative trigger — bumping
+    ``HEALTH_ANALYZER_VERSION`` — buys that at the price of a full health
+    re-score, and its gate is only consulted once an update reaches the
+    incremental path, so a repo with no new commits never picks it up at all.
+    """
+
+    def _modules(self, repo):
+        import sqlite3
+        from contextlib import closing
+
+        db = repo / ".repowise" / "wiki.db"
+        with closing(sqlite3.connect(db)) as conn:
+            return dict(conn.execute("SELECT file_path, module FROM health_file_metrics"))
+
+    def _corrupt(self, repo):
+        """Write the labels the old community-map path produced."""
+        import sqlite3
+        from contextlib import closing
+
+        db = repo / ".repowise" / "wiki.db"
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("UPDATE health_file_metrics SET module = 'tests/unit (3)'")
+            conn.commit()
+
+    def test_a_quiet_update_repairs_stale_module_labels(self, runner, git_work_repo):
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        indexed = self._modules(git_work_repo)
+        assert indexed, "no health rows to test against"
+
+        self._corrupt(git_work_repo)
+        assert set(self._modules(git_work_repo).values()) == {"tests/unit (3)"}
+
+        # No new commits and no config change: update takes the early return.
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Already up to date" in r1.output
+
+        # Repaired anyway, and back to exactly what the indexer wrote.
+        assert self._modules(git_work_repo) == indexed
+
+    def test_dry_run_writes_nothing(self, runner, git_work_repo):
+        """``--dry-run`` means nothing written, and the repair is a write.
+
+        It runs before the early return so a quiet repo is still corrected,
+        which puts it upstream of every other write in the command — and
+        therefore upstream of the guard they all sit behind.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        self._corrupt(git_work_repo)
+        corrupted = self._modules(git_work_repo)
+
+        r1 = runner.invoke(
+            cli,
+            ["update", str(git_work_repo), "--index-only", "--dry-run"],
+            catch_exceptions=False,
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Module attribution" not in r1.output
+        assert self._modules(git_work_repo) == corrupted
+
+    def test_a_second_update_changes_nothing(self, runner, git_work_repo):
+        """Idempotent, and silent when there is nothing to do.
+
+        If the repair and the indexer disagreed about the repo layout, the two
+        would alternate and every update would report work.
+        """
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Module attribution" not in r1.output
+
+
 class TestUpdateConfigChangeDetection:
     def _state(self, repo):
         import json

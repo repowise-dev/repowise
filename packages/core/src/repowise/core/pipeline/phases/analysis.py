@@ -210,6 +210,7 @@ async def _run_health_analysis(
             module_map=module_map,
             coverage_map=coverage_map,
             duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
+            repo_root=repo_path,
         )
 
         # Load per-file override rules from `.repowise/health-rules.json`.

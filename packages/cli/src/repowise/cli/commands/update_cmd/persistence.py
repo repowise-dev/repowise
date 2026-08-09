@@ -24,6 +24,66 @@ from .incremental import _build_repo_graph
 log = structlog.get_logger(__name__)
 
 
+def _repair_module_attribution(repo_path: Path) -> int:
+    """Re-derive every health row's ``module`` from the repo layout on disk.
+
+    Runs on every ``repowise update``, before the "already up to date" return,
+    and is cheap enough to justify that: one pruned directory walk looking for
+    manifest filenames, then a write only for rows whose label actually moved.
+    A repo already correct writes nothing, so the steady-state cost is the walk.
+
+    It exists because ``module`` is *persisted*, and a change to how it is
+    derived would otherwise only reach stored rows when something rewrote them
+    — a full health re-score at best, a re-index at worst. Neither is an
+    acceptable price for a directory label, and neither is necessary: the label
+    is a pure function of ``(file_path, package_roots)``, and package roots are
+    just the directories holding a manifest. No parse, no embedding, no model.
+
+    Failure-isolated: an unreadable tree or a missing index returns 0 rather
+    than failing the update. The next update retries and nothing else depends
+    on the result.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.ingestion.traverser import FileTraverser
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.crud import backfill_module_attribution
+
+    async def _run() -> int:
+        # Scan through the traverser so it honours the same gitignore,
+        # submodule and exclude boundaries the index does.
+        roots = FileTraverser(Path(repo_path)).package_root_dirs()
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return await backfill_module_attribution(session, repo.id, roots)
+        finally:
+            # Matches the other update-time DB opens. File SQLite uses
+            # NullPool so nothing is held open across the call, but leaving a
+            # live engine behind on a path that runs every update is the kind
+            # of thing that turns into a lock report later.
+            await engine.dispose()
+
+    try:
+        changed = run_async(_run())
+    except Exception as exc:
+        log.debug("module_attribution_repair_failed", error=str(exc))
+        return 0
+    if changed:
+        console.print(f"[dim]Module attribution: [bold]{changed}[/bold] file(s) corrected[/dim]")
+    return changed
+
+
 async def _coverage_for_rescore(
     session: Any,
     repo_id: str,
@@ -970,6 +1030,7 @@ async def _rescore_health_from_db(
                 parsed_files=parsed_files,
                 coverage_map=coverage_map,
                 duplication_cache_dir=Path(repo_path) / ".repowise",
+                repo_root=repo_path,
             )
             hcfg = HealthConfig.load(repo_path)
             analyzer_config = (
