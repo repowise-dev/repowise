@@ -12,6 +12,7 @@ self-contained README under `examples/<name>/`.
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
 | [risk/](risk/) | `repowise risk` change / PR defect scoring (no LLM key) |
+| [search/](search/) | `repowise search` fulltext / symbol / semantic wiki lookup |
 | [security-scan/](security-scan/) | Working-tree security signals + OSS `security scan --history` (no LLM key) |
 | [structurizr-export/](structurizr-export/) | `export --format structurizr` fragment vs standalone (no LLM key) |
 
