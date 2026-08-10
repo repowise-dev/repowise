@@ -19,6 +19,7 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.cli.ui.brand import format_bytes
 from repowise.core.docs_mode import resolve_docs_mode
 
@@ -142,13 +143,40 @@ def _query_page_count(repo_path: Path) -> int:
         return 0
 
 
-def _query_health_line(repo_path: Path) -> str | None:
-    """One-line health summary for ``repowise status``.
+async def _query_pages(repo_path: Path) -> tuple[dict[str, int], int]:
+    """Page counts per type and total page tokens for *repo_path*."""
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+        list_pages,
+    )
 
-    Returns ``None`` when no health data exists yet so the caller can
-    skip the line silently. Format matches plan §4 P4.10:
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    sf = create_session_factory(engine)
 
-        Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
+    counts: dict[str, int] = {}
+    total_tokens = 0
+    try:
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return counts, total_tokens
+            pages = await list_pages(session, repo.id, include_tombstones=False, limit=10000)
+            for p in pages:
+                counts[p.page_type] = counts.get(p.page_type, 0) + 1
+                total_tokens += (p.input_tokens or 0) + (p.output_tokens or 0)
+    finally:
+        await engine.dispose()
+    return counts, total_tokens
+
+
+def _query_health(repo_path: Path) -> dict | None:
+    """Health figures for ``repowise status``, or ``None`` when there are none.
+
+    Split from :func:`_query_health_line` so the json mode reports the numbers
+    rather than a string with rich markup in it.
     """
     db_path = get_repowise_dir(repo_path) / "wiki.db"
     if not db_path.exists() and not db_configured():
@@ -195,9 +223,20 @@ def _query_health_line(repo_path: Path) -> str | None:
             await engine.dispose()
 
     try:
-        data = run_async(_q())
+        return run_async(_q()) or None
     except Exception:
         return None
+
+
+def _query_health_line(repo_path: Path) -> str | None:
+    """One-line health summary for ``repowise status``.
+
+    Returns ``None`` when no health data exists yet so the caller can
+    skip the line silently. Format matches plan §4 P4.10:
+
+        Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
+    """
+    data = _query_health(repo_path)
     if not data:
         return None
     worst_path = data["worst_performer_path"] or "n/a"
@@ -254,16 +293,93 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
         return iso_timestamp[:10] if len(iso_timestamp) >= 10 else iso_timestamp
 
 
-def _workspace_status(target: CommandTarget) -> None:
-    """Show status for all repos in a workspace."""
+def _workspace_rows(target: CommandTarget) -> list[dict]:
+    """One plain-data row per workspace repo, before any rendering.
+
+    Split out so json mode reports the underlying values (a byte count, a
+    boolean, a commit) rather than the table's cells, which carry rich markup
+    and pre-formatted strings like ``3d ago``.
+
+    Every row carries every key. An unindexed repo has nothing to report and
+    leaves the measured fields ``None``, rather than omitting them and making
+    each consumer branch on ``indexed`` before it may read a field.
+    """
     from repowise.core.workspace import check_repo_staleness
 
     ws_root = target.ws_root
     ws_config = target.ws_config
+    assert ws_root is not None and ws_config is not None
+
+    rows: list[dict] = []
+    for entry in ws_config.repos:
+        abs_path = (ws_root / entry.path).resolve()
+        repowise_dir = abs_path / ".repowise"
+        row: dict = {
+            "alias": entry.alias,
+            "path": str(abs_path),
+            "primary": entry.alias == ws_config.default_repo,
+            "indexed": repowise_dir.exists(),
+            "indexed_at": entry.indexed_at,
+            "files": None,
+            "symbols": None,
+            "pages": None,
+            "docs_mode": None,
+            "storage_bytes": None,
+            "head": None,
+            "stale": None,
+            "commits_behind": None,
+        }
+        if not row["indexed"]:
+            rows.append(row)
+            continue
+
+        file_count, symbol_count = _query_repo_counts(abs_path)
+        page_count = _query_page_count(abs_path)
+        is_stale, current_head, behind = check_repo_staleness(
+            abs_path, entry.last_commit_at_index
+        )
+        row.update(
+            files=file_count,
+            symbols=symbol_count,
+            pages=page_count,
+            docs_mode=resolve_docs_mode(load_state(abs_path)),
+            storage_bytes=_index_storage_bytes(repowise_dir),
+            head=current_head,
+            stale=is_stale,
+            commits_behind=behind,
+        )
+        rows.append(row)
+    return rows
+
+
+def _workspace_status(target: CommandTarget, fmt: str = "table") -> None:
+    """Show status for all repos in a workspace."""
+    ws_root = target.ws_root
+    ws_config = target.ws_config
     if ws_root is None or ws_config is None:
-        console.print(
+        notice_console(fmt).print(
             "[yellow]No .repowise-workspace.yaml found. "
             "Run 'repowise init <workspace-dir>' first.[/yellow]"
+        )
+        if fmt == "json":
+            emit_json({"workspace": None, "repos": []})
+        return
+
+    rows = _workspace_rows(target)
+
+    if fmt == "json":
+        emit_json(
+            {
+                "workspace": {
+                    "name": ws_root.name,
+                    "path": str(ws_root),
+                    "default_repo": ws_config.default_repo,
+                    "repo_count": len(rows),
+                    "indexed_count": sum(1 for r in rows if r["indexed"]),
+                    "stale_count": sum(1 for r in rows if r["stale"]),
+                },
+                "repos": rows,
+            }
         )
         return
 
@@ -280,22 +396,17 @@ def _workspace_status(target: CommandTarget) -> None:
     total_stale = 0
     no_docs: list[str] = []  # aliases with index but no generated pages
 
-    for entry in ws_config.repos:
-        abs_path = (ws_root / entry.path).resolve()
-        repowise_dir = abs_path / ".repowise"
-        label = entry.alias
-        if entry.alias == ws_config.default_repo:
+    for row in rows:
+        label = row["alias"]
+        if row["primary"]:
             label += " [bold](primary)[/bold]"
 
-        if not repowise_dir.exists():
+        if not row["indexed"]:
             table.add_row(label, "-", "-", "-", "-", "-", "-", "[yellow]not indexed[/yellow]")
             continue
 
-        file_count, symbol_count = _query_repo_counts(abs_path)
-        indexed_ago = _format_relative_time(entry.indexed_at)
-        page_count = _query_page_count(abs_path)
-        storage_cell = format_bytes(_index_storage_bytes(repowise_dir))
-        docs_mode = resolve_docs_mode(load_state(abs_path))
+        page_count = row["pages"]
+        docs_mode = row["docs_mode"]
 
         # One axis in the Docs column: every wiki is complete, and the only
         # question is whether the subsystem pages carry written prose or are
@@ -307,44 +418,39 @@ def _workspace_status(target: CommandTarget) -> None:
                 docs_cell = f"[green]{page_count} · prose[/green]"
         elif docs_mode == "none":
             docs_cell = "[yellow]None[/yellow]"
-            no_docs.append(entry.alias)
+            no_docs.append(row["alias"])
         else:
             docs_cell = "[yellow]0[/yellow]"
-            no_docs.append(entry.alias)
+            no_docs.append(row["alias"])
 
-        # Check staleness by comparing stored commit to current HEAD
-        stored_commit = entry.last_commit_at_index
-        is_stale, current_head, behind = check_repo_staleness(abs_path, stored_commit)
-        head_short = (current_head or "-")[:7]
-
-        if is_stale and behind > 0:
+        behind = row["commits_behind"]
+        if row["stale"] and behind > 0:
             status = f"[yellow]{behind} new commit(s)[/yellow]"
             total_stale += 1
-        elif is_stale:
+        elif row["stale"]:
             status = "[yellow]stale[/yellow]"
             total_stale += 1
-        elif file_count > 0:
+        elif row["files"] > 0:
             status = "[green]up to date[/green]"
         else:
             status = "[yellow]empty[/yellow]"
 
         table.add_row(
             label,
-            str(file_count),
-            f"{symbol_count:,}",
+            str(row["files"]),
+            f"{row['symbols']:,}",
             docs_cell,
-            storage_cell,
-            indexed_ago,
-            head_short,
+            format_bytes(row["storage_bytes"]),
+            _format_relative_time(row["indexed_at"]),
+            (row["head"] or "-")[:7],
             status,
         )
 
     console.print(table)
 
     # Summary line
-    total_repos = len(ws_config.repos)
-    indexed = sum(1 for e in ws_config.repos if (ws_root / e.path / ".repowise").exists())
-    summary = f"\n  {indexed}/{total_repos} repos indexed. Default: {ws_config.default_repo}"
+    indexed = sum(1 for r in rows if r["indexed"])
+    summary = f"\n  {indexed}/{len(rows)} repos indexed. Default: {ws_config.default_repo}"
     if total_stale:
         summary += f". [yellow]{total_stale} stale[/yellow]"
     console.print(summary)
@@ -384,20 +490,23 @@ def _workspace_status(target: CommandTarget) -> None:
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
-def status_command(path: str | None, workspace: bool, no_workspace: bool) -> None:
+@format_option()
+def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: str) -> None:
     """Show wiki sync state and page statistics.
 
     Auto-detects workspace mode when invoked from a workspace root.
     """
+    notices = notice_console(fmt)
+
     target = resolve_command_target(
         path=path,
         workspace_flag=workspace,
         no_workspace_flag=no_workspace,
     )
-    target.notice(console, command="status")
+    target.notice(notices, command="status")
 
     if target.is_workspace:
-        _workspace_status(target)
+        _workspace_status(target, fmt)
         return
 
     repo_path = target.repo_path
@@ -405,12 +514,47 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool) -> Non
     repowise_dir = get_repowise_dir(repo_path)
 
     if not repowise_dir.exists():
-        console.print("[yellow]No .repowise/ directory found. Run 'repowise init' first.[/yellow]")
+        notices.print(
+            "[yellow]No .repowise/ directory found. Run 'repowise init' first.[/yellow]"
+        )
+        if fmt == "json":
+            emit_json({"repo": str(repo_path), "indexed": False})
         return
 
     state = load_state(repo_path)
+    storage_bytes = _index_storage_bytes(repowise_dir)
+    db_path = repowise_dir / "wiki.db"
+    has_db = db_path.exists() or db_configured()
 
-    # State table
+    if fmt == "json":
+        counts, total_db_tokens = (
+            run_async(_query_pages(repo_path)) if has_db else ({}, 0)
+        )
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "indexed": True,
+                "state": {
+                    "last_sync_commit": state.get("last_sync_commit"),
+                    "total_pages": state.get("total_pages", 0),
+                    "provider": state.get("provider"),
+                    "model": state.get("model"),
+                    "total_tokens": state.get("total_tokens", 0),
+                    "storage_bytes": storage_bytes,
+                },
+                "database_found": has_db,
+                "pages_by_type": counts,
+                "page_total": sum(counts.values()),
+                "page_tokens": total_db_tokens,
+                "health": _query_health(repo_path),
+            }
+        )
+        return
+
+    # State table. Printed before the page query runs, not after: the query is
+    # unguarded, and on a wiki.db whose schema predates the current models it
+    # raises. Ordering it first means a reader still gets the sync state that
+    # tells them the index is old.
     state_table = Table(title="Sync State")
     state_table.add_column("Key", style="cyan")
     state_table.add_column("Value")
@@ -419,48 +563,14 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool) -> Non
     state_table.add_row("Provider", state.get("provider", "—") or "—")
     state_table.add_row("Model", state.get("model", "—") or "—")
     state_table.add_row("Total tokens", f"{state.get('total_tokens', 0):,}")
-    state_table.add_row("Index storage", format_bytes(_index_storage_bytes(repowise_dir)))
+    state_table.add_row("Index storage", format_bytes(storage_bytes))
     console.print(state_table)
 
-    # Page counts from DB
-    db_path = repowise_dir / "wiki.db"
-    if not db_path.exists() and not db_configured():
+    if not has_db:
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")
         return
 
-    async def _query_pages():
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_repository_by_path,
-            get_session,
-            list_pages,
-        )
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        sf = create_session_factory(engine)
-
-        counts: dict[str, int] = {}
-        total_tokens = 0
-
-        async with get_session(sf) as session:
-            repo = await get_repository_by_path(session, str(repo_path))
-            if repo is None:
-                await engine.dispose()
-                return counts, total_tokens
-            pages = await list_pages(
-                session, repo.id, include_tombstones=False, limit=10000
-            )
-            for p in pages:
-                counts[p.page_type] = counts.get(p.page_type, 0) + 1
-                total_tokens += (p.input_tokens or 0) + (p.output_tokens or 0)
-
-        await engine.dispose()
-        return counts, total_tokens
-
-    counts, total_db_tokens = run_async(_query_pages())
-
+    counts, total_db_tokens = run_async(_query_pages(repo_path))
     if counts:
         pages_table = Table(title="Pages by Type")
         pages_table.add_column("Page Type", style="cyan")

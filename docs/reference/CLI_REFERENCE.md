@@ -445,6 +445,7 @@ Show wiki sync state, page statistics, and coverage.
 repowise status                          # auto-detects mode
 repowise status --workspace              # all workspace repos
 repowise status --no-workspace           # force single-repo even in a workspace
+repowise status --format json            # machine-readable
 ```
 
 In workspace mode, the table includes a **Docs** column with each repo's page count and a per-repo **Docs status** block listing skip reasons (e.g. `cost gate declined`) and the exact remediation command.
@@ -542,12 +543,12 @@ not re-run the working-tree scan.
 | `--to <rev>` | Upper git revision bound (inclusive). Defaults to HEAD / all history |
 | `--path <dir>` | Repo path (defaults to cwd / workspace primary) |
 | `--all-patterns` | History mode: also report code-smell patterns (`eval`, `os.system`, weak hashes, …). Default history mode reports only leaked-secret patterns (`hardcoded_password` / `hardcoded_secret`) to avoid noise |
-| `--output` | `table` (default) or `json` |
+| `--format` | `table` (default) or `json`. `--output` is a deprecated alias, still accepted; when both are given `--output` wins |
 
 ```bash
 repowise security scan --history
 repowise security scan --history --since v1.0.0 --to HEAD
-repowise security scan --history --all-patterns --output json
+repowise security scan --history --all-patterns --format json
 ```
 
 Findings are written to the `security_findings` table (idempotent on re-run)
@@ -656,6 +657,9 @@ repowise decision health [PATH]         # health dashboard
 | `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |
+| `--format` | `table` (default) or `json` |
+
+`--format json` is also available on `decision show` and `decision health`. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
 
 ---
 
@@ -699,6 +703,7 @@ repowise coverage add --verbose             # show ingestion debug logs
 coverage run --contexts=test -m pytest      # produce .coverage with contexts
 repowise coverage add .coverage             # per-file coverage + per-test map
 repowise coverage status                    # coverage summary + "Test-to-code map" counts
+repowise coverage status --format json      # machine-readable (note: the --format on `coverage add` names the input parser instead)
 ```
 
 > The per-test map is a separate dimension from the per-file aggregate that
@@ -759,6 +764,9 @@ distill filters.
 | `--model` | Pricing model for the dollar estimate (input-token rate). Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |
+| `--format` | `table` (default) or `json` |
+
+JSON folds the table, the net, and every trailing advisory line into one document.
 
 ```bash
 repowise saved                       # per-filter rollup + totals
@@ -781,6 +789,7 @@ default; entirely local. See [DISTILL.md](../agent/DISTILL.md#repowise-correctio
 | `--days` | Transcript window for the scan (default 30) |
 | `--write` | Maintain the "Known command corrections" managed block in `.claude/CLAUDE.md` / `AGENTS.md` (opt-in) |
 | `--min-count` | Occurrences a rule needs before `--write` includes it (default 2) |
+| `--format` | `table` (default) or `json` |
 
 ```bash
 repowise corrections                 # report recurring fumbles
@@ -800,6 +809,7 @@ Show LLM spend tracking.
 | `--repo` | Scope to a specific workspace repo |
 | `--all` | Aggregate across every workspace repo |
 | `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
+| `--format` | `table` (default) or `json` |
 
 ```bash
 repowise costs                           # auto-detects mode
@@ -898,11 +908,11 @@ Explain the cross-repo contract link count: per-repo provider/consumer counts, u
 | Flag | Description |
 |------|-------------|
 | `--repo` | Limit the report to one repo alias |
-| `--json` | Emit raw diagnostics JSON |
+| `--format` | `table` (default) or `json`. `--json` is a deprecated alias, still accepted |
 
 ```bash
 repowise workspace diagnostics            # human-readable report
-repowise workspace diagnostics --json     # raw JSON
+repowise workspace diagnostics --format json  # raw JSON
 repowise workspace diagnostics --repo api # limit to one repo alias
 ```
 
@@ -912,11 +922,11 @@ Architecture lint: check the declared `conformance:` rules against the system gr
 
 | Flag | Description |
 |------|-------------|
-| `--json` | Emit the raw conformance report as JSON |
+| `--format` | `table` (default) or `json`. `--json` is a deprecated alias, still accepted |
 
 ```bash
 repowise workspace check                  # human-readable report; exit 1 on findings
-repowise workspace check --json           # raw report JSON
+repowise workspace check --format json    # raw report JSON
 ```
 
 ### `repowise workspace metrics [PATH]`
@@ -925,11 +935,11 @@ Architecture-complexity metrics over the system graph built by `repowise update 
 
 | Flag | Description |
 |------|-------------|
-| `--json` | Emit the raw metrics as JSON |
+| `--format` | `table` (default) or `json`. `--json` is a deprecated alias, still accepted |
 
 ```bash
 repowise workspace metrics
-repowise workspace metrics --json
+repowise workspace metrics --format json
 ```
 
 See [Workspaces](../scale/WORKSPACES.md) for the full multi-repo guide.
@@ -975,7 +985,7 @@ in `.repowise/sessions/sessions.db`.
 
 ```bash
 repowise hook stats
-repowise hook stats --json      # raw per-surface rows
+repowise hook stats --format json   # raw per-surface rows
 ```
 
 Notices that ask for nothing (stale-read, the silent read-after-served
@@ -1163,6 +1173,9 @@ version as seen. Works offline from the changelog bundled with the install.
 |------|-------------|
 | `--version X.Y.Z` | Show notes for a single release |
 | `--all` | Show the full changelog history |
+| `--format` | `table` (default) or `json` |
+
+JSON carries every selected release; the panel caps at 5 releases and 8 bullets each.
 
 ```bash
 repowise whats-new                       # what changed since you last looked

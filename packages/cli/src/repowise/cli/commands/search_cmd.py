@@ -8,28 +8,18 @@ from rich.table import Table
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
-    err_console,
     get_db_url_for_repo,
     resolve_command_target,
     run_async,
 )
 from repowise.cli.output import emit_json, format_option
+from repowise.cli.output import notice_console as _notices
 
 # Rank-fusion damping for the workspace fan-out, matching the value the server's
 # retrieval fusion uses. Only reached when repos in one workspace answered on
 # different score scales (some semantic, some full-text), where the raw scores
 # are not comparable and the rank is the only shared quantity.
 _WORKSPACE_RRF_K = 60
-
-
-def _notices(fmt: str):
-    """Console for human asides — stderr under ``--format json``.
-
-    Progress notices, keyless-embedder warnings and "no results" lines are all
-    written for a person. On stdout they would sit in front of the JSON
-    document and break every parser reading it, so json mode diverts them.
-    """
-    return err_console if fmt == "json" else console
 
 
 def _answered_mode(requested: str, keyless_repos: list[str], mixed_scales: bool) -> str:

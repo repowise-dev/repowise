@@ -8,6 +8,25 @@ from repowise.cli.helpers import (
     console,
     resolve_command_target,
 )
+from repowise.cli.output import (
+    emit_json,
+    format_option,
+    json_option,
+    notice_console,
+    resolve_format,
+)
+
+#: Every ``hook stats --format json`` payload carries these five keys, whether
+#: or not there is a ledger to fill them from. A consumer that has to check
+#: which keys exist before reading them is not much better off than one parsing
+#: a table, so the empty case is the full shape rather than a shorter one.
+_EMPTY_STATS: dict = {
+    "surfaces": [],
+    "runs": [],  # hook_run_by_tool
+    "decision_feedback": {},  # decision_feedback_totals
+    "builds": [],  # injection_builds
+    "rewrite": [],  # rewrite_run_totals
+}
 
 
 @click.group("hook")
@@ -685,14 +704,9 @@ def _print_builds(builds: list[dict]) -> None:
 
 @hook_group.command("stats")
 @click.argument("path", required=False, default=None)
-@click.option(
-    "--json",
-    "as_json",
-    is_flag=True,
-    default=False,
-    help="Emit the raw per-surface rows as JSON instead of a table.",
-)
-def hook_stats(path: str | None, as_json: bool) -> None:
+@format_option(help="Output format. ``json`` emits the raw per-surface rows.")
+@json_option()
+def hook_stats(path: str | None, fmt: str, as_json: bool) -> None:
     """Show what the agent hooks fired and whether the agent acted on it.
 
     Reads the efficacy ledger in .repowise/sessions/sessions.db. The live
@@ -701,8 +715,6 @@ def hook_stats(path: str | None, as_json: bool) -> None:
     acted on. A surface showing firings but no verdicts has not been
     classified yet — run the backfill.
     """
-    import json as json_mod
-
     from repowise.core.sessions.efficacy import (
         CLASSIFIED_SURFACES,
         NO_ACTION_EXPECTED,
@@ -710,10 +722,15 @@ def hook_stats(path: str | None, as_json: bool) -> None:
     )
     from repowise.core.sessions.staging import SessionStagingStore, default_store_path
 
+    fmt = resolve_format(fmt, as_json)
+    notices = notice_console(fmt)
+
     target = resolve_command_target(path=path, workspace_flag=False, no_workspace_flag=True)
     assert target.repo_path is not None
     if not default_store_path(target.repo_path).exists():
-        console.print("[yellow]No hook ledger yet.[/yellow] Run `repowise hook backfill`.")
+        notices.print("[yellow]No hook ledger yet.[/yellow] Run `repowise hook backfill`.")
+        if fmt == "json":
+            emit_json(_EMPTY_STATS)
         return
 
     store = SessionStagingStore.open_default(target.repo_path)
@@ -728,24 +745,32 @@ def hook_stats(path: str | None, as_json: bool) -> None:
     finally:
         store.close()
     if not rows:
-        console.print("[yellow]Hook ledger is empty.[/yellow] Run `repowise hook backfill`.")
-        return
-
-    if as_json:
-        # The machine-readable twin carries the same lie the table did, so it
-        # gets the same label rather than a footer nothing can parse.
-        for row in rows:
-            row["retired"] = (row["surface"], row["category"]) in RETIRED_CATEGORIES
-        console.print_json(
-            json_mod.dumps(
+        notices.print("[yellow]Hook ledger is empty.[/yellow] Run `repowise hook backfill`.")
+        if fmt == "json":
+            emit_json(
                 {
-                    "surfaces": rows,
+                    **_EMPTY_STATS,
                     "runs": by_tool,
                     "decision_feedback": feedback,
                     "builds": builds,
                     "rewrite": rewrites,
                 }
             )
+        return
+
+    if fmt == "json":
+        # The machine-readable twin carries the same lie the table did, so it
+        # gets the same label rather than a footer nothing can parse.
+        for row in rows:
+            row["retired"] = (row["surface"], row["category"]) in RETIRED_CATEGORIES
+        emit_json(
+            {
+                "surfaces": rows,
+                "runs": by_tool,
+                "decision_feedback": feedback,
+                "builds": builds,
+                "rewrite": rewrites,
+            }
         )
         return
 

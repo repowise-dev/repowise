@@ -22,12 +22,13 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option, notice_console
 
 
-def _resolve_coverage_repo(path: str | None) -> Path:
+def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     """Resolve the repo path for coverage subcommands (workspace-aware)."""
     target = resolve_command_target(path=path)
-    target.notice(console, command="coverage")
+    target.notice(notice_console(fmt), command="coverage")
     if target.is_workspace:
         primary = target.primary_path()
         if primary is None:
@@ -286,9 +287,14 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
 @click.option(
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
-def coverage_status(repo: str | None) -> None:
+# Safe to spell this ``--format`` here: the ``--format`` that names an *input*
+# parser (lcov / cobertura / clover) lives on ``coverage add``, not on the
+# group, so the two never meet on one command line.
+@format_option()
+def coverage_status(repo: str | None, fmt: str) -> None:
     """Show the coverage currently ingested for this repo."""
-    repo_path = _resolve_coverage_repo(repo)
+    repo_path = _resolve_coverage_repo(repo, fmt)
+    notices = notice_console(fmt)
 
     async def _do() -> None:
         from repowise.core.persistence import (
@@ -307,10 +313,23 @@ def coverage_status(repo: str | None) -> None:
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                console.print("[yellow]No index yet — run `repowise init`.[/yellow]")
+                notices.print("[yellow]No index yet — run `repowise init`.[/yellow]")
+                if fmt == "json":
+                    emit_json({"repo": str(repo_path), "indexed": False})
                 return
             summary = await get_coverage_summary(session, repo_row.id)
             map_summary = await get_test_coverage_summary(session, repo_row.id)
+
+            if fmt == "json":
+                emit_json(
+                    {
+                        "repo": str(repo_path),
+                        "indexed": True,
+                        "coverage": summary if summary.get("file_count") else None,
+                        "test_map": map_summary if map_summary.get("pair_count") else None,
+                    }
+                )
+                return
 
             if not summary.get("file_count") and not map_summary.get("pair_count"):
                 console.print(

@@ -22,6 +22,7 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import console
+from repowise.cli.output import emit_json, format_option, notice_console
 
 #: Fallback pricing model for the dollar estimate. Saved tokens are input-side
 #: tokens the coding agent never had to read, so the input rate applies. Used
@@ -70,6 +71,7 @@ DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
     metavar="DAYS",
     help="Transcript window for the missed-savings scan.",
 )
+@format_option()
 def saved_command(
     path: str | None,
     group_by: str,
@@ -77,6 +79,7 @@ def saved_command(
     pricing_model: str | None,
     show_missed: bool,
     missed_days: float,
+    fmt: str,
 ) -> None:
     """Show tokens (and estimated dollars) saved by ``repowise distill``.
 
@@ -87,22 +90,35 @@ def saved_command(
     """
     from repowise.core.distill.store import OmissionStore, default_store_path
 
+    notices = notice_console(fmt)
     since_ts = _parse_since(since)
 
     start = Path(path).resolve() if path else Path.cwd()
     pricing_model, pricing_note = _resolve_pricing(start, pricing_model)
 
     if show_missed:
+        if fmt == "json":
+            emit_json(
+                {
+                    "days": missed_days,
+                    "pricing_model": pricing_model,
+                    "missed_distill": _missed_report(start, missed_days),
+                    "missed_mcp_rereads": _reread_report(start, missed_days),
+                }
+            )
+            return
         _print_missed_report(start, missed_days, pricing_model)
         return
 
     db_path = default_store_path(start)
     if not db_path.exists():
-        console.print(
+        notices.print(
             "[yellow]No savings recorded yet.[/yellow] Run commands through "
             "'repowise distill <cmd>' (or install the rewrite hook with "
             "'repowise hook rewrite install') to start saving tokens."
         )
+        if fmt == "json":
+            emit_json({"ledger": str(db_path), "events": 0, "rows": []})
         return
 
     store = OmissionStore(db_path)
@@ -111,6 +127,28 @@ def saved_command(
         rows = store.savings_rollup(by=group_by, since=since_ts)
     finally:
         store.close()
+
+    if fmt == "json":
+        saved_tokens = summary["saved_tokens"]
+        usd, rate = _estimate_usd(saved_tokens, pricing_model)
+        emit_json(
+            {
+                "ledger": str(db_path),
+                "group_by": group_by,
+                "since": since,
+                "pricing_model": pricing_model,
+                "pricing_source": pricing_note,
+                "input_rate_usd_per_mtok": rate,
+                "summary": {**summary, "estimated_usd": usd},
+                "rows": rows,
+                "mcp_truncation": _mcp_truncation_rows(db_path, since_ts),
+                "net": _net_data(start, saved_tokens, since_ts),
+                "missed_distill": _missed_report(start, missed_days),
+                "missed_mcp_rereads": _reread_report(start, missed_days),
+                "forgone": _forgone_rows(start, db_path, since_ts),
+            }
+        )
+        return
 
     if summary["events"] == 0:
         msg = "No distillation events recorded"
@@ -177,6 +215,65 @@ def saved_command(
     console.print()
 
 
+def _net_data(start: Path, saved_tokens: int, since_ts: float | None) -> dict | None:
+    """The net figures behind :func:`_print_net`, or ``None`` when there is no net.
+
+    Split out so ``--format json`` reports the same numbers the table path
+    prints rather than a second, drifting computation of them. The three
+    honesty rules documented on :func:`_print_net` all live here, since they
+    decide whether a net exists at all: a windowed ``--since`` has no
+    comparable debit side, and neither does a repo with no debit rows.
+    """
+    if since_ts is not None:
+        return None
+    try:
+        from repowise.cli.helpers import find_repowise_repo_root
+        from repowise.core.sessions.efficacy import advisory_cost
+        from repowise.core.sessions.footprint import measure
+        from repowise.core.sessions.staging import SessionStagingStore, default_store_path
+
+        repo_root = find_repowise_repo_root(start) or start
+        advisory_chars = advisory_firings = 0
+        if default_store_path(repo_root).exists():
+            store = SessionStagingStore.open_default(repo_root)
+            try:
+                advisory_chars, advisory_firings = advisory_cost(store.efficacy_rows())
+            finally:
+                store.close()
+        footprint = measure(
+            repo_root,
+            advisory_chars=advisory_chars,
+            advisory_firings=advisory_firings,
+        )
+    except Exception:
+        return None
+    if not footprint.debits:
+        return None
+
+    amp = footprint.amplification
+    billed_saved = int(saved_tokens * (amp.ratio if amp.known else 1.0))
+    return {
+        "billed_saved": billed_saved,
+        "billed_spent": footprint.billed_total,
+        "net": billed_saved - footprint.billed_total,
+        "amplification": (
+            {"known": True, "ratio": amp.ratio, "sessions": amp.sessions, "calls": amp.calls}
+            if amp.known
+            else {"known": False}
+        ),
+        "debits": [
+            {
+                "label": d.label,
+                "billed_tokens": d.billed_tokens,
+                "raw_tokens": d.raw_tokens,
+                "detail": d.detail,
+            }
+            for d in footprint.debits
+        ],
+        "unmeasured": list(footprint.unmeasured),
+    }
+
+
 def _print_net(start: Path, saved_tokens: int, since_ts: float | None = None) -> None:
     """Gross saved, gross spent, net — and the net may be negative.
 
@@ -206,50 +303,28 @@ def _print_net(start: Path, saved_tokens: int, since_ts: float | None = None) ->
             "describe the same period. Run without --since for the net.[/dim]"
         )
         return
-    try:
-        from repowise.cli.helpers import find_repowise_repo_root
-        from repowise.core.sessions.efficacy import advisory_cost
-        from repowise.core.sessions.footprint import measure
-        from repowise.core.sessions.staging import SessionStagingStore, default_store_path
-
-        repo_root = find_repowise_repo_root(start) or start
-        advisory_chars = advisory_firings = 0
-        if default_store_path(repo_root).exists():
-            store = SessionStagingStore.open_default(repo_root)
-            try:
-                advisory_chars, advisory_firings = advisory_cost(store.efficacy_rows())
-            finally:
-                store.close()
-        footprint = measure(
-            repo_root,
-            advisory_chars=advisory_chars,
-            advisory_firings=advisory_firings,
-        )
-    except Exception:
-        return
-    if not footprint.debits:
+    data = _net_data(start, saved_tokens, since_ts)
+    if data is None:
         return
 
-    amp = footprint.amplification
-    multiplier = amp.ratio if amp.known else 1.0
-    billed_saved = int(saved_tokens * multiplier)
-    net = billed_saved - footprint.billed_total
+    net = data["net"]
     colour = "green" if net > 0 else "red"
+    amp = data["amplification"]
 
     console.print()
     console.print("  [bold]Net[/bold] [dim](billed tokens, after amplification)[/dim]")
-    console.print(f"    gross saved   [green]{billed_saved:>12,}[/green]")
-    console.print(f"    gross spent   [yellow]{footprint.billed_total:>12,}[/yellow]")
+    console.print(f"    gross saved   [green]{data['billed_saved']:>12,}[/green]")
+    console.print(f"    gross spent   [yellow]{data['billed_spent']:>12,}[/yellow]")
     console.print(f"    net           [{colour}]{net:>12,}[/{colour}]")
-    for debit in footprint.debits:
+    for debit in data["debits"]:
         console.print(
-            f"      [dim]{debit.label}: {debit.billed_tokens:,} "
-            f"({debit.raw_tokens:,} raw — {debit.detail})[/dim]"
+            f"      [dim]{debit['label']}: {debit['billed_tokens']:,} "
+            f"({debit['raw_tokens']:,} raw — {debit['detail']})[/dim]"
         )
-    if amp.known:
+    if amp["known"]:
         console.print(
-            f"      [dim]amplification {amp.ratio:.1f}x, measured over {amp.sessions} "
-            f"sessions at a median {amp.calls} API calls each. It is a function of "
+            f"      [dim]amplification {amp['ratio']:.1f}x, measured over {amp['sessions']} "
+            f"sessions at a median {amp['calls']} API calls each. It is a function of "
             "session length, not a constant.[/dim]"
         )
     else:
@@ -257,7 +332,7 @@ def _print_net(start: Path, saved_tokens: int, since_ts: float | None = None) ->
             "      [dim]no cache figures on disk, so nothing was amplified and "
             "both sides are raw tokens.[/dim]"
         )
-    for missing in footprint.unmeasured:
+    for missing in data["unmeasured"]:
         console.print(f"      [dim]not counted as a cost: {missing}.[/dim]")
     console.print(
         "      [dim]Savings recorded before the cost side existed have no debit "
@@ -296,6 +371,23 @@ _FORGONE_SURFACES = (
 )
 
 
+def _mcp_truncation_rows(db_path: Path, since_ts: float | None) -> list[dict]:
+    """Per-tool truncation drops, or ``[]`` when this repo has never served MCP."""
+    import sqlite3
+
+    from repowise.core.distill import tracking
+
+    try:
+        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
+        try:
+            summary = tracking.mcp_savings_summary(con, since=since_ts)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return []  # no such table: this repo has never served MCP, not an error
+    return [r for r in summary["per_tool"] if r["kind"] == "truncation"]
+
+
 def _print_mcp_truncation_line(db_path: Path, since_ts: float | None) -> None:
     """MCP savings the table above structurally cannot show.
 
@@ -311,20 +403,7 @@ def _print_mcp_truncation_line(db_path: Path, since_ts: float | None) -> None:
     put in them. ``mcp_savings_summary`` merges with counterfactual
     precedence, so taking only the ``truncation`` rows adds each tool once.
     """
-    import sqlite3
-
-    from repowise.core.distill import tracking
-
-    try:
-        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
-        try:
-            summary = tracking.mcp_savings_summary(con, since=since_ts)
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return  # no such table: this repo has never served MCP, not an error
-
-    rows = [r for r in summary["per_tool"] if r["kind"] == "truncation"]
+    rows = _mcp_truncation_rows(db_path, since_ts)
     if not rows:
         return
     tokens = sum(r["tokens"] for r in rows)
@@ -339,24 +418,20 @@ def _print_mcp_truncation_line(db_path: Path, since_ts: float | None) -> None:
     )
 
 
-def _print_forgone_read_skeleton_line(start: Path, db_path: Path, since_ts: float | None) -> None:
-    """What each replacing surface would have saved, for repos that have it off.
+def _forgone_rows(start: Path, db_path: Path, since_ts: float | None) -> list[dict]:
+    """One row per replacing surface that has measured rows, else ``[]``.
 
-    Read out of its own table rather than the savings ledger, and printed
-    below the total rather than inside it, because none of it happened.
-
-    The caveat is not decoration. This number is exactly half the question:
-    it says what the replacement would have taken off the bill, and it cannot
-    say what the agent would then have had to read back, because nothing was
-    replaced and so nothing was recovered. A repo can show a large figure here
-    and still be one where serving skeletons is a bad trade.
+    A surface with no rows is omitted rather than reported as zero: nothing
+    was measured there, which is a different claim from "would have saved
+    nothing".
     """
     import sqlite3
 
+    from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
     from repowise.cli.helpers import find_repowise_repo_root
 
     repo_root = find_repowise_repo_root(start) or start
-    printed = False
+    rows: list[dict] = []
     for source, flag, label, noun, install_cmd in _FORGONE_SURFACES:
         try:
             con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
@@ -380,33 +455,66 @@ def _print_forgone_read_skeleton_line(start: Path, db_path: Path, since_ts: floa
             finally:
                 con.close()
         except sqlite3.Error:
-            return  # no such table: this repo never measured, which is not an error
+            # ``break``, not ``return []``: the surfaces already read are real
+            # measurements and the printer used to keep them, because it
+            # printed as it went. The common error (no such table) still fails
+            # on the first surface and yields nothing either way; a locked
+            # database part-way through must not retract what was gathered.
+            break
         if not items:
             continue
+        rows.append(
+            {
+                "filter": flag,
+                "source": source,
+                "label": label,
+                "noun": noun,
+                "install_cmd": install_cmd,
+                # Rows outlive the setting that produced them, and nothing
+                # prunes them, so the state has to be read rather than inferred
+                # from their presence, or a repo that measured for a week and
+                # then turned the feature on gets told forever that it is off.
+                "enabled": hook_flag_enabled(repo_root, flag),
+                "items": items,
+                "raw_tokens": raw,
+                "distilled_tokens": distilled,
+                "forgone_tokens": raw - distilled,
+            }
+        )
+    return rows
 
-        # Rows outlive the setting that produced them, and nothing prunes them,
-        # so the state has to be read rather than inferred from their presence,
-        # or a repo that measured for a week and then turned the feature on gets
-        # told forever that it is off and should turn it on.
-        from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
 
-        printed = True
+def _print_forgone_read_skeleton_line(start: Path, db_path: Path, since_ts: float | None) -> None:
+    """What each replacing surface would have saved, for repos that have it off.
+
+    Read out of its own table rather than the savings ledger, and printed
+    below the total rather than inside it, because none of it happened.
+
+    The caveat is not decoration. This number is exactly half the question:
+    it says what the replacement would have taken off the bill, and it cannot
+    say what the agent would then have had to read back, because nothing was
+    replaced and so nothing was recovered. A repo can show a large figure here
+    and still be one where serving skeletons is a bad trade.
+    """
+    rows = _forgone_rows(start, db_path, since_ts)
+    for row in rows:
+        items, raw, distilled = row["items"], row["raw_tokens"], row["distilled_tokens"]
         plural = "" if items == 1 else "s"
-        if not hook_flag_enabled(repo_root, flag):
+        if not row["enabled"]:
             console.print(
-                f"  [dim]Not saved:[/dim] {label} are [yellow]off[/yellow] here: "
-                f"{items:,} {noun}{plural} would have cost "
+                f"  [dim]Not saved:[/dim] {row['label']} are [yellow]off[/yellow] here: "
+                f"{items:,} {row['noun']}{plural} would have cost "
                 f"[bold]{raw - distilled:,}[/bold] fewer tokens ({raw:,} → {distilled:,}). "
-                f"[dim]Turn on with `{install_cmd}`.[/dim]"
+                f"[dim]Turn on with `{row['install_cmd']}`.[/dim]"
             )
         else:
             console.print(
-                f"  [dim]Measured before {label} was turned on:[/dim] {items:,} "
-                f"{noun}{plural} would have cost "
+                f"  [dim]Measured before {row['label']} was turned on:[/dim] {items:,} "
+                f"{row['noun']}{plural} would have cost "
                 f"[bold]{raw - distilled:,}[/bold] fewer tokens ({raw:,} → {distilled:,}). "
                 "[dim]Savings since then are in the table above.[/dim]"
             )
-    if printed:
+    if rows:
         console.print(
             "  [dim]This is what the replacement would have taken off the bill, and only "
             "that: nothing was replaced, so nothing was read back, so it says nothing "
