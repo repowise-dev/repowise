@@ -150,6 +150,31 @@ def json_option(*, help: str = "Deprecated alias for --format json.") -> Any:
     )
 
 
+def full_option(*, help: str | None = None) -> Any:
+    """``--full``: emit the underlying tool payload instead of the CLI projection.
+
+    ``ask``, ``context``, ``symbol`` and ``why`` are adapters over the MCP tool
+    functions, and those return considerably more than a command needs to show
+    — ``get_context`` on two files is ~20K chars, most of it skeleton source.
+    The default is therefore a trimmed projection and the raw dict is opt-in,
+    so payload size is a switch a caller (or a benchmark) can measure both
+    sides of rather than a choice baked into the command.
+
+    A raw tool dict has no table rendering, so this implies ``--format json``.
+    It carries the same log-silencing callback as :func:`json_option` for that
+    reason: ``--full`` alone leaves ``--format`` on ``table``, so without it the
+    one payload that stays corruptible is the one asked for by name.
+    """
+    return click.option(
+        "--full",
+        "full",
+        is_flag=True,
+        default=False,
+        callback=_silence_when_alias_selects_json,
+        help=help or "Emit the complete tool payload as JSON (implies --format json).",
+    )
+
+
 def resolve_format(fmt: str, as_json: bool) -> str:
     """Fold a legacy boolean alias into the ``--format`` value.
 
@@ -191,6 +216,7 @@ __all__ = [
     "NON_TTY_WIDTH",
     "emit_json",
     "format_option",
+    "full_option",
     "json_option",
     "notice_console",
     "resolve_console_width",

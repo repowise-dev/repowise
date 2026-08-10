@@ -729,6 +729,10 @@ repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (seconds; --workspace for every repo)
 repowise watch            # auto-sync daemon, re-index on file change
 repowise search "<q>"     # search the wiki (fulltext / semantic / symbol)
+repowise ask "<q>"        # a synthesized answer with citations
+repowise context <files>  # triage card: layer, hotspot, fix history, freshness
+repowise symbol <id>      # one symbol's body, with verified line bounds
+repowise why <q|path>     # decisions, rationale, git archaeology
 repowise health           # code-health KPIs and lowest-scoring files
 repowise risk main..HEAD  # score a branch or PR range for defect risk
 repowise impacted-tests   # only the tests a diff actually exercises

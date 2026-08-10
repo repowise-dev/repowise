@@ -422,6 +422,7 @@ Search wiki pages by keyword, meaning, or symbol name.
 | `--repo` | Scope to a specific workspace repo by alias |
 | `--all` | Fan out across every workspace repo and merge results |
 | `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
+| `--format` | `table` (default) or `json` |
 
 ```bash
 repowise search "rate limiting"
@@ -431,9 +432,134 @@ repowise search "rate limit" --repo backend     # workspace, one repo
 repowise search "rate limit" --all              # workspace, fan-out
 ```
 
-For question answering and synthesized explanations (not keyword lookup), use
-the MCP `get_answer` tool from your editor, or the **Chat** tab in the web UI
-(`repowise serve`), there is no dedicated CLI command for this.
+For a synthesized answer rather than a keyword lookup, use `repowise ask`.
+
+---
+
+### `repowise ask QUESTION`
+
+Answer a question about the codebase, with citations. The same synthesis the
+`get_answer` MCP tool performs: hybrid retrieval followed by an LLM answer over
+what it found, so this command costs an LLM call where the other query commands
+do not.
+
+```bash
+repowise ask "how does the retry backoff work?"
+repowise ask "where is the session cookie set?" --format json
+repowise ask "why is auth split across two modules?" --full
+```
+
+`confidence: high` is content-grounded, so it can be cited directly. A
+low-confidence answer returns `best_guesses` (a file plus why it is in the
+running) instead of an empty one.
+
+---
+
+### `repowise context TARGETS...`
+
+Triage card for files, modules or symbols: title, summary, architectural layer,
+hotspot and bug-fix history, doc freshness, and the shape of the verified
+skeleton. Relationships and risk signals, not source bytes. Batch targets in one
+call.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--include` | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton` |
+| `--no-compact` | Add structure, imports and docstrings to each card |
+
+```bash
+repowise context src/api/routes.py src/api/auth.py
+repowise context src/api/routes.py::login --include callers --include metrics
+repowise context src/api/routes.py --full        # includes the skeleton source
+```
+
+The skeleton's *text* is the bulk of the underlying payload, so the default
+reports its size and coverage and `--full` carries the source.
+
+---
+
+### `repowise symbol SYMBOL_ID`
+
+Read one function, class or constant with live-verified line bounds. `source`
+arrives in the same line-numbered format a file read produces; `verified: true`
+means the bounds were checked against the live file.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--context-lines` | Extra lines before and after the body (0-50) |
+| `--query` | Omission refs only: regex or substring filter on the restored lines |
+
+```bash
+repowise symbol "src/api/routes.py::login"
+repowise symbol "src/api/routes.py:140-180"     # live range read
+repowise symbol "repowise#a1b2c3d4e5f6"          # a distill omission ref
+```
+
+An ambiguous id (overloads, re-exports) returns every matching body rather than
+silently picking one. A truncated body carries a `continuation` you can pass
+straight back to `repowise symbol`.
+
+---
+
+### `repowise why [QUERY]`
+
+Why the code is shaped this way: decision records, rationale and git
+archaeology. Worth running before a refactor or a deliberate divergence from a
+pattern.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--target` | File path to anchor the search to. Repeatable |
+
+```bash
+repowise why "why is auth using JWT?"           # question
+repowise why src/api/auth.py                     # governing decisions + origin story
+repowise why "why the retry cap?" --target src/api/client.py
+repowise why                                     # decision health dashboard
+```
+
+Falls back to git archaeology when a path has no decisions, so it is never
+empty.
+
+---
+
+### Shared options: `ask`, `context`, `symbol`, `why`
+
+These four are thin adapters over the MCP tools of the same name, so they share
+one option block.
+
+| Flag | Description |
+|------|-------------|
+| `--path` | Repo (or workspace) root. Defaults to the current directory |
+| `--repo` | Workspace repo alias to query |
+| `--no-workspace` | Force single-repo mode even inside a workspace |
+| `--format` | `table` (default) or `json` |
+| `--full` | Emit the complete tool payload as JSON (implies `--format json`) |
+
+The repo is `--path` here rather than the trailing positional `[PATH]` the older
+commands take: `context` accepts a variadic list of targets, which would swallow
+a trailing path.
+
+`--format json` emits a **trimmed CLI projection**, not the tool's whole
+response. What each one keeps and drops is documented on the `project()`
+function in its command module. `--full` returns the raw dict, which is what an
+editor's MCP client receives. Measured on this repository:
+
+| Command | trimmed | `--full` |
+|---------|--------:|---------:|
+| `ask` | 3.4 KB | 19.7 KB |
+| `context` (one file) | 0.9 KB | 12.4 KB |
+| `why` (question) | 10.6 KB | 21.1 KB |
+| `symbol` | 0.8 KB | 0.8 KB |
+
+`symbol` barely moves because its payload *is* its answer — only the call
+envelope is dropped.
 
 ---
 

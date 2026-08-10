@@ -152,6 +152,10 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | Command | What it is for |
 |---|---|
 | `repowise search "<q>"` | Search the wiki. `--mode fulltext\|semantic\|symbol`. |
+| `repowise ask "<q>"` | A synthesized answer with citations and a confidence rating. Costs an LLM call. |
+| `repowise context <files>` | Triage card per file: layer, hotspot, bug-fix history, doc freshness. |
+| `repowise symbol "<file>::<Name>"` | One symbol's body with live-verified line bounds. |
+| `repowise why "<q>"` | Decisions and rationale behind the shape of the code. A path gets its origin story; no argument gets the decision health dashboard. |
 | `repowise health` | Lowest-scoring files and why. `--trend` for direction, `--refactoring-targets` for concrete plans. |
 | `repowise risk main..HEAD` | Defect risk for a commit or range, scored 0-10. |
 | `repowise dead-code` | What nothing references any more, by confidence tier. |
