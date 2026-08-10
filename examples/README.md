@@ -8,6 +8,7 @@ self-contained README under `examples/<name>/`.
 | Example | What it shows |
 |---------|----------------|
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
+| [dead-code/](dead-code/) | `repowise dead-code` — unused exports and cleanup candidates (no LLM key) |
 | [decisions/](decisions/) | `repowise decision` list/health/confirm — architectural records (no LLM key) |
 | [distill/](distill/) | `distill` / `expand` / `saved` — compress command output (no LLM key) |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
@@ -33,6 +34,7 @@ self-contained README under `examples/<name>/`.
 - [Codex integration](../docs/agent/CODEX.md)
 - [OpenCode integration](../docs/agent/OPENCODE.md)
 - [Code health](../docs/layers/CODE_HEALTH.md)
+- [Dead code](../docs/layers/DEAD_CODE.md)
 - [Decisions](../docs/layers/DECISIONS.md)
 - [Change risk](../docs/layers/CHANGE_RISK.md)
 - [Test intelligence](../docs/layers/TEST_INTELLIGENCE.md)
