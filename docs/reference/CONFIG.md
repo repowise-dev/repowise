@@ -647,7 +647,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `REPOWISE_PORT` | API server port (default: `7337`) |
 | `REPOWISE_MCP_PORT` | MCP SSE server port (default: `7338`) |
 | `REPOWISE_API_URL` | Frontend only; backend URL for the web UI (default: `http://localhost:7337`) |
-| `REPOWISE_API_KEY` | Bearer token required by clients calling the server API |
+| `REPOWISE_API_KEY` | Bearer token required by clients calling the server API. Without it the server answers local callers only, and refuses any request from another host with 403 |
 | `REPOWISE_CONFIG_DIR` | Override where repowise looks for its config directory |
 | `REPOWISE_GITHUB_WEBHOOK_SECRET` | Secret for verifying GitHub webhook signatures |
 | `REPOWISE_GITLAB_WEBHOOK_TOKEN` | Token for verifying GitLab webhook requests |

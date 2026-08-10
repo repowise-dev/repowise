@@ -100,6 +100,7 @@ ANTHROPIC_API_KEY=sk-ant-... docker compose up
 | `REPOWISE_PROVIDER` | auto | Override provider detection |
 | `REPOWISE_DB_URL` | SQLite (`.repowise/wiki.db`) | PostgreSQL connection string |
 | `REPOWISE_HOST` | `127.0.0.1` | API server bind host |
+| `REPOWISE_API_KEY` | — | Bearer token for the API. Required to serve callers on other hosts; without it requests from off-host are refused |
 | `REPOWISE_PORT` | `7337` | API server port |
 | `REPOWISE_MCP_PORT` | `7338` | MCP SSE server port |
 

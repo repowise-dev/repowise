@@ -10,6 +10,7 @@ Provides Depends() callables for:
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -26,12 +27,14 @@ _API_KEY = os.environ.get("REPOWISE_API_KEY")
 _REPOWISE_HOST = os.environ.get("REPOWISE_HOST", "127.0.0.1")
 _header_scheme = APIKeyHeader(name="Authorization", auto_error=False)
 
-# Warn at import time if server is network-exposed without authentication
+# Warn at import time if the server is network-exposed without a key. Only an
+# advisory: what a request is actually allowed to do is decided per request
+# from the peer address, since REPOWISE_HOST is not always set.
 if _API_KEY is None and _REPOWISE_HOST in ("0.0.0.0", "::"):
     logger.warning(
         "SECURITY WARNING: Server is binding to %s without REPOWISE_API_KEY set. "
-        "All endpoints are unauthenticated and network-accessible. "
-        "Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+        "Requests from other hosts will be refused. "
+        "Set REPOWISE_API_KEY to serve them, or bind to 127.0.0.1.",
         _REPOWISE_HOST,
     )
 
@@ -96,9 +99,33 @@ async def get_cross_repo_enricher(request: Request):
     return getattr(request.app.state, "cross_repo_enricher", None)
 
 
-def auth_is_open() -> bool:
-    """True when no key is required (no ``REPOWISE_API_KEY`` on a loopback bind)."""
-    return _API_KEY is None and _REPOWISE_HOST not in ("0.0.0.0", "::")
+def client_is_local(request: Request) -> bool:
+    """True when the request's peer address is a loopback address.
+
+    The keyless-access decision is taken from the peer, not from
+    ``REPOWISE_HOST``: that env var describes what an operator intended, and
+    nothing on the CLI path sets it, so ``repowise serve --host 0.0.0.0``
+    used to bind the world while the auth logic still read "127.0.0.1" and
+    let every request through. An unknown peer counts as remote.
+
+    Known limitation: behind a reverse proxy on the same host every peer is
+    loopback, so those deployments still need ``REPOWISE_API_KEY``. Forwarded
+    headers are deliberately not trusted, since any client can send them.
+    """
+    client = request.client
+    if client is None or not client.host:
+        return False
+    try:
+        return ipaddress.ip_address(client.host).is_loopback
+    except ValueError:
+        # A non-address peer (a UNIX socket, an ASGI test transport that
+        # names itself) is not something we can vouch for.
+        return False
+
+
+def auth_is_open(request: Request) -> bool:
+    """True when no key is required (no ``REPOWISE_API_KEY``, local caller)."""
+    return _API_KEY is None and client_is_local(request)
 
 
 def bearer_is_valid(auth: str | None) -> bool:
@@ -116,21 +143,22 @@ def bearer_is_valid(auth: str | None) -> bool:
 
 
 async def verify_api_key(
+    request: Request,
     auth: str | None = Security(_header_scheme),
 ) -> None:
     """API key verification.
 
-    When REPOWISE_API_KEY is not set and server binds to loopback, this is a
-    no-op (local-only access). When binding to a non-loopback address without
-    a key, requests are rejected (fail-closed for network-exposed deployments).
-    When set, requests must include ``Authorization: Bearer <key>``.
+    When REPOWISE_API_KEY is not set, only local callers are served; a request
+    from anywhere else is rejected (fail-closed for network-exposed
+    deployments, however the server was started). When set, requests must
+    include ``Authorization: Bearer <key>``.
     """
     if _API_KEY is None:
-        if _REPOWISE_HOST in ("0.0.0.0", "::"):
+        if not client_is_local(request):
             raise HTTPException(
                 status_code=403,
-                detail="Server is network-exposed but REPOWISE_API_KEY is not set. "
-                "Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+                detail="Server is reachable from the network but REPOWISE_API_KEY "
+                "is not set. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
             )
         return
     if not auth or not auth.startswith("Bearer "):

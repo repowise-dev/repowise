@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# Both servers bind 0.0.0.0 inside the container, so without a key the only
+# thing standing between the API and the network is the port publishing.
+if [ -z "${REPOWISE_API_KEY}" ]; then
+  echo "WARNING: REPOWISE_API_KEY is not set. Requests from outside the container" \
+       "will be refused; the API is only usable from inside it. Set REPOWISE_API_KEY."
+fi
+
 # Start the FastAPI backend
 echo "Starting repowise API server on port ${PORT_BACKEND}..."
 uvicorn repowise.server.app:create_app \
