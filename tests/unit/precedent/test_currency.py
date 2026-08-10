@@ -131,3 +131,31 @@ def test_silence_when_git_cannot_decide(tmp_path: Path) -> None:
     )
 
     assert sentence is None
+
+
+def test_git_never_inherits_the_callers_stdin(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one spawn detail that is load-bearing rather than tidiness.
+
+    ``get_why`` reaches this on every request that resolves an episode, and the
+    MCP server it runs inside speaks JSON-RPC over stdio. A git child that
+    inherits that stdin can hold it open indefinitely, and the ``timeout=``
+    here is not a backstop: on Windows ``subprocess.run`` kills the child on
+    ``TimeoutExpired`` and then re-enters ``communicate()`` with no timeout,
+    blocking on reader threads the child still holds. The observed result was
+    ``get_why`` never returning and the agent's session wedging behind it.
+    """
+    import repowise.core.precedent.currency as currency_mod
+
+    seen: dict[str, object] = {}
+    real_run = subprocess.run
+
+    def _spy(cmd, **kwargs):
+        seen.update(kwargs)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(currency_mod.subprocess, "run", _spy)
+    commits_since(repo, since_commit="HEAD", nodes=["a.py"])
+
+    assert seen.get("stdin") is subprocess.DEVNULL

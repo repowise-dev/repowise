@@ -887,6 +887,10 @@ async def _run_git_log(
                 capture_output=True,
                 text=True,
                 timeout=10,
+                # See commits_since() in core/precedent/currency.py: a git child
+                # that inherits this server's JSON-RPC stdin can wedge the
+                # session, and the timeout above is not a reliable ceiling.
+                stdin=subprocess.DEVNULL,
             )
             if proc.returncode == 0:
                 for line in proc.stdout.strip().splitlines():
@@ -918,6 +922,7 @@ async def _run_git_log(
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    stdin=subprocess.DEVNULL,  # see above
                 )
                 if proc2.returncode == 0:
                     seen = {r["sha"] for r in results}
