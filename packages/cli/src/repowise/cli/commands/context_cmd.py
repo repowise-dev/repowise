@@ -89,8 +89,10 @@ def _project_one(card: dict) -> dict:
     if card.get("fix_history"):
         out["fix_history"] = card["fix_history"]
     freshness = card.get("freshness") or {}
-    if freshness:
-        out["stale"] = bool(freshness.get("is_stale"))
+    # ``is_stale`` is None when the tool could not judge; reporting that as
+    # False would say "these docs are current" on no evidence.
+    if freshness.get("is_stale") is not None:
+        out["stale"] = bool(freshness["is_stale"])
     if card.get("episodes"):
         out["episodes"] = card["episodes"]
     # Everything else the card carries, including every --include block. A

@@ -334,6 +334,9 @@ def test_context_projection_keeps_the_skeleton_shape_without_its_text():
     assert card["hotspot"] is True
     assert card["fix_history"]["bug_magnet"] is True
     assert card["stale"] is False
+    # ``is_stale: null`` means the tool could not judge, not "current".
+    unknown = {"target": "a.py", "freshness": {"is_stale": None}}
+    assert "stale" not in project_context({"targets": {"a.py": unknown}}, ("a.py",))["targets"]["a.py"]
     assert card["episodes"] == 4
     assert card["skeleton"] == {
         "mode": "smart", "tokens": 100, "full_tokens": 400,
