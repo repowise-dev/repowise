@@ -72,7 +72,10 @@ def test_it_publishes_this_repos_resources_and_tears_them_down(wired):
     async def _tool():
         return {"ok": True}
 
-    assert tool_bridge.call_tool(repo, _tool) == {"ok": True}
+    assert tool_bridge.call_tool(repo, _tool, "get_symbol") == {"ok": True}
+    # The session factory is the object that decides *which repo's database*
+    # answers, so it is the one most worth pinning.
+    assert published["session_factory"].kw["bind"] is engine
     assert published["vector_store"] is store
     # The server points both at one store: decisions share the page table under
     # a "decision:" namespace rather than living in a separate one.
@@ -82,15 +85,51 @@ def test_it_publishes_this_repos_resources_and_tears_them_down(wired):
     assert engine.disposed and store.closed
 
 
-def test_a_failing_tool_still_disposes_the_engine(wired):
+def test_a_failing_tool_becomes_a_shaped_error_not_a_traceback(wired):
+    """The MCP surface composes every tool inside ``_failure_shield``.
+
+    A CLI command awaits the undecorated function, so without this a repo with
+    a ``.repowise/`` directory but no built database prints a sqlalchemy
+    traceback with an **empty stdout** — the state a caller cannot tell from a
+    crash, which is what every early return here exists to avoid.
+    """
     engine, store, _published, repo = wired
 
     async def _tool():
         raise RuntimeError("boom")
 
-    with pytest.raises(RuntimeError, match="boom"):
-        tool_bridge.call_tool(repo, _tool)
+    result = tool_bridge.call_tool(repo, _tool, "get_symbol")
+    assert "get_symbol" in result["error"] and "boom" in result["error"]
     assert engine.disposed and store.closed
+
+
+def test_an_unindexed_repo_gets_the_shields_run_init_advice(wired):
+    """``_get_repo`` raises this exact LookupError; the shield shapes it."""
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        raise LookupError("No repositories found in the database")
+
+    result = tool_bridge.call_tool(repo, _tool, "get_context")
+    assert "no repowise index yet" in result["error"].lower()
+    assert "repowise init" in result["remedy"]
+
+
+def test_a_store_that_fails_to_open_still_disposes_the_engine(wired, monkeypatch):
+    """Building the embedder happens before the tool call and can raise."""
+    engine, _store, _published, repo = wired
+
+    async def _explode(repo_path):
+        raise RuntimeError("no embedder")
+
+    monkeypatch.setattr(tool_bridge, "_open_vector_store", _explode)
+
+    async def _tool():
+        return {}
+
+    result = tool_bridge.call_tool(repo, _tool, "get_why")
+    assert "no embedder" in result["error"]
+    assert engine.disposed
 
 
 def test_a_store_that_fails_to_close_does_not_lose_the_answer(wired, monkeypatch):
@@ -105,7 +144,7 @@ def test_a_store_that_fails_to_close_does_not_lose_the_answer(wired, monkeypatch
     async def _tool():
         return {"ok": True}
 
-    assert tool_bridge.call_tool(repo, _tool) == {"ok": True}
+    assert tool_bridge.call_tool(repo, _tool, "get_symbol") == {"ok": True}
     assert engine.disposed
 
 
@@ -118,7 +157,7 @@ def test_the_factory_runs_inside_the_loop_after_the_state_is_published(wired):
         seen.append(dict(published))
         return {}
 
-    tool_bridge.call_tool(repo, _tool)
+    tool_bridge.call_tool(repo, _tool, "get_symbol")
     assert seen and seen[0]["repo_path"] == str(repo)
 
 

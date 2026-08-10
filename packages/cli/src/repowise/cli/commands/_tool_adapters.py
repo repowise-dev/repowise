@@ -102,14 +102,29 @@ def resolve_indexed_repo(
         assert target.repo_path is not None
         repo_path = target.repo_path
 
-    if not (repo_path / ".repowise").is_dir():
+    from repowise.cli.helpers import REPOWISE_DIR
+
+    if not (repo_path / REPOWISE_DIR).is_dir():
         raise click.ClickException(
             f"{repo_path} is not indexed. Run 'repowise init' there first."
         )
     return repo_path
 
 
-def run(repo_path: Path, factory: Callable[[], Awaitable[dict]]) -> dict:
+def emit_full(payload: dict) -> None:
+    """``--full``: the raw tool dict, and a non-zero exit if it is an error.
+
+    Same rule as :func:`emit_error` — the document is always emitted, and the
+    status still tells the truth. ``--full`` is exactly the spelling a script
+    reaches for, so this is the path where a failed lookup exiting 0 would do
+    the most damage.
+    """
+    emit_json(payload)
+    if payload.get("error"):
+        raise click.exceptions.Exit(1)
+
+
+def run(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str) -> dict:
     """Await one tool coroutine with this repo's resources published.
 
     Logs are silenced here rather than on the format option, because these
@@ -125,7 +140,7 @@ def run(repo_path: Path, factory: Callable[[], Awaitable[dict]]) -> dict:
     from repowise.cli.tool_bridge import call_tool
 
     silence_logs_for_machine_output()
-    return call_tool(repo_path, factory)
+    return call_tool(repo_path, factory, tool_name)
 
 
 #: MCP tool name -> the CLI command that now does the same thing.
@@ -155,6 +170,16 @@ def as_cli_prose(text: str) -> str:
     return text
 
 
+#: Keys the tools attach *beside* ``error`` to make it recoverable.
+#:
+#: ``suggestions`` is ``get_symbol``'s did-you-mean list, and its error message
+#: literally ends "retry with one of these exact symbol_ids" — dropping the
+#: list leaves a message pointing at nothing. ``remedy`` and ``guidance`` come
+#: from the failure shield's shaped responses (an unindexed repo, an unknown
+#: alias) and are the only part of those that says what to do.
+_ERROR_COMPANIONS = ("suggestions", "remedy", "guidance")
+
+
 def emit_error(payload: dict, fmt: str, *, extra: dict | None = None) -> None:
     """Render a tool's ``error`` key, if it has one, and exit non-zero.
 
@@ -167,10 +192,17 @@ def emit_error(payload: dict, fmt: str, *, extra: dict | None = None) -> None:
     error = payload.get("error")
     if not error:
         return
+    companions = {key: payload[key] for key in _ERROR_COMPANIONS if payload.get(key)}
     if fmt == "json":
-        emit_json({**(extra or {}), "error": error})
+        emit_json({**(extra or {}), "error": error, **companions})
     else:
-        _notices(fmt).print(f"[red]{as_cli_prose(str(error))}[/red]")
+        notices = _notices(fmt)
+        notices.print(f"[red]{as_cli_prose(str(error))}[/red]")
+        for value in companions.get("suggestions") or []:
+            notices.print(f"  [cyan]{value}[/cyan]")
+        for key in ("remedy", "guidance"):
+            if companions.get(key):
+                notices.print(f"[dim]{as_cli_prose(str(companions[key]))}[/dim]")
     raise click.exceptions.Exit(1)
 
 
@@ -205,7 +237,9 @@ def print_index_note(payload: dict, fmt: str) -> None:
 
 
 __all__ = [
+    "as_cli_prose",
     "emit_error",
+    "emit_full",
     "index_note",
     "print_index_note",
     "resolve_format_for",

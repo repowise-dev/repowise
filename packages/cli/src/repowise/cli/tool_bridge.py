@@ -37,18 +37,35 @@ from typing import Any
 from repowise.cli.helpers import run_async
 
 
-async def _acall_tool(repo_path: Path, factory: Callable[[], Awaitable[dict]]) -> dict:
+async def _acall_tool(
+    repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str
+) -> dict:
     """Wire tool state for *repo_path*, await ``factory()``, then tear down."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import FullTextSearch, create_engine
     from repowise.server.chat_tools import init_tool_state
+    from repowise.server.mcp_server._failure_shield import _shape_exception
 
-    engine = create_engine(get_db_url_for_repo(repo_path))
-    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    store = await _open_vector_store(repo_path)
+    engine = None
+    store = None
+    # The MCP surface composes every tool as
+    # ``_savings_instrument(_failure_shield(fn))`` at ``apply()`` time, so an
+    # MCP client never sees a raw exception: a repo with a ``.repowise/``
+    # directory but no built database comes back as a shaped "no index yet,
+    # run repowise init" dict. A CLI command awaiting the tool function
+    # directly gets the undecorated one, and would print a traceback with an
+    # **empty stdout** — the state a caller cannot distinguish from a crash,
+    # which is what every early return in these commands exists to avoid.
+    #
+    # The shield covers the setup as well as the call. Resolving the DB URL,
+    # opening the store and building the embedder all touch config and disk,
+    # and a failure there is the same condition from the caller's side.
     try:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        store = await _open_vector_store(repo_path)
         init_tool_state(
             session_factory,
             FullTextSearch(engine),
@@ -59,6 +76,8 @@ async def _acall_tool(repo_path: Path, factory: Callable[[], Awaitable[dict]]) -
             repo_path=str(repo_path),
         )
         return await factory()
+    except Exception as exc:
+        return _shape_exception(tool_name, exc)
     finally:
         close = getattr(store, "close", None)
         if close is not None:
@@ -66,7 +85,9 @@ async def _acall_tool(repo_path: Path, factory: Callable[[], Awaitable[dict]]) -
             # a good result into a traceback.
             with contextlib.suppress(Exception):
                 await close()
-        await engine.dispose()
+        if engine is not None:
+            with contextlib.suppress(Exception):
+                await engine.dispose()
 
 
 async def _open_vector_store(repo_path: Path) -> Any:
@@ -78,11 +99,14 @@ async def _open_vector_store(repo_path: Path) -> Any:
     make that judgement internally. Building the store the way the server does
     is what keeps a CLI answer and an MCP answer the same answer.
     """
+    from repowise.cli.helpers import REPOWISE_DIR
     from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
     from repowise.core.persistence.vector_store import InMemoryVectorStore
 
-    embedder = build_embedder(resolve_embedder_for_repo(repo_path))
-    lance_dir = repo_path / ".repowise" / "lancedb"
+    requested = resolve_embedder_for_repo(repo_path)
+    embedder = build_embedder(requested)
+    _publish_embedder_status(requested, embedder)
+    lance_dir = repo_path / REPOWISE_DIR / "lancedb"
     if lance_dir.is_dir():
         try:
             from repowise.core.persistence.vector_store import LanceDBVectorStore
@@ -96,15 +120,47 @@ async def _open_vector_store(repo_path: Path) -> Any:
     return InMemoryVectorStore(embedder=embedder)
 
 
-def call_tool(repo_path: Path, factory: Callable[[], Awaitable[dict]]) -> dict:
+def _publish_embedder_status(requested: str, embedder: Any) -> None:
+    """Record whether the embedder we got is the one the repo asked for.
+
+    ``build_meta`` reads ``_state._embedder_status`` to put ``embedder_degraded``
+    into every tool's ``_meta``, and only the MCP server's own
+    ``_resolve_embedder`` ever set it. Without this, a repo pinned to an
+    embedder whose key has gone away answers off keyless vectors and the
+    payload looks identical to a healthy one — the exact condition #306 added
+    the field for, and (per the keyless-embedder work) the common case rather
+    than the rare one.
+    """
+    from repowise.core.providers.embedding import KeylessEmbedder
+    from repowise.server.mcp_server import _state
+
+    wanted_mock = not requested or requested == "mock"
+    degraded = not wanted_mock and isinstance(embedder, KeylessEmbedder)
+    status: dict[str, Any] = {
+        "active": "mock" if isinstance(embedder, KeylessEmbedder) else requested,
+        "requested": requested or None,
+        "degraded": degraded,
+    }
+    if degraded:
+        status["reason"] = (
+            f"Configured embedder {requested!r} could not be built, so this "
+            "answer used keyless vectors and no semantic retrieval."
+        )
+    _state._embedder_status = status
+
+
+def call_tool(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str) -> dict:
     """Run one MCP tool coroutine against *repo_path* and return its dict.
 
     *factory* is called (not awaited) inside the event loop after the tool
     state is published, so it must be a zero-argument callable returning the
     coroutine — building the coroutine eagerly at the call site would be
     harmless today but would run any future eager work before the wiring.
+
+    *tool_name* names the tool in a shaped internal-error response, matching
+    what the MCP failure shield would have said.
     """
-    return run_async(_acall_tool(repo_path, factory))
+    return run_async(_acall_tool(repo_path, factory, tool_name))
 
 
 __all__ = ["call_tool"]

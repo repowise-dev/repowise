@@ -1,0 +1,4 @@
+{
+  "symbol_id": "packages/cli/src/repowise/cli/output.py::json_option",
+  "error": "Symbol not found: 'packages/cli/src/repowise/cli/output.py::json_option'. Use get_context to list available symbols in the file, then try again with the exact symbol_id from that response."
+}

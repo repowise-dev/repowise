@@ -47,6 +47,51 @@ def _project_episode(episode: dict) -> dict:
     }
 
 
+def _project_archaeology(arch: dict) -> dict:
+    """The git-history fallback, capped per layer.
+
+    Three layers, each already capped at 10 by the tool: the file's own
+    significant commits, other files' commits that mention it, and a live
+    ``git log``. The summary line survives whole — it is the one sentence that
+    says a file is ungoverned and what was recovered instead.
+    """
+    out: dict = {}
+    if arch.get("summary"):
+        out["summary"] = arch["summary"]
+    for key in ("file_commits", "git_log"):
+        if arch.get(key):
+            out[key] = [
+                {k: c.get(k, "") for k in ("sha", "date", "author", "message")}
+                for c in _capped(arch[key])
+            ]
+    if arch.get("cross_references"):
+        out["cross_references"] = [
+            {k: c.get(k, "") for k in ("source_file", "sha", "date", "message")}
+            for c in _capped(arch["cross_references"])
+        ]
+    return out
+
+
+def _project_target_entry(entry: dict) -> dict:
+    """One ``--target``'s card: its governing decisions, origin and fallback.
+
+    Recursively the same trim as the top level — the per-target ``origin``
+    carries the same ~2K-char prose ``summary`` and the per-target
+    ``git_archaeology`` the same three capped layers.
+    """
+    out: dict = {"governing_decisions": entry.get("governing_decisions") or []}
+    origin = entry.get("origin") or {}
+    if origin:
+        out["origin"] = {
+            key: origin[key]
+            for key in ("available", "primary_author", "total_commits", "age_days", "summary")
+            if key in origin and (key != "summary" or not origin.get("available"))
+        }
+    if entry.get("git_archaeology"):
+        out["git_archaeology"] = _project_archaeology(entry["git_archaeology"])
+    return out
+
+
 def project(payload: dict) -> dict:
     """``get_why``'s dict, trimmed. The tool has three modes and so has this.
 
@@ -62,7 +107,12 @@ def project(payload: dict) -> dict:
     path mode kept      path, alignment, decisions as above,
                         origin_story minus ``summary`` and minus
                         each key commit's ``body``, episodes,
-                        truncated / omission_marker
+                        truncated / omission_marker /
+                        dropped_decisions, and the three blocks the
+                        tool substitutes when nothing governs the
+                        path: git_archaeology (summary plus the head
+                        of each of its three layers), code_rationale
+                        and target_context
     dashboard kept      summary, counts, and the head of each of
                         stale_decisions / proposed_awaiting_review /
                         ungoverned_hotspots / conflicts, with the
@@ -138,6 +188,23 @@ def project(payload: dict) -> dict:
     if episodes:
         out["episodes"] = [_project_episode(e) for e in _capped(episodes)]
 
+    # The three blocks the tool substitutes when decisions are silent. Losing
+    # them empties exactly the mode this tool exists to never leave empty:
+    # `get_why` sets git_archaeology and code_rationale *because* nothing
+    # governs the path, and target_context is the entire product of --target.
+    if payload.get("git_archaeology"):
+        out["git_archaeology"] = _project_archaeology(payload["git_archaeology"])
+    if payload.get("code_rationale"):
+        out["code_rationale"] = [
+            {k: entry.get(k) for k in ("path", "lines", "comment")}
+            for entry in _capped(payload["code_rationale"])
+        ]
+    if payload.get("target_context"):
+        out["target_context"] = {
+            target: _project_target_entry(entry)
+            for target, entry in payload["target_context"].items()
+        }
+
     for key in ("stale_decisions", "proposed_awaiting_review", "ungoverned_hotspots", "conflicts"):
         values = payload.get(key)
         if values:
@@ -147,8 +214,9 @@ def project(payload: dict) -> dict:
 
     if payload.get("truncated"):
         out["truncated"] = True
-    if payload.get("omission_marker"):
-        out["omission_marker"] = payload["omission_marker"]
+    for key in ("omission_marker", "dropped_decisions"):
+        if payload.get(key):
+            out[key] = payload[key]
 
     note = _ta.index_note(payload)
     if note:
@@ -195,10 +263,10 @@ def why_command(
 
         return get_why(query=query, targets=list(targets) or None)
 
-    payload = _ta.run(repo_path, _factory)
+    payload = _ta.run(repo_path, _factory, "get_why")
 
     if full:
-        emit_json(payload)
+        _ta.emit_full(payload)
         return
     _ta.emit_error(payload, fmt, extra={"query": query})
     projected = project(payload)
@@ -261,6 +329,43 @@ def _render(projected: dict) -> None:
                 f"  [dim]{c.get('sha', '')} {str(c.get('date', ''))[:10]}[/dim] "
                 f"{c.get('message', '')}"
             )
+
+    arch = projected.get("git_archaeology") or {}
+    if arch:
+        console.print(f"\n[bold]Git archaeology[/bold] {arch.get('summary', '')}")
+        for label, key in (
+            ("this file", "file_commits"),
+            ("git log", "git_log"),
+            ("mentioned by", "cross_references"),
+        ):
+            for c in arch.get(key) or []:
+                where = f" [dim]({c['source_file']})[/dim]" if c.get("source_file") else ""
+                console.print(
+                    f"  [dim]{label}: {c.get('sha', '')[:8]} "
+                    f"{str(c.get('date', ''))[:10]}[/dim] {c.get('message', '')}{where}"
+                )
+
+    rationale = projected.get("code_rationale") or []
+    if rationale:
+        console.print("\n[bold]Rationale comments in the code[/bold]")
+        for entry in rationale:
+            lines = entry.get("lines") or []
+            where = f":{lines[0]}" if lines else ""
+            console.print(f"  [cyan]{entry.get('path', '')}{where}[/cyan]")
+            console.print(f"    [dim]{entry.get('comment', '')}[/dim]")
+
+    for target, entry in (projected.get("target_context") or {}).items():
+        console.print(f"\n[bold]Target[/bold] [cyan]{target}[/cyan]")
+        for governing in entry.get("governing_decisions") or []:
+            console.print(
+                f"  {governing.get('title', '')} [dim]({governing.get('status', '')})[/dim]"
+            )
+        origin = entry.get("origin") or {}
+        if origin.get("summary"):
+            console.print(f"  [dim]{origin['summary']}[/dim]")
+        arch_for_target = entry.get("git_archaeology") or {}
+        if arch_for_target.get("summary"):
+            console.print(f"  [dim]{arch_for_target['summary']}[/dim]")
 
     for label, key in (
         ("Stale decisions", "stale_decisions"),

@@ -23,14 +23,28 @@ _KEPT = (
     "end_line",
     "symbol_start_line",
     "symbol_end_line",
+    "total_lines",
     "bounds",
     "verified",
     "source",
     "truncated",
     "continuation",
     "candidates",
+    "ambiguous",
+    "match_count",
+    "resolution",
+    "suggestions",
     "fallback_lines",
     "note",
+    # Omission-ref reads ("repowise#<hex>") return a different shape entirely:
+    # ``content`` is the banked text and ``source`` is the *command* it came
+    # from, not a body. Keeping ``source`` without ``content`` would print the
+    # provenance label where the content should be.
+    "ref",
+    "content",
+    "original_tokens",
+    "created_at",
+    "query",
 )
 
 
@@ -41,16 +55,19 @@ def project(payload: dict) -> dict:
 
     ==================  ===========================================
     kept                every key in ``_KEPT`` that is present,
-                        including ``source``, ``candidates`` and
-                        ``continuation``, plus ``index`` from the
-                        freshness half of ``_meta``
+                        across all three response shapes this tool
+                        has — a symbol body, an omission-ref read,
+                        and an ambiguous or not-found card — plus
+                        ``index`` from the freshness half of ``_meta``
     dropped             ``_meta``'s timing and token accounting
     ==================  ===========================================
 
     Nothing else is trimmed on purpose. Dropping ``candidates`` would silently
-    pick one of an ambiguous id's bodies, and dropping ``continuation`` would
-    make a truncated body un-continuable — both change the answer rather than
-    its size.
+    pick one of an ambiguous id's bodies, ``continuation`` would make a
+    truncated body un-continuable, ``suggestions`` would leave a did-you-mean
+    error pointing at nothing, and ``content`` would make an omission-ref read
+    return its provenance label instead of the text it banked. All four change
+    the answer rather than its size.
     """
     out = {key: payload[key] for key in _KEPT if key in payload}
     note = _ta.index_note(payload)
@@ -107,10 +124,10 @@ def symbol_command(
             query=query,
         )
 
-    payload = _ta.run(repo_path, _factory)
+    payload = _ta.run(repo_path, _factory, "get_symbol")
 
     if full:
-        emit_json(payload)
+        _ta.emit_full(payload)
         return
     _ta.emit_error(payload, fmt, extra={"symbol_id": symbol_id})
     projected = project(payload)
@@ -124,6 +141,21 @@ def symbol_command(
 def _render(projected: dict) -> None:
     from repowise.cli.helpers import console
 
+    if projected.get("kind") == "omission":
+        # A "repowise#<hex>" read: ``content`` is the banked text and ``source``
+        # is the command it came from. Nothing here is a symbol body.
+        console.print(
+            f"[cyan]{projected.get('ref', '')}[/cyan] [dim]banked from "
+            f"{projected.get('source') or '?'}"
+            + (f", {projected['original_tokens']} tokens" if projected.get("original_tokens") else "")
+            + (f", {projected['created_at']}" if projected.get("created_at") else "")
+            + "[/dim]"
+        )
+        _echo_lines(projected.get("content") or "")
+        if projected.get("note"):
+            console.print(f"[dim]{_ta.as_cli_prose(str(projected['note']))}[/dim]")
+        return
+
     candidates = projected.get("candidates") or []
     if candidates:
         console.print(
@@ -135,6 +167,19 @@ def _render(projected: dict) -> None:
     _render_body(console, projected)
 
 
+def _echo_lines(text: str) -> None:
+    """Print source verbatim: no markup, no highlighting, and no wrapping.
+
+    ``console.print`` word-wraps to the console width even with
+    ``markup=False``, and the width is 400 for a non-TTY. A source line longer
+    than that comes back split across rows with its ``   1  `` prefix stranded
+    on the first one, which is not the file. ``click.echo`` is the exact bytes;
+    ``expand`` prints its restored content the same way.
+    """
+    if text:
+        click.echo(text)
+
+
 def _render_body(console, body: dict) -> None:
     where = body.get("file", "")
     start, end = body.get("start_line"), body.get("end_line")
@@ -143,13 +188,9 @@ def _render_body(console, body: dict) -> None:
     verified = "verified" if body.get("verified") else body.get("bounds") or "unverified"
     console.print(f"[cyan]{body.get('qualified_name') or body.get('name') or ''}[/cyan] "
                   f"[dim]{body.get('kind', '')} · {where} · {verified}[/dim]")
-    source = body.get("source") or ""
-    if source:
-        # Already in Read's line-numbered format — printing it through rich's
-        # markup would eat any [bracketed] token in the source.
-        console.print(source, markup=False, highlight=False)
+    _echo_lines(body.get("source") or "")
     for line in body.get("fallback_lines") or []:
-        console.print(line, markup=False, highlight=False)
+        _echo_lines(str(line))
     if body.get("note"):
         console.print(f"[dim]{_ta.as_cli_prose(str(body['note']))}[/dim]")
     if body.get("truncated"):

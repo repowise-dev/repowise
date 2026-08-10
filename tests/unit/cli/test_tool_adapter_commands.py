@@ -62,6 +62,11 @@ ANSWER_PAYLOAD = {
          "domain_penalty": None, "excerpt": "y" * 1500}
     ],
     "next_action_hint": "Read a.py first.",
+    "grounding": "extracted",
+    "note": "symbol_bodies carries the full live body — cite that directly.",
+    "code_rationale": [{"path": "a.py", "lines": [1, 2], "comment": "c" * 400}],
+    "more_definitions": ["a.py::g"],
+    "omission_marker": "[repowise#ask1]",
     "_meta": {"timing_ms": 12.5, "indexed_commit": "abc123", "live_head": "def456",
               "index_behind": True, "index_age_days": 2},
 }
@@ -77,6 +82,14 @@ CONTEXT_PAYLOAD = {
             "fix_history": {"fix_count": 3, "last_fix_days_ago": 1, "bug_magnet": True},
             "freshness": {"confidence_score": 0.9, "is_stale": False},
             "architectural_layer": {"name": "CLI", "description": "d" * 150},
+            # Blocks only an --include can produce. They must survive the trim:
+            # a flag that changes nothing the caller can see is not a flag.
+            "ownership": {"primary_owner": "Raghav", "bus_factor": 1},
+            "last_change": {"date": "2026-08-01", "author": "Raghav"},
+            "decisions": [{"id": "d1", "title": "Decision 1", "rationale": "because"}],
+            "community": {"id": 3, "neighbors": ["b.py"]},
+            "callers": ["b.py::g"],
+            "metrics": {"pagerank": 0.4},
             "skeleton": {
                 "mode": "smart", "tokens": 100, "full_tokens": 400,
                 "pct_of_full": 25.0, "bodies_kept": ["f"], "text": "z" * 10000,
@@ -112,6 +125,31 @@ SYMBOL_PAYLOAD = {
               "live_head": "abc123", "index_behind": False},
 }
 
+#: The tool's *other* two response shapes. ``get_symbol`` serves three, and a
+#: projection tested only against the first is a projection tested against the
+#: implementation rather than the contract.
+OMISSION_PAYLOAD = {
+    "symbol_id": "repowise#a1b2c3d4e5f6",
+    "ref": "a1b2c3d4e5f6",
+    "kind": "omission",
+    # ``source`` here is the *command* the content was banked from, not a body.
+    "source": "git log --stat",
+    "original_tokens": 4200,
+    "content": "THE ACTUAL OMITTED TEXT",
+    "created_at": "2026-08-10T00:00:00+00:00",
+    "_meta": {"timing_ms": 1.0},
+}
+
+SUGGESTION_PAYLOAD = {
+    "symbol_id": "x.py::login",
+    "error": (
+        "Symbol not found: 'x.py::login'. A symbol with this name exists at "
+        "the path(s) below — retry with one of these exact symbol_ids."
+    ),
+    "suggestions": ["a/b.py::login", "c/d.py::login"],
+    "_meta": {"timing_ms": 1.0},
+}
+
 
 def _decision(n: int) -> dict:
     return {
@@ -145,8 +183,44 @@ WHY_PATH_PAYLOAD = {
                   "evidence": "e", "scope": ["a.py"], "still_true": "yes"}],
     "truncated": True,
     "omission_marker": "[repowise#abc]",
+    "dropped_decisions": ["id7"],
     "_meta": {"indexed_commit": "abc123", "live_head": "def456",
               "stale_warning": "index is behind"},
+}
+
+#: The path mode as it actually arrives for an *ungoverned* file: no decisions,
+#: and the three fallback blocks the tool substitutes instead. This is the shape
+#: behind "falls back to git archaeology, so it is never empty", and a
+#: projection that only ever sees the governed shape cannot test it.
+WHY_UNGOVERNED_PAYLOAD = {
+    "mode": "path",
+    "path": "a.py",
+    "decisions": [],
+    "alignment": {"score": "none", "explanation": "This file is ungoverned."},
+    "origin_story": {"available": False},
+    "git_archaeology": {
+        "triggered": True,
+        "summary": "No architectural decisions found for a.py, but git archaeology recovered 7.",
+        "file_commits": [
+            {"sha": f"sha{i}", "message": f"m{i}", "author": "Raghav", "date": "2026-01-01"}
+            for i in range(7)
+        ],
+        "cross_references": [
+            {"source_file": "b.py", "sha": "shax", "message": "mentions a.py",
+             "author": "Raghav", "date": "2026-02-01", "matched_terms": ["a"]}
+        ],
+        "git_log": [{"sha": "shay", "message": "live", "author": "Raghav", "date": "2026-03-01"}],
+    },
+    "code_rationale": [{"path": "a.py", "lines": [10, 12], "comment": "why it is this way",
+                        "matched_terms": ["why"]}],
+    "target_context": {
+        "b.py": {
+            "governing_decisions": [{"title": "Decision 1", "status": "active"}],
+            "origin": {"available": True, "primary_author": "Raghav", "total_commits": 3,
+                       "age_days": 40, "summary": "s" * 2000},
+        }
+    },
+    "_meta": {"indexed_commit": "abc123", "live_head": "abc123"},
 }
 
 WHY_DASHBOARD_PAYLOAD = {
@@ -181,9 +255,9 @@ def _spy_run(payload: dict, calls: list):
     rather than awaited — running it would need a database.
     """
 
-    def _run(repo_path, factory):
+    def _run(repo_path, factory, tool_name):
         coro = factory()
-        calls.append((repo_path, coro.cr_code.co_qualname if hasattr(coro, "cr_code") else ""))
+        calls.append((repo_path, coro.cr_code.co_qualname, tool_name))
         coro.close()
         return payload
 
@@ -230,6 +304,21 @@ def test_ask_projection_strips_the_excerpt_from_every_best_guess():
     assert out["next_action_hint"] == "Read a.py first."
 
 
+def test_ask_projection_names_the_blocks_it_dropped():
+    """``note`` points at blocks by name ("symbol_bodies carries the body").
+
+    Keeping the note while silently removing what it names leaves a dangling
+    instruction, so the trim reports which of them the tool actually returned.
+    """
+    out = project_ask(ANSWER_PAYLOAD, "q?")
+    assert out["note"].startswith("symbol_bodies")
+    assert set(out["dropped_blocks"]) == {
+        "retrieval", "candidates", "symbol_bodies", "code_rationale", "more_definitions",
+    }
+    assert out["grounding"] == "extracted"
+    assert out["omission_marker"] == "[repowise#ask1]"
+
+
 def test_ask_projection_is_a_fraction_of_the_payload():
     trimmed = len(json.dumps(project_ask(ANSWER_PAYLOAD, "q?")))
     full = len(json.dumps(ANSWER_PAYLOAD))
@@ -252,6 +341,40 @@ def test_context_projection_keeps_the_skeleton_shape_without_its_text():
     }
     assert "z" * 100 not in json.dumps(out), "skeleton text survived the trim"
     assert "parent_page" not in card
+
+
+def test_context_projection_keeps_every_include_block():
+    """A flag that changes nothing the caller can see is not a flag.
+
+    Each ``--include`` lands under its own key, so an allowlist that misses
+    one makes ``repowise context f.py --include ownership`` print exactly what
+    a bare call prints.
+    """
+    card = project_context(CONTEXT_PAYLOAD, ("a.py",))["targets"]["a.py"]
+    assert card["ownership"] == {"primary_owner": "Raghav", "bus_factor": 1}
+    assert card["last_change"] == {"date": "2026-08-01", "author": "Raghav"}
+    assert card["decisions"][0]["rationale"] == "because"
+    assert card["community"] == {"id": 3, "neighbors": ["b.py"]}
+    assert card["callers"] == ["b.py::g"]
+    assert card["metrics"] == {"pagerank": 0.4}
+
+
+def test_context_projection_keeps_a_tombstones_redirect():
+    """The successor path is the whole point of a tombstone card."""
+    payload = {
+        "targets": {
+            "old.py": {
+                "target": "old.py",
+                "error": "'old.py' was deleted or renamed after indexing",
+                "successor_paths": ["new.py"],
+                "hint": "Content moved; call get_context on 'new.py' instead.",
+            }
+        },
+        "_meta": {},
+    }
+    card = project_context(payload, ("old.py",))["targets"]["old.py"]
+    assert card["successor_paths"] == ["new.py"]
+    assert "new.py" in card["hint"]
 
 
 def test_context_projection_keeps_a_targets_own_error():
@@ -286,6 +409,26 @@ def test_symbol_projection_keeps_the_body_and_the_continuation():
     assert out["index"]["indexed_commit"] == "abc123"
 
 
+def test_symbol_projection_keeps_an_omission_refs_content():
+    """``source`` on this shape is the command, not a body — ``content`` is.
+
+    Keeping ``source`` and dropping ``content`` makes ``repowise symbol
+    repowise#<ref>`` print the provenance label where the text should be, and
+    the renderer prints it through the body branch, so it looks like one.
+    """
+    out = project_symbol(OMISSION_PAYLOAD)
+    assert out["content"] == "THE ACTUAL OMITTED TEXT"
+    assert out["ref"] == "a1b2c3d4e5f6"
+    assert out["kind"] == "omission"
+    assert out["original_tokens"] == 4200
+
+
+def test_symbol_projection_keeps_the_did_you_mean_list():
+    """The error ends 'retry with one of these exact symbol_ids'."""
+    out = project_symbol(SUGGESTION_PAYLOAD)
+    assert out["suggestions"] == ["a/b.py::login", "c/d.py::login"]
+
+
 def test_why_path_projection_caps_lists_and_says_what_it_capped():
     out = project_why(WHY_PATH_PAYLOAD)
     assert len(out["decisions"]) == 5
@@ -310,6 +453,38 @@ def test_why_path_projection_drops_the_prose_retelling_and_commit_bodies():
     assert out["truncated"] is True
     assert out["omission_marker"] == "[repowise#abc]"
     assert out["index"]["stale_warning"] == "index is behind"
+
+
+def test_why_projection_keeps_the_blocks_that_answer_an_ungoverned_path():
+    """`get_why` is documented as never empty; the fallbacks are why.
+
+    It sets git_archaeology and code_rationale *because* nothing governs the
+    path. Dropping them leaves `repowise why <ungoverned file>` printing one
+    alignment line and nothing else.
+    """
+    out = project_why(WHY_UNGOVERNED_PAYLOAD)
+    arch = out["git_archaeology"]
+    assert arch["summary"].startswith("No architectural decisions found")
+    assert len(arch["file_commits"]) == 5, "the per-layer cap did not apply"
+    assert arch["cross_references"][0]["source_file"] == "b.py"
+    assert arch["git_log"][0]["sha"] == "shay"
+    assert out["code_rationale"][0]["comment"] == "why it is this way"
+
+
+def test_why_projection_keeps_target_context_and_trims_it_the_same_way():
+    """--target's entire product is target_context. Dropping it inerts the flag."""
+    out = project_why(WHY_UNGOVERNED_PAYLOAD)
+    entry = out["target_context"]["b.py"]
+    assert entry["governing_decisions"] == [{"title": "Decision 1", "status": "active"}]
+    # The per-target origin carries the same ~2K-char prose as the top level.
+    assert "summary" not in entry["origin"]
+    assert entry["origin"]["primary_author"] == "Raghav"
+
+
+def test_why_projection_keeps_the_handles_on_what_truncation_removed():
+    out = project_why(WHY_PATH_PAYLOAD)
+    assert out["omission_marker"] == "[repowise#abc]"
+    assert out["dropped_decisions"] == ["id7"]
 
 
 def test_why_dashboard_projection_caps_each_list_with_its_total():
@@ -344,6 +519,23 @@ def test_full_emits_the_raw_tool_dict_without_asking_for_json(
     """``--full`` implies json — a raw tool dict has no table rendering."""
     result = _invoke(monkeypatch, command, [*args, "--full"], repo, payload)
     assert json.loads(result.stdout) == payload
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        (ask_command, ["q?"]),
+        (context_command, ["a.py"]),
+        (symbol_command, ["a.py::f"]),
+        (why_command, ["a.py"]),
+    ],
+)
+def test_full_exits_non_zero_on_an_error_too(monkeypatch, repo, command, args):
+    """``--full`` is exactly the spelling a script reaches for."""
+    result = _invoke(
+        monkeypatch, command, [*args, "--full"], repo, {"error": "nope"}, expect_exit=1
+    )
+    assert json.loads(result.stdout) == {"error": "nope"}
 
 
 @pytest.mark.parametrize(
@@ -433,30 +625,35 @@ def test_an_empty_result_still_renders_on_the_table_path(monkeypatch, repo, comm
 
 
 @pytest.mark.parametrize(
-    ("command", "args", "tool_module"),
+    ("command", "args", "tool"),
     [
-        (ask_command, ["q?"], "repowise.server.mcp_server.tool_answer"),
-        (context_command, ["a.py"], "repowise.server.mcp_server.tool_context"),
-        (symbol_command, ["a.py::f"], "repowise.server.mcp_server.tool_symbol"),
-        (why_command, ["a.py"], "repowise.server.mcp_server.tool_why"),
+        (ask_command, ["q?"], "get_answer"),
+        (context_command, ["a.py"], "get_context"),
+        (symbol_command, ["a.py::f"], "get_symbol"),
+        (why_command, ["a.py"], "get_why"),
     ],
 )
-def test_the_command_really_builds_its_tool_coroutine(
-    monkeypatch, repo, command, args, tool_module
+def test_the_command_builds_the_coroutine_of_the_tool_it_names(
+    monkeypatch, repo, command, args, tool
 ):
     """The tool import lives inside the factory, so only calling it proves it.
 
     A wrong module or attribute name there raises nothing until the command
     runs against a real repo — the same class of defect the lazy command table
-    has its own test for.
+    has its own test for. Asserting the coroutine's own qualname rather than
+    "the module is in sys.modules" is what makes this order-independent: by
+    the fourth parametrized case all four tool modules are imported, so a
+    presence check would pass for a command wired to the wrong tool.
     """
     calls: list = []
     _invoke(monkeypatch, command, args, repo, {"_meta": {}}, calls=calls)
     assert len(calls) == 1
-    assert calls[0][0] == repo
-    import sys
-
-    assert tool_module in sys.modules
+    repo_path, qualname, tool_name = calls[0]
+    assert repo_path == repo
+    assert qualname == tool
+    # The same name reaches the bridge, which uses it to shape an internal
+    # error the way the MCP failure shield would have.
+    assert tool_name == tool
 
 
 def test_an_unindexed_repo_is_refused_before_any_tool_runs(monkeypatch, tmp_path):
@@ -485,7 +682,7 @@ def test_logs_are_silenced_at_every_format_not_only_the_machine_ones(
         "repowise.cli.helpers.silence_logs_for_machine_output",
         lambda: silenced.append(True),
     )
-    monkeypatch.setattr("repowise.cli.tool_bridge.call_tool", lambda p, f: {"_meta": {}})
+    monkeypatch.setattr("repowise.cli.tool_bridge.call_tool", lambda p, f, t: {"_meta": {}})
     result = CliRunner(mix_stderr=False).invoke(
         ask_command, ["q?", *args, "--path", str(repo), "--no-workspace"]
     )

@@ -17,7 +17,31 @@ _INCLUDE_BLOCKS = (
     "metrics",
     "community",
     "decisions",
+    "health",
     "skeleton",
+)
+
+#: Card keys the projection replaces or drops. Everything else passes through.
+#:
+#: A denylist, not an allowlist. Most of what a card carries is opt-in: nine
+#: ``--include`` blocks, each landing under its own key, and an allowlist that
+#: misses one turns ``--include ownership`` into a flag that changes nothing
+#: the caller can see. The failure mode of a denylist is a payload slightly
+#: larger than intended; the failure mode of an allowlist is a silently
+#: discarded answer, and that is the whole risk this trim carries.
+_REPLACED_KEYS = frozenset(
+    {
+        "target",
+        "type",
+        # Folded into flatter keys below.
+        "docs",
+        "architectural_layer",
+        "freshness",
+        # Replaced by its shape, without its ~10K-char text.
+        "skeleton",
+        # A breadcrumb to the wiki page the card came from, not a signal.
+        "parent_page",
+    }
 )
 
 
@@ -29,8 +53,13 @@ def _project_one(card: dict) -> dict:
     if card.get("error"):
         # A target the tool could not resolve gets a card carrying only this.
         # Trimming it away leaves an empty card, which reads as "indexed, but
-        # nothing to say" rather than "that path does not exist".
+        # nothing to say" rather than "that path does not exist". A tombstone
+        # (a page deleted or renamed after indexing) carries the redirect
+        # beside the error, which is the whole point of the tombstone.
         out["error"] = card["error"]
+        for key in ("successor_paths", "hint"):
+            if card.get(key):
+                out[key] = card[key]
         return out
     docs = card.get("docs") or {}
     if docs.get("title"):
@@ -49,9 +78,12 @@ def _project_one(card: dict) -> dict:
         out["stale"] = bool(freshness.get("is_stale"))
     if card.get("episodes"):
         out["episodes"] = card["episodes"]
-    for key in ("symbol_ids", "signatures", "decision_records", "callers", "callees", "metrics"):
-        if card.get(key):
-            out[key] = card[key]
+    # Everything else the card carries, including every --include block. A
+    # block the caller asked for by name is never trimmed: they paid a flag
+    # for it.
+    for key, value in card.items():
+        if key not in _REPLACED_KEYS and key not in out and value not in (None, [], {}, ""):
+            out[key] = value
     skeleton = card.get("skeleton") or {}
     if skeleton:
         # The skeleton *text* is the bulk of get_context's payload — 10K chars
@@ -77,15 +109,15 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     ==================  ===========================================
     kept                target, type, docs.title -> title,
                         docs.summary -> summary,
-                        architectural_layer.name -> layer, hotspot,
-                        fix_history, freshness.is_stale -> stale,
-                        episodes, and any of symbol_ids / signatures
-                        / decision_records / callers / callees /
-                        metrics the ``include`` blocks added; the
-                        skeleton's shape without its ``text``
+                        architectural_layer.name -> layer,
+                        freshness.is_stale -> stale, the skeleton's
+                        shape without its ``text``, and **every other
+                        key the card carries** — hotspot, fix_history,
+                        episodes, and each ``--include`` block under
+                        its own name
     dropped             skeleton.text (~10K chars per file, the bulk
-                        of the payload), parent_page,
-                        skeleton.opt_out_hint / auto,
+                        of the payload), skeleton.opt_out_hint /
+                        auto, parent_page,
                         freshness.confidence_score, ``_meta`` minus
                         its freshness keys
     ==================  ===========================================
@@ -102,10 +134,12 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     }
     if payload.get("truncated"):
         out["truncated"] = True
-    if payload.get("dropped_targets"):
-        out["dropped_targets"] = payload["dropped_targets"]
-    if payload.get("dropped_symbols"):
-        out["dropped_symbols"] = payload["dropped_symbols"]
+    for key in ("dropped_targets", "dropped_symbols", "omission_marker"):
+        # omission_marker is the only handle on what truncation banked, so a
+        # `truncated: true` without it says content went missing and offers no
+        # way to get it back.
+        if payload.get(key):
+            out[key] = payload[key]
     # Requested but absent from the response at all: neither a card nor a
     # recorded drop. Without this a typo'd path is indistinguishable from a
     # path the index simply has nothing to say about.
@@ -169,10 +203,10 @@ def context_command(
             compact=not no_compact,
         )
 
-    payload = _ta.run(repo_path, _factory)
+    payload = _ta.run(repo_path, _factory, "get_context")
 
     if full:
-        emit_json(payload)
+        _ta.emit_full(payload)
         return
     _ta.emit_error(payload, fmt, extra={"targets": list(targets)})
     projected = project(payload, targets)
@@ -198,6 +232,10 @@ def _render(projected: dict) -> None:
                 f"[yellow]{card.get('target', '')}: "
                 f"{_ta.as_cli_prose(str(card['error']))}[/yellow]"
             )
+            if card.get("hint"):
+                console.print(f"  [dim]{_ta.as_cli_prose(str(card['hint']))}[/dim]")
+            for successor in card.get("successor_paths") or []:
+                console.print(f"  [cyan]{successor}[/cyan]")
             continue
         table = Table(title=card.get("target", ""), show_header=False)
         table.add_column("Field", style="cyan")
@@ -236,6 +274,13 @@ def _render(projected: dict) -> None:
         for label, key in (("Symbols", "symbol_ids"), ("Decisions", "decision_records")):
             if card.get(key):
                 table.add_row(label, ", ".join(str(v) for v in card[key]))
+        # Every remaining block, including each --include the caller asked
+        # for by name. Rendering only the ones this function happens to know
+        # about is how `--include ownership` ends up printing nothing at all.
+        for key, value in card.items():
+            if key in _RENDERED_KEYS:
+                continue
+            table.add_row(key.replace("_", " ").title(), _flatten(value))
         console.print(table)
 
     for label, key in (
@@ -245,4 +290,37 @@ def _render(projected: dict) -> None:
         if projected.get(key):
             console.print(f"[yellow]{label}: {', '.join(projected[key])}[/yellow]")
     if projected.get("truncated"):
-        console.print("[yellow]Response was truncated to fit the tool's budget.[/yellow]")
+        marker = projected.get("omission_marker")
+        console.print(
+            "[yellow]Response was truncated to fit the tool's budget.[/yellow]"
+            + (f" Recover it with: [cyan]repowise expand {marker}[/cyan]" if marker else "")
+        )
+
+
+#: Card keys ``_render`` has already placed by hand, by the time it sweeps the
+#: rest. Everything not listed here is rendered generically rather than dropped.
+_RENDERED_KEYS = frozenset(
+    {
+        "target",
+        "type",
+        "title",
+        "summary",
+        "layer",
+        "hotspot",
+        "fix_history",
+        "stale",
+        "episodes",
+        "skeleton",
+        "symbol_ids",
+        "decision_records",
+    }
+)
+
+
+def _flatten(value: object) -> str:
+    """One cell for an arbitrary block a caller opted into with ``--include``."""
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {_flatten(v)}" for k, v in value.items())
+    if isinstance(value, list):
+        return ", ".join(_flatten(v) for v in value)
+    return str(value)

@@ -7,6 +7,22 @@ import click
 from repowise.cli.commands import _tool_adapters as _ta
 from repowise.cli.output import emit_json
 
+#: The heavy blocks the trim drops, reported by name in ``dropped_blocks``.
+#:
+#: Each is answer-adjacent material the tool has already consumed into the
+#: answer — a 1,500-char excerpt per retrieval hit, full symbol bodies, mined
+#: rationale comments — and together they are most of the payload. Naming them
+#: rather than silently removing them is what keeps ``note``'s references
+#: meaningful and tells a caller that ``--full`` has more.
+_DROPPED_BLOCKS = (
+    "retrieval",
+    "candidates",
+    "symbol_bodies",
+    "code_rationale",
+    "more_definitions",
+    "flow_path",
+)
+
 
 def project(payload: dict, question: str) -> dict:
     """``get_answer``'s dict, trimmed to what a CLI caller reads.
@@ -14,14 +30,16 @@ def project(payload: dict, question: str) -> dict:
     Field mapping, kept explicit because the session-cost bake-off cites it:
 
     ==================  ===========================================
-    kept                answer, confidence, retrieval_quality,
-                        citations, quotes, fallback_targets,
-                        best_guesses, episodes (subject / recorded /
-                        still_true), error, index (from ``_meta``)
-    dropped             retrieval (a 1,500-char ``excerpt`` per hit,
-                        plus ``key_symbols`` — the bulk of the
-                        payload), candidates, symbol_bodies, the
-                        timing half of ``_meta``
+    kept                answer, confidence, grounding,
+                        retrieval_quality, citations, quotes,
+                        fallback_targets, best_guesses (without their
+                        excerpts), next_action_hint, note,
+                        omission_marker, episodes (subject / recorded
+                        / still_true), error, index (from ``_meta``)
+    dropped             every block in ``_DROPPED_BLOCKS`` — but
+                        their names are reported in
+                        ``dropped_blocks``, so nothing is silent —
+                        and the timing half of ``_meta``
     ==================  ===========================================
 
     ``quotes`` survives the trim although ``retrieval`` does not: it is the
@@ -62,10 +80,19 @@ def project(payload: dict, question: str) -> dict:
             }
             for g in payload["best_guesses"]
         ]
-    # Only the abstain path sets these, and they say what to do next.
-    for key in ("next_action_hint", "note"):
+    # ``note`` and ``next_action_hint`` say what to do next, and ``grounding``
+    # is a trust axis in its own right ("extracted" is content-grounded, so it
+    # can be cited without a verifying read).
+    for key in ("grounding", "next_action_hint", "note", "omission_marker"):
         if payload.get(key):
             out[key] = payload[key]
+    # ``note`` names the blocks it wants read — "symbol_bodies carries the full
+    # live body", "code_rationale may already answer the question". Keeping the
+    # note while dropping what it points at leaves a dangling instruction, so
+    # say which of them the tool returned and where to get them.
+    dropped = [key for key in _DROPPED_BLOCKS if payload.get(key)]
+    if dropped:
+        out["dropped_blocks"] = dropped
     if payload.get("fallback_targets"):
         out["fallback_targets"] = list(payload["fallback_targets"])
     episodes = payload.get("episodes") or []
@@ -86,9 +113,15 @@ def project(payload: dict, question: str) -> dict:
 
 @click.command("ask")
 @click.argument("question")
+@click.option(
+    "--scope",
+    default=None,
+    help='Restrict retrieval to a path prefix (e.g. "packages/cli/").',
+)
 @_ta.target_options
 def ask_command(
     question: str,
+    scope: str | None,
     path: str | None,
     repo_alias: str | None,
     no_workspace: bool,
@@ -113,12 +146,12 @@ def ask_command(
     def _factory():
         from repowise.server.mcp_server.tool_answer import get_answer
 
-        return get_answer(question=question)
+        return get_answer(question=question, scope=scope)
 
-    payload = _ta.run(repo_path, _factory)
+    payload = _ta.run(repo_path, _factory, "get_answer")
 
     if full:
-        emit_json(payload)
+        _ta.emit_full(payload)
         return
     _ta.emit_error(payload, fmt, extra={"question": question})
     projected = project(payload, question)
@@ -147,9 +180,22 @@ def _render(projected: dict) -> None:
     confidence = projected.get("confidence") or "?"
     quality = projected.get("retrieval_quality") or "?"
     colour = {"high": "green", "medium": "yellow"}.get(confidence, "red")
+    grounding = projected.get("grounding")
     console.print(
-        f"\n[{colour}]confidence: {confidence}[/{colour}]  [dim]retrieval: {quality}[/dim]"
+        f"\n[{colour}]confidence: {confidence}[/{colour}]  [dim]retrieval: {quality}"
+        + (f"  grounding: {grounding}" if grounding else "")
+        + "[/dim]"
     )
+    if projected.get("note"):
+        # The value-grounding gate ("the numbers may be synthesised, read X
+        # before citing one") and the degraded-retrieval reason live only
+        # here, so a table path that skips it drops the caveat on the answer.
+        console.print(f"[dim]{_ta.as_cli_prose(str(projected['note']))}[/dim]")
+    if projected.get("dropped_blocks"):
+        console.print(
+            f"[dim]Not shown: {', '.join(projected['dropped_blocks'])}. "
+            "Pass --full for them.[/dim]"
+        )
 
     guesses = projected.get("best_guesses") or []
     if guesses:

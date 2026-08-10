@@ -443,9 +443,16 @@ Answer a question about the codebase, with citations. The same synthesis the
 what it found, so this command costs an LLM call where the other query commands
 do not.
 
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope` | Restrict retrieval to a path prefix (e.g. `packages/cli/`) |
+
 ```bash
 repowise ask "how does the retry backoff work?"
 repowise ask "where is the session cookie set?" --format json
+repowise ask "how is width resolved?" --scope packages/cli/
 repowise ask "why is auth split across two modules?" --full
 ```
 
@@ -553,13 +560,17 @@ editor's MCP client receives. Measured on this repository:
 
 | Command | trimmed | `--full` |
 |---------|--------:|---------:|
-| `ask` | 3.4 KB | 19.7 KB |
+| `ask` | 3.4 KB | 19.5 KB |
 | `context` (one file) | 0.9 KB | 12.4 KB |
-| `why` (question) | 10.6 KB | 21.1 KB |
-| `symbol` | 0.8 KB | 0.8 KB |
+| `why` (question) | 10.4 KB | 20.9 KB |
+| `why` (path) | 10.4 KB | 28.5 KB |
+| `symbol` | 0.7 KB | 1.0 KB |
 
 `symbol` barely moves because its payload *is* its answer — only the call
-envelope is dropped.
+envelope is dropped. Nothing that changes the *answer* is ever trimmed: an
+error, a not-found, a did-you-mean list, a truncation marker, a continuation
+token, and the ambiguity signals all survive at every format. `ask` reports the
+names of the heavy blocks it left out in `dropped_blocks`.
 
 ---
 
