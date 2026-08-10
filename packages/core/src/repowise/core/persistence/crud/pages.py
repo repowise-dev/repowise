@@ -460,13 +460,29 @@ async def backfill_related_pages(
 
     from repowise.core.generation.related_pages import attach_related_pages
 
+    # Five columns, not whole ORM rows. The recompute reads nothing but the
+    # id, type, title, target path and metadata, while ``select(Page)`` also
+    # drags every page's rendered ``content`` across the wire — megabytes on a
+    # repo of any size, for a metadata field. The whole live page set is still
+    # read: ``attach_related_pages`` resolves neighbours against the page set it
+    # is handed, so narrowing the *rows* (to the affected pages and one hop)
+    # rather than the *columns* would silently resolve fewer neighbours and
+    # need a periodic full pass to heal itself. Narrowing columns costs nothing
+    # in accuracy.
     result = await session.execute(
-        select(Page).where(
+        select(
+            Page.id,
+            Page.page_type,
+            Page.title,
+            Page.target_path,
+            Page.metadata_json,
+        ).where(
             Page.repository_id == repository_id,
             Page.freshness_status != "tombstone",
         )
     )
-    rows = [r for r in result.scalars() if r.id not in (skip_page_ids or set())]
+    skip = skip_page_ids or set()
+    rows = [r for r in result.all() if r.id not in skip]
     if not rows:
         return 0
 
@@ -495,7 +511,7 @@ async def backfill_related_pages(
         pagerank=pagerank,
     )
 
-    changed = 0
+    updates: dict[str, str] = {}
     for row, shim, before in zip(rows, shims, prior_related, strict=True):
         after = shim.metadata.get("related_pages")
         if after is None:
@@ -512,8 +528,28 @@ async def backfill_related_pages(
             )
         if after == before:
             continue
-        row.metadata_json = json.dumps(shim.metadata)
-        changed += 1
+        updates[row.id] = json.dumps(shim.metadata)
+
+    # ORM rows are hydrated only for the pages whose metadata actually moved,
+    # which on a steady-state update is usually none of them.
+    changed = 0
+    ids = list(updates)
+    for i in range(0, len(ids), _PAGE_SELECT_CHUNK):
+        batch = ids[i : i + _PAGE_SELECT_CHUNK]
+        page_rows = (
+            (
+                await session.execute(
+                    select(Page).where(
+                        Page.repository_id == repository_id, Page.id.in_(batch)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for page in page_rows:
+            page.metadata_json = updates[page.id]
+            changed += 1
     if changed:
         await session.flush()
     return changed

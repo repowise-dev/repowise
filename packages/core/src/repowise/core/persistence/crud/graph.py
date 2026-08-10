@@ -18,7 +18,7 @@ from ..models import (
     GraphNodeMembership,
     _new_uuid,
 )
-from ._shared import _BATCH_SIZE, _batch_upsert_keyed
+from ._shared import _BATCH_SIZE, UpsertGate, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # Graph CRUD (batch)
@@ -26,11 +26,56 @@ from ._shared import _BATCH_SIZE, _batch_upsert_keyed
 
 _METRIC_FIELDS = ("pagerank", "betweenness", "community_id", "in_degree", "out_degree")
 
+# Absolute tolerance for the centrality columns' skip test. The observed
+# process-to-process spread on an unchanged repo is ~1e-17 (bench probe
+# `probe_graph_determinism.py --cmp`), so this sits five orders above the
+# noise it exists to absorb and six below the smallest difference any reader
+# of these columns can act on — the rankings they feed are read as an order,
+# and no two distinct files sit 1e-12 apart in it. A backend that stored these
+# at lower precision than the payload computes them would push every row past
+# the tolerance and write it, which is today's behaviour, not a wrong one.
+_CENTRALITY_ATOL = 1e-12
+_CENTRALITY_COLUMNS = frozenset({"pagerank", "betweenness"})
+
 
 def _update_graph_node(existing: GraphNode, node_data: dict) -> None:
     for key, val in node_data.items():
         if key not in ("id", "repository_id", "created_at") and hasattr(existing, key):
             setattr(existing, key, val)
+
+
+# Every column ``_update_graph_node`` can write from a node payload. A payload
+# field missing here turns the gate off for that node rather than skipping it
+# (see UpsertGate), so adding a field to persist_graph_nodes without adding it
+# here costs a write, never a lost one. The direction that is NOT self-healing
+# is the reverse: an update_fn that writes something the payload does not carry
+# (a timestamp, a counter) would be skipped along with the row, so keep these
+# three update_fns strictly payload-driven.
+_NODE_FIELDS = (
+    "node_type",
+    "language",
+    "symbol_count",
+    "has_error",
+    "is_test",
+    "is_entry_point",
+    "pagerank",
+    "betweenness",
+    "community_id",
+    "community_meta_json",
+    "kind",
+    "name",
+    "qualified_name",
+    "file_path",
+    "start_line",
+    "end_line",
+    "visibility",
+    "signature",
+    "parent_symbol_id",
+)
+
+
+def _node_gate_values(node_data: dict) -> dict:
+    return {k: v for k, v in node_data.items() if k != "node_id"}
 
 
 def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
@@ -79,6 +124,11 @@ async def batch_upsert_graph_nodes(
     (excluding id and repository_id which are set here).
 
     Uses SELECT-then-INSERT/UPDATE for dialect portability.
+
+    *nodes* is a full snapshot of the repo's graph on every call, including the
+    incremental update path, where a one-file change leaves the overwhelming
+    majority of it identical. The gate skips those rows before they are
+    hydrated as ORM objects.
     """
     await _batch_upsert_keyed(
         session,
@@ -88,6 +138,13 @@ async def batch_upsert_graph_nodes(
         item_key_fn=lambda n: n.get("node_id", ""),
         row_key_fn=lambda row: row.node_id,
         update_fn=_update_graph_node,
+        gate=UpsertGate(
+            key_column=GraphNode.node_id,
+            columns=_NODE_FIELDS,
+            item_values_fn=_node_gate_values,
+            float_columns=_CENTRALITY_COLUMNS,
+            float_atol=_CENTRALITY_ATOL,
+        ),
         insert_fn=lambda n: GraphNode(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -250,6 +307,13 @@ async def batch_upsert_graph_metrics(
         item_key_fn=lambda kv: kv[0],
         row_key_fn=lambda row: row.node_id,
         update_fn=lambda existing, kv: _update_graph_metric(existing, kv[1]),
+        gate=UpsertGate(
+            key_column=GraphMetric.node_id,
+            columns=_METRIC_FIELDS,
+            item_values_fn=lambda kv: {k: v for k, v in kv[1].items() if k in _METRIC_FIELDS},
+            float_columns=_CENTRALITY_COLUMNS,
+            float_atol=_CENTRALITY_ATOL,
+        ),
         insert_fn=lambda kv: GraphMetric(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -284,18 +348,19 @@ async def batch_upsert_graph_node_membership(
     on screen indefinitely.
     """
     current = set(membership)
-    existing_ids = (
-        (
-            await session.execute(
-                select(GraphNodeMembership.node_id).where(
-                    GraphNodeMembership.repository_id == repository_id
-                )
-            )
+    # The stale scan already has to walk every row this repo owns, so it reads
+    # the comparison columns at the same time and hands them to the gate. A
+    # second narrow scan measured slower than the writes it was saving on a
+    # snapshot where most rows genuinely moved.
+    existing_rows = (
+        await session.execute(
+            select(
+                GraphNodeMembership.node_id,
+                *[getattr(GraphNodeMembership, c) for c in _MEMBERSHIP_FIELDS],
+            ).where(GraphNodeMembership.repository_id == repository_id)
         )
-        .scalars()
-        .all()
-    )
-    stale = [nid for nid in existing_ids if nid not in current]
+    ).all()
+    stale = [row[0] for row in existing_rows if row[0] not in current]
     for i in range(0, len(stale), _MEMBERSHIP_PRUNE_CHUNK):
         await session.execute(
             delete(GraphNodeMembership).where(
@@ -312,6 +377,18 @@ async def batch_upsert_graph_node_membership(
         item_key_fn=lambda kv: kv[0],
         row_key_fn=lambda row: row.node_id,
         update_fn=lambda existing, kv: _update_graph_node_membership(existing, kv[1]),
+        gate=UpsertGate(
+            key_column=GraphNodeMembership.node_id,
+            columns=_MEMBERSHIP_FIELDS,
+            item_values_fn=lambda kv: {
+                k: v for k, v in kv[1].items() if k in _MEMBERSHIP_FIELDS
+            },
+            # Pruned keys are excluded: their rows are gone by the time the
+            # upsert runs, and a snapshot never sends a key it just pruned.
+            prefetched={
+                row[0]: row[1:] for row in existing_rows if row[0] in current
+            },
+        ),
         insert_fn=lambda kv: GraphNodeMembership(
             id=_new_uuid(),
             repository_id=repository_id,
