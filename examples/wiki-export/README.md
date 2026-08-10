@@ -21,7 +21,7 @@ repowise init --index-only --yes
 repowise export                                    # markdown → .repowise/export/
 repowise export --format markdown -o ./wiki-export
 repowise export --format html -o ./wiki-html
-repowise export --format json -o ./wiki.json       # single wiki_pages.json
+repowise export --format json -o ./wiki-json    # writes ./wiki-json/wiki_pages.json
 ```
 
 ## 2. Host or archive offline
@@ -33,6 +33,7 @@ wiki programmatically.
 ```bash
 ls ./wiki-export | head
 ls ./wiki-html | head
+ls ./wiki-json/wiki_pages.json
 ```
 
 ## Smoke checklist
@@ -41,7 +42,7 @@ ls ./wiki-html | head
 |------|----------|
 | `repowise export --format markdown -o /tmp/wiki-md` | Directory of `.md` files |
 | `repowise export --format html -o /tmp/wiki-html` | Directory of `.html` files |
-| `repowise export --format json -o /tmp/wiki.json` | `wiki_pages.json` created |
+| `repowise export --format json -o /tmp/wiki-json` | `/tmp/wiki-json/wiki_pages.json` created |
 | No index present | Error: run `repowise init` first |
 
 ## Related docs
