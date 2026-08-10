@@ -1081,21 +1081,53 @@ async def export_wiki(
     )
 
 
+async def _is_indexed_file(session: AsyncSession, repo_id: str, file_path: str) -> bool:
+    """True when the indexer recorded ``file_path`` for this repo.
+
+    Same three-table existence test ``GET /files/{path}`` uses: which of them
+    is populated depends on the index tier, so any one of them counts.
+    """
+    if await crud.get_graph_node(session, repo_id, file_path) is not None:
+        return True
+    if await crud.get_git_metadata(session, repo_id, file_path) is not None:
+        return True
+    return bool(await crud.get_health_metrics(session, repo_id, file_paths=[file_path]))
+
+
 @router.get("/{repo_id}/file-content")
 async def get_file_content(
     repo_id: str,
     file_path: str = Query(...),
     session: AsyncSession = Depends(get_db_session),
 ) -> PlainTextResponse:
-    """Return raw file content from the repository's local checkout."""
+    """Return raw file content from the repository's local checkout.
+
+    Only files the indexer actually recorded are servable. Containment in the
+    repo root is not a sufficient guard on its own: ``.repowise/.env`` (the
+    user's provider API keys) and ``.git/config`` live inside the root too, so
+    the endpoint was an exfiltration path for anything under the checkout.
+    """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    # Belt and braces alongside the index membership test below. Only the two
+    # directories that hold credentials are named: the traverser walks other
+    # dot-paths, so `.github/workflows/ci.yml` and `.eslintrc.json` are indexed
+    # files a reader can legitimately open.
+    segments = file_path.replace("\\", "/").split("/")
+    if segments and segments[0] in (".git", ".repowise"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # Cheap containment first: an out-of-tree probe shouldn't cost three queries.
     base = Path(repo.local_path).resolve()
     target = (base / file_path).resolve()
     if not target.is_relative_to(base):
         raise HTTPException(status_code=400, detail="Invalid file path")
+
+    if not await _is_indexed_file(session, repo_id, file_path):
+        raise HTTPException(status_code=404, detail=f"File not indexed: {file_path}")
+
     if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
