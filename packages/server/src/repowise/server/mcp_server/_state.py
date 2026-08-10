@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+# Deferred deliberately: this module is the one submodule the package imports
+# eagerly (every other module reads its globals), and pulling sqlalchemy in for
+# an annotation alone accounted for ~340ms of the ~345ms it used to cost. The
+# annotations are strings under `from __future__ import annotations` and are
+# never evaluated at runtime.
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 _vector_store: Any = None
 _decision_store: Any = None

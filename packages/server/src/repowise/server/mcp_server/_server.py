@@ -546,7 +546,12 @@ def create_mcp_server(
     deltas, or ``"all"``); when omitted the ``mcp.tools`` config block is used.
     """
     _state._repo_path = repo_path
+    from repowise.server.mcp_server import ensure_full_surface
     from repowise.server.mcp_server._tool_selection import apply_tool_selection
+
+    # Tool modules import lazily now, so a server has to ask for the full
+    # surface before it can advertise (or trim) it.
+    ensure_full_surface()
 
     apply_tool_selection(mcp, repo_path=repo_path, override=tools)
     return mcp
@@ -565,8 +570,10 @@ def run_mcp(
     when omitted, the ``mcp.tools`` config block is honoured.
     """
     _state._repo_path = repo_path
+    from repowise.server.mcp_server import ensure_full_surface
     from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
+    ensure_full_surface()
     apply_tool_selection(mcp, repo_path=repo_path, override=tools)
 
     if transport == "sse":

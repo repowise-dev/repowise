@@ -1,6 +1,7 @@
 """Selection of which MCP tools a server advertises.
 
-The registry attaches *every* tool to the FastMCP instance at import time. This
+The registry attaches *every* tool to the FastMCP instance the first time a
+caller asks for the full surface (``mcp_server.ensure_full_surface``). This
 module trims that full set down to the surface a given server should expose,
 based on three inputs:
 
@@ -57,12 +58,26 @@ _LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 _full_surface: dict[str, Any] | None = None
 
 
+def _ensure_registered() -> None:
+    """Make sure every tool module has been imported before reading the registry.
+
+    Tool modules import lazily (see ``mcp_server/__init__``), so the registry is
+    empty until something asks for the full surface. Both public entry points
+    here read ``mcp_tool_registry.entries()``, and both are imported directly by
+    callers that never touch the server instance — the dashboard's ``/mcp``
+    routes among them — so neither can assume registration already happened.
+    """
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+
+
 def snapshot_full_surface(mcp: Any) -> None:
     """Record the complete registered tool set so selection can rebuild from it.
 
-    Called once at import, right after the registry attaches every tool. Safe to
-    call again; the first non-empty snapshot wins so a later call (after the set
-    has been trimmed) cannot shrink the source of truth.
+    Called once by ``ensure_full_surface``, right after the registry attaches
+    every tool. Safe to call again; the first non-empty snapshot wins so a later
+    call (after the set has been trimmed) cannot shrink the source of truth.
     """
     global _full_surface
     if _full_surface is not None:
@@ -196,6 +211,8 @@ def apply_tool_selection(
     block when not given on the CLI), then removes every registered tool that is
     not enabled. Returns the enabled set. Safe to call once per server boot.
     """
+    _ensure_registered()
+
     if override is None:
         override = _read_config_override(repo_path)
 
@@ -213,11 +230,19 @@ def apply_tool_selection(
     # Rebuild from the full snapshot when available so selection is idempotent
     # and can restore a tool a prior call trimmed; otherwise fall back to
     # in-place removal of the currently-registered set.
+    #
+    # Sorted, because registration order is the order the tool modules were
+    # imported in, and that is no longer fixed: tool modules import lazily, so
+    # whichever consumer forces the surface first decides it (an HTTP app has
+    # already pulled tool_risk in through routers/git.py; a stdio server has
+    # not). The advertised order is what an agent reads top-down, so it should
+    # not depend on the entry point. Name order is arbitrary but stable, and it
+    # still puts get_answer first.
     source = _full_surface if _full_surface is not None else dict(registered)
     registered.clear()
-    for name, tool in source.items():
+    for name in sorted(source):
         if name in enabled:
-            registered[name] = tool
+            registered[name] = source[name]
 
     return enabled
 
@@ -238,6 +263,8 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
     default set for this mode), ``requires_workspace``, and ``enabled`` (in the
     currently-resolved surface).
     """
+    _ensure_registered()
+
     entries = mcp_tool_registry.entries()
     is_workspace = _is_workspace(repo_path)
     override = _read_config_override(repo_path)

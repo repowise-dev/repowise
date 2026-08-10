@@ -24,8 +24,11 @@ def doc_text() -> str:
 
 
 def _entries():
-    import repowise.server.mcp_server  # noqa: F401  (registers the tools)
+    # Tool modules import lazily, so importing the package alone no longer
+    # registers anything — the surface has to be asked for explicitly.
+    from repowise.server.mcp_server import ensure_full_surface
 
+    ensure_full_surface()
     return mcp_tool_registry.entries()
 
 

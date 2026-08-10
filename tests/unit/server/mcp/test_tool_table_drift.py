@@ -15,8 +15,10 @@ from repowise.core.registry import mcp_tool_registry
 
 
 def _registered_names() -> set[str]:
-    import repowise.server.mcp_server  # noqa: F401  (registers the tools)
+    # Tool modules import lazily; the surface has to be asked for.
+    from repowise.server.mcp_server import ensure_full_surface
 
+    ensure_full_surface()
     return {fn.__name__ for fn in mcp_tool_registry.tools()}
 
 
