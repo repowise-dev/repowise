@@ -153,8 +153,67 @@ def _emit_traversal_summary(
 # its picklable args are known to work under it.
 _MP_SPAWN = multiprocessing.get_context("spawn")
 
+# Upper bound on the parse pool, independent of how many cores the host has.
+#
+# Every worker is a fresh interpreter under ``spawn`` that imports the repowise
+# stack and lazily builds an ``ASTParser`` holding compiled tree-sitter
+# Language/Query objects. That costs a flat ~50 MB of *private* memory per
+# worker — measured at 51.0 MB/worker on PowerToys (5,766 files, 29.5 MB of
+# source) and 49.2 MB/worker on hugo (2,130 files, 8.8 MB), so it is a
+# per-worker constant and not a function of repo size. Sizing the pool from
+# ``cpu_count`` therefore made peak memory a function of the *host*: 32 workers
+# held 1.57 GB where 8 hold 0.46 GB.
+#
+# Nothing was bought with it. With 16 cores genuinely free, 8 workers parsed
+# PowerToys in 5.54s/4.75s against 16 workers' 6.79s/5.23s (interleaved pairs):
+# past this point the per-worker import and grammar build is paid again without
+# amortizing over enough files to repay it, so more workers is slightly slower
+# *and* multiplies the memory. The same reasoning caps the betweenness pool
+# (see ``ingestion/graph/_betweenness.py``).
+_MAX_PARSE_WORKERS = 8
+
+# Escape hatch for hosts this default judges wrong in either direction.
+_PARSE_WORKERS_ENV = "REPOWISE_PARSE_WORKERS"
+
 # Module-level process-local parser cache (one per worker process).
 _WORKER_PARSER: Any = None
+
+
+def parse_pool_workers(pending: int) -> int:
+    """How many workers to ask the parse pool for, to parse *pending* files.
+
+    Stated once so the init and resume paths cannot drift apart, and so the
+    bound can be asserted on directly. Never exceeds *pending* — a repo with
+    three changed files has no use for eight interpreters.
+
+    ``REPOWISE_PARSE_WORKERS`` overrides the cap in both directions. A set but
+    non-positive value is ignored with a warning rather than failing an
+    otherwise healthy parse; an empty value means "unset", which is what an
+    ``export REPOWISE_PARSE_WORKERS=`` from an undefined shell variable
+    produces, so it is not worth warning about.
+    """
+    if pending <= 0:
+        return 1
+
+    override = os.environ.get(_PARSE_WORKERS_ENV)
+    if override:
+        try:
+            requested = int(override)
+        except ValueError:
+            requested = 0
+        if requested > 0:
+            return min(requested, pending)
+        logger.warning("invalid_parse_workers_env", value=override)
+
+    # ``process_cpu_count`` (3.13+) honours the CPU affinity mask, so a process
+    # pinned to fewer CPUs than the host has stops sizing its pool from the
+    # host's core count. It does *not* read cgroup CPU quotas: a container run
+    # with ``--cpus=2`` (CFS quota, no cpuset) still sees the full host mask,
+    # and the cap below is what bounds that case. Falls back to ``cpu_count``
+    # on 3.11/3.12, and when affinity is unavailable and it returns None.
+    affinity_aware = getattr(os, "process_cpu_count", None)
+    cpus = (affinity_aware() if affinity_aware else None) or os.cpu_count() or 4
+    return max(1, min(cpus, _MAX_PARSE_WORKERS, pending))
 
 
 def _parse_one(path_and_fi_and_bytes: tuple) -> Any:
@@ -369,7 +428,7 @@ async def _run_ingestion(
     # entirely (an incremental update re-ingests the whole repo for one
     # changed file). Misses parse exactly as before.
     parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
-    workers = max(1, min(os.cpu_count() or 4, len(to_parse) or 1))
+    workers = parse_pool_workers(len(to_parse))
 
     parse_results: list[Any] = []
 
@@ -636,7 +695,7 @@ async def reparse_for_resume(
     loop = asyncio.get_running_loop()
 
     parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
-    workers = max(1, min(os.cpu_count() or 4, len(to_parse) or 1))
+    workers = parse_pool_workers(len(to_parse))
     parse_results: list[Any] = []
 
     if to_parse:
