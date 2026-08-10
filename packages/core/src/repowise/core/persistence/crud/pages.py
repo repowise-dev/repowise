@@ -115,6 +115,24 @@ def _apply_page_upsert(
         # from the page's own bytes, so they can legitimately change while the
         # content hash does not: a renamed page, or one whose siblings moved.
         # A field left out here is frozen at whatever the first run wrote.
+        #
+        # ``confidence`` belongs here for the same reason ``freshness_status``
+        # does: it is decided by *how* the page was written, not by what the
+        # page says, so it can move while the bytes do not. A stub renders
+        # identically whether the run never asked for prose or asked and lost
+        # the call, and its ``source_hash`` is a hash of that render, so both
+        # transitions land in this branch with every compared field equal:
+        #
+        #   * a keyless page written at 0.3 by a version that stamped both
+        #     stub kinds alike stays 0.3 forever, on every subsequent run,
+        #     because nothing else would ever write the corrected value;
+        #   * a provider outage over an existing keyless stub records the
+        #     failure in ``metadata_json`` (right below) while leaving the
+        #     confidence saying nothing went wrong.
+        #
+        # The second is the one that matters: the marker and the number would
+        # disagree on the same row, and they are meant to be two halves of one
+        # statement.
         if (
             existing.content == content
             and existing.source_hash == source_hash
@@ -124,6 +142,7 @@ def _apply_page_upsert(
             existing.summary = summary
             existing.target_path = target_path
             existing.freshness_status = freshness_status
+            existing.confidence = confidence
             existing.metadata_json = meta_json
             existing.parent_page_id = parent_page_id
             existing.display_order = display_order

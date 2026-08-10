@@ -24,6 +24,7 @@ from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
     STUB_FALLBACK_ERROR,
+    STUB_PAGE_CONFIDENCE,
     GeneratedPage,
     compute_source_hash,
 )
@@ -52,8 +53,18 @@ def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> Gener
     it back: this page still has to count as a failure in the job checkpoint,
     and must not reach the vector store that ``--resume`` treats as its record
     of what is already done.
+
+    Lowering the confidence here rather than in ``_stub_page`` is the whole of
+    the distinction. Both paths render the identical template, so the bytes
+    cannot tell them apart. What differs is that this one was *supposed* to be
+    prose. A keyless run's stub is a finished deterministic page and keeps
+    :data:`TEMPLATE_PAGE_CONFIDENCE`; this one is a stand-in for something the
+    run intended and could not produce, and that is the state worth flagging to
+    a reader. Stamping both meant a keyless wiki flagged every model-written
+    page it had, which is all of them.
     """
     page.metadata[STUB_FALLBACK_ERROR] = str(exc)[:500]
+    page.confidence = STUB_PAGE_CONFIDENCE
     log.warning(
         "page_generation.stub_fallback",
         page_type=page_type,
