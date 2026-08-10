@@ -41,20 +41,21 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers** — Graph (tree-sitter AST across 16 languages, two-tier
+- **Five intelligence layers** — Graph (tree-sitter AST across 18 languages, two-tier
   dependency graph, call resolution, heritage extraction, Leiden communities,
   PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
   factor, significant commits, contributor profiles, module health), Documentation
   (LLM-generated wiki, freshness scoring, RAG search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (25 deterministic markers, 1–10 score per file, coverage ingestion, trend
+  (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
   alerts).
 - **Ten task-shaped MCP tools** — `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
-  `get_dead_code`, `get_health`. Benchmarked at **−36 % cost / −49 % tool calls**
-  on `pallets/flask`
-  and **−29 % cost / −70 % tool calls** on `scikit-learn` versus a strong baseline
-  agent, at parity answer quality — see [repowise-bench](https://github.com/repowise-dev/repowise-bench).
+  `get_dead_code`, `get_health`. Benchmarked at **−33.5 % cost per question**
+  against a bare agent, cheaper on 13 of 15 questions (n=15, p=0.007), and
+  **−49 % to −70 % tool calls** across paired runs on `pallets/flask` and
+  `scikit-learn`. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for the sample
+  sizes, the tests, and the runs where the cost saving did not replicate.
 - **Multi-repo workspace intelligence** — cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and
@@ -82,13 +83,13 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise treats **11 languages at Full tier** (Python, TypeScript, JavaScript, Java,
-Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import resolution,
-named bindings, call resolution, heritage extraction, multi-project workspace
-resolvers, framework-aware edges, per-language dynamic-hint extractors, and
+Repowise treats **13 languages at Full tier** (Python, TypeScript, JavaScript, Svelte,
+Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import
+resolution, named bindings, call resolution, heritage extraction, multi-project
+workspace resolvers, framework-aware edges, per-language dynamic-hint extractors, and
 code-health markers. A further 4 languages (C, Swift, PHP, Dart) sit at Good tier,
-and Luau is partial. SQL/dbt, shell, and the config formats are handled by dedicated
-extractors on top of that.
+and Luau is partial. SQL/dbt, shell, HTML, and the config formats are handled by
+dedicated extractors on top of that.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
 worth calling out. For **.NET**, as one example:

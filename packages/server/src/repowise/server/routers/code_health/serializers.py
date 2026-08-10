@@ -117,12 +117,17 @@ def _file_trend_to_dict(t: FileTrend) -> dict:
             {
                 "taken_at": p.taken_at.isoformat() if p.taken_at else None,
                 "score": round(p.score, 2),
+                # The score with the floor undone. Equal to ``score`` unless
+                # the snapshot recorded how deep the file actually was, which
+                # only happens once it is sitting on the floor.
+                "unclamped_score": round(p.unclamped_score, 2),
             }
             for p in t.points
         ],
         "current": t.current,
         "previous": t.previous,
         "delta": t.delta,
+        "unclamped_delta": t.unclamped_delta,
         "declining": t.declining,
         "snapshot_count": t.snapshot_count,
     }

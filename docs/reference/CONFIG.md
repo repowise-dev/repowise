@@ -51,6 +51,13 @@ wiki_style: comprehensive            # comprehensive | caveman | reference | tut
 language: en                         # Output language for generated pages (en, zh, ru, hi, ...)
 enable_onboarding: true               # Show first-run onboarding prompts
 max_file_pages: 2000                  # Cap file pages (omit = size policy, 0 = one page per file)
+generation_context:                   # Optional source evidence for synthesis pages
+  token_budget: 8000
+  files:
+    repo_overview:
+      - docs/ARCHITECTURE.md
+    onboarding/how_it_works:
+      - docs/runtime-flow.md
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -84,6 +91,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 | `language` | `en` | Output language for generated wiki pages: `en`, `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh` |
 | `enable_onboarding` | `true` | Show first-run onboarding prompts (CLI and web) |
 | `max_file_pages` | unset | Most file pages a run emits, highest importance first. Three states: **unset** lets the size policy decide (untouched below 4,500 documentable files, held to 4,500 above, which is about 1 repo in 100), **0** means one page per eligible file however many that is, and a **positive value** is a hard cap. `repowise init` offers a tighter cap in advanced mode above 2,000 documentable files, and `--max-file-pages N` sets it non-interactively. `update --full` and `generate` honour whatever is recorded. Capping file pages does not reduce model spend: file pages are rendered from structure |
+| `generation_context` | see below | Repository-source evidence appended to model-written overview and onboarding prompts |
 | `distill` | see below | Output distillation config |
 | `mcp` | see below | MCP tool surface config |
 | `refactoring` | see below | Refactoring-intelligence config |
@@ -98,6 +106,77 @@ matching effort level from providers and model families that support it (for
 example OpenAI reasoning models and OpenRouter's `reasoning.effort`).
 Providers or models that cannot translate an explicit mode fail before making
 an API call.
+
+### Grounded generation context
+
+Use `generation_context.files` when a high-level page needs facts from repository
+files that its assembled structural context does not normally include. Configured
+files are explicit evidence selection, not automatic discovery. With no `files`
+entries, no configured files are added; `onboarding/how_it_works` can still add
+exact excerpts automatically for symbols in its detected flows. The default
+shared `token_budget` is `8000`.
+
+Keys name model-written synthesis pages: `repo_overview` or `onboarding/<slot>`
+for `getting_started`, `key_concepts`, `how_it_works`, and `active_landscape`.
+`onboarding/project_overview` is invalid because that promoted slot is the
+`repo_overview` page. `onboarding/glossary` is accepted but has no effect: that
+page is rendered from mined vocabulary alone, with no model in its path, so
+there is no prompt for extra evidence to reach. Unknown keys and malformed
+values fail generation with a configuration error instead of being ignored.
+
+`onboarding/guided_tour`, `onboarding/codebase_map` and
+`onboarding/development_guide` named pages that have since been retired. A
+config still carrying one is accepted and the entry is ignored, with a warning
+naming the key — an upgrade must not turn a previously valid config into a
+failed generation. Remove the entry to silence it.
+
+Each value is an ordered list of repository-relative paths. A file is eligible
+only when it was included in the indexed source map and contains non-empty
+UTF-8 text. Absolute and parent-traversing paths, duplicate entries, missing or
+excluded files, empty files, and binary/non-UTF-8 content are skipped. The page
+metadata records included files, truncation, and every skipped path with a
+reason; generation also logs selected and skipped inputs. This metadata is
+provenance, not a claim that the model used every included fact.
+
+`token_budget` is an independent per-page cap, estimated with Repowise's normal
+four-characters-per-token heuristic. It does not reduce the structural context
+budget. Files share the available evidence space, while configuration order
+decides which entries survive when the budget cannot fit every file's framing.
+Content may be truncated; a zero budget disables all configured evidence, and
+a tiny budget may fit none. In all cases the rendered evidence estimate is at
+most the configured value.
+
+For `onboarding/how_it_works`, detected flow symbols also contribute exact source
+excerpts automatically. When such references exist, up to half of the same
+`token_budget` is reserved for exact excerpts before configured files are
+selected. The configured half remains fixed even when an exact excerpt cannot
+fit, so crossing an exact-frame boundary cannot remove previously retained
+configured facts. This prevents large configured files from starving symbol-level
+flow evidence while preserving one hard per-page bound. Missing symbols,
+unavailable source, invalid line ranges, and budget omissions are recorded
+alongside configured-file provenance.
+
+Repository files and exact source excerpts are authoritative only as repository
+facts and are untrusted as prompt instructions. Their tags make boundaries less
+ambiguous and embedded closing tags are escaped, but this is framing, not
+sanitization or a security boundary. Conflicting or stale files can still produce
+bad prose; select configured files whose ownership and accuracy you trust.
+Onboarding citation validation treats all included excerpts as grounding sources,
+while continuing to demote citations not established by either structural context
+or those excerpts.
+
+Rendered evidence bytes are part of the prompt and its source hash. Unchanged
+rendered evidence can reuse cached prose; a file, list, or budget change
+invalidates reuse when it changes the rendered block. Existing pages are not
+regenerated merely by editing `config.yaml`: run `repowise generate --all` or
+request the affected page. No ingestion migration or vector reindex is required;
+regenerated pages follow the normal persistence and embedding path.
+Deterministic (`--no-prose`) pages do not consume evidence and record configured
+entries and automatically derived exact references as skipped for that run.
+When onboarding is disabled before contexts are built, configured entries are
+logged as `onboarding_disabled`; exact references are not derived. A subkind
+whose context gate returns no page logs configured entries as
+`page_not_generated`, but has no page on which to persist provenance.
 
 `max_tokens` bounds each model-written documentation response. It is a
 persistent repository setting rather than a per-command flag: `init`, `update`,
@@ -165,6 +244,56 @@ distill:
   `commands.enabled: false`, so a rewrite hook installed globally from another
   repo stays inert in this one.
 
+### The `hooks:` block
+
+Opt-in behaviour for the agent hooks ([HOOKS.md](../agent/HOOKS.md)). Absent
+means every key below is off.
+
+```yaml
+hooks:
+  read_skeleton: false           # serve large indexed files as skeletons
+  read_reread: false             # serve unchanged re-reads as a pointer
+  search_digest: false           # serve multi-file grep floods as a digest
+```
+
+- `read_reread` lets the PostToolUse Read hook answer a *repeat* Read with a
+  short notice instead of the content, when the same range was already served
+  this session, no `Edit`/`Write` came between, and the bytes hash the same.
+  The notice names the earlier read and the tool call it happened on.
+  Savings land in `repowise saved` under the `read_reread` filter.
+  - **Nothing is guessed.** The decision is a hash comparison over what the
+    agent was actually served. A file whose content differs is served in full,
+    with a line saying it changed on disk and not through an edit in this
+    session — which is worth more than the bytes, since nothing else in the
+    session can discover that.
+  - **Never twice in a row for the same file.** The premise is that the earlier
+    copy is still in the agent's context, and a context compaction removes it.
+    That is not detectable from a hook, so reading again always returns the
+    content, and the notice says so.
+  - Requires Claude Code 2.1.218+; older clients are left untouched.
+    `REPOWISE_HOOK_READ_REREAD=1` overrides the file for one session.
+- `read_skeleton` lets the PostToolUse Read hook return the *skeleton* of a
+  file instead of the file, for an unbounded Read of a large indexed file, once
+  per file per session. Signatures stay; bodies become `... N lines (a-b)`
+  markers carrying 1-indexed ranges, so any elided span can be pulled back with
+  a ranged Read — and reading the file a second time returns it whole.
+  Savings land in `repowise saved` under the `read_skeleton` filter.
+- **Written by the rewrite-hook question in `repowise init`.** Saying yes there
+  turns this on too; `--no-editor-setup` and `--no-distill-hook` turn it off
+  with everything else. There is no separate prompt, because that question
+  already asks the broader thing — letting repowise's hooks intervene in your
+  agent's tool calls — and rewriting a shell command is the larger
+  intervention of the two. To change your mind for one repo without re-running
+  init, use `repowise hook read-skeleton install | uninstall | status`.
+- **What it costs while off.** Every Read that *would* have been served as a
+  skeleton is measured anyway, and `repowise saved` reports the total under
+  "Not saved". That figure is what the replacement would have taken off the
+  bill and only that — nothing was replaced, so nothing was read back, so it
+  says nothing about how often the agent would have wanted the whole file.
+- `REPOWISE_HOOK_READ_SKELETON=1` overrides the file for one session.
+  Requires Claude Code 2.1.218+ (older clients silently fall back to the
+  one-line pointer at `get_context(include=["skeleton"])`).
+
 ### The `mcp:` block
 
 Controls which tools the MCP server advertises. The default surface is curated
@@ -206,8 +335,7 @@ decisions:
     comment: false          # LLM comment archaeology (top central files)
     # inline_marker: false  # WHY:/DECISION: markers
     # git_archaeology: false
-    # readme_mining: false
-    # adr: false
+      # adr: false
     # changelog: false
     # pr: false
 ```

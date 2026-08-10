@@ -18,7 +18,13 @@ their own. The OSS CLI and MCP server use the module-level instances.
 
 from __future__ import annotations
 
-from .cli_registry import CLIRegistry, cli_registry, register_command
+from .cli_registry import (
+    CLIRegistry,
+    LazyCommand,
+    cli_registry,
+    register_command,
+    register_lazy_command,
+)
 from .mcp_tool_registry import MCPToolRegistry, ToolEntry, mcp_tool_registry
 from .pipeline_hooks import (
     HookPhase,
@@ -32,6 +38,7 @@ __all__ = [
     "CLIRegistry",
     "HookPhase",
     "HookProgressCallback",
+    "LazyCommand",
     "MCPToolRegistry",
     "PipelineHookRegistry",
     "ToolEntry",
@@ -40,4 +47,5 @@ __all__ = [
     "pipeline_hooks",
     "register_command",
     "register_hook",
+    "register_lazy_command",
 ]

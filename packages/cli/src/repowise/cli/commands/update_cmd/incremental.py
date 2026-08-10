@@ -153,6 +153,7 @@ def _run_partial_analysis(
     git_meta_map: dict,
     parsed_files: list,
     file_diffs: list,
+    source_map: dict[str, bytes] | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + dead-code analysis for the changed files.
 
@@ -170,5 +171,6 @@ def _run_partial_analysis(
         git_meta_map,
         parsed_files,
         file_diffs,
+        source_map=source_map,
         log=console.print,
     )

@@ -16,7 +16,6 @@ from repowise.core.distill.skeleton import (
     SkeletonResult,
     SkeletonSymbol,
     build_skeleton,
-    estimate_skeleton_tokens,
 )
 
 
@@ -209,30 +208,6 @@ class TestSignatureEndHeuristics:
         sigs = build_skeleton(source, sym, mode="signatures")
         assert "Summary line." not in sigs.text
         assert "x = 1" not in sigs.text
-
-
-class TestEstimate:
-    def test_estimate_tracks_real_skeleton(self, python_case) -> None:
-        source, symbols = python_case
-        real = build_skeleton(source, symbols, mode="signatures")
-        est = estimate_skeleton_tokens(
-            [(s.start_line, s.end_line) for s in symbols],
-            file_size_bytes=len(source.encode("utf-8")),
-            total_lines=len(source.splitlines()),
-        )
-        # Within 2x either way — good enough for a "~M tokens vs K" nudge.
-        assert real.skeleton_tokens / 2 <= est <= real.skeleton_tokens * 2
-
-    def test_estimate_empty_bounds(self) -> None:
-        assert estimate_skeleton_tokens([], file_size_bytes=4000) == 1000
-
-    def test_estimate_is_below_full(self, python_case) -> None:
-        source, symbols = python_case
-        size = len(source.encode("utf-8"))
-        est = estimate_skeleton_tokens(
-            [(s.start_line, s.end_line) for s in symbols], file_size_bytes=size
-        )
-        assert est < size // 4
 
 
 class TestResultShape:

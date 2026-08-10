@@ -1069,10 +1069,11 @@ async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, mon
     async def _fake_excerpts(hits, ctx=None):
         for h in hits:
             h["excerpt"] = f"Page content for {h['target_path']}: chunking rationale..."
+        return 0
 
     monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
     monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
-    monkeypatch.setattr(answer_mod, "_enrich_gated_excerpts", _fake_excerpts)
+    monkeypatch.setattr(answer_mod, "_attach_page_excerpts", _fake_excerpts)
     _patch_provider(monkeypatch, answer_mod, "Uploads chunk at 8MB (pkg/alpha/one.py).")
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text("CHUNK = 8\n", encoding="utf-8")
@@ -1192,22 +1193,23 @@ async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Gated-path excerpt enrichment
+# Page-content excerpt enrichment
 # ---------------------------------------------------------------------------
 
 
-class TestGatedExcerptEnrichment:
-    """_enrich_gated_excerpts must run its real query against the real Page
+class TestPageExcerptEnrichment:
+    """_attach_page_excerpts must run its real query against the real Page
     model — a silently-swallowed AttributeError here shipped pointers-only
     gated payloads and re-opened the 8-15 call fallback spree the excerpts
     exist to prevent."""
 
     async def test_excerpts_attached_from_real_page_rows(self, factory, populated_db):
         from repowise.server.mcp_server.tool_answer.retrieval import (
-            _enrich_gated_excerpts,
+            _attach_page_excerpts,
         )
 
         hits = [{"page_id": "repo_overview:test-repo", "score": 1.0}]
         ctx = SimpleNamespace(session_factory=factory)
-        await _enrich_gated_excerpts(hits, ctx)
+        missing = await _attach_page_excerpts(hits, ctx)
         assert hits[0].get("excerpt", "").startswith("# Test Repo")
+        assert missing == 0

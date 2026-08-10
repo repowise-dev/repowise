@@ -12,6 +12,8 @@ the shared registry, so openrouter and custom-registered embedders are honoured
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from repowise.core.providers.embedding.base import MockEmbedder
@@ -36,12 +38,21 @@ _EMBEDDER_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _clean_env_and_state(monkeypatch):
-    """Strip embedder env vars + reset status so each test starts from scratch."""
+def _clean_env_and_state(monkeypatch, tmp_path):
+    """Strip embedder env vars + reset status so each test starts from scratch.
+
+    ``Path.home()`` is redirected at an empty directory too: resolution falls
+    back to the ``embedder_api_key`` saved in ``~/.repowise/config.yaml``, so a
+    developer who has one would otherwise see the "missing key" tests resolve a
+    real embedder and fail locally while passing in CI.
+    """
     for var in _EMBEDDER_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(_state, "_repo_path", None, raising=False)
     monkeypatch.setattr(_state, "_embedder_status", None, raising=False)
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: empty_home))
     yield
     _state._embedder_status = None
 
@@ -158,6 +169,91 @@ def test_config_yaml_embedder_is_read(monkeypatch, tmp_path):
     assert isinstance(embedder, MockEmbedder)  # no key → fell back
     assert _state._embedder_status["requested"] == "openai"
     assert _state._embedder_status["degraded"] is True
+
+
+def test_repo_dotenv_supplies_missing_embedder_key(monkeypatch, tmp_path):
+    """The key persisted in the repo's .repowise/.env is used when env has none.
+
+    `repowise mcp` loads that file for the repo it is pointed at, but workspace
+    siblings and embedded run_mcp() callers never get it — without this fallback
+    the server queries an openai-embedded index with mock vectors.
+    """
+    from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".repowise").mkdir(parents=True)
+    (repo_dir / ".repowise" / "config.yaml").write_text("embedder: openai\n", encoding="utf-8")
+    (repo_dir / ".repowise" / ".env").write_text(
+        "OPENAI_API_KEY=sk-from-dotenv\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(_state, "_repo_path", str(repo_dir))
+
+    embedder = _server._resolve_embedder()
+
+    assert isinstance(embedder, OpenAIEmbedder)
+    assert _state._embedder_status == {
+        "active": "openai",
+        "requested": "openai",
+        "degraded": False,
+    }
+
+
+def test_global_config_supplies_missing_embedder_key(monkeypatch, tmp_path):
+    """`repowise serve` restores embedder_api_key from ~/.repowise/config.yaml —
+    the MCP server must resolve the same credential from the same place."""
+    from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
+    home = tmp_path / "home"
+    (home / ".repowise").mkdir(parents=True)
+    (home / ".repowise" / "config.yaml").write_text(
+        "embedder: openai\nembedder_api_key: sk-from-global\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "openai")
+
+    embedder = _server._resolve_embedder()
+
+    assert isinstance(embedder, OpenAIEmbedder)
+    assert _state._embedder_status["degraded"] is False
+
+
+def test_global_config_key_not_used_for_a_different_embedder(monkeypatch, tmp_path):
+    """A saved openai key must not be handed to gemini — that fails confusingly."""
+    home = tmp_path / "home"
+    (home / ".repowise").mkdir(parents=True)
+    (home / ".repowise" / "config.yaml").write_text(
+        "embedder: openai\nembedder_api_key: sk-from-global\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "gemini")
+
+    embedder = _server._resolve_embedder()
+
+    assert isinstance(embedder, MockEmbedder)
+    assert _state._embedder_status["degraded"] is True
+
+
+def test_process_env_key_wins_over_persisted(monkeypatch, tmp_path):
+    """An explicitly exported key stays authoritative over the persisted one."""
+    from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".repowise").mkdir(parents=True)
+    (repo_dir / ".repowise" / ".env").write_text("OPENAI_API_KEY=sk-persisted\n", encoding="utf-8")
+    monkeypatch.setattr(_state, "_repo_path", str(repo_dir))
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-exported")
+
+    embedder = _server._resolve_embedder()
+
+    assert isinstance(embedder, OpenAIEmbedder)
+    assert embedder._api_key == "sk-exported"
+
+
+def test_keyless_embedder_needs_no_persisted_lookup(monkeypatch):
+    """Embedders outside the keyed map resolve without touching the config files."""
+    assert _server._persisted_embedder_key("ollama") is None
+    assert _server._persisted_embedder_key("mock") is None
 
 
 def test_build_meta_surfaces_degraded_embedder(monkeypatch):

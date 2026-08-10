@@ -199,6 +199,30 @@ def test_newly_covered_tools_credit_successful_calls() -> None:
     assert cf.replaced_tokens_for("get_change_risk", {"error": "bad revspec"}) == 0
 
 
+def test_generate_refactoring_code_is_grounded_in_the_spans_it_read() -> None:
+    """The spans fed to the model are exactly what a hand refactor would read."""
+    result = {"spans": [{"source": "x" * 8000}, {"source": "y" * 4000}]}
+    assert cf.replaced_tokens_for("generate_refactoring_code", result) == 3000
+    # …floored for a tiny span, capped for an enormous one, zero without them.
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": [{"source": "x"}]}) == (
+        cf.REFACTOR_FLOOR
+    )
+    assert cf.replaced_tokens_for(
+        "generate_refactoring_code", {"spans": [{"source": "x" * 900_000}]}
+    ) == cf.REFACTOR_MAX
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": []}) == 0
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"spans": [{"file": "a.py"}]}) == 0
+    assert cf.replaced_tokens_for("generate_refactoring_code", {"error": "disabled"}) == 0
+
+
+def test_list_repos_scales_with_the_repos_it_named() -> None:
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}] * 10}) == 400
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}]}) == cf.REPOS_FLOOR
+    assert cf.replaced_tokens_for("list_repos", {"repos": [{}] * 500}) == cf.REPOS_MAX
+    assert cf.replaced_tokens_for("list_repos", {"repos": []}) == 0
+    assert cf.replaced_tokens_for("list_repos", {"error": "no index"}) == 0
+
+
 def test_dead_end_records_debit_row(tmp_path, monkeypatch) -> None:
     """An error response writes raw=0/distilled=N — a negative net at
     aggregation, so the ledger stops only ever crediting (E11)."""

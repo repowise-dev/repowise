@@ -117,12 +117,98 @@ def _find_dotnet_projects(repo_path: Path) -> list[Path]:
     return found
 
 
+# Every root-level path the scan below reads by name. The memo key stats all of
+# them, so adding a read here means adding it there or the memo goes stale on
+# the signal you just added.
+_MANIFEST_FILES = (
+    "package.json",
+    "tsconfig.json",
+    "pyproject.toml",
+    "setup.py",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "Gemfile",
+    "composer.json",
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    # .NET evidence read at the root, same as the rest.
+    "Directory.Build.props",
+    "Directory.Packages.props",
+)
+
+# repo_path -> (manifest fingerprint, detected stack).
+_STACK_CACHE: dict[str, tuple[tuple, list[TechStackItem]]] = {}
+
+
+def _manifest_fingerprint(repo_path: Path) -> tuple:
+    """Cheap stat-based signature of the root inputs this scan reads.
+
+    Sixteen stats plus one root glob, versus the bounded .csproj walk that
+    dominates the real scan (0.18s on hugo, 0.47s on PowerToys, measured). The
+    ``*.sln`` glob is in the key because the scan reads solutions by pattern
+    rather than by name, so no fixed entry can stand in for them.
+
+    The trailing directory-mtime entry is a bonus, not the mechanism: on Windows
+    file timestamps come from the ~15.6ms system timer tick, so two changes
+    inside one tick can leave it byte-identical. Every root path the scan reads
+    is stat'd by name or globbed above, so the key does not depend on it.
+
+    CEILING: it does not see a nested change - a ``.csproj`` appearing under an
+    existing subdirectory, or a workspace ``tsconfig.json`` one or two levels
+    down (``glob("*/tsconfig.json")`` and ``"*/*/tsconfig.json"``). Covering
+    those means walking, which is the cost this exists to avoid. In one CLI
+    command the window is seconds, so it is unreachable there; a long-lived
+    process (the server's job executor, or a test suite driving several
+    ``CliRunner`` invocations in one interpreter) can re-index the same repo
+    later and be served a stale stack. Blast radius is contextual metadata only:
+    framework edges, the knowledge-graph tech list, the editor file table. To
+    close it, key on a traversal snapshot instead of the root.
+    """
+    sig: list = []
+    for name in _MANIFEST_FILES:
+        try:
+            st = (repo_path / name).stat()
+            sig.append((name, st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append((name, None, None))
+    try:
+        sig.extend(sorted((p.name, p.stat().st_mtime_ns) for p in repo_path.glob("*.sln")))
+    except OSError:
+        sig.append(("*.sln", None))
+    try:
+        sig.append(("", repo_path.stat().st_mtime_ns, None))
+    except OSError:
+        sig.append(("", None, None))
+    return tuple(sig)
+
+
 def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
     """Detect languages, frameworks, and infra tools from manifest files.
 
     Scans repo root and one level deep for common manifest files.
     Returns items sorted by category then name.
+
+    Memoized on the root inputs' stat signature: a single ``repowise update``
+    asks twice (the graph's framework edges, then the knowledge-graph refresh)
+    and gets the same answer both times off an unchanged tree. See
+    :func:`_manifest_fingerprint` for what the key does and does not cover.
     """
+    key = str(Path(repo_path).resolve())
+    fingerprint = _manifest_fingerprint(Path(repo_path))
+    cached = _STACK_CACHE.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return list(cached[1])
+    items_list = _detect_tech_stack_uncached(Path(repo_path))
+    _STACK_CACHE[key] = (fingerprint, items_list)
+    return list(items_list)
+
+
+def _detect_tech_stack_uncached(repo_path: Path) -> list[TechStackItem]:
+    """The real scan. See :func:`detect_tech_stack` for the contract."""
     items: dict[str, TechStackItem] = {}
 
     def add(name: str, version: str | None, category: str) -> None:

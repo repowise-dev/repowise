@@ -132,7 +132,13 @@ async def _run_restyle(
         fts = FullTextSearch(engine)
         await fts.ensure_index()
         for page in generated_pages:
-            await fts.index(page.page_id, page.title, page.content)
+            await fts.index(
+                page.page_id,
+                page.title,
+                page.content,
+                summary=page.summary,
+                target_path=page.target_path,
+            )
     except Exception:
         pass  # FTS indexing is best-effort
 

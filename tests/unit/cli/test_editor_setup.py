@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import pytest
 from rich.console import Console
 
 from repowise.cli import mcp_config
@@ -197,6 +198,112 @@ def test_distill_optout_recorded_despite_no_editor_setup(monkeypatch, tmp_path: 
     )
     assert installs == []
     assert verdicts == [False]
+
+
+def test_the_consent_names_every_surface_a_yes_turns_on(monkeypatch, tmp_path: Path) -> None:
+    """One question, but it has to say what it covers.
+
+    A yes here writes every ``hooks.<surface>`` key, so a surface added without
+    a line in this prompt is one the user enabled without being told. That is
+    not a hypothetical: read-skeleton shipped undisclosed, and search-digest
+    was added to the same consent while the prompt still named only Reads.
+    The `repowise hook <name>` toggle stands in for the surface, since it is
+    the string a user can act on.
+    """
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+    from repowise.cli.helpers import HOOK_REPLACEMENT_SURFACES
+
+    _patch_distill_offer(monkeypatch)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("click.confirm", lambda *a, **k: False)
+
+    console = _silent_console()
+    offer_distill_rewrite_hook(console, [tmp_path], None)
+    # Collapsed: rich wraps to the console width, so a phrase this asserts on
+    # can arrive split across two lines.
+    shown = " ".join(console.file.getvalue().split())
+
+    for surface in HOOK_REPLACEMENT_SURFACES:
+        toggle = f"repowise hook {surface.replace('_', '-')}"
+        assert toggle in shown, f"the consent prompt never mentions {toggle}"
+
+
+def test_the_distill_hook_flag_names_every_surface_it_decides() -> None:
+    """``--distill-hook`` sets all of them with no prompt at all, so its help
+    text is the only disclosure that path has."""
+    from repowise.cli.commands.init_cmd.command import init_command
+    from repowise.cli.helpers import HOOK_REPLACEMENT_SURFACES
+
+    (option,) = [o for o in init_command.params if o.name == "distill_hook"]
+    for surface in HOOK_REPLACEMENT_SURFACES:
+        assert surface in option.help, f"--distill-hook help never mentions {surface}"
+
+
+def _hook_verdicts(repo_path: Path) -> tuple[object, ...]:
+    """``distill.commands.enabled`` then every ``hooks.<surface>``, from disk.
+
+    Built from ``HOOK_REPLACEMENT_SURFACES`` rather than a literal list, so a
+    surface added without a writer fails these tests instead of shipping
+    unreachable, which is exactly how read-skeleton shipped.
+    """
+    import yaml
+
+    from repowise.cli.helpers import HOOK_REPLACEMENT_SURFACES
+
+    cfg = yaml.safe_load((repo_path / ".repowise" / "config.yaml").read_text("utf-8")) or {}
+    hooks = cfg.get("hooks") or {}
+    return (
+        ((cfg.get("distill") or {}).get("commands") or {}).get("enabled"),
+        *(hooks.get(surface) for surface in HOOK_REPLACEMENT_SURFACES),
+    )
+
+
+def _all_same(verdicts: tuple[object, ...], answer: bool) -> bool:
+    return verdicts == (answer,) * len(verdicts)
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_the_rewrite_hook_answer_decides_every_replacing_surface(
+    monkeypatch, tmp_path: Path, answer: bool
+) -> None:
+    """One question, every key.
+
+    The prompt already means "repowise's hooks may intervene in my agent's
+    tool calls", and rewriting a Bash command into `repowise distill` is a
+    larger intervention than serving a Read as its skeleton or a search as its
+    digest, not a smaller one, so a second prompt would be asking for
+    permission already given.
+
+    The concrete thing this pins is that each replacing surface has *a* writer
+    at all. Read-skeleton shipped with none, reachable only by hand-editing
+    YAML, which left its gate needing 50 firings it could never collect.
+    """
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(
+        "repowise.cli.agent_adapters.claude_code.ClaudeCodeAdapter.install_rewrite_hook",
+        lambda self: tmp_path / "settings.json",
+    )
+
+    offer_distill_rewrite_hook(_silent_console(), [tmp_path], answer, yes=True)
+
+    assert _all_same(_hook_verdicts(tmp_path), answer)
+
+
+def test_no_editor_setup_turns_off_every_replacing_surface(monkeypatch, tmp_path: Path) -> None:
+    """One flag, one meaning: no hooks. An opt-out that left one of these on
+    would be `--no-editor-setup` still letting a hook rewrite what a tool
+    returns."""
+    from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
+
+    (tmp_path / ".repowise").mkdir()
+
+    offer_distill_rewrite_hook(
+        _silent_console(), [tmp_path], False, yes=True, no_editor_setup=True
+    )
+
+    assert _all_same(_hook_verdicts(tmp_path), False)
 
 
 def test_distill_offer_silent_when_undecided_and_setup_off(monkeypatch, tmp_path: Path) -> None:

@@ -349,8 +349,51 @@ def test_detector_emits_suggestion_for_flagged_function():
     assert set(s.plan) == {"span", "params", "returns", "suggested_name"}
     assert set(s.plan["span"]) == {"start", "end"}
     assert set(s.evidence) == {"slice_nloc", "ccn_removed"}
-    assert s.blast_radius == {"callers_count": 0}
+    # A categorical claim, not a count: extraction is local, so there is nothing
+    # to measure. The old ``{"callers_count": 0}`` was a hardcoded literal that
+    # no consumer could tell apart from a measured zero.
+    assert s.blast_radius == {"scope": "local"}
+    assert "callers_count" not in s.blast_radius
     assert s.confidence in ("medium", "high")
+
+
+def test_plan_carries_a_computed_name_not_a_hardcoded_none():
+    """``suggested_name`` was ``None`` on every extract_method plan ever stored
+    (854 of 854 on this repo's index) while Extract Helper computed one, so the
+    field's meaning depended on which detector wrote it and every surface fell
+    through to a generic "helper". It is now always a real identifier."""
+    findings = [_Finding("complex_method", "process", line_start=2, health_impact=1.5)]
+    s = ExtractMethodDetector().detect(_ctx(_PROCESS, findings))[0]
+    # The slice's single OUT value is ``average``, so the span is by
+    # construction the code that computes it.
+    assert s.plan["returns"] == ["average"]
+    assert s.plan["suggested_name"] == "compute_average"
+
+
+class _Extraction:
+    def __init__(self, returns):
+        self.returns = list(returns)
+
+
+class _Analysis:
+    def __init__(self, name):
+        self.name = name
+
+
+def test_suggested_name_unit():
+    name = ExtractMethodDetector._suggested_name
+    # Exactly one OUT -> name the helper for what it produces.
+    assert name(_Analysis("process"), _Extraction(["average"])) == "compute_average"
+    # Non-identifier characters normalised through the shared slug.
+    assert name(_Analysis("p"), _Extraction(["total-count"])) == "compute_total_count"
+    # No single OUT -> fall back to the enclosing function, the only other
+    # anchor known for certain.
+    assert name(_Analysis("run_pipeline"), _Extraction([])) == "run_pipeline_helper"
+    assert name(_Analysis("run_pipeline"), _Extraction(["a", "b"])) == "run_pipeline_helper"
+    # A return name that slugs to nothing must not yield "compute_".
+    assert name(_Analysis("process"), _Extraction(["___"])) == "process_helper"
+    # Nothing usable at all -> a stable, still-valid identifier.
+    assert name(_Analysis(""), _Extraction([])) == "extracted_helper"
 
 
 def test_detector_silent_without_matching_finding():

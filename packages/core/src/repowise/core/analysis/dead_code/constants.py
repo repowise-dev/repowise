@@ -12,11 +12,7 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 # Non-code languages that should never be flagged as dead code.
 # Derived from the centralised LanguageRegistry — passthrough config/infra
 # languages plus "unknown".
-_NON_CODE_LANGUAGES: frozenset[str] = frozenset(
-    spec.tag
-    for spec in _LANG_REGISTRY.all_specs()
-    if spec.is_passthrough and (not spec.is_code or spec.is_infra) and spec.tag != "openapi"
-) | {"unknown"}
+_NON_CODE_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_or_unknown_languages()
 
 # Patterns that should never be flagged as dead.
 _NEVER_FLAG_PATTERNS: tuple[str, ...] = (

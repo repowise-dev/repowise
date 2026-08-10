@@ -325,10 +325,22 @@ def _render_update_report(
     affected: Any,
     new_decision_markers: list,
     elapsed: float,
+    detail: bool = False,
 ) -> None:
-    """Render the detailed generation report table (verbose mode / fallback)."""
+    """Render the generation report.
+
+    The quality checks print on every run; ``detail`` adds the page, token and
+    cost statistics on top. Checks used to render only under ``-v``, and since
+    ``repowise.core`` logging is silenced outside verbose mode, that left a
+    flagged page pair with no channel at all — it was measured, reported to
+    nobody, and read as a clean run.
+    """
     try:
-        from repowise.core.generation.report import GenerationReport, render_report
+        from repowise.core.generation.report import (
+            GenerationReport,
+            render_generation_checks,
+            render_report,
+        )
 
         report = GenerationReport.from_pages(
             generated_pages,
@@ -336,9 +348,14 @@ def _render_update_report(
             decisions_count=len(new_decision_markers),
             elapsed=elapsed,
         )
-        render_report(report, console)
-    except Exception:
-        # Fallback to simple message if report fails
+        if detail:
+            render_report(report, console)
+        else:
+            render_generation_checks(report, console)
+    except Exception as exc:
+        # Never fail a completed index over its own summary, but never let the
+        # failure pass for a clean run either. This message is the only signal
+        # that the checks below it are missing rather than empty.
         console.print(
-            f"[bold green]Updated {len(generated_pages)} pages in {elapsed:.1f}s[/bold green]"
+            f"[bold red]Generation checks did not run:[/bold red] {type(exc).__name__}: {exc}"
         )

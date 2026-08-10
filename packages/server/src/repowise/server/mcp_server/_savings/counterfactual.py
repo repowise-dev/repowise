@@ -246,6 +246,50 @@ def _estimate_get_execution_flows(result: dict[str, Any]) -> int:
     return min(FLOWS_MAX, max(FLOWS_FLOOR, nodes * FLOWS_PER_NODE))
 
 
+#: ``generate_refactoring_code`` hands back the rewritten code for a plan. Its
+#: ``spans`` field carries the exact working-tree slices fed to the model --
+#: which is precisely what the agent would have had to read to do the refactor
+#: by hand -- so the counterfactual is grounded in those rather than guessed.
+#: Only the reading is credited, never the writing, which is the larger half:
+#: undersell by construction. Capped like the other signal-scaled floors so one
+#: enormous span cannot dominate the ledger.
+REFACTOR_FLOOR = 400
+REFACTOR_SPAN_CHARS_PER_TOKEN = 4
+REFACTOR_MAX = 8000
+
+
+def _estimate_generate_refactoring_code(result: dict[str, Any]) -> int:
+    if result.get("error"):
+        return 0
+    spans = result.get("spans")
+    if not isinstance(spans, list) or not spans:
+        return 0
+    chars = 0
+    for span in spans:
+        if isinstance(span, dict) and isinstance(span.get("source"), str):
+            chars += len(span["source"])
+    if chars <= 0:
+        return 0
+    return min(REFACTOR_MAX, max(REFACTOR_FLOOR, chars // REFACTOR_SPAN_CHARS_PER_TOKEN))
+
+
+#: ``list_repos`` replaces the agent working out which repos are indexed at all
+#: -- listing a workspace tree and checking each entry for a ``.repowise``.
+#: Small on purpose: it is a directory walk, not a file read.
+REPOS_FLOOR = 120
+REPOS_PER_REPO = 40
+REPOS_MAX = 800
+
+
+def _estimate_list_repos(result: dict[str, Any]) -> int:
+    if result.get("error"):
+        return 0
+    repos = result.get("repos")
+    if not isinstance(repos, list) or not repos:
+        return 0
+    return min(REPOS_MAX, max(REPOS_FLOOR, len(repos) * REPOS_PER_REPO))
+
+
 #: Tool name → estimator. Tools absent here emit no counterfactual (skip). Every
 #: agent-facing tool that replaces real exploration is listed: leaving a tool
 #: out means it can never earn credit yet still takes a dead-end debit on an
@@ -269,6 +313,8 @@ _ESTIMATORS: dict[str, Callable[[dict[str, Any]], int]] = {
     "get_architecture": _fixed_floor(ARCHITECTURE_FLOOR),
     "get_dependency_path": _fixed_floor(DEPENDENCY_FLOOR),
     "get_conformance": _fixed_floor(CONFORMANCE_FLOOR),
+    "generate_refactoring_code": _estimate_generate_refactoring_code,
+    "list_repos": _estimate_list_repos,
 }
 
 

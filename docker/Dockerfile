@@ -6,10 +6,9 @@
 #   docker run -p 7337:7337 -p 3000:3000 -v /path/to/repo/.repowise:/data -e GEMINI_API_KEY=... repowise
 # =============================================================================
 
-# ---------------------------------------------------------------------------
-# Stage 1: Build the Next.js frontend
-# ---------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+# Use Debian-based Node builder (glibc) to match python:3.12-slim runtime.
+# Alpine (musl) builds produce a node binary that fails to execute in Debian slim with exit code 127.
+FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /app
 
@@ -53,6 +52,11 @@ COPY --from=frontend-builder /app/.next/static /app/web/.next/static
 COPY --from=frontend-builder /app/public /app/web/public
 
 # Data volume for .repowise directory
+# mkdir is required: VOLUME only registers metadata and does not create the
+# directory on the image filesystem at build time. Without it, the subsequent
+# `chown -R repowise:repowise /data` (run at build time) fails with
+# "cannot access '/data': No such file or directory".
+RUN mkdir -p /data
 VOLUME /data
 
 # Environment defaults

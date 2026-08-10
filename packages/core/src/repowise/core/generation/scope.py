@@ -36,11 +36,15 @@ from repowise.core.generation.selection import Selection, SelectionInputs, selec
 # Page types that describe the whole repository (as opposed to one file/module).
 _REPO_WIDE_TYPES = frozenset({"repo_overview", "onboarding"})
 
-# Structural pages the coverage budget does not rank: layer pages come from KG
-# membership and onboarding is curated, so init emits every one of them at every
-# coverage. A ranked run includes the unwritten ones rather than leaving holes in
-# the navigation. (repo_overview / architecture come from the Selection itself.)
-_STRUCTURAL_PAGE_TYPES = frozenset({"layer_page", "onboarding"})
+# Structural pages the coverage budget does not rank: onboarding is curated, so
+# init emits every one of them at every coverage. A ranked run includes the
+# unwritten ones rather than leaving holes in the navigation. (repo_overview
+# comes from the Selection itself.)
+#
+# Layer pages used to sit here too. They are retired — nothing emits one — so
+# seeding an unwritten one would ask generation for a page it will not produce,
+# and the run would report it missing every time.
+_STRUCTURAL_PAGE_TYPES = frozenset({"onboarding"})
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,13 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
     A page is "template" (unwritten) when a model never touched it: the
     template provider stamps ``provider_name='template'`` and
     ``metadata.deterministic=True``. Either signal is enough.
+
+    ``metadata.model_free`` overrides both. Those pages carry the same two
+    signals and mean the opposite by them: their subkind is registered
+    ``deterministic``, so no model is ever going to write one. Counting them as
+    unwritten would offer them to ``generate --unwritten`` on every run, bill a
+    cost estimate for prose that will not be written, and leave the reader UI's
+    "bulk generate" affordance up on a wiki that is complete.
     """
     records: list[PageRecord] = []
     for p in pages:
@@ -67,8 +78,8 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
             meta = json.loads(getattr(p, "metadata_json", None) or "{}")
         except ValueError:
             meta = {}
-        is_template = getattr(p, "provider_name", "") == "template" or bool(
-            meta.get("deterministic")
+        is_template = not meta.get("model_free") and (
+            getattr(p, "provider_name", "") == "template" or bool(meta.get("deterministic"))
         )
         records.append(
             PageRecord(
@@ -80,22 +91,6 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
             )
         )
     return records
-
-
-def _layer_membership(kg_ctx: Any) -> dict[str, str]:
-    """Map each file path to its ``layer_page:<id>`` from KG layer membership."""
-    out: dict[str, str] = {}
-    if not (kg_ctx and getattr(kg_ctx, "available", False)):
-        return out
-    from repowise.core.analysis.knowledge_graph import _slugify
-
-    for layer in kg_ctx.get_layers():
-        layer_id = layer.get("id") or f"layer:{_slugify(layer.get('name', ''))}"
-        page_id = compute_page_id("layer_page", layer_id)
-        for nid in layer.get("nodeIds", []):
-            if isinstance(nid, str) and nid.startswith("file:"):
-                out.setdefault(nid[5:], page_id)
-    return out
 
 
 def _selection_inputs(
@@ -166,7 +161,6 @@ def build_dependencies(
     return build_page_dependencies(
         module_groups=selection.module_groups,
         scc_groups=selection.scc_groups,
-        layer_page_of=_layer_membership(kg_ctx),
         repo_wide_ids=repo_wide_ids,
     )
 

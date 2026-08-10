@@ -337,17 +337,28 @@ def _embedder_meta() -> dict[str, Any]:
     agent can detect — programmatically — that semantic search is broken instead
     of trusting empty/garbage retrieval. Emits nothing when the embedder is
     healthy or unresolved, so healthy responses stay clean.
+
+    A *keyless* index is a different state and gets a different field. Nothing
+    is broken and nothing was misconfigured, so it is not flagged as degraded;
+    but retrieval really is full-text-only, and a caller that assumes semantic
+    matching is running will misread a lexical miss as "not in the codebase".
+    ``semantic_search: false`` says so once per response without crying wolf.
     """
     # Lazy import: `_state` is a sibling module; importing it at call-time keeps
     # `_meta` free of any package import-ordering coupling.
     from repowise.server.mcp_server import _state
 
     status = getattr(_state, "_embedder_status", None)
-    if not status or not status.get("degraded"):
+    if not status:
+        return {}
+    if not status.get("degraded"):
+        if status.get("active") == "mock":
+            return {"embedder": "mock", "semantic_search": False}
         return {}
     out: dict[str, Any] = {
         "embedder": status.get("active", "mock"),
         "embedder_degraded": True,
+        "semantic_search": False,
     }
     reason = status.get("reason")
     if reason:

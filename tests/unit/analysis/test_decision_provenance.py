@@ -19,11 +19,48 @@ from repowise.core.analysis.decision_provenance import (
 
 
 def test_source_rank_ladder_ordering():
-    # adr > pr > commit > changelog > inline_marker > comment > test_name > inferred
-    order = ["adr", "pr", "commit", "changelog", "inline_marker", "comment", "test_name", "inferred"]
+    # session > adr > commit > changelog > inline_marker > comment > test_name > inferred
+    order = [
+        "session",
+        "adr",
+        "commit",
+        "changelog",
+        "inline_marker",
+        "comment",
+        "test_name",
+        "inferred",
+    ]
     ranks = [rank_for_source(s) for s in order]
     assert ranks == sorted(ranks, reverse=True)
     assert ranks == [8, 7, 6, 5, 4, 3, 2, 1]
+
+
+def test_session_outranks_adr():
+    """A user's own words beat a later write-up of them.
+
+    The promotion branch in ``crud.decisions`` compares with ``>=``, so with
+    ``session`` below ``adr`` a transcript could never take the headline and a
+    mined document overwrote what the user actually said.
+    """
+    assert rank_for_source("session") > rank_for_source("adr")
+
+
+def test_adr_and_pr_tie():
+    """Both are write-ups rather than the decision being made; later one wins."""
+    assert rank_for_source("adr") == rank_for_source("pr") == 7
+
+
+def test_swapping_session_and_adr_left_the_scale_intact():
+    """The ladder's value set is unchanged, so no other source's confidence moved.
+
+    ``compute_confidence`` divides by ``MAX_SOURCE_RANK``. Had the swap been done
+    by lifting ``session`` to a new top rank instead of trading places with
+    ``adr``, every source's confidence would have silently rescaled and every
+    stored value in every existing store would have been on a different scale
+    from every new one.
+    """
+    assert MAX_SOURCE_RANK == 9
+    assert compute_confidence(rank_for_source("commit")) == compute_confidence(6)
 
 
 def test_git_archaeology_aliases_commit_rank():

@@ -35,6 +35,9 @@ _FALLBACK_TIMEOUT_S = 30.0
 # bare transport error. 600s also matches the agent-CLI providers' own
 # subprocess ceiling, past which raising this is inert anyway.
 _MAX_TIMEOUT_S = 600.0
+# Operation label for the ledger rows written here, so answer spend is its own
+# bucket on the costs report rather than folded into doc generation.
+_COST_OPERATION = "answer_synthesis"
 
 
 def _hash_question(question: str) -> str:
@@ -306,7 +309,92 @@ def _empty_completion_note(provider, response) -> str:
     )
 
 
-async def synthesize(provider, system_prompt: str, user_prompt: str) -> tuple[str, str | None]:
+async def _record_synthesis_cost(
+    provider,
+    response,
+    session_factory,
+    repo_id: str | None,
+) -> None:
+    """Meter one completed synthesis call: a ledger row plus a telemetry line.
+
+    Every published figure for what a question costs to answer has come from
+    metering the provider *outside* the product, because the token counts the
+    provider returns were read for nothing but the empty-completion check. That
+    makes the cost of a change to this path unverifiable anywhere it actually
+    runs.
+
+    Two states are reported separately on purpose. A call with counts is priced
+    with the same table the generation ledger uses and persisted under its own
+    operation label. A call whose counts are both zero is a provider adapter
+    that did not normalise ``usage`` — it is *not* a free call, so it warns and
+    writes nothing; a zero row would total up as free forever.
+
+    Never raises: metering a call must not be able to fail an answer that
+    already succeeded.
+    """
+    input_tokens = int(getattr(response, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(response, "output_tokens", 0) or 0)
+    cached_tokens = int(getattr(response, "cached_tokens", 0) or 0)
+    model = getattr(provider, "model_name", None) or "?"
+    name = getattr(provider, "provider_name", None) or "?"
+
+    if not input_tokens and not output_tokens:
+        _log.warning(
+            "get_answer synthesis reported no usage (provider=%s, model=%s) — this call is "
+            "unpriced, not free. The provider adapter is not normalising input/output tokens.",
+            name,
+            model,
+        )
+        return
+
+    try:
+        from repowise.core.generation.cost_tracker import CostTracker
+
+        tracker = CostTracker(session_factory, repo_id)
+        cost_usd = await tracker.record(
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            operation=_COST_OPERATION,
+        )
+    except Exception:
+        _log.warning(
+            "get_answer synthesis cost not recorded (provider=%s, model=%s, "
+            "input_tokens=%d, output_tokens=%d, cached_tokens=%d)",
+            name,
+            model,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            exc_info=True,
+        )
+        return
+
+    # One line per synthesis, logged whether or not there was a ledger to write
+    # to — an MCP server pointed at a read-only or repo-less index still has to
+    # be able to report what it spent. ``cached_tokens`` is on the line because a
+    # cost comparison across two runs is meaningless without it.
+    _log.info(
+        "get_answer synthesis cost: provider=%s model=%s operation=%s "
+        "input_tokens=%d output_tokens=%d cached_tokens=%d cost_usd=%.6f",
+        name,
+        model,
+        _COST_OPERATION,
+        input_tokens,
+        output_tokens,
+        cached_tokens,
+        cost_usd,
+    )
+
+
+async def synthesize(
+    provider,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    session_factory=None,
+    repo_id: str | None = None,
+) -> tuple[str, str | None]:
     """Run one synthesis call. Returns ``(answer_text, failure_note)``.
 
     ``failure_note`` is None on success. Owning the budget, the call and the
@@ -314,6 +402,10 @@ async def synthesize(provider, system_prompt: str, user_prompt: str) -> tuple[st
     cancelled the call is the number the note quotes, and a caller cannot wire
     up the call while forgetting the budget (which is how #1119 survived a
     hardcoded 30s for as long as it did).
+
+    ``session_factory`` / ``repo_id`` are where the cost row lands. Both
+    optional: with neither, the call is still priced and logged, just not
+    persisted.
     """
     timeout_s = _synthesis_timeout(provider)
 
@@ -346,6 +438,11 @@ async def synthesize(provider, system_prompt: str, user_prompt: str) -> tuple[st
         timed_out = True
         response, failure = None, exc
     if failure is None:
+        # Metered before the empty-completion branch: a reasoning model that
+        # spends its whole budget on hidden thinking returns no text and is the
+        # most expensive call this path makes, so it is the last one that should
+        # go unpriced.
+        await _record_synthesis_cost(provider, response, session_factory, repo_id)
         text = (getattr(response, "content", None) or "").strip()
         return (text, None) if text else ("", _empty_completion_note(provider, response))
 

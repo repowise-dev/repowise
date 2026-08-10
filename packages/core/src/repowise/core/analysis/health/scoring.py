@@ -25,6 +25,13 @@ from dataclasses import replace
 from .biomarkers.base import BiomarkerResult
 from .models import HealthFileMetricData, HealthFindingData, Severity
 
+# The band every dimension's score is clamped into. Named because the floor is
+# lossy — a file 12.9 points deep and one 9.1 points deep both print 1.0 — and
+# the snapshot writer needs the same number to decide whose depth is worth
+# recording. Values unchanged; this only stops them being written out per site.
+SCORE_FLOOR: float = 1.0
+SCORE_MAX: float = 10.0
+
 # Per-category max deduction.
 CATEGORY_CAPS: dict[str, float] = {
     "organizational": 3.5,
@@ -533,7 +540,7 @@ def _score_dimension(
                 per_result[idx] = d * scale
             total += cap
 
-    score = max(1.0, min(10.0, 10.0 - total))
+    score = max(SCORE_FLOOR, min(SCORE_MAX, SCORE_MAX - total))
     return score, per_result
 
 

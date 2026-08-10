@@ -316,7 +316,14 @@ export function PunchCard({
             title={
               isLocal
                 ? "Each commit is placed at its author's own local time, using the UTC offset git recorded with it."
-                : "This index predates the commit-offset capture, so hours fall back to UTC. Run `repowise update` to switch to author-local time."
+                : // Describes the state, prescribes nothing. This renders in the
+                  // CLI's web UI and in the hosted app, where a viewer of someone
+                  // else's public snapshot can act on neither a shell command nor
+                  // a re-index. Also says what the rule actually is: the branch
+                  // is coverage-based (_LOCAL_TIME_COVERAGE), so an index whose
+                  // offsets are merely patchy lands here too, and any promised
+                  // remedy would be false for it.
+                  "Too few commits carry the UTC offset git records with them, so hours fall back to UTC rather than mixing two clocks in one matrix."
             }
             className="cursor-help font-mono uppercase tracking-[0.1em]"
           >

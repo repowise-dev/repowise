@@ -373,6 +373,14 @@ Pass `--refresh-ui` to skip (1) and (2) and force (3).
 
 Watch for file changes and auto-update wiki pages. Press `Ctrl+C` to stop.
 
+Unlike the post-commit hook, this indexes **uncommitted** work: staged,
+unstaged and untracked files all reach the index, so what you see in the wiki
+matches what is on disk rather than what you last committed.
+
+Writes inside `.repowise/`, `.git/`, `node_modules/`, build output and the
+files repowise manages itself (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`) never
+trigger an update.
+
 **Options:**
 
 | Flag | Description |
@@ -382,16 +390,20 @@ Watch for file changes and auto-update wiki pages. Press `Ctrl+C` to stop.
 | `--debounce` | Delay in ms after last change (default: 2000) |
 | `--workspace` / `-w` | Watch all workspace repos |
 | `--no-workspace` | Force single-repo mode |
-| `--repo` | Watch a single workspace repo by alias |
+| `--index-only` | Skip LLM page regeneration on every trigger (workspace mode is index-only either way) |
 | `--verbose` / `-v` | Show debug logs from the pipeline and triggered updates |
 
 ```bash
 repowise watch                           # single repo (auto-detects)
 repowise watch --debounce 5000           # 5s debounce
 repowise watch --workspace               # all workspace repos
-repowise watch --repo backend            # just one
+repowise watch --index-only              # no model calls per save
 repowise watch --verbose                 # show pipeline debug logs
 ```
+
+On a repo indexed with docs, every trigger is a page regeneration with a model
+behind it. `--index-only` keeps the index, graph and health current for free
+and leaves the prose to a later `repowise update`.
 
 ---
 
@@ -584,7 +596,7 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
 
 ### `repowise health [PATH]`
 
-Compute per-file code-health scores from 25 deterministic markers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
+Compute per-file code-health scores from 49 deterministic detectors (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls by default, pure Python over tree-sitter + git data. See [`docs/layers/CODE_HEALTH.md`](../layers/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](../architecture/code-health.md) for the internals.
 
 **Options:**
 
@@ -641,7 +653,7 @@ repowise decision health [PATH]         # health dashboard
 | Flag | Description |
 |------|-------------|
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `all` |
-| `--source` | `git_archaeology`, `inline_marker`, `readme_mining`, `cli`, `all` |
+| `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |
 
@@ -744,7 +756,7 @@ distill filters.
 |------|-------------|
 | `--by` | Grouping: `filter` (default), `day`, `source` |
 | `--since` | Only count savings since this ISO date |
-| `--model` | Pricing model for the dollar estimate (input-token rate; default `claude-sonnet-4-6`) |
+| `--model` | Pricing model for the dollar estimate (input-token rate). Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |
 
@@ -954,6 +966,39 @@ repowise hook uninstall --workspace
 ```
 
 See [Auto-Sync](../scale/AUTO_SYNC.md) for all sync methods (hooks, file watcher, webhooks, polling).
+
+### `repowise hook stats`
+
+Show what the Claude Code agent hooks said and whether the agent acted on it,
+per surface, plus hook invocation counts and wall time. Reads the local ledger
+in `.repowise/sessions/sessions.db`.
+
+```bash
+repowise hook stats
+repowise hook stats --json      # raw per-surface rows
+```
+
+Notices that ask for nothing (stale-read, the silent read-after-served
+measurement) report `n/a` rather than a rate.
+
+### `repowise hook backfill`
+
+Replay Claude Code transcripts into the ledger, so `hook stats` starts with
+history instead of only what has fired since you upgraded. Local, single-pass,
+and safe to re-run: a firing is keyed by a hash of its own text, so a replay
+settles the row it already owns.
+
+```bash
+repowise hook backfill                   # this checkout's transcripts
+repowise hook backfill --all-projects    # include this repo's worktrees
+repowise hook backfill --days 30         # only recent transcripts
+repowise hook backfill --reset           # rebuild the hook surfaces from scratch
+```
+
+`repowise update` classifies recent sessions automatically, so a backfill is
+normally a one-time catch-up. Use `--reset` once when upgrading from a release
+that keyed rows by hook input rather than by emitted text; it clears only the
+hook surfaces, never decisions.
 
 ### `repowise hook rewrite install|uninstall|status`
 

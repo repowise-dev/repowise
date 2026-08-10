@@ -8,13 +8,18 @@ vice versa.
 
 Pipeline (each stage is a pure function over hit dicts):
 
-    1. ``hybrid_retrieve``      — FTS + vector store in parallel, merged via
-                                  Reciprocal Rank Fusion. Single retrieval
-                                  modes systematically miss either token
-                                  matches (vectors drift) or conceptual
-                                  matches (FTS is literal). Two modes catch
-                                  both classes of failure for the cost of one
-                                  extra coroutine.
+    1. ``hybrid_retrieve``      : FTS, vector store and the structural symbol
+                                  index in parallel, merged via Reciprocal
+                                  Rank Fusion. Single retrieval modes
+                                  systematically miss either token matches
+                                  (vectors drift) or conceptual matches (FTS
+                                  is literal), and both page-shaped modes miss
+                                  anything a generated file page does not
+                                  spell out: its public-symbol table is all
+                                  they can index, so a private helper or a
+                                  local name is invisible to them. The symbol
+                                  leg covers that third class, for the cost of
+                                  one more coroutine.
     2. ``hydrate_hits``         — attach target_path, summary, page_type from
                                   the Page table to each hit.
     3. ``apply_pagerank_bias``  — multiply scores by a damped PageRank factor
@@ -37,19 +42,40 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
+import logging
 import re
+from collections import OrderedDict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.test_paths import is_test_path
+from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
+
+_log = logging.getLogger("repowise.mcp.answer")
 
 # How many candidates each retriever fetches before merging. Both modes
 # tend to put the right answer in their top ~10, so 15 gives RRF room to
 # resolve ties without dragging weak tail hits into the merge.
 _RETRIEVAL_FETCH_LIMIT = 15
+
+# Page-id namespace decision vectors live under in the shared page store. Read
+# from the module that writes them so the two cannot drift apart.
+_DECISION_PREFIX = DECISION_VECTOR_PREFIX
+
+# Decision records share the page vector store under this page-id namespace, so
+# a page fetch has to ask for more rows than it needs and drop them. Over-fetch
+# rather than post-filter a fixed window: a query whose nearest neighbours are
+# all decisions would otherwise return a candidate set short by however many
+# happened to rank high, which reads downstream as thin retrieval rather than as
+# a filtered one. The margin is generous because decision rows cluster on the
+# question-shaped text that also retrieves well.
+_DECISION_OVERFETCH = 15
 
 # RRF constant. The standard k=60 from the original RRF paper — large enough
 # that rank-1 (1/61) and rank-2 (1/62) are close, small enough that rank-10
@@ -72,6 +98,15 @@ _RRF_SCORE_SCALE = 180.0
 _GRAPH_EXPAND_TOP_N = 2
 _GRAPH_EXPAND_MAX_NEW = 3
 
+# Degree above which a neighbour is treated as a hub and dropped from the
+# expansion set. A file that half the repo imports is a near-neighbour of
+# everything, so it says nothing about *this* question; it is also exactly the
+# file PageRank ranks first, which is why the ordering below needs a guard
+# rather than trusting centrality on its own. Floor plus percentile, so a small
+# repo where every file has a handful of edges excludes nothing.
+_HUB_DEGREE_FLOOR = 50
+_HUB_DEGREE_PERCENTILE = 0.99
+
 # PageRank bias is multiplicative and capped. We don't want a marginally
 # more central file to outrank a strong text match — only to break ties.
 # Empirically PageRank values on this corpus span ~0 to ~0.01; we normalise
@@ -85,6 +120,193 @@ _PAGERANK_BIAS_MAX = 0.3
 # rank-3/4 hit (~3.0-3.5).
 _GRAPH_EXPAND_DAMPING = 0.7
 
+# Budget for embedding the question. The searches that used to embed inline were
+# bounded at 8s including the embed, so the round-trip keeps that ceiling now
+# that it happens on its own.
+_EMBED_TIMEOUT_S = 8.0
+
+# Which retrieval legs actually ran for the current question (finding A18).
+#
+# Every leg here is best-effort by design: a slow vector store must not be able
+# to block an answer. The defect was that the fallback was *silent*. An embed
+# that times out returns no vector, retrieval quietly continues lexical-only,
+# and every health signal still reports green — ``embedder_live`` included,
+# because a configured embedder is live whether or not this particular call
+# beat the clock. Five queries in one bake-off run were answered without their
+# vector leg and nothing in the response, the logs' structured fields, or the
+# per-cell record said so.
+#
+# So the leg outcome travels with the answer. ``embedder_live`` says the
+# embedder exists; this says whether it was used. Those are different claims
+# and only one of them is about the answer the caller is holding.
+_LEG_RECORD: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "repowise_retrieval_legs", default=None
+)
+
+
+def _record_leg(leg: str, outcome: str) -> None:
+    """Note how one retrieval leg ended, if anyone is collecting."""
+    record = _LEG_RECORD.get()
+    if record is not None:
+        record[leg] = outcome
+
+
+def begin_leg_record() -> dict[str, str]:
+    """Start collecting leg outcomes for one question. Returns the record.
+
+    The legs run under ``asyncio.gather``, which copies the context into each
+    task. Copying rebinds names, not objects, so the tasks all mutate this one
+    dict and the caller sees what they wrote.
+    """
+    record: dict[str, str] = {}
+    _LEG_RECORD.set(record)
+    return record
+
+
+def retrieval_legs() -> dict[str, str]:
+    """How each retrieval leg ended for the question just answered.
+
+    ``{"fts": "ok", "vector": "timeout", "symbol": "ok"}`` and so on, plus an
+    ``embed`` key when embedding the question is what failed. Empty before any
+    retrieval has run.
+    """
+    return dict(_LEG_RECORD.get() or {})
+
+
+def degraded_legs(legs: dict[str, str]) -> list[str]:
+    """The legs that *broke*, named. Empty when retrieval was whole.
+
+    ``keyless`` is not degradation and is deliberately excluded. A keyless index
+    has no semantic vectors by construction, so its vector leg is permanently
+    absent rather than transiently broken, and naming it here would put a
+    failure marker on every answer the mode ever produces. The configuration
+    itself is reported once per response by ``_meta`` instead.
+    """
+    return sorted(leg for leg, outcome in legs.items() if outcome not in ("ok", "keyless"))
+
+# Third retrieval leg: the structural symbol index. FTS and the vector store
+# both read the generated wiki page, which by construction carries an overview
+# sentence, the *public* symbol table and dependency paths, with no function
+# bodies, no private helpers, no local names. A question about something a page
+# does not spell out therefore has nothing to match on, however well it is
+# phrased. The symbol index does carry those names, and it is keyed on the
+# words a symbol is built from, so it recovers exactly that class of miss.
+#
+# How many symbols the leg ranks, and how many distinct files they may
+# contribute. Deliberately smaller than the other two legs' 15: this leg is
+# there to add pool members the page legs cannot see, not to outvote them.
+_SYMBOL_LEG_FETCH_LIMIT = 20
+_SYMBOL_LEG_MAX_PAGES = 8
+
+# The symbol leg's own RRF constant, larger than the page legs' so its
+# contribution is smaller at every rank. Fusing it at k=60 like the others gave
+# one lexical symbol match the same weight as a page two independent retrievers
+# ranked first, which is not what a name match is worth: measured on the
+# 99-question eval it pushed the correct ``distill/skeleton.py`` out of the
+# served five in favour of a same-named React component. At k=180 the leg can
+# lift a file the page retrievers already liked and can add one they never saw,
+# but it cannot outvote them.
+_SYMBOL_LEG_RRF_K = 180
+
+
+# ---------------------------------------------------------------------------
+# The question's embedding, computed once per call
+# ---------------------------------------------------------------------------
+
+# Answering one question used to embed its text up to three times: once for the
+# main fetch, once for the concept lookup on a subsystem-shaped question, once
+# for the neighbourhood re-rank on a flow-shaped one. Each is a network
+# round-trip to the embedding provider, billed, for a vector that cannot differ
+# between them.
+#
+# Keyed by ``(id(store), question)`` and holding the store in the value, so an
+# id can never be recycled onto a different store while its entries are live.
+# Capacity is a handful of entries rather than one: concurrent calls with
+# different questions would otherwise evict each other and re-embed. An entry is
+# a pure function of (embedder, text), so a hit across calls is as correct as a
+# hit within one.
+_QUESTION_VECTOR_CACHE_MAX = 4
+_QUESTION_VECTORS: OrderedDict[tuple[int, str], tuple[Any, list[float]]] = OrderedDict()
+
+
+async def question_vector(ctx: Any, question: str) -> list[float] | None:
+    """The question's embedding, computed at most once per store and question.
+
+    Returns None when there is no store, the backend holds no embedder of its
+    own, or the embed failed — callers then fall back to the store's own
+    ``search(text)``, which embeds inline. That fallback is a cost regression,
+    never a correctness one, so it warns rather than raising.
+    """
+    store = getattr(ctx, "vector_store", None)
+    if store is None or not question:
+        return None
+    if not store_has_semantic_vectors(store):
+        # Nothing will consume it, so do not pay to compute it.
+        return None
+
+    key = (id(store), question)
+    cached = _QUESTION_VECTORS.get(key)
+    if cached is not None:
+        _QUESTION_VECTORS.move_to_end(key)
+        return cached[1]
+
+    try:
+        vectors = await asyncio.wait_for(store.embed_texts([question]), timeout=_EMBED_TIMEOUT_S)
+    except TimeoutError:
+        # The A18 case, and the one worth naming separately: the embedder is
+        # configured, reachable and healthy, and simply did not answer inside
+        # the budget. Nothing downstream fails, so without this the answer is
+        # lexical-only and indistinguishable from one that was not.
+        _record_leg("embed", "timeout")
+        _log.warning(
+            "get_answer could not embed the question within %.1fs; retrieval "
+            "continues without a question vector",
+            _EMBED_TIMEOUT_S,
+        )
+        return None
+    except Exception:
+        _record_leg("embed", "error")
+        _log.warning(
+            "get_answer could not embed the question up front; each retrieval "
+            "stage will embed it again",
+            exc_info=True,
+        )
+        return None
+    if not vectors:
+        # Backend without an embedder of its own. Not an error — but it means
+        # every stage pays for its own round-trip, so it is worth seeing.
+        _log.debug("Vector store cannot embed directly; per-stage embedding stands")
+        return None
+
+    vector = [float(v) for v in vectors[0]]
+    _QUESTION_VECTORS[key] = (store, vector)
+    while len(_QUESTION_VECTORS) > _QUESTION_VECTOR_CACHE_MAX:
+        _QUESTION_VECTORS.popitem(last=False)
+    return vector
+
+
+async def vector_search(
+    store: Any, question: str, limit: int, *, vector: list[float] | None
+) -> list[Any]:
+    """Nearest pages to *question*, reusing *vector* when the backend allows it.
+
+    Every backend that can search by raw vector is spared a second embedding of
+    text it has already embedded; one that cannot returns None from
+    ``search_by_vector`` and is asked to search the text as before.
+
+    Returns nothing on a keyless store. Guarded here rather than only at the
+    callers because this is the shared floor under every vector read in the
+    answer pipeline, and the text fallback on the last line would otherwise
+    route a keyless store straight back into the embedder this is avoiding.
+    """
+    if not store_has_semantic_vectors(store):
+        return []
+    if vector is not None:
+        by_vector = await store.search_by_vector(vector, limit=limit)
+        if by_vector is not None:
+            return by_vector
+    return await store.search(question, limit=limit)
+
 
 # ---------------------------------------------------------------------------
 # Stage 1: Hybrid retrieval (FTS + vector → RRF merge)
@@ -92,7 +314,7 @@ _GRAPH_EXPAND_DAMPING = 0.7
 
 
 async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
-    """Run FTS and vector retrieval in parallel and merge via RRF.
+    """Run FTS, vector and symbol retrieval in parallel and merge via RRF.
 
     Returns a list of dicts shaped ``{page_id, title, score, snippet,
     page_type, _sources: set[str]}``. ``_sources`` names which retrievers
@@ -104,9 +326,13 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
     block the call. An empty result from one mode just means the other mode
     fully drives ranking, which matches the pre-hybrid behaviour.
     """
+    # Reset before the legs run so the record describes this question and not
+    # a previous one that happened to share the task context.
+    begin_leg_record()
     fts_task = _safe_fts_search(ctx, question)
     vec_task = _safe_vector_search(ctx, question)
-    fts_results, vec_results = await asyncio.gather(fts_task, vec_task)
+    sym_task = _safe_symbol_search(ctx, question)
+    fts_results, vec_results, sym_results = await asyncio.gather(fts_task, vec_task, sym_task)
 
     # RRF merge. Each hit's contribution from a source is 1/(rank + k);
     # hits appearing in both sources sum their contributions naturally.
@@ -126,6 +352,11 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
         entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _RRF_K)
         entry["_sources"].add("vector")
         entry["_vec_rank"] = rank
+    for rank, h in enumerate(sym_results):
+        entry = fused.setdefault(h.page_id, _hit_dict_from_result(h))
+        entry["score"] = entry.get("score", 0.0) + 1.0 / (rank + _SYMBOL_LEG_RRF_K)
+        entry["_sources"].add("symbol")
+        entry["_sym_rank"] = rank
 
     # Scale to BM25-range so downstream confidence/dominance gates (tuned
     # against the prior single-mode BM25 retrieval) keep behaving sanely.
@@ -142,13 +373,57 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
 async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
     """FTS search wrapped in timeout + suppression. Returns [] on any failure."""
     if ctx.fts is None:
+        _record_leg("fts", "absent")
         return []
     try:
-        return await asyncio.wait_for(
+        results = await asyncio.wait_for(
             ctx.fts.search(question, limit=_RETRIEVAL_FETCH_LIMIT), timeout=5.0
         )
-    except Exception:
+    except TimeoutError:
+        _record_leg("fts", "timeout")
         return []
+    except Exception:
+        _record_leg("fts", "error")
+        return []
+    _record_leg("fts", "ok")
+    return results
+
+
+def _pages_only(results: list[Any], limit: int) -> list[Any]:
+    """Best-first *results* with decision vectors removed, capped at *limit*.
+
+    Decision records live in the page store under their own page-id namespace so
+    dedup can match a paraphrase and ``search_codebase`` can surface a decision
+    directly. Neither is true of answering: a decision row has no ``wiki_pages``
+    row, so hydration leaves it pathless — and a pathless hit skips the tombstone
+    check and the scope filter, can only be reordered by noise demotion rather
+    than dropped, and cannot be cited by the answer it helped write.
+
+    A why-shaped question still gets its decisions. They are injected from a
+    path-overlap query over ``decision_records``, which does not involve this
+    store at all.
+    """
+    kept = [r for r in results if not str(getattr(r, "page_id", "")).startswith(_DECISION_PREFIX)]
+    dropped = len(results) - len(kept)
+    if dropped:
+        _log.debug(
+            "get_answer page retrieval dropped %d decision vector(s) from a window of %d",
+            dropped,
+            len(results),
+        )
+    if len(kept) < limit and dropped:
+        # The over-fetch margin was not enough. Reported because the visible
+        # symptom is a short candidate set, which otherwise reads as a corpus
+        # too small or a query too narrow.
+        _log.warning(
+            "get_answer page retrieval kept only %d of a requested %d candidates: %d "
+            "decision vector(s) filled the window. Decisions may be over-represented "
+            "in the vector store.",
+            len(kept),
+            limit,
+            dropped,
+        )
+    return kept[:limit]
 
 
 async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
@@ -156,20 +431,99 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
 
     Also waits for vector-store readiness when the lifespan event is set —
     skipping the wait would race a background-loading store on cold start.
+
+    Returns nothing on a keyless index, before the readiness wait and before the
+    question is embedded: there is no vector worth computing when there is
+    nothing discriminative to compare it against. See
+    ``store_has_semantic_vectors``. This leg is the only entry to vector
+    retrieval here, so guarding it covers every caller.
     """
     if ctx.vector_store is None:
+        _record_leg("vector", "absent")
+        return []
+    if not store_has_semantic_vectors(ctx.vector_store):
+        _record_leg("vector", "keyless")
         return []
     ready = getattr(ctx, "vector_store_ready", None)
     if ready is not None:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ready.wait(), timeout=30.0)
+    # Embedded here, before the store is asked anything: this is the first stage
+    # to need the vector, and every later stage reads the same one back.
+    vector = await question_vector(ctx, question)
     try:
-        return await asyncio.wait_for(
-            ctx.vector_store.search(question, limit=_RETRIEVAL_FETCH_LIMIT),
+        results = await asyncio.wait_for(
+            vector_search(
+                ctx.vector_store,
+                question,
+                _RETRIEVAL_FETCH_LIMIT + _DECISION_OVERFETCH,
+                vector=vector,
+            ),
             timeout=8.0,
         )
-    except Exception:
+    except TimeoutError:
+        _record_leg("vector", "timeout")
         return []
+    except Exception:
+        _record_leg("vector", "error")
+        return []
+    _record_leg("vector", "ok")
+    return _pages_only(results, _RETRIEVAL_FETCH_LIMIT)
+
+
+class _SymbolLegResult:
+    """A file page reached through the symbol index, in retriever result shape.
+
+    The RRF merge is keyed on page ids and reads four attributes off whatever
+    the retrievers hand it, so the symbol leg presents its file pages the same
+    way FTS and the vector store present theirs.
+    """
+
+    __slots__ = ("page_id", "page_type", "snippet", "title")
+
+    def __init__(self, page_id: str, title: str, snippet: str, page_type: str) -> None:
+        self.page_id = page_id
+        self.title = title
+        self.snippet = snippet
+        self.page_type = page_type
+
+
+async def _safe_symbol_search(ctx: Any, question: str) -> list[_SymbolLegResult]:
+    """File pages whose symbols the question's words name. [] on any failure.
+
+    Ungated: it runs on every question, not only on ones that happen to carry
+    an identifier-shaped token. Which indexes get read is not something the
+    grammar of the sentence should decide. "How does an incremental update
+    persist symbols" and ``_persist_symbols`` are after the same file, and
+    before this leg only the second one reached the symbol index.
+
+    Best-effort with a timeout, like the other two legs: a slow or missing
+    symbol index degrades ``get_answer`` to its previous behaviour rather than
+    failing the call.
+    """
+    try:
+        pages = await asyncio.wait_for(
+            symbol_backed_pages(
+                ctx,
+                question,
+                max_files=_SYMBOL_LEG_MAX_PAGES,
+                symbol_limit=_SYMBOL_LEG_FETCH_LIMIT,
+            ),
+            timeout=5.0,
+        )
+    except TimeoutError:
+        _record_leg("symbol", "timeout")
+        _log.debug("get_answer symbol leg timed out; page retrieval stands")
+        return []
+    except Exception:
+        _record_leg("symbol", "error")
+        _log.debug("get_answer symbol leg failed; page retrieval stands", exc_info=True)
+        return []
+    _record_leg("symbol", "ok")
+    return [
+        _SymbolLegResult(p["page_id"], p["title"], (p.get("summary") or "")[:200], p["page_type"])
+        for p in pages
+    ]
 
 
 def _hit_dict_from_result(result: Any) -> dict:
@@ -264,8 +618,18 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
         }
 
     out: list[dict] = []
+    pageless = 0
     for h in hits:
-        meta = meta_by_id.get(h["page_id"], {})
+        meta = meta_by_id.get(h["page_id"])
+        if meta is None:
+            # A retrieved id with no page behind it: a decision vector, or a
+            # vector left over from a page the stores have since disagreed
+            # about. Either way there is nothing to cite and nothing to read,
+            # and keeping it costs a served slot — while every later gate that
+            # would have caught it (tombstone, scope) is keyed on a path it
+            # does not have.
+            pageless += 1
+            continue
         # Tombstoned pages document deleted/renamed files — serving them as
         # answer material would cite code that no longer exists.
         if meta.get("freshness") == "tombstone":
@@ -279,6 +643,14 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
         # of truth; retrievers sometimes carry stale or empty types.
         h["page_type"] = meta.get("page_type") or h.get("page_type", "")
         out.append(h)
+    if pageless:
+        _log.warning(
+            "get_answer dropped %d of %d retrieved hit(s) with no page row behind them; "
+            "an id in a retriever that the page table does not know is either a "
+            "non-page vector or a three-store disagreement (repowise doctor --repair)",
+            pageless,
+            len(hits),
+        )
     return out
 
 
@@ -332,6 +704,39 @@ async def apply_pagerank_bias(hits: list[dict], ctx: Any) -> None:
 # ---------------------------------------------------------------------------
 # Stage 4: Graph expansion (1-hop neighbors of top hits)
 # ---------------------------------------------------------------------------
+
+
+async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
+    """Total graph degree (in + out) for each node in *nodes*.
+
+    One grouped count per direction over the same indexed edge table the
+    expansion already reads, scoped to the candidate set rather than the whole
+    graph.
+    """
+    if not nodes:
+        return {}
+    degree: dict[str, int] = {}
+    for column in (GraphEdge.source_node_id, GraphEdge.target_node_id):
+        res = await session.execute(
+            select(column, func.count()).where(column.in_(nodes)).group_by(column)
+        )
+        for node_id, count in res.all():
+            degree[node_id] = degree.get(node_id, 0) + int(count or 0)
+    return degree
+
+
+def _hub_degree_cutoff(degree: dict[str, int]) -> int:
+    """Degree at which a candidate counts as a hub, for this candidate set.
+
+    ``max(floor, p99)``. The floor keeps a small or sparsely-linked repo from
+    excluding ordinary files, and the percentile keeps a densely-linked one
+    from excluding nothing.
+    """
+    if not degree:
+        return 1 << 30
+    values = sorted(degree.values())
+    idx = min(len(values) - 1, int(len(values) * _HUB_DEGREE_PERCENTILE))
+    return max(_HUB_DEGREE_FLOOR, values[idx])
 
 
 async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
@@ -399,9 +804,19 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
             )
         )
         pr_by_path = {row[0]: float(row[1] or 0.0) for row in pr_res.all()}
+        degree = await _neighbor_degrees(session, neighbors)
 
     if not page_rows:
         return hits
+
+    # Drop hubs before ranking. Ranking by PageRank alone actively prefers
+    # them, which is the wrong instinct here: expansion is trying to name the
+    # specific file the question is about, and the most-imported file in the
+    # repo is the least specific candidate available.
+    cutoff = _hub_degree_cutoff(degree)
+    non_hub = [row for row in page_rows if degree.get(row[0], 0) <= cutoff]
+    if non_hub:
+        page_rows = non_hub
 
     # Damp parent score by _GRAPH_EXPAND_DAMPING for child candidates; pick
     # the strongest parent each child connects to (taking the max parent
@@ -519,7 +934,10 @@ async def _semantic_concept_paths(question: str, ctx: Any) -> list[str]:
         return []
     try:
         results = await asyncio.wait_for(
-            vs.search(question, limit=_CONCEPT_FETCH_LIMIT), timeout=8.0
+            vector_search(
+                vs, question, _CONCEPT_FETCH_LIMIT, vector=await question_vector(ctx, question)
+            ),
+            timeout=8.0,
         )
     except Exception:
         return []
@@ -561,11 +979,9 @@ async def expand_via_parent_page(hits: list[dict], question: str, ctx: Any) -> l
     # Cluster on the strongest real hits: skip decision records and any hit
     # without a path so decision noise crowding the top slots can't starve the
     # clustering of the member files that reveal the subsystem.
-    top = [
-        h
-        for h in hits
-        if h.get("target_path") and h.get("page_type") != "decision_record"
-    ][:_PARENT_EXPAND_TOP_N]
+    top = [h for h in hits if h.get("target_path") and h.get("page_type") != "decision_record"][
+        :_PARENT_EXPAND_TOP_N
+    ]
     if not top:
         return hits
 

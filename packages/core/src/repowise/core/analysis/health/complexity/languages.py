@@ -445,6 +445,13 @@ _KOTLIN = LanguageNodeMap(
     # ``assertTrue(...)`` are plain calls placed directly in the statement
     # list (no ``expression_statement`` wrapper).
     assert_call_kinds=frozenset({"call_expression"}),
+    # The perf pass. Kotlin has no ``new``: a constructor (``OkHttpClient()``)
+    # is an ordinary ``call_expression`` over a bare ``identifier``, so one kind
+    # covers calls and construction alike. ``suspend`` is a modifier TOKEN, not
+    # a node type, so ``async_function_kinds`` stays empty and
+    # ``KotlinPerfDialect.is_async_fn`` sniffs the modifier instead (the same
+    # posture Rust takes for ``async fn``).
+    call_kinds=frozenset({"call_expression"}),
 )
 
 _DART = LanguageNodeMap(
@@ -512,6 +519,26 @@ _CPP = LanguageNodeMap(
     # ``ASSERT_TRUE`` are ordinary calls (``expect``/``assert`` prefix matched
     # case-insensitively).
     assert_call_kinds=frozenset({"call_expression"}),
+    # The perf pass needs both forms: ``db.execute()`` / ``std::fs::read()``
+    # (``call_expression``) and ``new Client()`` (``new_expression``, which the
+    # grammar does NOT spell as a call). C++ has no ``async``/``await``, so
+    # ``async_function_kinds`` stays empty and ``blocking_sync_in_async`` is
+    # deliberately unimplemented rather than faked onto ``std::async``.
+    call_kinds=frozenset({"call_expression", "new_expression"}),
+    # ``x = …`` and ``x += …`` are both an ``assignment_expression`` (the
+    # dialect tells them apart by the ``operator`` token, as in Java and Go), so
+    # the augmented set stays empty. ``int x = 1, y = 2;`` is one
+    # ``declaration`` nesting one ``init_declarator`` per bound name.
+    # ``conditional_expression`` is in ``branch_kinds`` for CCN but NOT in
+    # ``if_kinds``: a ternary is an expression, not a CFG statement.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"compound_statement"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _CSHARP = LanguageNodeMap(
@@ -676,9 +703,7 @@ _SHELL = LanguageNodeMap(
     branch_kinds=frozenset({"if_statement", "elif_clause"}),
     # `until ...` parses as `while_statement` in tree-sitter-bash, so it is
     # covered here; `for ((;;))` is `c_style_for_statement`.
-    loop_kinds=frozenset(
-        {"for_statement", "c_style_for_statement", "while_statement"}
-    ),
+    loop_kinds=frozenset({"for_statement", "c_style_for_statement", "while_statement"}),
     # No exceptions in shell (`trap` is not `try`).
     try_kinds=frozenset(),
     catch_kinds=frozenset(),
@@ -698,6 +723,10 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
     "tsx": _TS,
+    # An SFC reaches the walker as a TypeScript buffer (see
+    # ingestion/sfc_source.py), so the TS node map applies verbatim.
+    "svelte": _TS,
+    "vue": _TS,
     "javascript": _JS,
     "jsx": _JS,
     "go": _GO,

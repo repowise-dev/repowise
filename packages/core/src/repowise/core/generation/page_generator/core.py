@@ -14,7 +14,7 @@ The level-by-level orchestration of ``generate_all`` lives in
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,13 +25,22 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
+from ..context.evidence import (
+    EvidenceItem,
+    EvidenceSelection,
+    EvidenceSkip,
+    select_prompt_evidence,
+)
 from ..context_assembler import ContextAssembler, FilePageContext
+from ..house_vocabulary import cell
 from ..models import (
+    MODEL_PAGE_CONFIDENCE,
     GeneratedPage,
     GenerationConfig,
     compute_page_id,
     compute_source_hash,
 )
+from ..report import reset_house_terms
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
@@ -42,7 +51,7 @@ from .structural import (
     oneline,
     signature,
 )
-from .validation import validate_generated_response
+from .validation import reset_artifact_check_counts, validate_generated_response
 
 if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
@@ -194,6 +203,11 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         self._jinja_env.filters.setdefault("oneline", oneline)
         self._jinja_env.filters.setdefault("as_markdown", as_markdown)
         self._jinja_env.filters.setdefault("signature", signature)
+        # A pipe ends a table cell wherever it appears, and a deterministic
+        # template interpolates the repository's own prose — which routinely
+        # quotes a shell pipeline. Without this every column to the right of
+        # one shifts.
+        self._jinja_env.filters.setdefault("table_cell", cell)
 
     # ------------------------------------------------------------------
     # generate_all — orchestration (delegates to orchestrate.py)
@@ -243,6 +257,15 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         reason, so nothing is added); None when the caller has no use for it.
         """
         from .orchestrate import run_generate_all
+
+        # The artifact-check tallies are per run, and a long-lived process
+        # generates more than once.  Reset so the report's denominator counts
+        # this run's responses rather than every response since start-up.
+        reset_artifact_check_counts()
+        # Same reason, and it matters more here: a run that never reaches the
+        # onboarding level would otherwise report the previous run's
+        # vocabulary as its own.
+        reset_house_terms()
 
         return await run_generate_all(
             self,
@@ -445,6 +468,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             created_at=now,
             updated_at=now,
             content_hash=content_hash,
+            # A model wrote this from assembled material: grounded in it and
+            # checked against it, but a summary of the code rather than an
+            # extraction from it. Not the claim a template page makes.
+            confidence=MODEL_PAGE_CONFIDENCE,
         )
         # Record the effective style as page provenance (D10). Only for active
         # styles, so default ("comprehensive") pages keep byte-identical metadata.
@@ -484,3 +511,107 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         is_onboarding = template_name.startswith("onboarding/")
         prefix = self._style.user_prompt_prefix(is_onboarding=is_onboarding)
         return prefix + body if prefix else body
+
+    def _append_source_evidence(
+        self,
+        user_prompt: str,
+        page_key: str,
+        source_map: dict[str, bytes],
+        *,
+        parsed_files: Sequence[ParsedFile] = (),
+        references: Sequence[str] = (),
+    ) -> tuple[str, EvidenceSelection]:
+        """Append bounded repository evidence and report every selection decision."""
+        selection = self._select_source_evidence(
+            page_key,
+            source_map,
+            parsed_files=parsed_files,
+            references=references,
+        )
+        prompt = user_prompt + selection.rendered if selection.rendered else user_prompt
+        return prompt, selection
+
+    def _select_source_evidence(
+        self,
+        page_key: str,
+        source_map: dict[str, bytes],
+        *,
+        parsed_files: Sequence[ParsedFile] = (),
+        references: Sequence[str] = (),
+    ) -> EvidenceSelection:
+        """Select bounded repository evidence and log every decision."""
+        configured = self._config.source_evidence_files.get(page_key, ())
+        selection = select_prompt_evidence(
+            source_map,
+            configured,
+            token_budget=self._config.source_evidence_token_budget,
+            parsed_files=parsed_files,
+            references=references,
+        )
+        if selection.included:
+            log.info(
+                "source_evidence.selected",
+                page_key=page_key,
+                paths=[item.path for item in selection.included],
+                estimated_tokens=selection.estimated_tokens,
+                token_budget=self._config.source_evidence_token_budget,
+            )
+        if selection.skipped:
+            log.warning(
+                "source_evidence.skipped",
+                page_key=page_key,
+                skipped=[{"path": item.path, "reason": item.reason} for item in selection.skipped],
+            )
+        return selection
+
+    def _disabled_source_evidence(
+        self,
+        page_key: str,
+        reason: str,
+        references: Sequence[str] = (),
+    ) -> EvidenceSelection:
+        """Report repository evidence that a non-model path cannot consume."""
+        configured_skips = tuple(
+            EvidenceSkip(path, reason)
+            for path in self._config.source_evidence_files.get(page_key, ())
+        )
+        reference_skips = tuple(EvidenceSkip(str(reference), reason) for reference in references)
+        skipped = configured_skips + reference_skips
+        selection = EvidenceSelection(skipped=skipped)
+        if skipped:
+            log.warning(
+                "source_evidence.skipped",
+                page_key=page_key,
+                skipped=[{"path": item.path, "reason": item.reason} for item in skipped],
+            )
+        return selection
+
+    def _attach_source_evidence(
+        self,
+        page: GeneratedPage,
+        page_key: str,
+        selection: EvidenceSelection,
+    ) -> GeneratedPage:
+        """Persist evidence provenance on a generated or fallback page."""
+        if not selection.included and not selection.skipped:
+            return page
+        page.metadata["source_evidence"] = {
+            "page_key": page_key,
+            "token_budget": self._config.source_evidence_token_budget,
+            "estimated_tokens": selection.estimated_tokens,
+            "included": [self._source_evidence_metadata(item) for item in selection.included],
+            "skipped": [{"path": item.path, "reason": item.reason} for item in selection.skipped],
+        }
+        return page
+
+    @staticmethod
+    def _source_evidence_metadata(item: EvidenceItem) -> dict[str, object]:
+        """Keep configured-file metadata stable while identifying exact excerpts."""
+        metadata: dict[str, object] = {"path": item.path, "truncated": item.truncated}
+        if item.symbol is not None:
+            metadata.update(
+                symbol=item.symbol,
+                start_line=item.start_line,
+                end_line=item.end_line,
+            )
+        return metadata

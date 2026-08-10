@@ -1,9 +1,24 @@
 """Build the wire envelope for an event and send it, best-effort.
 
-Sending is fire-and-forget on a daemon thread so a slow or unreachable backend
-never delays a CLI command. An ``atexit`` flush briefly joins in-flight sends
-so short-lived invocations still deliver. Everything here is fail-silent: a
-telemetry failure must never surface to the user.
+Recording an event appends it to an on-disk spool and returns, so nothing on
+the recording path talks to the network. On exit the process spawns a detached
+flusher (:mod:`.flusher`) to deliver what is queued and dies without waiting
+for it.
+
+That indirection is the point. Sending used to happen on a daemon thread that
+``atexit`` joined for up to 2s, which meant every short command paid the POST
+(~750ms measured) after its output was already printed — the CLI waiting on the
+network is exactly what the fire-and-forget thread was supposed to prevent, and
+a thread cannot outlive the interpreter that owns it. A separate process can,
+so delivery no longer competes with exit: the spawn costs a few milliseconds
+and the network cost lands where nobody is waiting on it.
+
+Delivery is still best-effort — a batch the backend refuses is dropped rather
+than retried (see :mod:`.spool`) — so this trades none of the old design's
+guarantees, only its latency.
+
+Everything here is fail-silent: a telemetry failure must never surface to the
+user.
 """
 
 from __future__ import annotations
@@ -11,19 +26,16 @@ from __future__ import annotations
 import atexit
 import contextlib
 import json
+import os
+import subprocess
 import sys
-import threading
 
 from repowise.cli.platform import identity, settings
-from repowise.cli.platform.client import default_client
-from repowise.cli.platform.telemetry import environment
+from repowise.cli.platform.telemetry import environment, spool
 from repowise.cli.platform.telemetry.events import TelemetryEvent
 
-#: Backend ingestion path (joined to the platform base URL by the client).
-_INGEST_PATH = "telemetry/events"
-
-#: In-flight send threads, joined briefly at exit so quick commands deliver.
-_pending: list[threading.Thread] = []
+#: Module the detached flusher runs as.
+_FLUSHER_MODULE = "repowise.cli.platform.telemetry.flusher"
 
 
 def _cli_version() -> str:
@@ -33,6 +45,18 @@ def _cli_version() -> str:
         return __version__
     except Exception:
         return "unknown"
+
+
+def _under_test() -> bool:
+    """Return whether we are running inside a pytest session.
+
+    The suite drives real CLI commands, and its fixtures relocate the home
+    directory that holds ``anon_id``, so without this every test run delivers
+    events under a freshly minted install. Only delivery is suppressed:
+    consent resolution stays real, so its own tests still exercise the actual
+    precedence rules.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 
 
 def build_envelope(event: TelemetryEvent) -> dict[str, object]:
@@ -49,7 +73,7 @@ def build_envelope(event: TelemetryEvent) -> dict[str, object]:
 
 
 def record(event: TelemetryEvent) -> None:
-    """Record *event*: respect consent, then debug-print or send. Never raises."""
+    """Record *event*: respect consent, then debug-print or queue. Never raises."""
     try:
         if not settings.is_enabled():
             return
@@ -63,35 +87,47 @@ def record(event: TelemetryEvent) -> None:
             )
             return
 
-        thread = threading.Thread(
-            target=default_client.post,
-            args=(_INGEST_PATH, envelope),
-            daemon=True,
-        )
-        thread.start()
-        # Prune finished sends so a long-lived process (e.g. ``serve``/``watch``)
-        # emitting many events never accumulates dead Thread objects.
-        _pending[:] = [t for t in _pending if t.is_alive()]
-        _pending.append(thread)
+        spool.append(envelope)
     except Exception:
         # Telemetry must never break a command.
         return
 
 
+def _spawn_flusher() -> bool:
+    """Start the detached delivery process. Returns whether it started.
+
+    Fully detached (own session/console, no inherited streams) so it keeps
+    running after this process exits and can never write to the user's
+    terminal.
+    """
+    if not sys.executable:
+        return False
+    kwargs: dict[str, object] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+        "cwd": os.getcwd(),
+    }
+    if os.name == "nt":
+        # DETACHED_PROCESS | CREATE_NO_WINDOW: no console window flashes up
+        # in front of the user between commands.
+        kwargs["creationflags"] = 0x00000008 | 0x08000000
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([sys.executable, "-m", _FLUSHER_MODULE], **kwargs)  # type: ignore[arg-type]
+    return True
+
+
 @atexit.register
 def _flush() -> None:
-    """Give in-flight sends a brief moment to complete on process exit.
-
-    Bounded to ~2s total across all pending sends so exit is never noticeably
-    delayed even if the backend is hung.
-    """
-    import time
-
-    remaining = 2.0
-    for thread in _pending:
-        if remaining <= 0:
-            break
-        start = time.monotonic()
-        with contextlib.suppress(Exception):
-            thread.join(timeout=remaining)
-        remaining -= time.monotonic() - start
+    """Hand queued events to a detached flusher on the way out. Never raises."""
+    with contextlib.suppress(Exception):
+        if _under_test() or not spool.has_events():
+            return
+        if not settings.is_enabled() or settings.debug_mode():
+            # Turning telemetry off must also unsend what is already queued,
+            # or a disable would be followed by one last batch.
+            spool.claim()
+            return
+        _spawn_flusher()

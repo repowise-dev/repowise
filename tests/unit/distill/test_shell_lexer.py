@@ -8,6 +8,8 @@ cases live here; the import-graph guard lives in ``test_rewrite_perf``.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from repowise.cli import rewrite_hook
@@ -201,20 +203,45 @@ class TestPowerShellEdgeCases:
     """PowerShell shapes the hook used to reject via an ad-hoc character
     scan now reject structurally, for the reason named in each case."""
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "git status; git log --oneline -5",  # statement separator
-            "git log --oneline `\n  -20",  # backtick continuation
-            "git diff $(git merge-base main HEAD)",  # subexpression
-            '& "C:\\Program Files\\Git\\bin\\git.exe" status',  # call operator
-            "$env:FOO='1'; pytest -x",  # assignment then separator
-            "Get-ChildItem | Select-Object -First 5",  # object pipeline
-        ],
+    PS_SHAPES: ClassVar[tuple[str, ...]] = (
+        "git status; git log --oneline -5",  # statement separator
+        "git log --oneline `\n  -20",  # backtick continuation
+        "git diff $(git merge-base main HEAD)",  # subexpression
+        '& "C:\\Program Files\\Git\\bin\\git.exe" status',  # call operator
+        "$env:FOO='1'; pytest -x",  # assignment then separator
+        "Get-ChildItem | Select-Object -First 5",  # object pipeline
     )
+
+    @pytest.mark.parametrize("command", PS_SHAPES)
     def test_still_bail(self, command) -> None:
         assert analyze_pipeline(command) is None
-        assert rewrite_hook.classify(command) is None
+
+    @pytest.mark.parametrize("command", PS_SHAPES)
+    def test_powershell_sourced_commands_are_never_rewritten(self, command, tmp_path) -> None:
+        """The PowerShell guarantee belongs to ``decide``, not ``classify``.
+
+        ``classify`` takes no shell argument and never encoded a PowerShell
+        rule: it answers "which family is this", and a statement separator is
+        also a perfectly good POSIX ``;``. What must hold is that a command
+        *sourced from the PowerShell tool* is never rewritten, and that gate
+        lives in ``decide``. Asserting it on ``classify`` passed on Windows
+        only because ``_POSIX_HOST`` is False there, which made every compound
+        command bail for a reason that had nothing to do with PowerShell.
+        """
+        (tmp_path / ".repowise").mkdir()
+        assert rewrite_hook.decide(command, str(tmp_path), "powershell") is None
+
+    def test_a_posix_shell_may_still_rewrite_the_separator_shape(self, tmp_path, monkeypatch):
+        """…and the same text from bash is two recognized commands, so it does.
+
+        This is the one shape above that is not PowerShell-specific, and it
+        pins the distinction the test above rests on.
+        """
+        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", True)
+        (tmp_path / ".repowise").mkdir()
+        command = "git status; git log --oneline -5"
+        assert rewrite_hook.decide(command, str(tmp_path), "powershell") is None
+        assert rewrite_hook.decide(command, str(tmp_path), "posix") is not None
 
 
 class TestSharedWithTheHook:

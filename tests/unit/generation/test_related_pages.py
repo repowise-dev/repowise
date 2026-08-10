@@ -144,12 +144,208 @@ def test_deleted_targets_drop_out():
     assert _related(pages[0]) == []
 
 
-def test_non_file_pages_untouched():
-    pages = [_make_page("module_page", "community-1")]
+def test_pages_that_are_neither_file_nor_module_are_untouched():
+    pages = [
+        _make_page("onboarding", "onboarding/getting_started"),
+        _make_page("symbol_spotlight", "a.py::Thing"),
+    ]
 
     attach_related_pages(pages, import_edges=[])
 
-    assert "related_pages" not in pages[0].metadata
+    assert all("related_pages" not in p.metadata for p in pages)
+
+
+def _module(target: str, members: list[str]) -> GeneratedPage:
+    page = _make_page("module_page", target)
+    page.metadata["file_paths"] = members
+    return page
+
+
+class TestModulePages:
+    """A module's neighbours are its members' neighbours, lifted and counted."""
+
+    def test_import_edges_between_members_become_module_edges(self):
+        pages = [
+            _module("src/ingest", ["src/ingest/a.py", "src/ingest/b.py"]),
+            _module("src/store", ["src/store/db.py"]),
+            _make_page("file_page", "src/ingest/a.py"),
+            _make_page("file_page", "src/store/db.py"),
+        ]
+
+        attach_related_pages(
+            pages, import_edges=[("src/ingest/a.py", "src/store/db.py")]
+        )
+
+        ingest = _related(pages[0])
+        assert [(r["target_page_id"], r["reason"]) for r in ingest] == [
+            ("module_page:src/store", "imports")
+        ]
+        # The edge is symmetric: the target learns who depends on it.
+        assert [(r["target_page_id"], r["reason"]) for r in _related(pages[1])] == [
+            ("module_page:src/ingest", "imported-by")
+        ]
+
+    def test_weight_counts_the_edges_crossing_the_boundary(self):
+        """Two subsystems joined by three edges outrank two joined by one."""
+        pages = [
+            _module("src/ingest", ["src/ingest/a.py", "src/ingest/b.py"]),
+            _module("src/store", ["src/store/db.py", "src/store/q.py"]),
+            _module("src/util", ["src/util/u.py"]),
+        ]
+
+        attach_related_pages(
+            pages,
+            import_edges=[
+                ("src/ingest/a.py", "src/store/db.py"),
+                ("src/ingest/a.py", "src/store/q.py"),
+                ("src/ingest/b.py", "src/store/db.py"),
+                ("src/ingest/b.py", "src/util/u.py"),
+            ],
+        )
+
+        ingest = _related(pages[0])
+        assert [(r["target_page_id"], r["weight"]) for r in ingest] == [
+            ("module_page:src/store", 3.0),
+            ("module_page:src/util", 1.0),
+        ]
+
+    def test_edges_inside_a_module_are_dropped(self):
+        """A module is not related to itself, and self-edges would swamp the rest."""
+        pages = [
+            _module("src/ingest", ["src/ingest/a.py", "src/ingest/b.py"]),
+            _module("src/store", ["src/store/db.py"]),
+        ]
+
+        attach_related_pages(
+            pages,
+            import_edges=[
+                ("src/ingest/a.py", "src/ingest/b.py"),
+                ("src/ingest/b.py", "src/ingest/a.py"),
+                ("src/ingest/a.py", "src/store/db.py"),
+            ],
+        )
+
+        assert [r["target_page_id"] for r in _related(pages[0])] == [
+            "module_page:src/store"
+        ]
+
+    def test_same_module_is_never_a_reason_for_a_module(self):
+        """It *is* the module; the reason is meaningless at this scale."""
+        pages = [
+            _module("src/ingest", ["src/ingest/a.py", "src/ingest/b.py"]),
+            _module("src/store", ["src/store/db.py"]),
+        ]
+
+        attach_related_pages(
+            pages,
+            import_edges=[("src/ingest/a.py", "src/store/db.py")],
+            module_groups=[_Group("src/ingest", ("src/ingest/a.py", "src/ingest/b.py"))],
+        )
+
+        assert all(r["reason"] != "same-module" for r in _related(pages[0]))
+
+    def test_co_change_partners_lift_to_their_modules(self):
+        pages = [
+            _module("src/ingest", ["src/ingest/a.py"]),
+            _module("src/store", ["src/store/db.py"]),
+        ]
+        git_meta = {
+            "src/ingest/a.py": {
+                "co_change_partners_json": json.dumps(
+                    [{"file_path": "src/store/db.py", "co_change_count": 9}]
+                )
+            }
+        }
+
+        attach_related_pages(pages, import_edges=[], git_meta_map=git_meta)
+
+        assert [(r["target_page_id"], r["reason"]) for r in _related(pages[0])] == [
+            ("module_page:src/store", "co-changes-with")
+        ]
+
+    def test_a_member_owned_by_no_module_is_ignored(self):
+        """A file with no documenting page cannot lift an edge anywhere."""
+        pages = [_module("src/ingest", ["src/ingest/a.py"])]
+
+        attach_related_pages(pages, import_edges=[("src/ingest/a.py", "vendor/x.py")])
+
+        assert _related(pages[0]) == []
+
+    def test_a_chapter_with_no_files_inherits_its_subtree(self):
+        """Otherwise the page whose whole job is orientation has nothing across."""
+        pages = [
+            _module("src/ingest", []),  # the chapter: all its files are its children's
+            _module("src/ingest/lang", ["src/ingest/lang/a.py"]),
+            _module("src/ingest/graph", ["src/ingest/graph/b.py"]),
+            _module("src/store", ["src/store/db.py"]),
+        ]
+
+        attach_related_pages(
+            pages,
+            import_edges=[
+                ("src/ingest/lang/a.py", "src/store/db.py"),
+                ("src/ingest/graph/b.py", "src/store/db.py"),
+            ],
+        )
+
+        assert [(r["target_page_id"], r["weight"]) for r in _related(pages[0])] == [
+            ("module_page:src/store", 2.0)
+        ]
+
+    def test_an_inherited_neighbour_inside_the_subtree_is_dropped(self):
+        """It already links down to that page; repeating it across is not news."""
+        pages = [
+            _module("src/ingest", []),
+            _module("src/ingest/lang", ["src/ingest/lang/a.py"]),
+            _module("src/ingest/graph", ["src/ingest/graph/b.py"]),
+        ]
+
+        attach_related_pages(
+            pages, import_edges=[("src/ingest/lang/a.py", "src/ingest/graph/b.py")]
+        )
+
+        assert _related(pages[0]) == []
+        # The children still see each other; only the chapter filters them out.
+        assert [r["target_page_id"] for r in _related(pages[1])] == [
+            "module_page:src/ingest/graph"
+        ]
+
+    def test_a_chapter_that_owns_files_keeps_its_own_edges(self):
+        """It has real evidence, so it is not given its subtree's second-hand set."""
+        pages = [
+            _module("src/ingest", ["src/ingest/main.py"]),
+            _module("src/ingest/lang", ["src/ingest/lang/a.py"]),
+            _module("src/store", ["src/store/db.py"]),
+            _module("src/util", ["src/util/u.py"]),
+        ]
+
+        attach_related_pages(
+            pages,
+            import_edges=[
+                ("src/ingest/main.py", "src/store/db.py"),
+                ("src/ingest/lang/a.py", "src/util/u.py"),
+            ],
+        )
+
+        assert [r["target_page_id"] for r in _related(pages[0])] == [
+            "module_page:src/store"
+        ]
+
+    def test_prose_links_still_win(self):
+        """Related fills the gaps left by prose, and never duplicates one."""
+        pages = [
+            _module("src/ingest", ["src/ingest/a.py"]),
+            _module("src/store", ["src/store/db.py"]),
+        ]
+        pages[0].metadata["wiki_links"] = [
+            {"anchor": "src/store", "target_page_id": "module_page:src/store", "kind": "file"}
+        ]
+
+        attach_related_pages(
+            pages, import_edges=[("src/ingest/a.py", "src/store/db.py")]
+        )
+
+        assert _related(pages[0]) == []
 
 
 def test_prior_page_ids_widen_resolution_on_incremental_update():

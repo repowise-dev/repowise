@@ -16,11 +16,72 @@ from typing import Any
 
 import structlog
 
-from repowise.cli.helpers import console, run_async, save_state
+from repowise.cli.helpers import console, head_commit_ts, run_async, save_state
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
 from .incremental import _build_repo_graph
 
 log = structlog.get_logger(__name__)
+
+
+def _repair_module_attribution(repo_path: Path) -> int:
+    """Re-derive every health row's ``module`` from the repo layout on disk.
+
+    Runs on every ``repowise update``, before the "already up to date" return,
+    and is cheap enough to justify that: one pruned directory walk looking for
+    manifest filenames, then a write only for rows whose label actually moved.
+    A repo already correct writes nothing, so the steady-state cost is the walk.
+
+    It exists because ``module`` is *persisted*, and a change to how it is
+    derived would otherwise only reach stored rows when something rewrote them
+    — a full health re-score at best, a re-index at worst. Neither is an
+    acceptable price for a directory label, and neither is necessary: the label
+    is a pure function of ``(file_path, package_roots)``, and package roots are
+    just the directories holding a manifest. No parse, no embedding, no model.
+
+    Failure-isolated: an unreadable tree or a missing index returns 0 rather
+    than failing the update. The next update retries and nothing else depends
+    on the result.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.ingestion.traverser import FileTraverser
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.crud import backfill_module_attribution
+
+    async def _run() -> int:
+        # Scan through the traverser so it honours the same gitignore,
+        # submodule and exclude boundaries the index does.
+        roots = FileTraverser(Path(repo_path)).package_root_dirs()
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return await backfill_module_attribution(session, repo.id, roots)
+        finally:
+            # Matches the other update-time DB opens. File SQLite uses
+            # NullPool so nothing is held open across the call, but leaving a
+            # live engine behind on a path that runs every update is the kind
+            # of thing that turns into a lock report later.
+            await engine.dispose()
+
+    try:
+        changed = run_async(_run())
+    except Exception as exc:
+        log.debug("module_attribution_repair_failed", error=str(exc))
+        return 0
+    if changed:
+        console.print(f"[dim]Module attribution: [bold]{changed}[/bold] file(s) corrected[/dim]")
+    return changed
 
 
 async def _coverage_for_rescore(
@@ -176,6 +237,112 @@ def heal_commit_offsets(repo_path: Any) -> None:
         run_async(_run())
 
 
+# A repair window that has grown past this many commits stopped being a repair
+# and became a re-index: the diff it forces every update to walk is no longer
+# change-sized. Bounding it is what stops a step that fails on every run from
+# pinning the window open forever.
+_REPAIR_MAX_COMMITS = 500
+
+
+def record_repair_marker(new_state: dict, prior_state: dict, failed_steps: list[str]) -> None:
+    """Record, or clear, the commit range this update failed to fully persist.
+
+    ``last_sync_commit`` advances whether or not the persist steps succeeded, so
+    a failed step used to take its commit range with it: nothing ever revisited
+    those commits, and their git metadata, health rows, symbols or edges were
+    skipped permanently and announced exactly once in the completion panel. The
+    marker keeps the *old* pointer so the next update diffs from there and
+    re-covers the range, while the pointer itself stays current for every other
+    reader of the state file.
+
+    Carrying the oldest unrepaired commit forward rather than the newest is the
+    part that makes it hold: three failed runs in a row still have to re-cover
+    all three ranges, not just the last one.
+
+    Only range-scoped failures land here (see ``persist_incremental_index``),
+    so a repo-wide step that fails on every single run cannot keep the marker
+    alive: it heals itself on the next update instead.
+    """
+    if not failed_steps:
+        new_state.pop("pending_repair", None)
+        return
+    prior = prior_state.get("pending_repair")
+    if not isinstance(prior, dict):  # a hand-edited or truncated state file
+        prior = {}
+    from_commit = prior.get("from_commit") or prior_state.get("last_sync_commit")
+    if not from_commit:
+        # Nothing to diff back to (a first index, or a state file with no
+        # pointer). Widening from an unknown base is not something we can do
+        # safely, so leave no marker rather than a broken one.
+        new_state.pop("pending_repair", None)
+        return
+    # Union, not replace: the marker names one range, so it has to name
+    # everything still unrepaired in it. Run 1 failing the git persist and run 2
+    # failing only the health persist leaves both unrepaired over the same span.
+    prior_steps = prior.get("steps")
+    prior_steps = prior_steps if isinstance(prior_steps, list) else []
+    new_state["pending_repair"] = {
+        "from_commit": from_commit,
+        "steps": sorted({*prior_steps, *failed_steps}),
+    }
+
+
+def resolve_repair_base(
+    repo_path: Any, state: dict, base_ref: str, head: str | None
+) -> tuple[str, str | None]:
+    """Widen *base_ref* back to an unrepaired range, or report giving up on it.
+
+    Returns ``(base_ref, give_up_reason)``. The reason is non-None exactly when
+    the marker should be dropped without being honoured, and it is written for
+    the user rather than the log.
+
+    Three things have to hold before the marker is honoured, and each one closes
+    a way this could go wrong:
+
+    * the recorded commit still resolves and is an *ancestor* of the current
+      base, so honouring it can only ever move the diff backwards. Without the
+      ancestry check a rebase, a branch switch or a docs-mode base that is
+      already older would let the marker move the base *forward* and skip the
+      very commits it exists to re-cover;
+    * the range is still bounded (see ``_REPAIR_MAX_COMMITS``);
+    * it differs from the base we already have, so a marker that has effectively
+      caught up costs nothing.
+    """
+    import subprocess
+
+    marker = state.get("pending_repair")
+    from_commit = marker.get("from_commit") if isinstance(marker, dict) else None
+    if not from_commit or from_commit == base_ref:
+        return base_ref, None
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(repo_path), *args], capture_output=True, timeout=30, text=True
+        )
+
+    try:
+        if _git("merge-base", "--is-ancestor", from_commit, base_ref).returncode != 0:
+            # Non-zero covers both "not an ancestor" (rebased, force-pushed,
+            # branch switched) and "cannot resolve that object" (gc'd, or a
+            # shallow clone that never fetched it), and git does not
+            # distinguish them by exit code. Say both rather than assert one.
+            return base_ref, (
+                f"the recorded commit {from_commit[:8]} is not an ancestor of this "
+                "branch's history, or is not present in this clone"
+            )
+        counted = _git("rev-list", "--count", f"{from_commit}..{head or 'HEAD'}")
+        if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
+            return base_ref, (
+                f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
+                "a re-index rather than a repair"
+            )
+    except Exception:
+        # git being unavailable is not a reason to widen blindly.
+        return base_ref, None
+
+    return from_commit, None
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,
@@ -195,9 +362,15 @@ def _persist_index_only_update(
     git_decay_map: dict | None = None,
     exclude_patterns: list[str] | None = None,
     head_ts: float | None = None,
+    force_full_rescore: bool = False,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
     save state, and print the completion line. No LLM regeneration.
+
+    ``force_full_rescore`` runs the full health re-score regardless of the
+    periodic gate. Set by the config-changed caller, which relies on this path
+    rather than re-scoring separately and returning — doing that advanced
+    ``last_sync_commit`` past commits it never indexed.
 
     DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
     state-file updates and console reporting stay here. Best-effort steps
@@ -206,6 +379,10 @@ def _persist_index_only_update(
     from repowise.core.pipeline.incremental import persist_incremental_index
 
     degraded = degraded if degraded is not None else []
+    # Failures whose input was this commit range, kept apart from ``degraded``
+    # (which also collects repo-wide and non-DB failures) because only these
+    # strand data the advancing sync pointer would otherwise skip forever.
+    failed_steps: list[str] = []
     run_async(
         persist_incremental_index(
             repo_path,
@@ -220,6 +397,7 @@ def _persist_index_only_update(
             git_decay_map=git_decay_map,
             log=console.print,
             degraded=degraded,
+            failed_steps=failed_steps,
         )
     )
     from repowise.cli.helpers import config_fingerprint
@@ -229,16 +407,26 @@ def _persist_index_only_update(
     # Periodic idle-file health re-score (#728): git_metadata is now fresh in the
     # DB, so re-score every file's findings against the decayed inputs. Gated to
     # ~weekly since only the findings (not their cheap git inputs) lag here.
+    # ``force_full_rescore`` is the config-changed caller: a config edit
+    # invalidates every persisted score, and the partial health update above
+    # only reached the changed files.
     last_full_rescore_at = state.get("last_full_rescore_at")
-    if full_rescore_due(state, head_ts) and run_decay_health_rescore(
+    health_analyzer_version = state.get("health_analyzer_version")
+    if (force_full_rescore or full_rescore_due(state, head_ts)) and run_decay_health_rescore(
         repo_path, graph_builder, parsed_files or [], exclude_patterns or []
     ):
-        last_full_rescore_at = head_ts
+        # Only the time gate reads this, and it treats a non-numeric value as
+        # "never re-scored", so leave a real stamp alone rather than writing
+        # None over it when git gave us no timestamp.
+        if head_ts is not None:
+            last_full_rescore_at = head_ts
+        health_analyzer_version = HEALTH_ANALYZER_VERSION
 
     new_state = {
         **state,
         "last_sync_commit": head,
         "last_full_rescore_at": last_full_rescore_at,
+        "health_analyzer_version": health_analyzer_version,
         "config_fingerprint": config_fingerprint(repo_path),
         # Record the renderer this run rendered with. Without this an index-only
         # update that regenerated stale file pages leaves the stored fingerprint
@@ -248,6 +436,15 @@ def _persist_index_only_update(
         # here is exactly the cost the mode exists to avoid.
         "renderer_fingerprint": _current_renderer_fingerprint(repo_path),
     }
+    # Before save_state, and reading ``state`` (the pre-update dict) for the old
+    # pointer: this is what keeps a degraded run recoverable now that the
+    # pointer below advances to head regardless.
+    record_repair_marker(new_state, state, failed_steps)
+    if failed_steps:
+        console.print(
+            "[yellow]Some data for this commit range was not persisted; "
+            "the next update will re-cover it.[/yellow]"
+        )
     if "last_docs_commit" not in state and "last_sync_commit" in state:
         new_state["last_docs_commit"] = state["last_sync_commit"]
     if knowledge_graph_result is not None:
@@ -448,6 +645,11 @@ async def _persist_full_update_async(
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
+    # Filled by the tombstone step; read by the full-text block after the
+    # session closes, so it has to survive a step that was skipped.
+    tombstoned_page_ids: list[str] = []
+    # Same contract, for rows of a page that has been retired outright.
+    swept_page_ids: list[str] = []
     try:
         await init_db(engine)
         sf = create_session_factory(engine)
@@ -462,6 +664,38 @@ async def _persist_full_update_async(
             # streamed each page per-commit for durability.
             await upsert_pages_from_generated(session, generated_pages, repo_id)
 
+            # Delete rows of pages that have been retired since this index was
+            # built. Nothing else on the update path can reach them: an update
+            # runs with ``file_pages_only``, so the ladder returns before the
+            # repo-wide levels and never visits an onboarding row to notice it
+            # should not exist. Without this the retirement reaches only users
+            # who re-index, and everyone else keeps being served a page the
+            # product no longer has.
+            try:
+                from repowise.core.pipeline.persist import (
+                    sweep_absent_cycle_pages,
+                    sweep_retired_pages,
+                )
+
+                swept_page_ids = await sweep_retired_pages(session, repo_id)
+                # Cycle pages are never regenerated on this path (the ladder
+                # stops at file pages), so a cycle that no longer exists can
+                # only be retired by asking the rebuilt graph directly.
+                swept_page_ids += await sweep_absent_cycle_pages(
+                    session, repo_id, graph_builder
+                )
+
+                # Drop the embeddings before the SQL session commits, the same
+                # ordering ``init`` uses: the vector store is a separate engine,
+                # so there is no write-lock conflict, the delete is idempotent,
+                # and an interrupted run self-heals forwards rather than leaving
+                # an embedding whose page is gone. ``decision_vector_store`` is
+                # the shared page/decision store despite the name.
+                if swept_page_ids and decision_vector_store is not None:
+                    await decision_vector_store.delete_many(swept_page_ids)
+            except Exception as exc:
+                _skip("Retired page sweep", exc)
+
             # Tombstone pages for deleted/renamed files — regeneration only
             # rewrites pages for files that still exist.
             try:
@@ -470,7 +704,9 @@ async def _persist_full_update_async(
                     tombstone_candidates,
                 )
 
-                await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
+                tombstoned_page_ids = await mark_tombstone_pages(
+                    session, repo_id, tombstone_candidates(file_diffs)
+                )
             except Exception as exc:
                 _skip("Tombstone marking", exc)
 
@@ -553,13 +789,26 @@ async def _persist_full_update_async(
             # Decision records: new markers + harvested decisions, supersession
             # detection, staleness recompute.
             try:
-                # One-shot drain of proposals from the removed code_comment
-                # harvest (#751). Confirmed/dismissed rows are kept.
+                # The same three store repairs the full-index path runs, in the
+                # same order (see ``pipeline/persist.py``). They live here too
+                # because a user whose workflow is ``repowise update`` never
+                # takes that path, and every one of them is a repair the store
+                # cannot make for itself: ``superseded`` and the retired-source
+                # backlog both survive re-extraction, and ``source_rank`` is a
+                # value copied into rows rather than derived on read.
+                from repowise.core.analysis.decision_provenance import RETIRED_SOURCES
                 from repowise.core.persistence.crud import (
                     purge_proposed_decisions_by_source,
+                    reconcile_source_ranks,
+                    unretire_auto_superseded,
                 )
 
-                await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
+                # Before the purge: restoring lands a row at ``proposed``,
+                # which is what the purge deletes.
+                await unretire_auto_superseded(session)
+                for _retired in RETIRED_SOURCES:
+                    await purge_proposed_decisions_by_source(session, repo_id, _retired)
+                await reconcile_source_ranks(session)
 
                 decision_dicts: list[dict] = []
                 if new_decision_markers:
@@ -743,7 +992,25 @@ async def _persist_full_update_async(
             fts = FullTextSearch(engine)
             await fts.ensure_index()
             for page in generated_pages:
-                await fts.index(page.page_id, page.title, page.content)
+                await fts.index(
+                    page.page_id,
+                    page.title,
+                    page.content,
+                    summary=page.summary,
+                    target_path=page.target_path,
+                )
+            # A tombstone can never be an answer — hydration drops it — but
+            # retrieval fetches a fixed number of rows before that check runs,
+            # so every tombstone left in the index costs a real candidate its
+            # slot.
+            if tombstoned_page_ids:
+                await fts.delete_many(tombstoned_page_ids)
+            # A swept page's FTS row outlives the page row unless it is deleted
+            # here, and search hydrates title and snippet from the FTS copy
+            # itself — so an orphan keeps answering queries in full, pointing
+            # at a page that now 404s. Worse than never having swept it.
+            if swept_page_ids:
+                await fts.delete_many(swept_page_ids)
         except Exception as exc:
             _skip("Full-text search indexing", exc)
         return total_pages
@@ -883,6 +1150,7 @@ async def _rescore_health_from_db(
                 parsed_files=parsed_files,
                 coverage_map=coverage_map,
                 duplication_cache_dir=Path(repo_path) / ".repowise",
+                repo_root=repo_path,
             )
             hcfg = HealthConfig.load(repo_path)
             analyzer_config = (
@@ -953,10 +1221,20 @@ def _run_full_health_rescore(
         console.print(f"[yellow]Health re-score failed: {exc}[/yellow]")
         return
 
-    save_state(
-        repo_path,
-        {**state, "last_sync_commit": head, "config_fingerprint": curr_fingerprint},
-    )
+    # Same full-replace re-score the periodic gate runs, so it restarts the same
+    # cadence. Left unstamped when git is unreadable: the gate cannot fire
+    # without a head_ts either.
+    new_state = {
+        **state,
+        "last_sync_commit": head,
+        "config_fingerprint": curr_fingerprint,
+        # These rows were just rewritten by this analyzer.
+        "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+    }
+    rescored_at = head_commit_ts(repo_path)
+    if rescored_at is not None:
+        new_state["last_full_rescore_at"] = rescored_at
+    save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
     console.print(f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s")
 
@@ -980,12 +1258,37 @@ def _full_rescore_interval_days() -> float:
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
-def full_rescore_due(state: dict, head_ts: float | None) -> bool:
-    """Whether a periodic idle-file health re-score is due this update (#728).
+def health_analyzer_changed(state: dict) -> bool:
+    """Whether the stored health rows were written by a different analyzer.
 
-    Absent ``head_ts`` (git unavailable) → not due. Absent stamp (never
-    re-scored, or legacy state) → due, to establish the recovered baseline.
+    A legacy state file with no stamp is **not** a change: the rows it wrote
+    are no more suspect than any other pre-upgrade rows, and treating absence
+    as drift would re-score every existing install once on upgrade for no
+    stated defect. They pick the stamp up on their first re-score from any
+    other trigger.
     """
+    stored = state.get("health_analyzer_version")
+    return stored is not None and stored != HEALTH_ANALYZER_VERSION
+
+
+def full_rescore_due(state: dict, head_ts: float | None) -> bool:
+    """Whether a full health re-score is due this update.
+
+    Two independent triggers:
+
+    * the analyzer changed since these rows were written — re-score now, so a
+      correction lands on the next update rather than waiting out the timer;
+    * the periodic idle-file cadence (#728).
+
+    The version check is deliberately ahead of the ``head_ts`` guard: an
+    analyzer change invalidates the rows whether or not git is readable.
+
+    Absent ``head_ts`` (git unavailable) → the time gate cannot fire. Absent
+    time stamp (never re-scored, or legacy state) → due, to establish the
+    recovered baseline.
+    """
+    if health_analyzer_changed(state):
+        return True
     if head_ts is None:
         return False
     last = state.get("last_full_rescore_at")

@@ -49,21 +49,27 @@ async def health_overview(
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
-    summary = await crud.get_health_summary(session, repo_id)
+    # ``metrics=`` / ``findings=`` exist for exactly this caller (see the
+    # parameter docstring): without them the summary pulls both whole tables a
+    # second time. The metrics read also aggregates the deduction column for the
+    # worst-first ranking, and the findings read is the most expensive of the
+    # two — so the route was paying for each of them twice per request.
     metrics = await crud.get_health_metrics(session, repo_id)
     findings = await crud.get_health_findings(session, repo_id)
-    snapshots = await crud.list_health_snapshots(session, repo_id)
+    summary = await crud.get_health_summary(
+        session, repo_id, metrics=metrics, findings=findings
+    )
 
     # Pull hotspot_health from the latest snapshot (KPIs aren't recomputed
-    # on every overview hit — the snapshot is authoritative).
-    hotspot_health: float | None = None
-    snapshot_taken_at = None
-    if snapshots:
-        latest = snapshots[-1]
-        hotspot_health = round(float(latest.hotspot_health), 2)
-        snapshot_taken_at = latest.taken_at
+    # on every overview hit — the snapshot is authoritative). Scalars only:
+    # a full snapshot entity drags its per-file score map, and this route reads
+    # none of it.
+    snapshot = await crud.get_health_snapshot_headline(session, repo_id)
+    hotspot_health = (
+        round(snapshot.hotspot_health, 2) if snapshot.hotspot_health is not None else None
+    )
 
-    last_indexed_at = _resolve_last_indexed_at(snapshot_taken_at, repo.updated_at)
+    last_indexed_at = _resolve_last_indexed_at(snapshot.taken_at, repo.updated_at)
 
     leads = _leads_by_file(findings)
     metric_dicts = [_metric_to_dict(m, leads.get(m.file_path)) for m in metrics]
@@ -82,9 +88,14 @@ async def health_overview(
     # "Does the score find the bugs?" self-validation, derived from the same
     # metrics + findings (prior_defect biomarker) already loaded above. ``None``
     # when the repo lacks enough files / defect history to be honest.
+    #
+    # Fed the rows it actually reads. It reads ``file_path`` / ``score`` off the
+    # metrics — so ``metric_dicts`` above serves, no second conversion — and
+    # only the ``prior_defect`` findings, so converting the other ~90% (which
+    # means a ``json.loads`` of every ``details_json``) was pure waste.
     defect_accuracy = compute_defect_accuracy(
-        [_metric_to_dict(m) for m in metrics],
-        [_finding_to_dict(f) for f in findings],
+        metric_dicts,
+        [_finding_to_dict(f) for f in findings if f.biomarker_type == "prior_defect"],
     )
 
     top_findings = await _attach_symbol_ids(
@@ -105,7 +116,7 @@ async def health_overview(
             # so the freshness signal self-heals on read (see the /api/repos
             # overlay). This is the extension's primary indexed-commit source.
             "head_commit": resolve_indexed_commit(repo.head_commit, repo.local_path),
-            "snapshot_count": len(snapshots),
+            "snapshot_count": snapshot.snapshot_count,
         },
     }
 

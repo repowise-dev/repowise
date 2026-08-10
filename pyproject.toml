@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.37.0"
+version = "0.39.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,6 +51,13 @@ dependencies = [
     "tree-sitter-php>=0.23,<1",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
+    # Markup grammars for single-file components: these locate <script> blocks
+    # and markup expressions only; the JS inside them is parsed with the
+    # TypeScript grammar (see sfc_source.py). There is no tree-sitter-vue on
+    # PyPI — the HTML grammar parses a .vue SFC cleanly, since <template>,
+    # <script> and <style> are just elements to it.
+    "tree-sitter-svelte>=1,<2",
+    "tree-sitter-html>=0.23,<1",
     # SQL parsing (multi-dialect, error-tolerant, pure Python)
     "sqlglot>=26,<28",
     # Dependency graph
@@ -85,7 +92,7 @@ dependencies = [
     "uvicorn[standard]>=0.32,<1",
     "mcp>=1.0,<2",
     "apscheduler>=3.10,<4",
-    "cryptography>=48.0.1,<49",
+    "cryptography>=50.0.0,<51",
     # LLM providers (bundled — no extras needed)
     "anthropic>=0.40,<1",
     "openai>=1.50,<3",

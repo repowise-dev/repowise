@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ...persistence.vector_store import embed_item
 from ..context_assembler import FilePageContext
 from ..models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
@@ -407,6 +408,12 @@ class _GenerationRun:
                     scope=scope_of.get(mg.structural_key, mg.scope),
                 )
             )
+        # A chapter is named from the leaves under it, and those leaves have
+        # just been renamed, so the names it was given at selection are stale.
+        # Same rule, same function; the model never names a chapter directly.
+        from ..selection.selector import retitle_chapters
+
+        groups_out = retitle_chapters(groups_out)
         # Generation order is left alone: it is summed PageRank, so the most
         # central subsystem is written first and lands in the store earliest.
         # Where the reader meets each page is ``order``, applied by the tree.
@@ -436,13 +443,6 @@ class _GenerationRun:
             return
 
         counts = self.selection.counts()
-        layer_page_count = 0
-        if self.kg_ctx.available:
-            layer_page_count = sum(
-                1
-                for layer in self.kg_ctx.get_layers()
-                if len([n for n in layer.get("nodeIds", []) if n.startswith("file:")]) >= 3
-            )
         # Level-8 onboarding pages (the non-promoted slots) also emit, and
         # were previously omitted here, which made the progress total read
         # lower than the pages actually generated (issue #922: "43 of 41").
@@ -462,7 +462,6 @@ class _GenerationRun:
             + counts["file_page"]
             + counts["scc_page"]
             + counts["module_page"]
-            + layer_page_count
             + int(self.selection.emit_repo_overview)
             + counts["infra_page"]
             + onboarding_page_count
@@ -621,7 +620,14 @@ class _GenerationRun:
                             and getattr(self.vector_store, "persists_across_runs", False)
                         )
                     ):
-                        embed_items.append(_embed_item(result))
+                        # None below the information floor: the page is kept and
+                        # still resolves as a link target, it just gets no
+                        # vector. ``embed_item`` tallies those itself, so the
+                        # run can report how much it held back instead of
+                        # leaving the index quietly smaller than the wiki.
+                        item = _embed_item(result)
+                        if item is not None:
+                            embed_items.append(item)
                 return result
             except Exception as exc:
                 if self.job_system is not None and self.job_id is not None:
@@ -707,15 +713,16 @@ class _GenerationRun:
         # Level 4 (module_page).
         all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
 
-        # Level 5 (layer_page) — one page per KG layer.
-        all_pages.extend(await self.run_level(_levels.build_level5_coros(self), 5))
-
-        # Levels 6 (repo_overview + architecture_diagram), 7 (infra_page),
-        # and 8 (onboarding) share no data dependencies — run merged.
+        # Level 5 was one page per KG layer. Those pages retired: the layer a
+        # page belongs to is stamped on the page itself, so the docs tree can
+        # group by it without a page to hang the group off.
+        #
+        # Levels 6 (repo_overview), 7 (infra_page), and 8 (onboarding) share
+        # no data dependencies — run merged.
         final = (
-            _levels.build_level6_coros(self)
+            await _levels.build_level6_coros(self)
             + _levels.build_level7_coros(self)
-            + _levels.build_level8_coros(self)
+            + await _levels.build_level8_coros(self)
         )
         final_pages = await self.run_level(final, 8)
         # Tag promoted onboarding slots (repo_overview / architecture_diagram).
@@ -880,6 +887,20 @@ def _stamp_structural_keys(pages: list[GeneratedPage]) -> None:
             # curated id is the best identity available and is stable for a
             # layer; for the others this is a fallback, not the design.
             page.structural_key = page.target_path
+        if not page.structural_key:
+            # The fallback above is a target_path, and a page whose members are
+            # unknown *and* whose target_path is empty comes out of it with no
+            # identity at all. That page is not merely unkeyed: the stale-page
+            # sweep matches these three types by structural key, so an empty one
+            # is a page the sweep can neither find nor retire, and it strands as
+            # a duplicate on every later run. Nothing downstream can tell that
+            # from a type that is not keyed on purpose, which is why this raises
+            # here rather than being logged and carried.
+            raise ValueError(
+                f"structural key missing for {page.page_id!r} (type "
+                f"{page.page_type!r}): it has no member list and no target "
+                f"path, so there is nothing to identify it by."
+            )
 
 
 def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
@@ -903,26 +924,33 @@ def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
     return scores
 
 
-def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:
+def _embed_item(page: GeneratedPage) -> tuple[str, str, dict] | None:
     """Build the ``(page_id, text, metadata)`` tuple for embedding.
+
+    ``None`` when the page falls below the information floor and should get no
+    vector; the caller counts those rather than embedding them.
 
     ``title`` is load-bearing, not decoration: it feeds the coverage rerank
     haystack and the grounding corpus on the serving side. Omitting it here
     (as this did until 2026-07) left every page embedded at generation time
     with a blank title, while ``reindex`` and ``doctor --repair`` set it, so
     the store disagreed with itself depending on how a page got there.
+
+    The recipe itself is shared with those two commands rather than repeated
+    here, which is what stops that class of disagreement recurring.
+
+    ``page.summary`` and not a summary derived here: it is the same field the
+    full-text index is given, so both arms describe a page the same way. The
+    two used to differ, and a page's summary then depended on which arm you
+    asked.
     """
-    summary = overview_summary(page.content)
-    return (
+    return embed_item(
         page.page_id,
-        page.content,
-        {
-            "title": page.title,
-            "page_type": page.page_type,
-            "target_path": page.target_path,
-            "content": page.content[:600],
-            "summary": summary,
-        },
+        title=page.title,
+        page_type=page.page_type,
+        target_path=page.target_path,
+        summary=page.summary,
+        content=page.content,
     )
 
 

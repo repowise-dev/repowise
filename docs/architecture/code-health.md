@@ -245,7 +245,12 @@ The returned report rides on `PipelineResult.health_report`. Then
 `core/pipeline/persist.py` writes it in one session: `save_health_metrics`,
 `save_health_findings` (only when there are findings), and a
 `save_health_snapshot` carrying the three KPIs plus a `{path: score}` map for
-trend tracking (rolling 50-row window per repo).
+trend tracking (rolling 50-row window per repo), and a second
+`{path: total_deduction}` map covering only the files whose score is held at
+the floor. Both maps come from `trends.snapshot_file_maps`, which the other two
+snapshot writers (`repowise health` and `repowise upgrade`) also call — a repo
+whose writers disagreed would get a history whose depth changed depending on
+which command last wrote it.
 
 ---
 
@@ -281,23 +286,54 @@ than dormant ones.
 
 ---
 
-## 5. The 26 markers and their categories
+## 5. The markers and their categories
 
 Each marker is a stateless class implementing the `Biomarker` Protocol from
 `biomarkers/base.py`: a `name` (`"brain_method"`, `"nested_complexity"`, ...), a
 `category` (see `scoring.CATEGORY_CAPS`), and a `detect(ctx: FileContext)` method
 returning a list of `BiomarkerResult`s.
 
+### The full roster
+
+`biomarkers/registry.py` registers **49 detectors**; counting the three
+governance findings written by the additive pass (`governance.py`) there
+are **52 marker ids**. They divide by what each is permitted to affect:
+
+| Group | Count | Scores into |
+|---|---:|---|
+| Defect-scoring | 26 | `defect` (8 of them also `maintainability`) |
+| Performance | 20 | `performance` only |
+| SQL | 3 | `maintainability` only |
+| Governance | 3 | nothing — the finding surfaces, the score is untouched |
+
+The authority is `scoring._BIOMARKER_DIMENSIONS`. Any biomarker **not** listed
+there defaults into `defect`, which is why every `sql_*` and every performance
+name must be listed explicitly: an omission would silently break the defect
+golden guarantee (§6).
+
+### Defect categories and caps
+
 | Category               | Cap  | Markers |
 |------------------------|------|------------|
-| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect |
+| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect, ungoverned_hotspot†, stale_governance†, contradictory_decision† |
 | Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
-| Test coverage (cont.)  | −2.0 | coverage_gradient |
+| Test coverage gradient | −2.0 | coverage_gradient |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0 | dry_violation |
 | Test quality           | −0.5 | large_assertion_block, duplicated_assertion_block |
 | Error handling         | −0.5 | error_handling |
+
+† The three governance markers carry a category and a weight, but the pass that
+writes them runs *after* scoring completes and never touches
+`HealthFileMetric.score` — so in practice they never deduct. They are counted
+in the table above because `scoring.py` maps them, not because they move a
+number.
+
+The maintainability dimension has its own independent tables
+(`_MAINTAINABILITY_CATEGORY`, caps: structural_complexity 4.0,
+size_and_complexity 2.0, duplication 2.0, error_handling 2.0, sql 2.0), and the
+performance dimension a single `performance` category capped at 2.0. See §6.
 
 `large_assertion_block` and `duplicated_assertion_block` are the two
 **test-quality** smells (see §5.3). They fire only on test files and sit in
@@ -532,6 +568,23 @@ so the same window yields a single file's score-over-time series:
 Both are state-free; the server serialises `FileTrend` via
 `_file_trend_to_dict` and embeds it in the file-detail health block, the
 health-breakdown response, and the standalone trend route (§13).
+
+#### Below the floor
+
+The stored score is clamped to `[SCORE_FLOOR, SCORE_MAX]`, so files 12.9 and
+9.1 points deep both persist as `1.0` and their series is flat however much of
+the work gets done. The second snapshot map (`per_file_deductions_json`) keeps
+the pre-clamp deduction for exactly those files — for every other file the
+deduction is `SCORE_MAX - score`, so there is nothing to store.
+
+Each point therefore carries `unclamped_score` alongside `score`:
+`SCORE_MAX - deduction` where the snapshot recorded one, and `score` otherwise.
+It is the series `_file_declining` runs on, so `declining` describes the line
+that can actually move, and a file getting worse *below* the floor now trips it.
+
+Snapshots written before this existed have no deduction map. Their floored
+files stay flat, which is correct — the depth was never measured, and inventing
+one would be worse than a flat line.
 
 ### Per-file signals (`signals.py`)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+from structlog.testing import capture_logs
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import (
@@ -481,6 +482,50 @@ async def test_generate_all_returns_pages():
     assert len(pages) >= 1
 
 
+async def test_generate_all_reports_evidence_skipped_when_onboarding_is_disabled():
+    config = GenerationConfig(
+        max_tokens=256,
+        token_budget=500,
+        max_concurrency=2,
+        enable_onboarding=False,
+        source_evidence_files={"onboarding/how_it_works": ("docs/flow.md",)},
+    )
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    fi = _make_file_info("pkg/main.py", language="python")
+    parsed = ParsedFile(
+        file_info=fi,
+        symbols=[_make_symbol(file_path="pkg/main.py")],
+        imports=[],
+        exports=[],
+        docstring=None,
+        parse_errors=[],
+    )
+    repo = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=1,
+        total_loc=20,
+        entry_points=[],
+    )
+
+    with capture_logs() as logs:
+        await gen.generate_all(
+            [parsed],
+            {"pkg/main.py": b"def main(): pass", "docs/flow.md": b"flow"},
+            _make_builder_with([parsed]),
+            repo,
+            "test-repo",
+        )
+
+    assert {
+        "event": "source_evidence.skipped",
+        "page_key": "onboarding/how_it_works",
+        "skipped": [{"path": "docs/flow.md", "reason": "onboarding_disabled"}],
+        "log_level": "warning",
+    } in logs
+
+
 async def test_generate_all_level_values_in_range():
     config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=2)
     provider = MockProvider()
@@ -650,12 +695,15 @@ async def test_generate_all_uses_in_memory_kg_modules_without_artifact_file():
 
 
 async def test_generate_all_builds_kg_ctx_from_in_memory_kg_data():
-    """Layer pages must generate on a FRESH init via the in-memory KG.
+    """A fresh init reads its layers from the in-memory KG, not from disk.
 
     kg_ctx previously only read knowledge-graph.json, which is written during
-    persistence — after generation — so first-run wikis silently had zero
-    layer pages (caught live: fresh repowise wiki had 37 module pages and no
-    Architecture layers).
+    persistence — after generation — so first-run wikis silently had no layer
+    information at all (caught live: fresh repowise wiki had 37 module pages
+    and no Architecture layers).
+
+    Layers no longer get pages of their own, so the observable result is the
+    provenance stamped on the pages they group.
     """
     config = GenerationConfig(
         max_tokens=256,
@@ -720,6 +768,12 @@ async def test_generate_all_builds_kg_ctx_from_in_memory_kg_data():
         kg_data=kg_data,
     )
 
-    layer_pages = [p for p in pages if p.page_type == "layer_page"]
-    assert layer_pages, "no layer pages generated from in-memory KG"
-    assert any("Service" in p.title for p in layer_pages)
+    assert not [p for p in pages if p.page_type == "layer_page"], (
+        "layer pages are retired; nothing should emit one"
+    )
+    # The KG layer still reached generation: every file page carries it, and
+    # the module page over those files inherits it from them.
+    file_pages = [p for p in pages if p.page_type == "file_page"]
+    assert file_pages, "no file pages generated from in-memory KG"
+    assert {p.metadata.get("layer_id") for p in file_pages} == {"layer:service"}
+    assert {p.metadata.get("layer_name") for p in file_pages} == {"Service"}

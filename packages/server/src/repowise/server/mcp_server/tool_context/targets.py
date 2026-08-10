@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.generation.page_selection import STALE_STATUSES
 from repowise.core.persistence.crud import get_kg_layers, get_kg_tour_steps
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -769,19 +770,44 @@ async def _resolve_one_target(
         result_data["decisions"] = governing
 
     # --- Freshness ---
+    #
+    # ``is_stale`` reads ``freshness_status`` through the same predicate
+    # ``repowise generate --stale`` uses, rather than thresholding
+    # ``confidence``. Two separate corrections in one line.
+    #
+    # The axis was wrong: freshness is whether a page has fallen behind the
+    # code it documents, confidence is how far its statements can be trusted
+    # while it has not. Thresholding the latter reported a *module* page as
+    # stale on the day it was built, because generation stamped every module
+    # page a keyless run rendered below the threshold. File and symbol targets
+    # were unaffected, since their pages are template renders at full
+    # confidence, so this was a module-target bug rather than a whole-tool one.
+    #
+    # The word was also being redefined: importing the CLI's set keeps one
+    # meaning of "stale" in the product. A hand-rolled ``!= "fresh"`` would
+    # quietly widen it to cover ``tombstone`` and ``outdated`` too, which is a
+    # different claim than the one the flag makes.
     if include is None or "freshness" in include:
         freshness: dict[str, Any] = {}
+
+        def _is_stale(row: Page) -> bool:
+            # Defensive on None: the column is NOT NULL with a "fresh" default
+            # and every write path passes it, but the old expression guarded
+            # its input and dropping the guard would turn a hand-written row
+            # into a stale one rather than a fresh one.
+            return (row.freshness_status or "fresh") in STALE_STATUSES
+
         if page:
             freshness["confidence_score"] = page.confidence
             freshness["freshness_status"] = page.freshness_status
-            freshness["is_stale"] = (page.confidence or 1.0) < 0.6
+            freshness["is_stale"] = _is_stale(page)
         elif target_type == "symbol" and file_path_for_git:
             sym_page_id = f"file_page:{file_path_for_git}"
             sym_page = await session.get(Page, sym_page_id)
             if sym_page:
                 freshness["confidence_score"] = sym_page.confidence
                 freshness["freshness_status"] = sym_page.freshness_status
-                freshness["is_stale"] = (sym_page.confidence or 1.0) < 0.6
+                freshness["is_stale"] = _is_stale(sym_page)
             else:
                 freshness["confidence_score"] = None
                 freshness["freshness_status"] = None

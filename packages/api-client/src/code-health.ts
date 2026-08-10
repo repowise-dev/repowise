@@ -104,7 +104,7 @@ export async function updateFindingStatus(
 
 export async function getHealthCoverage(
   repoId: string,
-  opts?: { file_path?: string; limit?: number },
+  opts?: { file_path?: string; limit?: number; module_limit?: number },
 ): Promise<HealthCoverageResponse> {
   return apiGet<HealthCoverageResponse>(
     `/api/repos/${repoId}/health/coverage`,

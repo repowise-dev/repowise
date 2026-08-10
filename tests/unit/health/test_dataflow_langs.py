@@ -1052,3 +1052,195 @@ def test_rust_match_conditional_write_refuses_promotion():
         """,
         "HIT",
     )
+
+
+# == C++ ========================================================================
+
+# Every C++ write shape in one function: declaration (with and without an
+# initialiser, through pointer / reference / array declarators), plain and
+# compound assignment, ``++``, the range-``for`` binder, the C-style ``for``
+# initializer -- plus the target shapes that bind NO local.
+_CPP_SHAPES = """
+    int total(const std::vector<int>& input, int base, Config* cfg) {
+        int acc = base;
+        int a = 1, b = 2;
+        int uninit;
+        int* ptr = nullptr;
+        int& ref = acc;
+        int arr[8];
+        for (const auto& item : input) {
+            acc += item;
+        }
+        for (int i = 0; i < 10; i++) {
+            acc = acc + i;
+        }
+        cfg->count = acc;
+        obj.field = acc;
+        arr[a] = b;
+        *ptr = acc;
+        acc++;
+        auto lam = [&](int z) { return z + hidden; };
+        return acc;
+    }
+"""
+
+
+def test_cpp_def_use_classification():
+    fn = _first("cpp", _CPP_SHAPES)
+    defs = _def_names(fn)
+    # Declarations (initialised or not), through every declarator wrapper, plus
+    # the two loop binders, are locals.
+    assert {"acc", "a", "b", "uninit", "ptr", "ref", "arr", "item", "i", "lam"} <= defs
+    assert {"input", "base", "cfg"} <= defs  # parameters seeded as entry defs
+    # Field / subscript / deref targets bind no local: their bases are reads.
+    assert "count" not in defs
+    assert "obj" not in defs
+    assert "field" not in defs
+    uses = _use_names(fn)
+    assert {"base", "acc", "cfg", "obj", "item", "input", "i"} <= uses
+    # A type is never a variable read, and neither is a called function's name.
+    assert "vector" not in uses
+    assert "Config" not in uses
+
+
+def test_cpp_reads_a_member_callee_receiver_but_not_the_method():
+    fn = _first(
+        "cpp",
+        """
+        int run(Database& db, int id) {
+            int n = 0;
+            n += db.execute(id);
+            n += helper(id);
+            return n;
+        }
+        """,
+    )
+    uses = _use_names(fn)
+    assert "db" in uses  # the receiver is a real read
+    assert "execute" not in uses  # the method name is not a variable
+    assert "helper" not in uses  # nor is a free function's name
+
+
+def test_cpp_lambda_body_is_a_separate_scope():
+    fn = _first(
+        "cpp",
+        """
+        int outer(int seed) {
+            int kept = seed;
+            auto lam = [&](int z) { return z + inner_only; };
+            return kept;
+        }
+        """,
+    )
+    assert "inner_only" not in _use_names(fn)
+    assert "z" not in _def_names(fn)
+
+
+def test_cpp_range_for_and_c_for_build_loop_headers():
+    fn = _first(
+        "cpp",
+        """
+        int walk(const std::vector<int>& xs) {
+            int n = 0;
+            for (auto x : xs) { n += x; }
+            for (int i = 0; i < 4; i++) { n += i; }
+            while (n > 100) { n--; }
+            return n;
+        }
+        """,
+    )
+    kinds = [b.kind for b in fn.cfg.blocks]
+    assert kinds.count("loop_header") == 3
+    assert "loop_exit" in kinds
+
+
+def test_cpp_else_if_chain_branches():
+    fn = _first(
+        "cpp",
+        """
+        int pick(int x) {
+            int r = 0;
+            if (x > 10) { r = 1; }
+            else if (x > 5) { r = 2; }
+            else { r = 3; }
+            return r;
+        }
+        """,
+    )
+    assert [b.kind for b in fn.cfg.blocks].count("branch") == 2
+
+
+def test_cpp_try_catch_builds_a_handler_block():
+    fn = _first(
+        "cpp",
+        """
+        int guarded(int x) {
+            int r = 0;
+            try { r = risky(x); }
+            catch (const std::exception& e) { r = -1; }
+            return r;
+        }
+        """,
+    )
+    assert any(b.kind == "handler" for b in fn.cfg.blocks)
+
+
+def test_cpp_switch_writes_are_may_defs():
+    # A switch is one CFG statement, so an arm's write is recorded as a def AND
+    # a use -- keeping the must-def reasoning conservative.
+    fn = _first(
+        "cpp",
+        """
+        int classify(int x) {
+            int r = 0;
+            switch (x) {
+                case 1: r = 10; break;
+                default: r = 20;
+            }
+            return r;
+        }
+        """,
+    )
+    assert "r" in _def_names(fn)
+    assert "r" in _use_names(fn)
+
+
+def test_cpp_extract_method_fires():
+    fn = _first(
+        "cpp",
+        """
+        int report(const std::vector<int>& xs, int base) {
+            int sum = base;
+            int count = 0;
+            for (auto& item : xs) {
+                if (item > 0) { sum += item; count++; }
+                else if (item < -5) { sum -= item; }
+                else { count--; }
+            }
+            int avg = count > 0 ? sum / count : 0;
+            int scaled = avg * 2;
+            int shifted = scaled + base;
+            int clamped = shifted > 100 ? 100 : shifted;
+            if (clamped < 0) { clamped = 0; }
+            return clamped;
+        }
+        """,
+    )
+    lmap = get_language_map("cpp")
+    assert lmap is not None
+    extractions = find_extractions(fn, lmap)
+    assert extractions
+    # Deterministic ordering: re-running yields the identical best candidate.
+    assert [(e.start_line, e.end_line) for e in find_extractions(fn, lmap)] == [
+        (e.start_line, e.end_line) for e in extractions
+    ]
+
+
+def test_cpp_extraction_never_spans_a_jump():
+    # ``break`` / ``continue`` / ``return`` / ``throw`` all have dedicated node
+    # types in tree-sitter-cpp, so the slicer's single-exit gate sees them.
+    lmap = get_language_map("cpp")
+    assert lmap is not None
+    assert {"break_statement", "continue_statement"} <= lmap.break_kinds | lmap.continue_kinds
+    assert "return_statement" in lmap.return_kinds
+    assert "throw_statement" in lmap.raise_kinds

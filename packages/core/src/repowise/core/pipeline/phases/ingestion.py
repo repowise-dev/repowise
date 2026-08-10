@@ -84,6 +84,32 @@ _TOP_LANGUAGES_SHOWN = 6
 _SLOW_GRAPH_BUILD_FILES = 2000
 
 
+async def _record_structural_episodes(
+    repo_path: Path,
+    traverser: Any,
+    *,
+    allow_formatter_check: bool,
+) -> None:
+    """Persist structural episodes for the walk that just finished.
+
+    Imported lazily and swallowed whole: an episode is enrichment, and nothing
+    here may fail or slow an index. Off the event loop because the formatter
+    check is a blocking subprocess with a timeout, and this loop is also
+    driving progress rendering.
+    """
+    try:
+        from repowise.core.precedent.structural import record_structural_episodes
+
+        await asyncio.to_thread(
+            record_structural_episodes,
+            repo_path,
+            traverser,
+            allow_formatter_check=allow_formatter_check,
+        )
+    except Exception:
+        logger.debug("structural_episodes_skipped", exc_info=True)
+
+
 def _emit_traversal_summary(
     progress: ProgressCallback | None,
     stats: Any,
@@ -241,6 +267,7 @@ async def _run_ingestion(
     skip_tests: bool,
     skip_infra: bool,
     progress: ProgressCallback | None,
+    derive_environment_facts: bool = False,
 ) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any]:
     """Traverse, parse, and build the dependency graph.
 
@@ -291,6 +318,15 @@ async def _run_ingestion(
         await asyncio.to_thread(io_pool.shutdown, wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
+
+    # Structural episodes ride the walk that just finished — nested-repo names
+    # and console scripts are by-products of it. The one check that describes
+    # the machine rather than the repository is opt-in: this function is the
+    # *full pipeline*, not ``init``, and the workspace updater and the hosted
+    # job executor both reach it.
+    await _record_structural_episodes(
+        repo_path, traverser, allow_formatter_check=derive_environment_facts
+    )
     _phase_done(progress, "traverse")
 
     # Filter
@@ -400,13 +436,16 @@ async def _run_ingestion(
 
     if parse_cache is not None:
         parse_cache.save()
+    # Lend the just-read bytes to the builder so the language warmups that
+    # scan file text during build() don't re-read the repo.
+    graph_builder.set_source_map(source_map)
     _phase_done(progress, "parse")
 
     # ---- tsconfig path-alias resolver (before graph build) ------------------
     # Only runs when the repo has TS/JS files. On large TS monorepos the
     # resolver indexes hundreds of tsconfig files up-front; without a phase
     # label this shows up as a silent gap right after parsing.
-    _ts_langs = {"typescript", "javascript"}
+    _ts_langs = {"typescript", "javascript", "svelte", "vue"}
     if any(pf.file_info.language in _ts_langs for pf in parsed_files):
         if progress:
             progress.on_phase_start("tsconfig", None)
@@ -522,6 +561,7 @@ async def reparse_for_resume(
     skip_tests: bool,
     skip_infra: bool,
     progress: ProgressCallback | None,
+    derive_environment_facts: bool = False,
 ) -> tuple[list[Any], list[Any], Any, dict[str, bytes], list[Any]]:
     """Parse-only ingestion for a resumed run: traverse + parse, **no graph
     build or centrality**.
@@ -569,6 +609,12 @@ async def reparse_for_resume(
         await asyncio.to_thread(io_pool.shutdown, wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
+    # A resumed run is still the same command: the interrupted one may never
+    # have reached the derivation, so it runs here too rather than leaving a
+    # resumed repo without the facts a fresh one gets.
+    await _record_structural_episodes(
+        repo_path, traverser, allow_formatter_check=derive_environment_facts
+    )
     _phase_done(progress, "traverse")
 
     if skip_tests:

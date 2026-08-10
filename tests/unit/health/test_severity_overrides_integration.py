@@ -61,6 +61,7 @@ def _evaluate(severity_overrides):
         pf,
         fcx,
         path_basenames=set(),
+        package_roots=set(),
         disabled=[],
         dup_report=DuplicationReport(),
         severity_overrides=severity_overrides,

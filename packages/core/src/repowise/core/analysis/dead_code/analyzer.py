@@ -36,7 +36,11 @@ from .cpp_reachability import (
     is_cpp_file_reachable,
     is_cpp_path,
 )
-from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
+from .dynamic_markers import (
+    find_dynamic_edge_files,
+    find_dynamic_import_files,
+    read_source_text,
+)
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
@@ -85,6 +89,16 @@ _LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
 # Kinds allowed as top-level imports in TS/JS (top-level `export const` literals/objects)
 _TS_JS_IMPORTABLE_KINDS: frozenset[str] = frozenset({"constant", "variable"})
 
+# Single-file-component languages: the whole file is one component, so their
+# exports behave unlike an ordinary module's — see _non_importable_kinds.
+_SFC_LANGUAGES: frozenset[str] = frozenset({"svelte", "vue"})
+
+# Every kind an SFC component prop can take, plus "class" for the synthetic
+# component symbol itself — see _non_importable_kinds.
+_SFC_NON_IMPORTABLE_KINDS: frozenset[str] = frozenset(
+    {"constant", "variable", "function", "class", "interface", "type_alias"}
+)
+
 
 def _non_importable_kinds(language: str) -> frozenset[str]:
     """Per-language set of symbol kinds excluded from unused-export passes.
@@ -93,6 +107,26 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
     additions. Cheap to call — short lookup, no per-call allocation
     when the language has no additions.
     """
+    # An SFC's top-level exports are its props: Svelte's ``export let x`` is
+    # set by the PARENT as a markup attribute (``<Foo x={1} />``), never by an
+    # ``import { x }``. repowise models component instantiation as a call edge
+    # on the component, not as symbol-level edges on each prop, so every prop
+    # would read as an unused export.
+    #
+    # The component symbol itself needs the same treatment, which is why
+    # "class" is in the set. A component is reached as a whole module — by a
+    # markup tag, or by a router's ``import('@/views/profile')``, which binds
+    # no name at all — so it never carries the symbol-level inbound edge the
+    # unused-export pass looks for. On vue-element-admin that alone accounted
+    # for 45 of 53 findings, every one of them a false positive.
+    #
+    # Suppressing the whole pass is the honest ceiling: it costs the
+    # genuinely-dead named exports of a Svelte ``<script context="module">``
+    # or a Vue non-setup ``<script>``, which cannot be told apart from props
+    # without modelling attribute-to-prop binding across files.
+    if language in _SFC_LANGUAGES:
+        return _UNIVERSAL_NON_IMPORTABLE | _SFC_NON_IMPORTABLE_KINDS
+
     extra = _LANGUAGE_NON_IMPORTABLE.get(language)
     if extra is None:
         if language in ("typescript", "javascript"):
@@ -303,7 +337,10 @@ _BARREL_FILENAMES: frozenset[str] = frozenset(
 )
 
 
-def _find_jsx_namespace_files(parsed_files: dict) -> set[str]:
+def _find_jsx_namespace_files(
+    parsed_files: dict,
+    source_map: dict[str, bytes] | None = None,
+) -> set[str]:
     """Return repo-relative paths of TS/TSX files that declare ``namespace JSX``.
 
     Symbols whose name is in :data:`_TS_JSX_NAMESPACE_TYPES` and whose
@@ -321,7 +358,7 @@ def _find_jsx_namespace_files(parsed_files: dict) -> set[str]:
             src_path = Path(file_info.abs_path)
             if src_path.suffix not in (".ts", ".tsx", ".d.ts"):
                 continue
-            source = src_path.read_text(errors="ignore")
+            source = read_source_text(path, file_info.abs_path, source_map)
             # Match ``namespace JSX`` and ``declare namespace JSX`` — both
             # are JSX transformer integration points in practice.
             if "namespace JSX" in source:
@@ -342,7 +379,10 @@ _RELATIVE_PATH_STRING_RE = re.compile(r"""['"]((?:\.\.?/)?[\w@.-]+(?:/[\w@.-]+)+
 _TS_PROBE_SUFFIXES = ("", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
 
 
-def _find_bundler_alias_targets(parsed_files: dict) -> set[str]:
+def _find_bundler_alias_targets(
+    parsed_files: dict,
+    source_map: dict[str, bytes] | None = None,
+) -> set[str]:
     """Repo-relative paths referenced from bundler config files.
 
     Vite/webpack ``resolve.alias`` entries substitute a bare package import
@@ -362,7 +402,7 @@ def _find_bundler_alias_targets(parsed_files: dict) -> set[str]:
             file_info = getattr(pf, "file_info", None)
             if file_info is None:
                 continue
-            source = Path(file_info.abs_path).read_text(errors="ignore")
+            source = read_source_text(path, file_info.abs_path, source_map)
         except Exception:
             continue
         config_dir = Path(path).parent
@@ -386,7 +426,10 @@ def _posix_normpath(config_dir: Path, raw: str) -> str:
 _TS_EXPORT_ALIAS_RE = re.compile(r"\bexport\s*\{([^}]*)\}(?!\s*from)")
 
 
-def _find_ts_export_aliases(parsed_files: dict) -> dict[str, dict[str, str]]:
+def _find_ts_export_aliases(
+    parsed_files: dict,
+    source_map: dict[str, bytes] | None = None,
+) -> dict[str, dict[str, str]]:
     """Per-file ``{local_name: exported_alias}`` maps for TS/JS alias exports.
 
     ``export { ConversationHistoryWrapper as ConversationHistory }`` publishes
@@ -402,7 +445,7 @@ def _find_ts_export_aliases(parsed_files: dict) -> dict[str, dict[str, str]]:
             file_info = getattr(pf, "file_info", None)
             if file_info is None:
                 continue
-            source = Path(file_info.abs_path).read_text(errors="ignore")
+            source = read_source_text(path, file_info.abs_path, source_map)
         except Exception:
             continue
         file_map: dict[str, str] = {}
@@ -471,20 +514,48 @@ class DeadCodeAnalyzer:
         graph: Any,  # nx.DiGraph
         git_meta_map: dict | None = None,
         parsed_files: dict | None = None,
+        source_map: dict[str, bytes] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
+        # Four prepasses below each scan every indexed file for text markers.
+        # ``source_map`` is ingestion's ``{repo_relative_path: raw bytes}`` for
+        # the same file set, so passing it turns four full-repo disk passes
+        # into dict lookups. Callers that don't have it (a resume view, the
+        # standalone ``dead-code`` command on a graph built elsewhere) pass
+        # None and each prepass reads from disk exactly as before.
         self._dynamic_import_files = find_dynamic_import_files(
-            parsed_files or {}
+            parsed_files or {}, source_map
         ) | find_dynamic_edge_files(graph)
-        self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(parsed_files or {})
+        # Parent directories of the above, precomputed once.
+        #
+        # ``_make_unreachable_finding`` asks "does any dynamic-import file sit
+        # in the same package as this node". That used to be a scan over
+        # ``_dynamic_import_files`` constructing a ``Path`` per candidate, run
+        # once per unreachable candidate: O(candidates x dynamic_files) with a
+        # pathlib constant. A set of parent strings makes it one hash lookup,
+        # so the pass is linear in candidates again. On a 30k-file JS monorepo
+        # (8.8k files carrying dynamic-import markers) that took the dead-code
+        # phase from 374.9s to 10.1s with byte-identical findings.
+        #
+        # Derived state: this is only valid for the current
+        # ``_dynamic_import_files``. Treat both as immutable after __init__,
+        # or update them together.
+        self._dynamic_import_dirs: set[str] = {
+            str(Path(dif).parent) for dif in self._dynamic_import_files
+        }
+        self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(
+            parsed_files or {}, source_map
+        )
         # Files substituted in via bundler ``resolve.alias`` config — named
         # by the config, never imported by path.
-        self._bundler_alias_targets: set[str] = _find_bundler_alias_targets(parsed_files or {})
+        self._bundler_alias_targets: set[str] = _find_bundler_alias_targets(
+            parsed_files or {}, source_map
+        )
         # ``export { local as alias }`` maps so importer edges carrying the
         # alias still count for the local symbol.
         self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
-            parsed_files or {}
+            parsed_files or {}, source_map
         )
         # Lazily-built ``.go`` package-directory → file-node map, used by the
         # Go package-granular reachability hook (see ``go_reachability``).
@@ -695,12 +766,8 @@ class DeadCodeAnalyzer:
             confidence = 0.4
 
         # Reduce confidence when dynamic imports exist in the same package.
-        if self._dynamic_import_files:
-            node_pkg = str(Path(node).parent)
-            for dif in self._dynamic_import_files:
-                if str(Path(dif).parent) == node_pkg:
-                    confidence = min(confidence, 0.4)
-                    break
+        if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
+            confidence = min(confidence, 0.4)
 
         # Runtime-load risk factors (config / bootstrap / database /
         # environment / script). These are files the never-flag allowlist

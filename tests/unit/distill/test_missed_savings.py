@@ -18,11 +18,8 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.commands.saved_cmd import saved_command
-from repowise.core.distill.missed import (
-    RATIO_FLOOR,
-    scan_missed_savings,
-    transcript_dir_for,
-)
+from repowise.core.distill.missed import RATIO_FLOOR, scan_missed_savings
+from repowise.core.sessions import transcript_dir_for
 
 NOW = time.time()
 
@@ -129,6 +126,24 @@ def test_distill_prefixed_commands_are_not_missed(repo: Path, projects: Path) ->
     assert report["events"] == 0
 
 
+def test_an_already_distilled_run_is_not_counted_as_missed(repo: Path, projects: Path) -> None:
+    """The command text cannot prove a rewrite did not happen; the output can.
+
+    The rewrite hook swaps the command via PreToolUse ``updatedInput``, which
+    changes what executes and not what the transcript stored -- so a rewritten
+    call still shows its original command here. Counting it would bill a
+    saving the ledger has already banked.
+    """
+    distilled = PYTEST_OUT + (
+        "\n[repowise#a1b2c3d4e5f6: 40 lines omitted (~900 tokens); "
+        "restore: repowise expand a1b2c3d4e5f6]\n"
+    )
+    _write_session(projects, repo, _tool_pair("pytest -q", distilled, cwd=str(repo)))
+    report = scan_missed_savings(repo, projects_root=projects, now=NOW + 10)
+    assert report["events"] == 0
+    assert report["est_saved_tokens"] == 0
+
+
 def test_unclassifiable_command_skipped(repo: Path, projects: Path) -> None:
     _write_session(projects, repo, _tool_pair("docker compose up", "y\n" * 80, cwd=str(repo)))
     report = scan_missed_savings(repo, projects_root=projects, now=NOW + 10)
@@ -204,8 +219,10 @@ def test_saved_missed_empty_report_message(tmp_path: Path, monkeypatch) -> None:
 
 def test_saved_missed_table(repo: Path, projects: Path, monkeypatch) -> None:
     _write_session(projects, repo, _tool_pair("pytest -q", PYTEST_OUT, cwd=str(repo)))
+    # The CLI has no --projects-root, so redirect discovery at the adapter:
+    # ClaudeCodeAdapter.discover reads this as a module global.
     monkeypatch.setattr(
-        "repowise.core.distill.missed.transcript_dir_for",
+        "repowise.core.sessions.adapters.claude_code.transcript_dir_for",
         lambda root, projects_root=None: transcript_dir_for(root, projects),
     )
     result = CliRunner().invoke(saved_command, ["--missed", str(repo)])

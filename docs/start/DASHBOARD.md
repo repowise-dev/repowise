@@ -55,7 +55,7 @@ If a job is in flight, the progress and log stream here.
 
 **Answers:** how does this system work, in prose someone can read?
 
-<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/docs-page.mp4" alt="Repowise docs reader: page tree on the left, generated wiki page with confidence and freshness badges in the center" autoplay loop muted playsinline width="100%"></video>
+<img src="../../.github/assets/dashboard/docs-page.png" alt="Repowise docs reader: page tree on the left, generated wiki page with confidence and freshness badges in the center" width="100%" />
 
 The generated wiki: a page tree on the left, the rendered page in the middle
 with mermaid diagrams, code blocks that link into the file views, a confidence
@@ -117,7 +117,7 @@ regenerating everything.
 
 **Answers:** what talks to what?
 
-<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/architecture-page.mp4" alt="Repowise dependency graph: ELK-laid-out module graph with a context drawer showing a selected node's dependents" autoplay loop muted playsinline width="100%"></video>
+<img src="../../.github/assets/dashboard/architecture-page.png" alt="Repowise dependency graph: detected communities laid out on the module map, sized by how much code each holds" width="100%" />
 
 Five views behind `?view=`:
 
@@ -149,7 +149,7 @@ zoomed on one node. The older `/c4` and `/zoom` URLs redirect here.
 
 **Answers:** which files are likely to break next, and why?
 
-<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: health ring, band distribution, KPI cards and the lowest-scoring file list" width="100%" />
+<img src="../../.github/assets/dashboard/code-health.png" alt="Repowise code health: the three co-equal pillars, the alert/warning/healthy band distribution, KPI cards and the code health map" width="100%" />
 
 Tabs behind `?tab=`:
 
@@ -254,8 +254,10 @@ concentrated. Useful before a reorg, and before assuming a file has an owner.
 
 **Answers:** why is this code shaped this way?
 
-Architectural decisions with their evidence drawer, supersession lineage, and a
-decision graph. Decisions are mined from history and PR discussion and can be
+Architectural decisions with their evidence drawer and a decision graph.
+(Supersession lineage renders empty for now — the detector that produced those
+edges is off, see `docs/layers/DECISIONS.md`.) Decisions are mined from history
+and PR discussion and can be
 confirmed, edited, or added by hand. This is the view that keeps a "we already
 tried that" answer from being lost.
 
@@ -263,7 +265,7 @@ tried that" answer from being lost.
 
 `/repos/<id>/chat`
 
-<video src="https://raw.githubusercontent.com/repowise-dev/repowise/main/.github/assets/dashboard/chat-page.mp4" alt="Repowise chat: a question answered against the index, with citations to the pages and files it came from and an artifacts panel" autoplay loop muted playsinline width="100%"></video>
+<img src="../../.github/assets/dashboard/chat-page.png" alt="Repowise chat: a question answered against the index, with citations to the pages and files it came from and an artifacts panel" width="100%" />
 
 Ask questions against the indexed repo. Answers cite the pages and files they
 came from, an artifacts panel collects code the answer produced, and you can

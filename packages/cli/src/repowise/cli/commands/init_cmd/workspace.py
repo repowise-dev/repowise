@@ -203,13 +203,13 @@ def _run_workspace_deterministic_generation(
     from repowise.core.generation import GenerationConfig
     from repowise.core.providers.llm.template import TemplateProvider
 
-    requested = embedder_was_requested or pin_names_an_embedder(
-        load_config(repo_path).get("embedder")
-    )
+    repo_config = load_config(repo_path)
+    requested = embedder_was_requested or pin_names_an_embedder(repo_config.get("embedder"))
     hosted = embedder_name_resolved not in ("mock", "ollama")
     embedder = "mock" if hosted and not requested else embedder_name_resolved
 
-    gen_config = GenerationConfig(
+    gen_config = GenerationConfig.from_repo_config(
+        repo_config,
         deterministic=True,
         max_concurrency=concurrency,
         language=language,
@@ -217,7 +217,7 @@ def _run_workspace_deterministic_generation(
         wiki_style=wiki_style,
         # No question is asked in the workspace flow, so this only picks up a cap
         # already recorded for this repo (by a single-repo init, or by hand).
-        max_file_pages=resolve_max_file_pages(config=load_config(repo_path)),
+        max_file_pages=resolve_max_file_pages(config=repo_config),
     )
     generated_pages = run_repo_generation(
         repo_path=repo_path,
@@ -332,6 +332,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     ),
                     progress=callback,
                     existing_kg_fingerprint=_prev_kg_fp,
+                    derive_environment_facts=True,
                 )
             )
         repo_phase_timings: dict[str, float] = callback.timings
@@ -408,9 +409,14 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             result.generated_pages = generated_pages
             # (result.vector_store is set inside _run_workspace_generation
             # so the Phase-2C decision dedup can reuse the same store.)
-            pages_generated = len(generated_pages)
+            # Excludes placeholders left behind by failed provider calls, which
+            # are members of this list like any other page. The single-repo
+            # flow reports the same split.
+            from repowise.core.generation.models import count_stub_fallbacks
+
+            pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
             docs_mode = "llm"
-            console.print(f"    [green]✓[/green] Generated {len(generated_pages)} pages\n")
+            console.print(f"    [green]✓[/green] Generated {pages_generated} pages\n")
         except CostGateDeclined:
             # Declining only ever meant "not at that price". Fall back to the
             # free template renderer rather than leaving the repo with no wiki

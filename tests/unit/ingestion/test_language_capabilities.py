@@ -143,8 +143,14 @@ _FULL = {
     "python",
     "ruby",
     "rust",
+    # svelte components resolve through the TS/JS resolver plus the
+    # SvelteKit $lib alias.
+    "svelte",
     "swift",
     "typescript",
+    # vue components project to TypeScript through the same SFC pass as
+    # svelte, so their <script> imports are ordinary ESM.
+    "vue",
 }
 _PARTIAL = {
     "luau",
@@ -160,6 +166,10 @@ _PARTIAL = {
     "sql",
     # source ./lib.sh + $SCRIPT_DIR / dirname idioms.
     "shell",
+    # <script src>/<link href> as document-/root-relative asset paths. Partial
+    # rather than full because template dialects (Django, Jinja, Go templates,
+    # ERB, Handlebars) are invisible to an HTML grammar and yield nothing.
+    "html",
 }
 
 

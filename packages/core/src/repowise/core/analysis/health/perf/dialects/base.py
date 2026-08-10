@@ -108,6 +108,19 @@ class BasePerfDialect:
     string_literal_kinds: frozenset[str] = frozenset()
     aug_assign_kinds: frozenset[str] = frozenset()
 
+    #: Sink methods that are genuine I/O boundaries but must NOT make a function
+    #: a ``hot_path_sync_io`` candidate.
+    #:
+    #: That marker fires OUTSIDE any loop, so it only earns its keep on work
+    #: whose cost is unbounded — spawning a subprocess, walking a whole tree.
+    #: It was gated at 11/11 back when a dialect's ``filesystem`` kind meant
+    #: essentially one call, so widening a per-language filesystem lexicon
+    #: silently widens this separately-calibrated marker too. Listing the
+    #: point-sized reads/writes here keeps the two decoupled: they stay real
+    #: sinks for every loop-based marker (where per-iteration cost is the whole
+    #: point) while a single bounded file touch in a hot function stays quiet.
+    hot_path_excluded_methods: frozenset[str] = frozenset()
+
     # -- callee extraction (the per-grammar seam) -----------------------------
 
     def callee_root_name(self, call_node: Node) -> str | None:
@@ -202,6 +215,21 @@ class BasePerfDialect:
         """
         return None
 
+    def loop_body(self, node: Node) -> Node | None:
+        """The per-iteration body of a *native* loop node (the counterpart of
+        :meth:`block_loop_body` for grammars that spell loops as statements).
+
+        Only the body runs per iteration — a ``for x in <iterable>`` header runs
+        once — so the walker raises ``loop_depth`` for exactly this child. The
+        default is the ``body`` field, which every grammar the perf pass serves
+        labels except tree-sitter-kotlin (whose ``for_statement`` /
+        ``while_statement`` block is an unlabeled child). A dialect whose grammar
+        does not label the field overrides this; returning ``None`` keeps the
+        walker's conservative fallback (every child counts as body), so a
+        language that does not override it is byte-for-byte unchanged.
+        """
+        return node.child_by_field_name("body")
+
     def is_iteration_loop(self, node: Node) -> bool:
         """True if this loop iterates a *collection* (a data multiplier), rather
         than spinning a cursor (``while (hasMore)`` / ``for (;;)``).
@@ -250,6 +278,52 @@ class BasePerfDialect:
         if not any(c.type == "+=" for c in node.children):
             return False
         return self._rhs_is_stringish(node)
+
+    def binds_name(self, node: Node, name: bytes) -> bool:
+        """True when *node* is a statement that (re)binds *name* — a fresh local
+        declaration or a plain (non-compound) assignment.
+
+        The one grammar-specific question inside :meth:`resets_per_iteration`;
+        default ``False`` so a dialect that does not override it never claims a
+        reset (and therefore never suppresses a finding).
+        """
+        return False
+
+    def resets_per_iteration(self, node: Node, name: bytes, loop_kinds: frozenset[str]) -> bool:
+        """True when *name* is re-bound inside the body of the loop enclosing
+        *node*, so a ``+=`` onto it accumulates within ONE iteration only.
+
+        The top ``string_concat_in_loop`` false positive in every language
+        surveyed so far: an accumulator declared fresh each pass (``var s = "";
+        s += part; out.append(s)``) is bounded per iteration, not the O(n^2)
+        rebuild the marker means. Traversal lives here — walk out to the nearest
+        enclosing loop (native or block-iteration), then scan its body — and the
+        per-grammar "does this statement bind the name" question is delegated to
+        :meth:`binds_name`.
+
+        NB: the Python, Ruby and Dart dialects each carry an older bespoke
+        version of this guard, predating the hook; they are left as-is rather
+        than retrofitted, since each is tuned against its own validated corpus.
+        """
+        cur = node.parent
+        loop: Node | None = None
+        for _ in range(32):
+            if cur is None:
+                break
+            if cur.type in loop_kinds or self.block_loop_body(cur) is not None:
+                loop = cur
+                break
+            cur = cur.parent
+        if loop is None:
+            return False
+        body = self.block_loop_body(loop) or self.loop_body(loop) or loop
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if self.binds_name(n, name):
+                return True
+            stack.extend(n.children)
+        return False
 
     def _rhs_is_stringish(self, node: Node) -> bool:
         """True if an augmented-assignment's RHS is provably string-typed.

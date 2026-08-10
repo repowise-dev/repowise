@@ -19,6 +19,8 @@ from typing import Any
 import networkx as nx
 import structlog
 
+from ..cohesion import is_cohesion_edge
+
 log = structlog.get_logger(__name__)
 
 _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
@@ -106,6 +108,39 @@ class MetricsMixin:
             self._file_subgraph_cache = sub
             return sub
 
+    def cycle_subgraph(self) -> nx.DiGraph:
+        """Return :meth:`file_subgraph` minus cohesion edges, for cycle detection.
+
+        A cohesion edge records that two files are one compilation unit — Go
+        package siblings, JVM same-package classes, C# partial fragments, a C++
+        header/implementation pair — not that one depends on the other. See
+        :mod:`repowise.core.ingestion.cohesion`. Left in, they turn every
+        cohesive package into a fabricated import cycle.
+
+        Kept separate from :meth:`file_subgraph` deliberately: PageRank,
+        betweenness and the degree kernels must keep seeing cohesion edges,
+        because dead-code and orphan detection are the whole reason the resolver
+        passes synthesise them.
+
+        Built lazily — only cycle callers pay for it — and cached like the other
+        subgraphs. A ``restricted_view`` rather than a filtered copy: on a 30k-node
+        repo a second full copy of the file graph is real memory for a graph we
+        only ever read. Callers must treat the result as read-only.
+        """
+        cached = self._cycle_subgraph_cache
+        if cached is not None:
+            return cached
+        # Resolve the base graph BEFORE taking the lock: file_subgraph() takes
+        # the same lock, and threading.Lock is not reentrant.
+        base = self.file_subgraph()
+        with self._subgraph_lock:
+            if self._cycle_subgraph_cache is not None:
+                return self._cycle_subgraph_cache
+            cohesion = [(u, v) for u, v, d in base.edges(data=True) if is_cohesion_edge(d)]
+            sub = nx.restricted_view(base, [], cohesion)
+            self._cycle_subgraph_cache = sub
+            return sub
+
     def symbol_subgraph(self) -> nx.DiGraph:
         """Return a subgraph of symbol nodes connected by call + heritage edges.
 
@@ -141,6 +176,9 @@ class MetricsMixin:
     def strongly_connected_components(self) -> list[frozenset[str]]:
         """Return SCCs as a list of frozensets, in a run-stable order.
 
+        Computed over :meth:`cycle_subgraph`, so files that are merely siblings
+        in one compilation unit do not read as a cycle.
+
         NetworkX yields components in graph-iteration order, and the graph's
         node insertion order varies between runs (git-indexer threads finish
         in whatever order they finish). Callers that index into this list, such
@@ -150,7 +188,7 @@ class MetricsMixin:
         something that depends only on the component contents.
         """
         return sorted(
-            (frozenset(scc) for scc in nx.strongly_connected_components(self.file_subgraph())),
+            (frozenset(scc) for scc in nx.strongly_connected_components(self.cycle_subgraph())),
             key=lambda scc: (-len(scc), min(scc)),
         )
 

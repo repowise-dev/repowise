@@ -31,6 +31,12 @@ from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
     distinct_commits_in_range,
 )
+
+# Package attribution lives in one place, shared with the traverser and with
+# the `repowise update` backfill, so all three agree on what a package is.
+from ...ingestion.package_roots import module_for as _module_for
+from ...ingestion.package_roots import package_roots_from_paths as _package_roots
+from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
@@ -56,6 +62,28 @@ from .refactoring.graph_signals import build_file_scc_index, build_methods_by_fi
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 
 log = structlog.get_logger(__name__)
+
+# Bump when a change to this analyzer makes already-persisted health rows wrong
+# — a new or removed biomarker, a changed attribution rule, a different finding
+# shape. ``repowise update`` compares it against the value stored in state.json
+# and re-scores on mismatch (see ``update_cmd.persistence.full_rescore_due``),
+# instead of waiting out the 7-day decay timer.
+#
+# Reach, stated honestly: the gate is only consulted once an update reaches the
+# incremental path, so this lands on the next update that has changed files. A
+# repo with no new commits returns at the "already up to date" branch and picks
+# the correction up on its next commit; workspace members and the hosted
+# indexer do not run this path at all. That is the same reach the decay timer
+# already has — this extends that trigger rather than adding a wider one.
+#
+# Deliberately *not* folded into ``config_fingerprint``: that fingerprint means
+# "this repo's config content changed", and a workspace update answers drift in
+# it by full-re-indexing every member repo. An analyzer change invalidates the
+# scores, not the parse or the git index, so it routes to the re-score alone.
+#
+# Not a licence to move a calibrated scoring weight — those are frozen
+# independently of this stamp.
+HEALTH_ANALYZER_VERSION = 1
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -85,17 +113,6 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
-def _fallback_module(rel_path: str) -> str | None:
-    """Top-level directory as a stand-in module label when no community map.
-
-    Returns ``None`` for root-level files so the rollup endpoint doesn't
-    create a phantom "" bucket.
-    """
-    norm = rel_path.replace("\\", "/")
-    if "/" not in norm:
-        return None
-    head = norm.split("/", 1)[0]
-    return head or None
 
 
 def _read_source_lines(abs_path: str) -> list[str] | None:
@@ -282,6 +299,7 @@ class HealthAnalyzer:
         coverage_map: dict[str, dict[str, Any]] | None = None,
         module_map: dict[str, str] | None = None,
         duplication_cache_dir: Any | None = None,
+        repo_root: Any | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -301,6 +319,39 @@ class HealthAnalyzer:
         # repo's ``.repowise``). None disables caching — the duplication
         # pass then re-tokenizes everything, exactly as before.
         self.duplication_cache_dir = duplication_cache_dir
+        # Checkout root, used only to read package boundaries off disk. None
+        # falls back to inferring them from the analyzed file list, which sees
+        # only the manifests the traverser emitted.
+        self.repo_root = repo_root
+        self._package_roots_cache: set[str] | None = None
+
+    def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
+        """Package roots for this repo, decided once per analyzer.
+
+        One answer for every file, so ``module`` is a property of the repo
+        layout rather than of whichever code path happens to be running — the
+        defect this replaced was four call sites disagreeing.
+
+        Read off disk when a ``repo_root`` is known, because the analyzed file
+        list only carries manifests the traverser could language-detect, and it
+        drops ``go.mod``, ``pom.xml``, ``build.gradle``, ``Gemfile``,
+        ``build.sbt`` and a dozen more. Falls back to the file list otherwise
+        (in-memory callers and tests), which is the previous behaviour.
+        """
+        if self._package_roots_cache is not None:
+            return self._package_roots_cache
+        roots: set[str] | None = None
+        if self.repo_root is not None:
+            try:
+                roots = _scan_package_roots(self.repo_root)
+            except OSError as exc:
+                # An unreadable tree must not fail the health pass; the file
+                # list still gives the pre-existing answer.
+                log.debug("health_package_root_scan_failed", error=str(exc))
+        if roots is None:
+            roots = _package_roots(analyzed_paths)
+        self._package_roots_cache = roots
+        return roots
 
     def analyze(
         self,
@@ -330,7 +381,9 @@ class HealthAnalyzer:
         # PageRank is optional — graph_builder.symbol_pagerank exists but
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
-        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
+        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames(analyzed_paths)
+        package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -417,6 +470,7 @@ class HealthAnalyzer:
                 pf,
                 fcx,
                 path_basenames,
+                package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -490,7 +544,9 @@ class HealthAnalyzer:
         )
         changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
-        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
+        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames(analyzed_paths)
+        package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -591,6 +647,7 @@ class HealthAnalyzer:
                 pf,
                 fcx,
                 path_basenames,
+                package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -767,6 +824,7 @@ class HealthAnalyzer:
         pf: Any,
         fcx: FileComplexity,
         path_basenames: set[str],
+        package_roots: set[str],
         *,
         disabled: list[str],
         dup_report: DuplicationReport,
@@ -815,7 +873,7 @@ class HealthAnalyzer:
         clones = dup_report.pairs_by_file.get(file_path, [])
         dup_pct = dup_report.duplication_pct.get(file_path)
 
-        module = self.module_map.get(file_path) or _fallback_module(file_path)
+        module = _module_for(file_path, package_roots)
 
         file_git_meta = self.git_meta_map.get(file_path, {}) or {}
         blame_idx_obj = file_git_meta.get("blame_index")

@@ -311,9 +311,11 @@ _WALK_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # Repo DISCOVERY: exists to find nested .git dirs, prunes in-place;
     # migration onto walk_repo(prune_nested_git=False) is a tracked follow-up.
     ("core", "workspace/scanner.py"): frozenset({"os.walk"}),
-    # Decision mining: pruned in-place walks + an rglob bounded to docs/;
-    # migration is a tracked follow-up (sequenced after the source_map reuse).
-    ("core", "analysis/decisions/extractor.py"): frozenset({"rglob", "os.walk"}),
+    # Decision mining: pruned in-place walks. The ``rglob`` entry went with the
+    # readme_mining/changelog miners (#1290) — the ADR scan globs a fixed set
+    # of patterns and walks with in-place pruning. Migration onto walk_repo is
+    # a tracked follow-up (sequenced after the source_map reuse).
+    ("core", "analysis/decisions/extractor.py"): frozenset({"os.walk"}),
     # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
     ("cli", "commands/status_cmd.py"): frozenset({"rglob"}),
     # Scans repowise's own packaged web/ui source dirs, not the user repo.

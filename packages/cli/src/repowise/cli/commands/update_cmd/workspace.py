@@ -11,6 +11,40 @@ import click
 from repowise.cli.helpers import CommandTarget, console, run_async
 
 
+def _print_repo_result(result: Any) -> None:
+    """Print one repo's outcome. Shared by both workspace passes.
+
+    The index-only pass and the docs pass report identically, and keeping two
+    copies of this is what let the deferral line drift into saying only that
+    something else was running, without saying for how long.
+    """
+    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+
+    if result.error:
+        console.print(f"    [red]✗ {result.alias}: {result.error}[/red]")
+    elif result.skipped_reason == "in_flight":
+        # Surface skipped-because-in-flight as a yellow note rather than a
+        # silent skip. Single-flight is the noise-fix path, so the user
+        # benefits from seeing it actually trigger — and the age is what tells
+        # a normal overlap apart from an update that has stopped progressing.
+        age = result.lock_age_seconds
+        held = format_lock_age(age)
+        note = (
+            ""
+            if age is None or age <= UPDATE_LOCK_SUSPECT_AFTER_SECONDS
+            else " That is long enough to be worth checking on."
+        )
+        console.print(
+            f"    [yellow]↻ {result.alias}: another update has held the lock "
+            f"{held}; this commit was queued for it to pick up.{note}[/yellow]"
+        )
+    elif result.updated:
+        console.print(
+            f"    [green]✓[/green] {result.alias}: "
+            f"{result.file_count} files, {result.symbol_count:,} symbols"
+        )
+
+
 def _workspace_update(
     target: CommandTarget,
     *,
@@ -177,24 +211,6 @@ def _workspace_update(
     def _on_start(alias: str) -> None:
         console.print(f"  Updating [bold]{alias}[/bold]...")
 
-    def _on_done(result: RepoUpdateResult) -> None:
-        if result.error:
-            console.print(f"    [red]\u2717 {result.alias}: {result.error}[/red]")
-        elif result.skipped_reason == "in_flight":
-            # Surface skipped-because-in-flight as a yellow note rather than
-            # a silent skip. Single-flight is the noise-fix path, so the
-            # user benefits from seeing it actually trigger.
-            console.print(
-                f"    [yellow]\u21bb {result.alias}: another update is already "
-                "in flight; this commit was queued for it to pick up.[/yellow]"
-            )
-        elif result.updated:
-            console.print(
-                f"    [green]\u2713[/green] {result.alias}: "
-                f"{result.file_count} files, {result.symbol_count:,} symbols"
-            )
-
-    from repowise.core.workspace import RepoUpdateResult
 
     results = run_async(
         update_workspace(
@@ -203,7 +219,7 @@ def _workspace_update(
             repo_filter=repo_alias,
             dry_run=False,
             on_repo_start=_on_start,
-            on_repo_done=_on_done,
+            on_repo_done=_print_repo_result,
         )
     )
 
@@ -305,20 +321,6 @@ def _workspace_docs_update(
         def _on_start(alias: str) -> None:
             console.print(f"  Updating [bold]{alias}[/bold]...")
 
-        def _on_done(result: RepoUpdateResult) -> None:
-            if result.error:
-                console.print(f"    [red]✗ {result.alias}: {result.error}[/red]")
-            elif result.skipped_reason == "in_flight":
-                console.print(
-                    f"    [yellow]↻ {result.alias}: another update is already "
-                    "in flight; this commit was queued for it to pick up.[/yellow]"
-                )
-            elif result.updated:
-                console.print(
-                    f"    [green]✓[/green] {result.alias}: "
-                    f"{result.file_count} files, {result.symbol_count:,} symbols"
-                )
-
         core_results = run_async(
             update_workspace(
                 ws_root,
@@ -327,7 +329,7 @@ def _workspace_docs_update(
                 run_hooks=False,
                 dry_run=False,
                 on_repo_start=_on_start,
-                on_repo_done=_on_done,
+                on_repo_done=_print_repo_result,
             )
         )
         changed_aliases.extend(r.alias for r in core_results if r.updated)
@@ -434,10 +436,29 @@ def _workspace_docs_update(
     # work), "complete" would overclaim — the real regeneration is still
     # running elsewhere. Say so, and point at the log the hook writes.
     if deferred and not (docs_updated or core_updated):
+        from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+
+        # The oldest lock is the one worth naming: it is the run most likely to
+        # have stopped progressing, and "still running" with no age attached is
+        # exactly the message that leaves a wedged update looking healthy.
+        ages = [r.lock_age_seconds for r in core_results if r.lock_age_seconds is not None]
+        oldest = max(ages) if ages else None
+        if oldest is not None and oldest > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+            tail = (
+                f"An update has held the lock {format_lock_age(oldest)}, which is "
+                "longer than an update normally takes. Check "
+                "[bold].repowise/.update.log[/bold]: if it has not been written to "
+                "in that time, that update is stuck and can be stopped."
+            )
+        elif oldest is not None:
+            tail = (
+                f"A background update has been running {format_lock_age(oldest)}; "
+                "watch [bold].repowise/.update.log[/bold]."
+            )
+        else:
+            tail = "A background update is still running; watch [bold].repowise/.update.log[/bold]."
         console.print(
-            f"[yellow]Workspace update deferred[/yellow]: {summary}. "
-            "A background update is still running; watch "
-            "[bold].repowise/.update.log[/bold]. "
+            f"[yellow]Workspace update deferred[/yellow]: {summary}. {tail} "
             f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
         )
     else:

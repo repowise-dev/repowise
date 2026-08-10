@@ -30,7 +30,6 @@ import contextlib
 import json
 import re
 import sqlite3
-import time
 from pathlib import Path
 
 # --- SessionStart tunables -------------------------------------------------
@@ -96,7 +95,7 @@ _CLIP_RATIONALE = 160
 
 # ---------------------------------------------------------------------------
 # Shared SQLite plumbing (read-only wiki.db, stdlib sqlite3 — the hook path
-# must not pay the sqlalchemy import; same pattern as the skeleton nudge)
+# must not pay the sqlalchemy import; same pattern as fast_lookup)
 # ---------------------------------------------------------------------------
 
 
@@ -437,8 +436,13 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
             globals_shown += 1
     if not shown:
         return None
-    _record_injections(repo_path, session_id, [d["id"] for d in shown], node_id="")
-    return "\n".join(lines)
+    from repowise.cli.hook_ledger import _record_injections
+
+    block = "\n".join(lines)
+    _record_injections(
+        repo_path, session_id, [d["id"] for d in shown], node_id="", chars=len(block)
+    )
+    return block
 
 
 # ---------------------------------------------------------------------------
@@ -522,11 +526,11 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
         conn.close()
 
     shown.append(decision["id"])
-    if session_id:
-        claimed, session_total = _claim_injection(repo_path, session_id, decision["id"], rel)
-        if not claimed or session_total > _MAX_EDIT_NOTICES:
-            return None
 
+    # Built before the claim, not after: the claim records what this emission
+    # costs, and the cost model sums that column. A row claimed at zero chars
+    # is an injection the net reports as free. Building first is a handful of
+    # string operations on a path that has already done a database query.
     why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
     if _echoes_title(decision["title"], why):
         why = ""  # legacy rows echo the title into decision/rationale
@@ -535,7 +539,17 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
         line += f" because {why}"
     if sessions_n >= 2:
         line += f" (confirmed across {sessions_n} sessions)"
-    return line + "."
+    line += "."
+
+    if session_id:
+        from repowise.cli.hook_ledger import _claim_injection
+
+        claimed, session_total = _claim_injection(
+            repo_path, session_id, decision["id"], rel, chars=len(line)
+        )
+        if not claimed or session_total > _MAX_EDIT_NOTICES:
+            return None
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -623,10 +637,14 @@ def _edit_fix_history_notice(repo_path: Path, rel: str, session_id: str) -> str 
     line += "."
 
     if session_id:
+        from repowise.cli.hook_ledger import _claim_ledger
+
+        from ._shared import _ledger_key
+
         claimed, shown = _claim_ledger(
             repo_path,
             session_id,
-            f"fix_history:{rel}",
+            _ledger_key("fix_history", "edit_notice", line),
             node_id=rel,
             surface="fix_history",
             category="edit_notice",
@@ -675,152 +693,3 @@ def _top_fix_symbol(raw: object) -> str | None:
     if not isinstance(counts, dict) or not counts:
         return None
     return str(next(iter(counts))).rsplit("::", 1)[-1] or None
-
-
-# ---------------------------------------------------------------------------
-# Injection recording (usage feedback v1)
-# ---------------------------------------------------------------------------
-
-_INJECTIONS_TABLE_SQL = (
-    "CREATE TABLE IF NOT EXISTS injections ("
-    "session_id TEXT NOT NULL, decision_id TEXT NOT NULL, "
-    "node_id TEXT NOT NULL DEFAULT '', shown_at REAL NOT NULL, "
-    "evaluated INTEGER NOT NULL DEFAULT 0, "
-    "surface TEXT NOT NULL DEFAULT '', "
-    "category TEXT NOT NULL DEFAULT '', "
-    "chars INTEGER NOT NULL DEFAULT 0, "
-    "PRIMARY KEY (session_id, decision_id))"
-)
-
-#: Mirror of core.sessions.staging.INJECTIONS_LEDGER_COLUMNS — the hook path
-#: must not import repowise.core, so the migration is duplicated verbatim.
-_LEDGER_COLUMNS = (
-    ("surface", "TEXT NOT NULL DEFAULT ''"),
-    ("category", "TEXT NOT NULL DEFAULT ''"),
-    ("chars", "INTEGER NOT NULL DEFAULT 0"),
-)
-
-
-def _open_injections(repo_path: Path) -> sqlite3.Connection | None:
-    db_path = repo_path / ".repowise" / "sessions" / "sessions.db"
-    try:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db_path, timeout=1)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=1000")
-        conn.execute(_INJECTIONS_TABLE_SQL)
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(injections)")}
-        for name, decl in _LEDGER_COLUMNS:
-            if name not in existing:
-                conn.execute(f"ALTER TABLE injections ADD COLUMN {name} {decl}")
-        return conn
-    except (sqlite3.Error, OSError):
-        return None
-
-
-def _record_injections(
-    repo_path: Path, session_id: str, decision_ids: list[str], *, node_id: str
-) -> None:
-    """Log shown decisions in the sessions.db sidecar; best-effort, never raises.
-
-    The update-time miner reads these rows to judge whether injected guidance
-    was followed or contradicted (usage feedback v1). Written with raw stdlib
-    sqlite3 so the hook path never imports repowise.core.
-    """
-    if not session_id or not decision_ids:
-        return
-    conn = _open_injections(repo_path)
-    if conn is None:
-        return
-    try:
-        now = time.time()
-        conn.executemany(
-            "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category) "
-            "VALUES (?, ?, ?, ?, 'decision', 'session_start')",
-            [(session_id, did, node_id, now) for did in decision_ids],
-        )
-        conn.commit()
-    except sqlite3.Error:
-        pass
-    finally:
-        conn.close()
-
-
-def _claim_ledger(
-    repo_path: Path,
-    session_id: str,
-    key: str,
-    *,
-    node_id: str,
-    surface: str,
-    category: str,
-    chars: int,
-) -> tuple[bool, int]:
-    """Atomically claim one non-decision ledger emission.
-
-    Generic twin of :func:`_claim_injection` for the read/search enrichment
-    surfaces: *key* replaces the decision id in the primary key, so INSERT OR
-    IGNORE is the once-per-session-per-key gate. Returns ``(claimed,
-    surface_injection_count)`` where the count covers only rows that actually
-    carried text (``chars > 0``) on *surface* — pure measurement rows must not
-    eat into an injection cap. Fail-closed: any error reports unclaimed.
-    """
-    conn = _open_injections(repo_path)
-    if conn is None:
-        return False, 0
-    try:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category, chars) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, key, node_id, time.time(), surface, category, chars),
-        )
-        claimed = cur.rowcount > 0
-        count = conn.execute(
-            "SELECT COUNT(*) FROM injections WHERE session_id = ? AND surface = ? AND chars > 0",
-            (session_id, surface),
-        ).fetchone()[0]
-        conn.commit()
-        return claimed, int(count)
-    except sqlite3.Error:
-        return False, 0
-    finally:
-        conn.close()
-
-
-def _claim_injection(
-    repo_path: Path, session_id: str, decision_id: str, node_id: str
-) -> tuple[bool, int]:
-    """Atomically claim the right to show one decision this session.
-
-    Returns ``(claimed, edit_notice_count)``. The primary key makes the
-    INSERT OR IGNORE the once-per-session-per-decision gate, immune to the
-    state-file races two concurrent hook processes produce; the count backs
-    the strict per-session notice cap. Fail-closed: any error reports
-    unclaimed, so a sidecar glitch degrades to silence, never to spam.
-    """
-    conn = _open_injections(repo_path)
-    if conn is None:
-        return False, 0
-    try:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category) "
-            "VALUES (?, ?, ?, ?, 'decision', 'edit_notice')",
-            (session_id, decision_id, node_id, time.time()),
-        )
-        claimed = cur.rowcount > 0
-        # Surface-scoped: read/search enrichment rows also carry a node_id and
-        # must not eat into the edit-notice cap.
-        count = conn.execute(
-            "SELECT COUNT(*) FROM injections WHERE session_id = ? AND node_id != '' "
-            "AND surface IN ('', 'decision')",
-            (session_id,),
-        ).fetchone()[0]
-        conn.commit()
-        return claimed, int(count)
-    except sqlite3.Error:
-        return False, 0
-    finally:
-        conn.close()

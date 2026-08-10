@@ -85,6 +85,25 @@ const TAB_ALIASES: Record<string, TabId> = {
  */
 const OVERLAYS: CodeHealthOverlay[] = ["health", "maintainability", "performance", "churn"];
 
+/** Files pulled for the map: biggest first, capped so the galaxy stays legible. */
+const MAP_FILE_LIMIT = 2000;
+/**
+ * Churn points pulled for the churn lens. Deliberately larger than
+ * `MAP_FILE_LIMIT`: the map ranks by NLOC and churn-complexity ranks by
+ * `commit_count × max_ccn`, so the two windows do not contain the same files.
+ * At the old default of 300 this repo joined churn onto 296 of the 1,935 mapped
+ * files that have it, and the other ~1,700 nodes rendered as the legend's
+ * "no data" swatch for data that exists. Matching the map's 2,000 would still
+ * miss 445. 5,000 covers every churned file here with headroom; a repo that
+ * exceeds it degrades back to the same partial join rather than breaking.
+ *
+ * Costs ~469 KB uncompressed on this repo (3,011 points), on a request that
+ * only fires once the churn lens is selected. The hosted route still caps at
+ * 1,000, so porting this page there needs that ceiling raised first or the
+ * request 422s.
+ */
+const CHURN_POINT_LIMIT = 5000;
+
 export default function CodeHealthPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -140,7 +159,7 @@ export default function CodeHealthPage() {
   // so switching the lens never refetches.
   const { data: mapFiles } = useSWR<HealthFilesResponse>(
     `code-health-map-files:${repoId}`,
-    () => listHealthFiles(repoId, { limit: 2000, sort: "nloc", order: "desc" }),
+    () => listHealthFiles(repoId, { limit: MAP_FILE_LIMIT, sort: "nloc", order: "desc" }),
     { revalidateOnFocus: false },
   );
 
@@ -150,7 +169,7 @@ export default function CodeHealthPage() {
   const churnWanted = overlay === "churn";
   const { data: churn, isLoading: churnLoading } = useSWR<ChurnComplexityResponse>(
     churnWanted ? `health-churn-complexity:${repoId}` : null,
-    () => getChurnComplexity(repoId),
+    () => getChurnComplexity(repoId, { limit: CHURN_POINT_LIMIT }),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
 
@@ -177,11 +196,14 @@ export default function CodeHealthPage() {
     () => getDeadCodeSummary(repoId),
     { revalidateOnFocus: false },
   );
-  // Coverage's own tab pulls 5,000 file rows; this asks for the summary alone,
-  // on its own key, so a badge never drags the heavy payload onto page load.
+  // Coverage's own tab pulls 5,000 file rows and the module rollup; this badge
+  // reads one number off `summary`, so it declines both. `limit` and
+  // `module_limit` cap different blocks — one file row and no modules is 0.7 KB
+  // against the tab's 442 KB, and `modules_total` still reports the real count
+  // to anyone who asks for it.
   const { data: coverage } = useSWR<HealthCoverageResponse>(
     `code-health-coverage-summary:${repoId}`,
-    () => getHealthCoverage(repoId, { limit: 1 }),
+    () => getHealthCoverage(repoId, { limit: 1, module_limit: 0 }),
     { revalidateOnFocus: false },
   );
   const coveragePct = coverage?.summary.line_coverage_pct;

@@ -406,7 +406,7 @@ class TestClassifyHitKind:
         from repowise.server.mcp_server.tool_search import _classify_hit_kind
 
         assert _classify_hit_kind("", "repo_overview") == "doc"
-        assert _classify_hit_kind("onboarding/guided_tour", "onboarding") == "doc"
+        assert _classify_hit_kind("onboarding/how_it_works", "onboarding") == "doc"
 
     def test_file_page_paths_classify_by_role(self):
         from repowise.server.mcp_server.tool_search import _classify_hit_kind
@@ -986,3 +986,112 @@ class TestFusion:
         result = await search_codebase("session cache layer", limit=10)
         by_path = {r["target_path"]: r for r in result["results"]}
         assert by_path["src/fts_rescue.py"]["sources"] == ["fts"]
+
+
+class TestSearchCandidates:
+    """`candidates`: every slot the caller paid for resolves to an openable file.
+
+    The unit-level rules live in ``test_search_candidates.py``. These drive the
+    real tool, because the defect this fixes was not in the path logic — it was
+    in which branch of ``search_codebase`` ever called it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pages_that_are_not_files_do_not_cost_the_caller_a_slot(self, setup_mcp):
+        """A module page and an onboarding page rank, and candidates still names
+        two files, reached from below the caller's cut."""
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page("module_page:pkg/cmd/release", "pkg/cmd/release", "module_page")
+        await _seed_page(
+            "onboarding:onboarding/how_it_works", "onboarding/how_it_works", "onboarding"
+        )
+        await _seed_page("file_page:pkg/cmd/release/list.go", "pkg/cmd/release/list.go")
+        await _seed_page("file_page:pkg/cmd/release/http.go", "pkg/cmd/release/http.go")
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "module_page:pkg/cmd/release", "Release", "module_page", "pkg/cmd/release", 0.90
+                ),
+                _mk_result(
+                    "onboarding:onboarding/how_it_works",
+                    "Guided Tour",
+                    "onboarding",
+                    "onboarding/how_it_works",
+                    0.80,
+                ),
+                _mk_result(
+                    "file_page:pkg/cmd/release/list.go",
+                    "list.go",
+                    "file_page",
+                    "pkg/cmd/release/list.go",
+                    0.70,
+                ),
+                _mk_result(
+                    "file_page:pkg/cmd/release/http.go",
+                    "http.go",
+                    "file_page",
+                    "pkg/cmd/release/http.go",
+                    0.60,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("listing releases in order", limit=10)
+
+        # The module page is still a legitimate ranked result.
+        assert "module_page" in [r["page_type"] for r in result["results"]]
+        # ...and candidates names only things that can be opened.
+        assert result["candidates"] == [
+            {"path": "pkg/cmd/release/list.go"},
+            {"path": "pkg/cmd/release/http.go"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_symbol_page_is_served_as_its_file(self, setup_mcp):
+        """The half of A14 that never reached this branch.
+
+        ``target_path`` keeps the page id, because callers pipe it into
+        get_symbol. ``file`` and ``candidates`` carry the openable path.
+        """
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page(
+            "symbol_spotlight:api/client.go::HTTP", "api/client.go::HTTP", "symbol_spotlight"
+        )
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result(
+                    "symbol_spotlight:api/client.go::HTTP",
+                    "HTTP",
+                    "symbol_spotlight",
+                    "api/client.go::HTTP",
+                    0.90,
+                )
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("how are requests issued", limit=10)
+
+        hit = result["results"][0]
+        assert hit["target_path"] == "api/client.go::HTTP"
+        assert hit["file"] == "api/client.go"
+        assert result["candidates"] == [{"path": "api/client.go"}]
+
+    @pytest.mark.asyncio
+    async def test_no_block_when_nothing_openable_was_reached(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        await _seed_page("repo_overview:cli", "cli", "repo_overview")
+
+        async def fake_search(query, limit=10):
+            return [_mk_result("repo_overview:cli", "Overview", "repo_overview", "cli", 0.90)]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("what is this repository", limit=10)
+        assert "candidates" not in result

@@ -51,6 +51,16 @@ export interface RefactoringCardProps {
   onSelect?: ((target: RefactoringTarget) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
   onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
+  /**
+   * Fetch this file's findings, called on first expand. The list response
+   * deliberately omits them — serializing every file's findings to render a
+   * list that shows none of them cost 1.8 MB per request. Falls back to
+   * `target.all_findings` when the host does not supply this, so a card fed by
+   * an older payload still expands.
+   */
+  onLoadFindings?:
+    | ((filePath: string) => Promise<RefactoringTargetFinding[]>)
+    | undefined;
   expandable?: boolean;
   /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
   highlighted?: boolean;
@@ -75,10 +85,31 @@ export function RefactoringCard({
   onSelect,
   onStatusChange,
   onGeneratePrompt,
+  onLoadFindings,
   expandable = true,
   highlighted = false,
 }: RefactoringCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [loaded, setLoaded] = useState<RefactoringTargetFinding[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  // `finding_count` is on every target, so the expander's presence and its
+  // label no longer depend on shipping the findings themselves.
+  const findings = target.all_findings ?? loaded;
+  const hasFindings = target.finding_count > 0;
+
+  const toggle = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (!next || findings || !onLoadFindings) return;
+    setLoadFailed(false);
+    try {
+      setLoaded(await onLoadFindings(target.file_path));
+    } catch {
+      // Keep the card usable: the header already carries the primary finding.
+      setLoadFailed(true);
+    }
+  };
   return (
     <div
       data-refactoring-card={target.file_path}
@@ -165,19 +196,25 @@ export function RefactoringCard({
           </div>
         ) : null}
       </div>
-      {expandable && target.all_findings && target.all_findings.length > 0 ? (
+      {expandable && hasFindings ? (
         <>
           <button
             type="button"
-            onClick={() => setExpanded((e) => !e)}
+            onClick={toggle}
+            aria-expanded={expanded}
             className="flex w-full items-center gap-2 px-4 py-2 text-xs text-[var(--color-text-secondary)] border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)]"
           >
             {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            {expanded ? "Hide" : "Show"} all {target.all_findings.length} findings
+            {expanded ? "Hide" : "Show"} all {target.finding_count} findings
           </button>
-          {expanded ? (
+          {expanded && !findings ? (
+            <p className="border-t border-[var(--color-border-default)] px-4 py-2 text-xs text-[var(--color-text-tertiary)]">
+              {loadFailed ? "Could not load findings." : "Loading findings…"}
+            </p>
+          ) : null}
+          {expanded && findings ? (
             <ul className="divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)]">
-              {target.all_findings.map((f) => (
+              {findings.map((f) => (
                 <li key={f.id} className="px-4 py-2 space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <SeverityMark severity={f.severity} />

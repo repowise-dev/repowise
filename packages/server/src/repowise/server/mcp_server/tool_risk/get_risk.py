@@ -14,6 +14,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -39,21 +40,26 @@ async def get_risk(
 
     Fuses git temporal signals (churn percentile, trend, bus factor) with
     graph topology (dependents, co-changes, impact surface) and security
-    findings. Consult before editing a file that is bug-fixed or busy. Pass
+    findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
     (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
     first. tests_to_run is coverage-backed: the tests the per-test map proves
-    exercise the changed files, empty when no coverage map is ingested.
-    To score a live commit or ``base..head`` diff by revspec instead of file
-    paths, use ``get_change_risk``.
+    exercise the changed files, empty when no coverage map is ingested. To
+    score a commit or ``base..head`` range instead, use ``get_change_risk``.
 
     defect_profile appears only on files with counted bug fixes: how many landed
     in the trailing 6 months, how long ago the last one was, a bug_magnet flag
-    for sustained recent fix pressure, and top_symbols. Those per-symbol counts
-    are approximate, because symbol spans are current-tree while each fix's line
-    ranges are numbered on its own parent commit, so read them as "mostly here"
-    rather than exact. Nothing here names the commit that introduced a bug.
-    global_hotspots ranks the same way: fix history first, churn as fallback.
+    for sustained recent fix pressure, and top_symbols. Read top_symbols as
+    "mostly here" rather than exact — symbol spans are current-tree while each
+    fix's line ranges are numbered on its own parent commit. Nothing names the
+    commit that introduced a bug. global_hotspots ranks the same way: fix
+    history first, churn as fallback.
+
+    episodes counts the dated records bound to a target — what happened here and
+    why, evidenced by a commit or a filesystem fact. It appears only when there
+    is at least one, and get_why serves the bodies. A directory target
+    aggregates everything beneath it, so compare the numbers within a kind of
+    target, not across kinds.
 
     Args:
         targets: file paths to assess.
@@ -178,6 +184,12 @@ async def get_risk(
     # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
     # health tables. Conservative: missing data → no field, never invented.
     await _enrich_health(results, ctx, repo_id)
+
+    # ---- Precedent enrichment ----------------------------------------------
+    # One integer per target: how many dated episodes are bound here. A number
+    # invites a follow-up get_why; a paragraph would spend the budget of every
+    # caller that only wanted the risk card. Absent rather than zero.
+    await asyncio.to_thread(_enrich_episodes, results, ctx.path)
 
     response: dict = {
         "targets": {r["target"]: r for r in results},

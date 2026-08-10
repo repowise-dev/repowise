@@ -127,18 +127,41 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
 
 
 def build_embedder(embedder_name_resolved: str) -> Any:
-    """Construct the configured embedder, falling back to MockEmbedder.
+    """Construct the configured embedder, falling back to KeylessEmbedder.
 
     Shared by the generation flows and the decision semantic-dedup wiring so
     the same backend selection logic isn't duplicated. Real providers fall
-    back to the deterministic mock when their SDK/credentials are unavailable.
+    back to the keyless embedder when their SDK/credentials are unavailable.
+
+    That fallback is **said out loud**. It used to be a bare ``except`` that
+    returned the keyless embedder with nothing printed anywhere, so
+    ``--embedder ollama`` against a stopped Ollama produced a repo that indexes
+    and searches without complaint and has no semantic retrieval at all: the
+    8-wide vectors carry no signal, and the read path now declines to rank on
+    them. ``doctor`` reports healthy throughout. The server path already
+    records this state as ``degraded: True``; the CLI path recorded nothing.
+
+    Warn only when someone named a real backend. ``mock`` is the keyless
+    default and reaching it is not a failure, so it stays silent.
     """
-    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.base import KeylessEmbedder
     from repowise.core.providers.embedding.registry import get_embedder
 
     if embedder_name_resolved == "mock":
-        return MockEmbedder()
+        return KeylessEmbedder()
     try:
         return get_embedder(embedder_name_resolved, **_embedder_kwargs(embedder_name_resolved))
-    except Exception:
-        return MockEmbedder()
+    except Exception as exc:
+        # Said here, once, rather than in each of the thirteen call sites, for
+        # the same reason build_vector_store says its own refusal here: a
+        # caller that forgets is exactly how this became invisible.
+        from repowise.cli.helpers import console
+
+        console.print(
+            f"[yellow]Embedder '{embedder_name_resolved}' could not be built:[/yellow] "
+            f"{type(exc).__name__}: {exc}\n"
+            "Falling back to keyless embeddings, which means [bold]no semantic search[/bold] "
+            "for this run.\nFull-text and symbol search are unaffected. Fix the key or "
+            "endpoint and run [cyan]repowise reindex[/cyan]\nto restore semantic search."
+        )
+        return KeylessEmbedder()

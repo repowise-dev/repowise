@@ -23,12 +23,12 @@ from ._constants import (
     _COMMIT_CATEGORIES,
     _DECISION_SIGNAL_WORDS,
     _MAX_BLAME_SIZE_BYTES,
-    _MAX_COMMIT_BODY_BYTES,
     _MAX_SIGNIFICANT_COMMITS,
     _MAX_TOP_AUTHORS,
     _PR_BODY_MARKERS,
     _PR_NUMBER_RE,
     HOTSPOT_HALFLIFE_DAYS,
+    _truncate_body,
 )
 from .enrich import detect_original_path, is_significant_commit
 from .function_blame import (
@@ -60,16 +60,6 @@ def _body_carries_decision(subject: str, body: str) -> bool:
     if any(marker in blob for marker in _PR_BODY_MARKERS):
         return True
     return any(word in blob for word in _DECISION_SIGNAL_WORDS)
-
-
-def _truncate_body(body: str) -> str:
-    """Trim *body* to the byte ceiling, never splitting a UTF-8 sequence."""
-    if not body:
-        return ""
-    encoded = body.encode("utf-8")
-    if len(encoded) <= _MAX_COMMIT_BODY_BYTES:
-        return body
-    return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
 
 
 logger = structlog.get_logger(__name__)

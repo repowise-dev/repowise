@@ -13,12 +13,19 @@ Everything here is read-only and local: transcripts are read from the user's
 own machine and never leave it.
 """
 
-from repowise.core.sessions.adapters.base import HarnessAdapter
-from repowise.core.sessions.adapters.claude_code import (
+from repowise.core.sessions.adapters import (
+    INTENT_SHELL_CALLS,
+    INTENT_TOOL_CALLS,
+    INTENT_TURNS,
     ClaudeCodeAdapter,
-    parse_timestamp,
-    transcript_dir_for,
+    CodexAdapter,
+    HarnessAdapter,
+    RawPrefilter,
+    get_adapter,
+    register_adapter,
+    registered_adapters,
 )
+from repowise.core.sessions.adapters.claude_code import transcript_dir_for
 from repowise.core.sessions.cursor import CursorStore, iter_new_events
 from repowise.core.sessions.events import (
     INTERRUPT_MARKER,
@@ -26,18 +33,27 @@ from repowise.core.sessions.events import (
     ToolResult,
     ToolUse,
     iter_deduped_usage,
+    parse_timestamp,
 )
 
 __all__ = [
+    "INTENT_SHELL_CALLS",
+    "INTENT_TOOL_CALLS",
+    "INTENT_TURNS",
     "INTERRUPT_MARKER",
     "ClaudeCodeAdapter",
+    "CodexAdapter",
     "CursorStore",
     "Event",
     "HarnessAdapter",
+    "RawPrefilter",
     "ToolResult",
     "ToolUse",
+    "get_adapter",
     "iter_deduped_usage",
     "iter_new_events",
     "parse_timestamp",
+    "register_adapter",
+    "registered_adapters",
     "transcript_dir_for",
 ]

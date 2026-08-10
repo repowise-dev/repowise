@@ -15,6 +15,12 @@ search → context → read loop with one tool call that returns:
                                    follow-up); present only when the answer
                                    names a function/method/class that was
                                    hydrated
+      "episodes":          list  — at most one dated fact recorded about this
+                                   checkout that bears on the question, served
+                                   beside the answer and never in place of it;
+                                   present only when its scope intersects the
+                                   answer's and confidence is below high (see
+                                   ``episodes``)
       "more_definitions":  list    only on an answer-by-union (homonym) reply
                                    whose bodies overflowed the char budget:
                                    {file, name, line, symbol_id, hint} entries
@@ -54,6 +60,9 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import AnswerCache
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._answer_context import (
+    _MAX_CHARS_PER_HIT_EXCERPT,
+)
+from repowise.server.mcp_server._answer_context import (
     build_context_block as _build_context_block_v2,
 )
 from repowise.server.mcp_server._answer_context import (
@@ -72,6 +81,9 @@ from repowise.server.mcp_server._answer_pipeline import (
     apply_pagerank_bias as _apply_pagerank_bias,
 )
 from repowise.server.mcp_server._answer_pipeline import (
+    degraded_legs as _degraded_legs,
+)
+from repowise.server.mcp_server._answer_pipeline import (
     demote_noise_hits as _demote_noise_hits,
 )
 from repowise.server.mcp_server._answer_pipeline import (
@@ -84,6 +96,9 @@ from repowise.server.mcp_server._answer_pipeline import (
     hybrid_retrieve as _hybrid_retrieve,
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
+from repowise.server.mcp_server._answer_pipeline import (
+    retrieval_legs as _retrieval_legs,
+)
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._flow_path import expand_via_flow_path as _expand_via_flow_path
 from repowise.server.mcp_server._helpers import (
@@ -112,10 +127,13 @@ from repowise.server.mcp_server.tool_answer.config import (
     _ANSWER_SCHEMA_VERSION,
     _DOMINANCE_RATIO,
     _ENRICH_TOP_N_HITS,
+    _GATED_EXCERPT_CHARS,
     _GATED_RETURN_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _INLINE_BODY_MAX_LINES,
     _INLINE_BODY_MAX_SYMBOLS,
+    _PAGE_EXCERPT_HITS,
+    _SYMBOL_AGREEMENT_TOP_RANK_MAX,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
 )
@@ -123,12 +141,18 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
     _is_data_shape_question,
     mine_data_shape,
 )
+from repowise.server.mcp_server.tool_answer.episodes import (
+    attach_episode as _attach_episode,
+)
 from repowise.server.mcp_server.tool_answer.retrieval import (
     _apply_domain_penalty,
+    _attach_page_excerpts,
     _candidate_justification,
-    _enrich_gated_excerpts,
     _intersection_boost,
     _rerank_by_coverage,
+)
+from repowise.server.mcp_server.tool_answer.retrieval import (
+    serialize_candidates as _serialize_candidates,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_hits as _serialize_hits,
@@ -138,6 +162,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _concept_anchor_hits,
     _extract_question_identifiers,
     _extract_value_answer,
+    _hydrate_candidate_defines,
     _hydrate_symbols_for_hits,
     _read_symbol_source,
     build_homonym_union_bodies,
@@ -151,6 +176,18 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
 
 _log = logging.getLogger("repowise.mcp.answer")
 
+# The excerpt fetch and the prompt formatter each cap page content, and they
+# live in different modules — which is how the formatter came to discard more
+# than half of every excerpt the fetch had paid a database round-trip for.
+# Checked here, at import, because this is the only module that sees both.
+if _MAX_CHARS_PER_HIT_EXCERPT < _GATED_EXCERPT_CHARS:
+    raise RuntimeError(
+        "get_answer would truncate the page content it fetches: the prompt "
+        f"formatter caps an excerpt at {_MAX_CHARS_PER_HIT_EXCERPT} chars "
+        f"while the fetch asks for {_GATED_EXCERPT_CHARS}. Raise "
+        "_MAX_CHARS_PER_HIT_EXCERPT or lower _GATED_EXCERPT_CHARS."
+    )
+
 # Always-synthesize flag. Default ON: synthesis runs for every retrieval and the
 # post-synthesis grading cascade demotes confidence instead of the tool
 # abstaining, so coverage matches a research assistant that answers every
@@ -158,6 +195,12 @@ _log = logging.getLogger("repowise.mcp.answer")
 # value (0/off/false/no) to restore the legacy abstain-on-ambiguous behaviour.
 _ALWAYS_SYNTHESIZE_ENV = "REPOWISE_ANSWER_ALWAYS_SYNTHESIZE"
 _AGREEMENT_CONFIDENCE_ENV = "REPOWISE_ANSWER_AGREEMENT_CONFIDENCE"
+# The keyless-only half of that signal (FTS + symbol in place of FTS + vector,
+# which a keyless index can never produce). Its own flag on purpose: the pair
+# above was tuned against the 99-question eval, whereas this substitutes a leg
+# the fusion already prices at a third weight, so it must be reversible and
+# A/B-able WITHOUT also switching off the measured half.
+_SYMBOL_AGREEMENT_ENV = "REPOWISE_ANSWER_SYMBOL_AGREEMENT"
 # Keep the exact_symbol union fast path from hijacking a "how does X work"
 # mechanism question, whose real answer often lives in a different file than the
 # named symbol's body.
@@ -251,15 +294,30 @@ def _agreement_confidence_enabled() -> bool:
     }
 
 
-def _agreement_dominant(hits: list[dict]) -> bool:
+def _symbol_agreement_enabled() -> bool:
+    """Whether a keyless index may read agreement from FTS + the symbol leg.
+
+    Independently reversible from :func:`_agreement_confidence_enabled`, which
+    governs the measured FTS + vector pair. Turning this off restores the state
+    where a keyless index simply cannot earn the agreement lift.
+    """
+    return os.environ.get(_SYMBOL_AGREEMENT_ENV, "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _agreement_dominant(hits: list[dict], *, vector_leg_keyless: bool = False) -> bool:
     """True when the top hit is the confident pick by retriever AGREEMENT.
 
     RRF fusion compresses scores: a page both retrievers rank #1 barely
     outscores one they rank #2 (ratio ~1.017), so the numeric dominance ratio
     calls the *most* confident retrieval "non-dominant" and demotes it. This
-    reads the per-source ranks (``_fts_rank`` / ``_vec_rank``) instead: when FTS
-    and vector independently put the SAME page at (or within a rank of) the top,
-    that consensus is a stronger ground-truth signal than any RRF score margin.
+    reads the per-source ranks instead: when two retrievers put the SAME page at
+    (or within a rank of) the top, that consensus is a stronger ground-truth
+    signal than any RRF score margin.
 
     Conservative. Requires the top hit to be found by BOTH retrievers near the
     top of each, to rank no lower than the runner-up in either source, and the
@@ -267,30 +325,66 @@ def _agreement_dominant(hits: list[dict]) -> bool:
     lower-ranked in a source). Otherwise returns False and the caller falls back
     to the pure ratio/gap gate. Agreement can only LIFT — the demotion gates
     still apply.
+
+    ``vector_leg_keyless`` swaps the vector leg for the symbol leg. On an index
+    with no semantic vectors the vector leg is skipped outright, so ``_vec_rank``
+    is never written for any question and a fixed FTS+vector pair makes this
+    signal permanently unreachable — every keyless answer is then graded by the
+    pure ratio gate, which is exactly the gate this function exists because it
+    mis-reads. The symbol leg runs on every index and records ``_sym_rank``.
+
+    **The caller must pass the retrieval leg's own status, not infer it from
+    the hits.** By the time this runs, ``hits`` is capped to the top 5 out of a
+    much larger fused pool, so "no hit carries a ``_vec_rank``" is *not*
+    evidence the leg was skipped: a keyed index whose vector leg timed out,
+    errored, was scope-filtered, or was simply outranked by five FTS-and-symbol
+    hits presents identically. Substituting on that inference would fire exactly
+    when evidence is weakest and manufacture "high" confidence from it.
+
+    The symbol pair is held to a stricter rank than the vector pair. FTS and the
+    symbol leg are not independent — the wiki page FTS indexes contains the
+    public symbol table the symbol leg matches on — so their agreeing is closer
+    to one lexical match observed twice than to two retrievers concurring. The
+    fusion beside this already prices that leg at a third of the others'
+    (``_SYMBOL_LEG_RRF_K`` 180 vs ``_RRF_K`` 60, after a same-named React
+    component displaced the right file on the 99-question eval). Requiring an
+    exact rank-0 tie keeps the weaker signal from carrying the stronger claim.
+
+    Note the consequence: at ``top_rank_max = 0`` the runner-up comparison below
+    can no longer reject anything, because two hits cannot share rank 0 within
+    one leg. The symbol pair therefore reduces exactly to "the top hit is #1 in
+    FTS and #1 in the symbol leg", which is the intended rule; the shared gap
+    check is retained for the vector pair, where it does constrain.
     """
     if len(hits) < 2:
         return False
+    if vector_leg_keyless:
+        second_field = "_sym_rank"
+        top_rank_max = _SYMBOL_AGREEMENT_TOP_RANK_MAX
+    else:
+        second_field = "_vec_rank"
+        top_rank_max = _AGREEMENT_TOP_RANK_MAX
     top = hits[0]
-    top_fts = top.get("_fts_rank")
-    top_vec = top.get("_vec_rank")
+    top_a = top.get("_fts_rank")
+    top_b = top.get(second_field)
     # Top must be a consensus pick: found by both retrievers, near the top of
     # each. A one-retriever top hit is exactly the ambiguous case we must NOT
     # lift.
-    if top_fts is None or top_vec is None:
+    if top_a is None or top_b is None:
         return False
-    if top_fts > _AGREEMENT_TOP_RANK_MAX or top_vec > _AGREEMENT_TOP_RANK_MAX:
+    if top_a > top_rank_max or top_b > top_rank_max:
         return False
     second = hits[1]
-    sec_fts = second.get("_fts_rank")
-    sec_vec = second.get("_vec_rank")
+    sec_a = second.get("_fts_rank")
+    sec_b = second.get(second_field)
     # Runner-up found by only one retriever → the consensus top clearly wins.
-    if sec_fts is None or sec_vec is None:
+    if sec_a is None or sec_b is None:
         return True
     # Runner-up found by both: the top must rank at least as high in BOTH
     # sources (no source disagrees) and strictly ahead in at least one.
-    if top_fts <= sec_fts and top_vec <= sec_vec:
-        return (sec_fts - top_fts) >= _AGREEMENT_RANK_GAP or (
-            sec_vec - top_vec
+    if top_a <= sec_a and top_b <= sec_b:
+        return (sec_a - top_a) >= _AGREEMENT_RANK_GAP or (
+            sec_b - top_b
         ) >= _AGREEMENT_RANK_GAP
     return False
 
@@ -561,6 +655,37 @@ def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
     return payload
 
 
+def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
+    """Attach the ranked shortlist to a payload that is about to be returned.
+
+    ``get_answer`` has several early returns that fire *after* retrieval has
+    run: the qualified-miss guard, answer-by-union, the value-extraction fast
+    path, the legacy abstain, and both degraded paths. Each was written as a
+    complete reply in its own terms — the union hands back every definition of
+    the named symbol, the extractor hands back the literal assignment line —
+    and each set ``retrieval`` to ``[]`` and returned.
+
+    That is right about ``retrieval``, which is re-read evidence for a synthesised
+    answer, and wrong about what the caller is left holding. ``resolved_pool``
+    already exists at every one of these sites: the full ranked file list, built
+    before the 5-hit synthesis cap, at no further cost. Discarding it means a
+    caller whose question tripped one of these gates gets a narrower reply than
+    one whose question did not, and gets it *because* we recognised their question
+    more precisely. Measured on the 70 ContextBench dev instances, the gates that
+    fire after retrieval account for 20 firings and 15 answers that named no gold
+    file, every one of them with a ranked pool in hand.
+
+    So the shortlist travels with every reply. This adds to a payload and takes
+    nothing away: no gate stops firing, no predicate moves, and the special reply
+    each gate exists to give is returned unchanged. It is deliberately NOT the
+    fix of loosening a gate — finding A11 measured that at -6.4 recall@5.
+    """
+    candidates = _serialize_candidates(resolved_pool)
+    if candidates:
+        payload["candidates"] = candidates
+    return payload
+
+
 def _degraded_payload(
     *,
     reason: str,
@@ -569,6 +694,7 @@ def _degraded_payload(
     fallback_targets: list[str],
     repository,
     t0: float,
+    resolved_pool: list[dict] | None = None,
 ) -> dict:
     """Shape a synthesis-less get_answer response.
 
@@ -579,24 +705,27 @@ def _degraded_payload(
     set only the top-level key, so a caller watching ``_meta`` saw a normal
     empty answer.
     """
-    return {
-        "answer": "",
-        "citations": [],
-        "confidence": "low",
-        "degraded": reason,
-        "fallback_targets": fallback_targets,
-        "retrieval": _serialize_hits(hits),
-        "note": note,
-        "_meta": {
-            **_build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                hint=_answer_hint("low", len(hits)),
-                repository=repository,
-                targets=fallback_targets,
-            ),
+    return _with_candidates(
+        {
+            "answer": "",
+            "citations": [],
+            "confidence": "low",
             "degraded": reason,
+            "fallback_targets": fallback_targets,
+            "retrieval": _serialize_hits(hits),
+            "note": note,
+            "_meta": {
+                **_build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("low", len(hits)),
+                    repository=repository,
+                    targets=fallback_targets,
+                ),
+                "degraded": reason,
+            },
         },
-    }
+        resolved_pool if resolved_pool is not None else hits,
+    )
 
 
 @mcp.tool()
@@ -618,6 +747,9 @@ async def get_answer(
     retrieval_quality separately rates the retrieval that fed synthesis.
     When the answer names a function/method/class, ``symbol_bodies`` carries
     its full live body — read that instead of a follow-up get_symbol.
+    ``episodes``, when present, is a dated fact recorded about this checkout
+    that bears on the question — evidence beside the answer, not a correction
+    of it. Weigh it against the answer; ``still_true`` says how current it is.
 
     Args:
         question: developer question.
@@ -758,6 +890,16 @@ async def get_answer(
                     targets=[p for p in cached_paths if isinstance(p, str) and p],
                 )
                 _apply_lean_high(payload, question)
+                # Serve-time, on this path as well as the fresh one: the
+                # episode is read on every call and never cached into an
+                # answer, so a disagreement cannot be frozen into a row and
+                # served after the episode has been superseded.
+                await _attach_episode(
+                    payload,
+                    question=question,
+                    repo_path=getattr(ctx, "path", None),
+                    repo_name=getattr(repository, "name", None),
+                )
                 return payload
 
     # --- Retrieval pipeline ------------------------------------------------
@@ -865,6 +1007,12 @@ async def get_answer(
     # all anchoring/expansion (which inject file/symbol pages, never noise) so it
     # only reorders what those stages left in place.
     hits = _demote_noise_hits(hits, question, is_why=_is_why_question(question))
+    # Everything retrieval resolved, in rank order, before the cap. Synthesis
+    # keeps its 5-hit budget, which is a context-window decision and the
+    # right one, but the files below the cut are still the best answer to
+    # "where do I look next", and they used to be discarded. ``candidates``
+    # (built after synthesis) hands them over at one line each.
+    resolved_pool = list(hits)
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
@@ -878,6 +1026,15 @@ async def get_answer(
                 await _hydrate_symbols_for_hits(
                     session, repo_id, hits, ctx, question_ids=question_ids
                 )
+                # And the shortlist BELOW the synthesis cap: `candidates` names
+                # those files and, until now, said nothing about any of them.
+                # Runs here, sharing the open session, and against
+                # `resolved_pool` rather than `hits` because the whole point is
+                # the files the cap discarded. Suppressed with the block above:
+                # a missing `_defines` costs a `defines` key, never an answer.
+                await _hydrate_candidate_defines(
+                    session, repo_id, resolved_pool, question_ids=question_ids
+                )
 
     # --- Qualified-miss guard ----------------------------------------------
     # The question qualified a symbol (``Parent.leaf``) but the exact-name scan
@@ -886,27 +1043,31 @@ async def get_answer(
     # never degrade to a confidently-wrong answer (CodeGraph #173).
     if homonyms.get("qualified_miss"):
         missed = homonyms["qualified_miss"]
-        return {
-            "answer": "",
-            "citations": [],
-            "confidence": "low",
-            "note": (
-                f"No indexed definition matches the qualified name(s) {missed}. "
-                "The base name is defined elsewhere, but not under the "
-                "class/module you named, so this is not returning a same-named "
-                "symbol from another file, to avoid a confidently-wrong answer. "
-                'Re-check the qualifier, or call search_codebase mode="symbol" '
-                "on the base name to see every definition."
-            ),
-            "fallback_targets": [],
-            "retrieval": [],
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                hint=_answer_hint("low", 0),
-                repository=repository,
-                targets=[],
-            ),
-        }
+        return _with_candidates(
+            {
+                "answer": "",
+                "citations": [],
+                "confidence": "low",
+                "note": (
+                    f"No indexed definition matches the qualified name(s) {missed}. "
+                    "The base name is defined elsewhere, but not under the "
+                    "class/module you named, so this is not returning a same-named "
+                    "symbol from another file, to avoid a confidently-wrong answer. "
+                    'Re-check the qualifier, or call search_codebase mode="symbol" '
+                    "on the base name to see every definition. The files retrieval "
+                    "ranked for this question are in candidates."
+                ),
+                "fallback_targets": [],
+                "retrieval": [],
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("low", 0),
+                    repository=repository,
+                    targets=[],
+                ),
+            },
+            resolved_pool,
+        )
 
     # --- Answer-by-union (homonym exact-name lookup) -----------------------
     # The question named a symbol with N>=2 defs no qualifier disambiguates
@@ -951,6 +1112,10 @@ async def get_answer(
                     f" {len(more_defs)} more are in more_definitions; call "
                     "get_symbol with the listed id, do NOT Read."
                 )
+            note += (
+                " If the question was about something other than these definitions, "
+                "candidates holds the files retrieval ranked for it."
+            )
             payload: dict = {
                 "answer": (
                     f"`{', '.join(names)}` has {total} definition(s) in this repo; "
@@ -973,7 +1138,7 @@ async def get_answer(
             }
             if more_defs:
                 payload["more_definitions"] = more_defs
-            return payload
+            return _with_candidates(payload, resolved_pool)
         # Bodies unreadable (no repo root / files gone) — fall through to the
         # normal retrieval/gate path rather than returning an empty union.
 
@@ -984,26 +1149,53 @@ async def get_answer(
     ]
 
     if not hits:
-        return {
-            "answer": "",
-            "citations": [],
-            "confidence": "low",
-            "fallback_targets": [],
-            "retrieval": [],
-            "note": (
-                "No wiki hits for this question. Rephrase around the code "
-                'concept, or use search_codebase (mode="symbol" for an '
-                'identifier, mode="path" for a file name); if the question '
-                "names a file, call get_context on it directly. Grep only "
-                "if those come back empty too."
-            ),
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                hint=_answer_hint("low", 0),
-                repository=repository,
-                targets=[],
-            ),
-        }
+        # Wrapped like every other post-retrieval return even though the pool is
+        # necessarily empty here (``resolved_pool`` is ``hits`` before the cap, so
+        # no hits means no pool). Keeping the invariant "every return after
+        # retrieval goes through ``_with_candidates``" is what stops the next
+        # reordering of this function quietly re-opening the hole.
+        return _with_candidates(
+            {
+                "answer": "",
+                "citations": [],
+                "confidence": "low",
+                "fallback_targets": [],
+                "retrieval": [],
+                "note": (
+                    "No wiki hits for this question. Rephrase around the code "
+                    'concept, or use search_codebase (mode="symbol" for an '
+                    'identifier, mode="path" for a file name); if the question '
+                    "names a file, call get_context on it directly. Grep only "
+                    "if those come back empty too."
+                ),
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("low", 0),
+                    repository=repository,
+                    targets=[],
+                ),
+            },
+            resolved_pool,
+        )
+
+    # Attach real page content to the top hits, once, for every retrieval —
+    # before anything downstream branches on how good the retrieval looks.
+    #
+    # This used to run only when retrieval was NOT dominant, and dominance is
+    # what earns high confidence: the more certain retrieval was, the less
+    # prose the model was given, so confident answers were the ones built from
+    # symbol names alone. Whatever replaces the code below, keep this
+    # unconditional. Two call sites under different conditions is what made
+    # that inversion possible, and the cost of enriching a hit that a later
+    # fast path never reads is one indexed SELECT over at most five rows.
+    hits_without_page_content = await _attach_page_excerpts(hits, ctx)
+    if hits_without_page_content:
+        _log.warning(
+            "get_answer: %d of %d top hits have no page content; those hits "
+            "reach synthesis as a one-line summary only",
+            hits_without_page_content,
+            min(len(hits), _PAGE_EXCERPT_HITS),
+        )
 
     # --- Retrieval dominance -----------------------------------------------
     # ``dominant`` = retrieval clearly pointed at ONE page (the top hit
@@ -1026,7 +1218,20 @@ async def get_answer(
     # that RRF fusion compresses out of the numeric score. Computed once and
     # OR'd into every place the ratio/gap gate decides dominance, so it can
     # only LIFT a retrieval — never demote one the ratio already trusts.
-    agreement_dominant = _agreement_dominant(hits) if _agreement_confidence_enabled() else False
+    # Read the vector leg's own recorded status rather than inferring it from
+    # `hits`, which is capped to 5 by here: "no _vec_rank in the top 5" is also
+    # what a timed-out, errored, scope-filtered or simply outranked vector leg
+    # looks like, and those must NOT fall back to the symbol leg.
+    agreement_dominant = (
+        _agreement_dominant(
+            hits,
+            vector_leg_keyless=(
+                _symbol_agreement_enabled() and _retrieval_legs().get("vector") == "keyless"
+            ),
+        )
+        if _agreement_confidence_enabled()
+        else False
+    )
     dominant = True
     if len(hits) >= 2:
         top_score = hits[0].get("score", 0.0)
@@ -1042,14 +1247,12 @@ async def get_answer(
         # is ambiguous, so skip synthesis and hand back ranked excerpts +
         # best_guesses for the agent to ground in.
         #
-        # Attach real page content to the top candidates before shaping the
-        # reply. Agent-transcript evidence (context-tool bench, 2026-07-17): a
-        # pointers-only gated payload sends the agent into an 8-15 call Grep/Read
-        # spree that costs more than a bare agent — it paid for the tool call and
-        # still had to acquire all content natively. Excerpts turn the miss path
-        # into "pick one candidate, verify with at most one Read".
-        with contextlib.suppress(Exception):
-            await _enrich_gated_excerpts(hits, ctx)
+        # The excerpts those best_guesses carry were attached above. Agent-
+        # transcript evidence (context-tool bench, 2026-07-17): a pointers-only
+        # gated payload sends the agent into an 8-15 call Grep/Read spree that
+        # costs more than a bare agent — it paid for the tool call and still had
+        # to acquire all content natively. Excerpts turn the miss path into
+        # "pick one candidate, verify with at most one Read".
         best_guesses = _build_best_guesses(hits)
         # Mine source comments for rationale the wiki/decision corpus missed —
         # turns "go Read these 5 files" into a cited why.
@@ -1099,7 +1302,7 @@ async def get_answer(
             repository=repository,
             targets=fallback_targets,
         )
-        return gated
+        return _with_candidates(gated, resolved_pool)
 
     # Confidence is the only axis we gate on. We deliberately do NOT add a
     # second gate keyed on question shape (e.g. relational questions
@@ -1124,28 +1327,32 @@ async def get_answer(
             answer_text = extraction["answer"]
             if extraction.get("value_source"):
                 answer_text += "\n\n" + extraction["value_source"]
-            return {
-                "answer": answer_text,
-                "citations": [extraction["file"]],
-                "confidence": "high",
-                "retrieval_quality": (
-                    "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
-                ),
-                "grounding": "extracted",
-                "fallback_targets": fallback_targets,
-                "retrieval": [],
-                "note": (
-                    "Extracted verbatim from the live source line — no LLM "
-                    "synthesis involved. Cite directly; no verification "
-                    "Read needed."
-                ),
-                "_meta": _build_meta(
-                    timing_ms=(time.perf_counter() - t0) * 1000,
-                    hint=_answer_hint("high", len(hits)),
-                    repository=repository,
-                    targets=[extraction["file"], *fallback_targets],
-                ),
-            }
+            return _with_candidates(
+                {
+                    "answer": answer_text,
+                    "citations": [extraction["file"]],
+                    "confidence": "high",
+                    "retrieval_quality": (
+                        "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
+                    ),
+                    "grounding": "extracted",
+                    "fallback_targets": fallback_targets,
+                    "retrieval": [],
+                    "note": (
+                        "Extracted verbatim from the live source line — no LLM "
+                        "synthesis involved. Cite directly; no verification "
+                        "Read needed. candidates holds the files retrieval ranked, "
+                        "for the wider question the value sits inside."
+                    ),
+                    "_meta": _build_meta(
+                        timing_ms=(time.perf_counter() - t0) * 1000,
+                        hint=_answer_hint("high", len(hits)),
+                        repository=repository,
+                        targets=[extraction["file"], *fallback_targets],
+                    ),
+                },
+                resolved_pool,
+            )
 
     # --- Synthesis (LLM) ---------------------------------------------------
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
@@ -1169,16 +1376,8 @@ async def get_answer(
             fallback_targets=fallback_targets,
             repository=repository,
             t0=t0,
+            resolved_pool=resolved_pool,
         )
-
-    # Ambiguous retrieval (always-synthesize): pull real page content across the
-    # non-dominant top pages so the LLM synthesizes over the actual candidate
-    # content, not one-line summaries — the same excerpts the legacy abstain path
-    # served the agent. No-op on dominant retrievals. (The excerpts also back the
-    # best_guesses folded into a low/medium reply below.)
-    if not dominant:
-        with contextlib.suppress(Exception):
-            await _enrich_gated_excerpts(hits, ctx)
 
     # Decision fusion (why-shaped questions only) + structured prelude. Both
     # layers are gated on signal: no ADRs for the top hits → no decisions
@@ -1203,7 +1402,13 @@ async def get_answer(
     # remote API answers in single-digit seconds; an agent-CLI subprocess or a
     # local model needs minutes, and the old flat 30s cancelled every one of
     # those before it could return (#1119).
-    answer_text, failure_note = await synthesize(provider, _SYSTEM_PROMPT, user_prompt)
+    answer_text, failure_note = await synthesize(
+        provider,
+        _SYSTEM_PROMPT,
+        user_prompt,
+        session_factory=getattr(ctx, "session_factory", None),
+        repo_id=repo_id,
+    )
     if failure_note is not None:
         return _degraded_payload(
             reason="synthesis-failed",
@@ -1212,6 +1417,7 @@ async def get_answer(
             fallback_targets=fallback_targets,
             repository=repository,
             t0=t0,
+            resolved_pool=resolved_pool,
         )
 
     citations = [
@@ -1629,6 +1835,16 @@ async def get_answer(
     if flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in flow_paths[:2]]
 
+    # Where to look next, always. ``retrieval`` shrinks as confidence rises
+    # (correctly: it is re-read evidence, and a trustworthy answer needs less
+    # of it), but that left the highest-confidence answers naming no file at
+    # all, which is the one thing an agent always has a use for. This block is
+    # navigation rather than evidence: the ranked shortlist, one path per line,
+    # ungated. It costs ~800 characters against a ~10k response.
+    candidates = _serialize_candidates(resolved_pool)
+    if candidates:
+        payload["candidates"] = candidates
+
     # Persist to cache (upsert). Best-effort: cache failures must never block
     # the response — but they must be LOGGED, not suppressed. A plain INSERT
     # under a blanket suppress violated uq_answer_cache_q on every
@@ -1669,5 +1885,26 @@ async def get_answer(
         repository=repository,
         targets=[*citations, *fallback_targets],
     )
+    # Finding A18. Each retrieval leg is best-effort so one slow backend cannot
+    # block an answer, which is right, but it made a lexical-only answer
+    # indistinguishable from a whole one: nothing failed, nothing was logged
+    # where a caller could see it, and ``embedder_live`` stayed true because a
+    # configured embedder is live whether or not this call beat its 8s budget.
+    # Named only when a leg actually fell over, so a healthy response pays
+    # nothing for it.
+    if degraded := _degraded_legs(_retrieval_legs()):
+        payload["_meta"]["retrieval_degraded"] = degraded
     _apply_lean_high(payload, question)
+    # After the cache write above, deliberately. ``cache_payload`` is a shallow
+    # copy taken before this point, so the episode reaches the caller and never
+    # the cache row — which is why adding it needs no _ANSWER_SCHEMA_VERSION
+    # bump: a row written before this change and one written after are the same
+    # bytes, and bumping would invalidate every user's cache for a field that
+    # is not in it.
+    await _attach_episode(
+        payload,
+        question=question,
+        repo_path=getattr(ctx, "path", None),
+        repo_name=getattr(repository, "name", None),
+    )
     return payload

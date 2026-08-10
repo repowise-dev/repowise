@@ -68,5 +68,12 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         if len(first_line) > 160:
             first_line = first_line[:157] + "..."
         return first_line
+    if node_type == "lexical_declaration":
+        # Arrow function assigned to const/let.
+        # params_text is either "(a, b)" (formal_parameters) or a bare
+        # identifier "x" (unparenthesized single-param arrow: x => ...).
+        if params_text and not params_text.startswith("("):
+            return f"{name}({params_text})"
+        return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"

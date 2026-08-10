@@ -288,3 +288,250 @@ async def test_get_why_semantic_decision_namespace_filtering(setup_mcp):
     assert not any(d.get("id", "").startswith("file_page:") for d in result["decisions"]), (
         "Noise page should not appear in decisions list"
     )
+
+
+# ---------------------------------------------------------------------------
+# Path-mode cap and projection
+#
+# Before this, path mode inlined every governing record whole: on a bug-magnet
+# file that measured 81 854 chars, over the MCP host cap, which rejects rather
+# than truncates — so the mode that answers "what governs this file right
+# before I edit it" hard-failed on exactly the files it exists for.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_bulky_decisions(session, rid: str, path: str, count: int) -> None:
+    """``count`` records governing *path*, each as heavy as a real one gets."""
+    import json
+
+    from repowise.core.persistence.models import DecisionRecord
+
+    for i in range(count):
+        session.add(
+            DecisionRecord(
+                id=f"bulk{i}",
+                repository_id=rid,
+                title=f"Bulky decision {i}",
+                status="superseded" if i else "active",
+                context="ctx " * 200,
+                decision="dec " * 200,
+                rationale="why " * 200,
+                affected_files_json=json.dumps([path] + [f"src/f{i}/{n}.py" for n in range(60)]),
+                affected_modules_json=json.dumps([]),
+                source="pr",
+                confidence=0.5,
+                staleness_score=0.0,
+            )
+        )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_fits_the_transport_budget(session, setup_mcp):
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server._budget import effective_char_budget
+
+    await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
+
+    result = await get_why("src/auth/service.py")
+
+    import json as _json
+
+    assert len(_json.dumps(result, default=str)) <= effective_char_budget()
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_fits_a_narrowed_host_cap(session, setup_mcp, monkeypatch, tmp_path):
+    """The cap alone is not the guarantee — free text is what the budget bounds.
+
+    A user who lowers ``MAX_MCP_OUTPUT_TOKENS`` pulls the ceiling under the
+    projection, which is the case the fixed caps cannot cover on their own.
+    """
+    import json as _json
+
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server._budget import collector as collector_mod
+    from repowise.server.mcp_server._budget import effective_char_budget
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "2000")
+    # Drops are recoverable, which means they are written somewhere — send
+    # them to tmp_path instead of the developer's own ~/.repowise.
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
+    await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
+
+    result = await get_why("src/auth/service.py")
+
+    assert result["truncated"] is True
+    assert result["dropped_decisions"]
+    assert len(_json.dumps(result, default=str)) <= effective_char_budget()
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_caps_records_and_keeps_the_active_one_first(session, setup_mcp):
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import _MAX_PATH_DECISIONS
+
+    await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
+
+    result = await get_why("src/auth/service.py")
+
+    assert len(result["decisions"]) <= _MAX_PATH_DECISIONS
+    # Ranked, not table-scan order: the one active record leads.
+    assert result["decisions"][0]["status"] == "active"
+    # And the count that was capped is still reported honestly.
+    assert result["decisions_total"] == 31
+    assert result["alignment"]["governing_count"] == 31
+
+
+@pytest.mark.asyncio
+async def test_get_why_asks_git_about_the_top_record_only(session, setup_mcp, monkeypatch):
+    """The sanctioned read-time query is one call, not one per governing record.
+
+    Measured at ~66 ms against this repo, so eight of them would be ~530 ms on
+    a path that also does everything else. The record ranked first is the one
+    a reader acts on; the rest keep the stored proportion, which cost nothing.
+    """
+    from repowise.server.mcp_server import get_why, tool_why
+
+    calls: list[tuple] = []
+
+    def _fake(root, *, created_at, nodes):
+        calls.append((root, tuple(nodes)))
+        return "nothing in the 1 file it governs has changed since 2026-01-01"
+
+    monkeypatch.setattr(tool_why, "describe_decision_currency", _fake)
+    await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
+
+    result = await get_why("src/auth/service.py")
+
+    assert len(calls) == 1
+    assert "still_true" in result["decisions"][0]
+    assert all("still_true" not in d for d in result["decisions"][1:])
+
+
+@pytest.mark.asyncio
+async def test_get_why_stays_silent_when_git_cannot_decide(session, setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_why, tool_why
+
+    monkeypatch.setattr(
+        tool_why, "describe_decision_currency", lambda root, **kw: None
+    )
+
+    result = await get_why("src/auth/service.py")
+
+    assert all("still_true" not in d for d in result["decisions"])
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_projects_wide_affected_files(session, setup_mcp):
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server.tool_why import _MAX_AFFECTED_FILES
+
+    await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 2)
+
+    result = await get_why("src/auth/service.py")
+    wide = next(d for d in result["decisions"] if d["title"].startswith("Bulky"))
+
+    assert len(wide["affected_files"]) == _MAX_AFFECTED_FILES
+    assert wide["affected_files_total"] == 61
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_leaves_a_small_response_untouched(session, setup_mcp):
+    """No cap fires on the ordinary case: no truncation flags, full arrays."""
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why("src/auth/service.py")
+
+    assert "truncated" not in result
+    assert "decisions_total" not in result
+    jwt = next(d for d in result["decisions"] if d["title"] == "Use JWT for authentication")
+    assert jwt["affected_files"] == ["src/auth/service.py", "src/auth/middleware.py"]
+    assert "affected_files_total" not in jwt
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_fits_with_one_enormous_record(session, setup_mcp, monkeypatch, tmp_path):
+    """The last record is droppable too — a cap on the count is not a bound.
+
+    One governing record whose free text alone busts the budget is the case a
+    per-record cap cannot reach.
+    """
+    import json as _json
+
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server._budget import collector as collector_mod
+    from repowise.server.mcp_server._budget import effective_char_budget
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "2000")
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
+    session.add(
+        DecisionRecord(
+            id="huge",
+            repository_id=setup_mcp,
+            title="One very long decision",
+            status="active",
+            rationale="why " * 6000,
+            affected_files_json=_json.dumps(["src/auth/service.py"]),
+            affected_modules_json=_json.dumps([]),
+            source="pr",
+        )
+    )
+    await session.flush()
+
+    result = await get_why("src/auth/service.py")
+
+    assert result["truncated"] is True
+    assert len(_json.dumps(result, default=str)) <= effective_char_budget()
+
+
+@pytest.mark.asyncio
+async def test_get_why_path_fits_on_an_ungoverned_file(session, setup_mcp, monkeypatch, tmp_path):
+    """The git-archaeology fallback is budgeted too.
+
+    It is the branch that fires on a file with no decisions — which is most
+    files — and none of the decision-shaped caps touch it.
+    """
+    import json as _json
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server._budget import collector as collector_mod
+    from repowise.server.mcp_server._budget import effective_char_budget
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "2000")
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
+    session.add(
+        GitMetadata(
+            repository_id=setup_mcp,
+            file_path="src/other/utils.py",
+            commit_count_total=90,
+            significant_commits_json=_json.dumps(
+                [
+                    {
+                        "sha": f"{i:08x}",
+                        "date": "2026-01-01T00:00:00+00:00",
+                        "message": f"refactor: rework the utils helper {i}",
+                        "author": "Alice",
+                        "body": "why " * 250,
+                    }
+                    for i in range(50)
+                ]
+            ),
+        )
+    )
+    await session.flush()
+
+    result = await get_why("src/other/utils.py")
+
+    assert result["decisions"] == []
+    # The fallback really was over the line — otherwise this test proves nothing.
+    assert result["truncated"] is True
+    assert len(_json.dumps(result, default=str)) <= effective_char_budget()

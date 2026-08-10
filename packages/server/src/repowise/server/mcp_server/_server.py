@@ -20,7 +20,7 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
-from repowise.core.providers.embedding.base import MockEmbedder
+from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server.mcp_server import _state
 
 _log = __import__("logging").getLogger("repowise.mcp")
@@ -65,13 +65,90 @@ def _configured_embedder_name() -> str:
     return ""
 
 
+# Keyed embedders and the env vars each reads its credential from. The first
+# entry is the canonical name the CLI persists under; the rest are accepted
+# aliases. Embedders outside this map (ollama, mock, custom) need no API key.
+_EMBEDDER_KEY_ENV: dict[str, tuple[str, ...]] = {
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openrouter": ("OPENROUTER_API_KEY",),
+}
+
+
+def _persisted_embedder_key(name: str) -> str | None:
+    """Recover the configured embedder's API key from where the CLI persists it.
+
+    ``repowise mcp`` loads ``<repo>/.repowise/.env`` before starting, but that
+    covers only the repo it was pointed at: a workspace serves sibling repos
+    whose ``.env`` is never read, and embedded callers reach :func:`run_mcp`
+    without going through the CLI at all. ``repowise serve`` already falls back
+    to the ``embedder_api_key`` saved in ``~/.repowise/config.yaml``. Without
+    the same fallback here the server builds a ``MockEmbedder`` and queries a
+    real index with vectors that cannot match it — semantic search silently
+    degrades to full-text-only.
+
+    Order: the served repo's ``.repowise/.env`` first, then the global config.
+    Returns ``None`` when the embedder needs no key or none is persisted.
+    """
+    from pathlib import Path
+
+    env_vars = _EMBEDDER_KEY_ENV.get(name)
+    if not env_vars:
+        return None
+    canonical = env_vars[0]
+
+    if _state._repo_path:
+        try:
+            # Reuse the reader get_answer already uses for the LLM credential,
+            # rather than a third copy of .env parsing.
+            from repowise.server.mcp_server.tool_answer.synthesis import (
+                _load_repo_provider_config,
+            )
+
+            _, _, overlay = _load_repo_provider_config(Path(_state._repo_path))
+            for var in env_vars:
+                if overlay.get(var):
+                    return overlay[var]
+        except Exception:
+            _log.debug("Failed to read repo .env for embedder key", exc_info=True)
+
+    try:
+        cfg_path = Path.home() / ".repowise" / "config.yaml"
+        if cfg_path.is_file():
+            import yaml  # type: ignore[import-untyped]
+
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            # Only honour the saved key when it belongs to the embedder being
+            # resolved — handing an openai key to gemini fails confusingly.
+            if (cfg.get("embedder") or "").strip().lower() == name:
+                key = str(cfg.get("embedder_api_key") or "").strip()
+                if key:
+                    _log.info(
+                        "Embedder key for '%s' recovered from ~/.repowise/config.yaml "
+                        "(%s not set in the MCP server's environment).",
+                        name,
+                        canonical,
+                    )
+                    return key
+    except Exception:
+        _log.debug("Failed to read global config for embedder key", exc_info=True)
+
+    return None
+
+
 def _embedder_kwargs(name: str) -> dict[str, Any]:
     """Map repowise embedding env vars onto an embedder's constructor kwargs.
 
     Kept backend-agnostic: ``REPOWISE_EMBEDDING_MODEL`` applies to any embedder
-    that accepts a ``model`` arg; ``REPOWISE_EMBEDDING_DIMS`` is gemini-specific
-    (its constructor exposes ``output_dimensionality``). Anything not set here
-    falls through to the embedder's own defaults.
+    that accepts a ``model`` arg. ``REPOWISE_EMBEDDING_DIMS`` is read directly by
+    the openai and ollama embedders in their own constructors; only gemini needs
+    it mapped here, because its constructor spells the width
+    ``output_dimensionality``. Anything not set here falls through to the
+    embedder's own defaults.
+
+    When the embedder needs an API key and the environment has none, the key is
+    recovered from the repo/global config so the server matches the index it
+    was pointed at instead of falling back to mock vectors.
     """
     kwargs: dict[str, Any] = {}
     model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
@@ -80,6 +157,12 @@ def _embedder_kwargs(name: str) -> dict[str, Any]:
     if name == "gemini":
         dims = os.environ.get("REPOWISE_EMBEDDING_DIMS")
         kwargs["output_dimensionality"] = int(dims) if dims else 768
+
+    env_vars = _EMBEDDER_KEY_ENV.get(name, ())
+    if env_vars and not any(os.environ.get(var) for var in env_vars):
+        key = _persisted_embedder_key(name)
+        if key:
+            kwargs["api_key"] = key
     return kwargs
 
 
@@ -112,7 +195,7 @@ def _resolve_embedder():
             "requested": name or None,
             "degraded": False,
         }
-        return MockEmbedder()
+        return KeylessEmbedder()
 
     try:
         embedder = get_embedder(name, **_embedder_kwargs(name))
@@ -136,7 +219,39 @@ def _resolve_embedder():
             "degraded": True,
             "reason": reason,
         }
-        return MockEmbedder()
+        return KeylessEmbedder()
+
+
+async def _cancel_task(task: asyncio.Task) -> None:
+    """Cancel a lifespan background task and swallow its unwind."""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
+async def _warm_lancedb() -> None:
+    """Import lancedb once, off the event loop, and signal when it is done.
+
+    The import pulls in numpy/pyarrow and their native extensions, which costs
+    seconds on a cold filesystem. Running it on a worker thread keeps the loop
+    answering, but a worker-thread import holds Python's import locks, and tool
+    bodies lazily import as they run. When the two overlap they block each
+    other and the event loop stops making progress entirely — at which point
+    the timeouts that would cap the call cannot fire either, because firing
+    them needs the loop.
+
+    Tool dispatch waits on this event before running any handler body (see
+    ``_failure_shield``), so the two never overlap.
+    """
+    try:
+        await asyncio.to_thread(__import__, "lancedb")
+    except ImportError:
+        pass  # optional dependency — the InMemory fallback covers it
+    except Exception:
+        _log.warning("lancedb import failed — vector search falls back to InMemory")
+    finally:
+        if _state._lancedb_ready is not None:
+            _state._lancedb_ready.set()
 
 
 async def _load_vector_stores(repo_path: str | None) -> None:
@@ -189,7 +304,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
         _state._decision_store = vector_store
     except Exception:
         _log.exception("Failed to load vector stores — falling back to MockEmbedder")
-        _fallback = InMemoryVectorStore(embedder=MockEmbedder())
+        _fallback = InMemoryVectorStore(embedder=KeylessEmbedder())
         _state._vector_store = _fallback
         _state._decision_store = _fallback
     finally:
@@ -248,6 +363,12 @@ async def _lifespan(server: FastMCP):
     the server starts accepting tool calls immediately.  search_codebase awaits
     _state._vector_store_ready before querying the vector store.
     """
+
+    # Start the lancedb import immediately and gate tool dispatch on it. Both
+    # modes load vector stores in the background, and in both the first tool
+    # call can otherwise land mid-import and wedge the loop.
+    _state._lancedb_ready = asyncio.Event()
+    _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
 
     # --- Workspace detection ------------------------------------------------
     ws_root, ws_config, ws_repo_alias = _detect_workspace(_state._repo_path)
@@ -320,6 +441,8 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        await _cancel_task(_warm_task)
+        _state._lancedb_ready = None
         _state._cross_repo_enricher = None
         await registry.close()
         _state._registry = None
@@ -356,12 +479,19 @@ async def _lifespan(server: FastMCP):
     )
 
     _state._fts = FullTextSearch(engine)
-    await _state._fts.ensure_index()
+    try:
+        await _state._fts.ensure_index()
+    except Exception:
+        # Every tool this server exposes was unreachable when this raised
+        # (issue #1309), including the ones that never touch the index. The
+        # instance is kept: its search still runs against whatever shape the
+        # index is in, and the vector arm answers alongside it.
+        _log.warning("repowise MCP: full-text index unavailable", exc_info=True)
 
     # Seed InMemory placeholder so tools that don't need vector search
     # can start immediately, before the background load completes.
     # decision_store is repointed to the same store — no separate table.
-    _placeholder = InMemoryVectorStore(embedder=MockEmbedder())
+    _placeholder = InMemoryVectorStore(embedder=KeylessEmbedder())
     _state._vector_store = _placeholder
     _state._decision_store = _placeholder
 
@@ -373,9 +503,9 @@ async def _lifespan(server: FastMCP):
 
     yield
 
-    _bg_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await _bg_task
+    await _cancel_task(_bg_task)
+    await _cancel_task(_warm_task)
+    _state._lancedb_ready = None
 
     await engine.dispose()
     # _decision_store is an alias for _vector_store — close only once.
@@ -446,6 +576,12 @@ def run_mcp(
         mcp.settings.port = port
         mcp.run(transport="streamable-http")
     else:
+        # stdout is the JSON-RPC channel on stdio, so every log line written
+        # there arrives at the client as a malformed protocol frame. Move the
+        # log sinks to stderr before anything can log.
+        from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+
+        route_logging_to_stderr()
         # stdio servers are spawned per-session by the MCP client; when the
         # client dies abnormally the stdio loop doesn't exit (and Windows
         # never kills children), leaking servers that hold wiki.db handles.

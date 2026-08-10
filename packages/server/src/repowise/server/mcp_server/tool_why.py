@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
@@ -16,8 +17,12 @@ from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
 )
+from repowise.core.precedent.currency import describe_decision_currency
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
+from repowise.server.mcp_server._episodes import bank_overflow, episode_evidence
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
     _compute_alignment,
@@ -157,9 +162,53 @@ async def _why_health_dashboard(repo: str | None) -> dict:
         }
 
 
+# --- Path-mode cap and projection -------------------------------------------
+#
+# Path mode used to return every governing record whole: on ``persist.py`` that
+# was 15 records inlining 241 file paths between them, plus an origin story
+# carrying full commit bodies — 81 854 chars, which the MCP host rejects
+# outright (see ``_budget.budgeter``: over the cap is an isError, not a
+# truncation). The mode that matters most, "what governs this file right before
+# I edit it", hard-failed on exactly the bug-magnet files it exists for.
+#
+# So: rank, project, then enforce. The caps below are the projection; the
+# budget pass after them is the guarantee, since no fixed cap can bound a
+# response whose fields are free text.
+
+#: Governing records kept, best-first. Past ~8 the tail is review-queue noise.
+_MAX_PATH_DECISIONS = 8
+
+#: Paths kept per record. The array answers "how wide is this decision", which
+#: a head plus a total answers as well as 241 paths do.
+_MAX_AFFECTED_FILES = 10
+
+#: Commit *bodies* are the weight in an origin story: the subject is already
+#: capped at 200 chars at ingest, but ``body`` is kept up to 1 KB per
+#: significant commit (``git_indexer/file_history.py``) and up to 10 of those
+#: ride along in ``key_commits``. An origin story reads the intent, not the
+#: whole message.
+_MAX_COMMIT_TEXT_CHARS = 320
+
+#: Headroom left under the budget for ``OmissionCollector.attach``, which adds
+#: ``omission_marker`` + ``_meta.omitted`` *after* the last size check.
+_COLLECTOR_HEADROOM_CHARS = 600
+
+#: Sort order for governing records: what governs beats what was proposed
+#: beats what is retired; then confidence; then freshness.
+_PATH_STATUS_ORDER = {"active": 0, "proposed": 1, "deprecated": 2, "superseded": 3}
+
+
+def _path_decision_sort_key(d: Any) -> tuple[int, float, float]:
+    return (
+        _PATH_STATUS_ORDER.get(d.status, 4),
+        -(d.confidence or 0.0),
+        d.staleness_score or 0.0,
+    )
+
+
 def _governing_decision_entry(d: Any, affected_files: list, lineage: list[dict]) -> dict:
     """Serialize a decision that governs a path, including its lineage chain."""
-    return {
+    entry = {
         "id": d.id,
         "title": d.title,
         "status": d.status,
@@ -168,12 +217,120 @@ def _governing_decision_entry(d: Any, affected_files: list, lineage: list[dict])
         "rationale": d.rationale,
         "alternatives": json.loads(d.alternatives_json),
         "consequences": json.loads(d.consequences_json),
-        "affected_files": affected_files,
+        "affected_files": affected_files[:_MAX_AFFECTED_FILES],
         "source": d.source,
         "confidence": d.confidence,
         "staleness_score": d.staleness_score,
         "lineage": lineage if len(lineage) > 1 else [],
     }
+    if len(affected_files) > _MAX_AFFECTED_FILES:
+        entry["affected_files_total"] = len(affected_files)
+    return entry
+
+
+def _trim_commit_text(origin_story: dict) -> None:
+    """Cap commit prose in place, wherever the origin story inlines it.
+
+    ``message`` and ``body`` both, because which one carries the weight depends
+    on the repo: a squash-merge repo puts the whole rationale in ``body`` and
+    the ingest keeps it up to 1 KB, while ``message`` is already capped at 200.
+    Capping both means this does not quietly become a no-op if that changes.
+    """
+
+    def _trim(commits: Any) -> None:
+        if not isinstance(commits, list):
+            return
+        for c in commits:
+            if not isinstance(c, dict):
+                continue
+            for field in ("message", "body"):
+                text = c.get(field)
+                if isinstance(text, str) and len(text) > _MAX_COMMIT_TEXT_CHARS:
+                    c[field] = text[:_MAX_COMMIT_TEXT_CHARS] + "…"
+
+    _trim(origin_story.get("key_commits"))
+    for linked in origin_story.get("linked_decisions") or []:
+        if isinstance(linked, dict):
+            _trim(linked.get("evidence_commits"))
+
+
+def _fit_path_response(
+    result_data: dict, repo_root: Any, collector: OmissionCollector | None = None
+) -> dict:
+    """Shrink a path response until it fits the transport budget.
+
+    The projection above bounds the structured fields; this bounds the free
+    text ones, which no fixed cap can — a single record's ``rationale`` is
+    unbounded, and the ungoverned-file branch returns git archaeology instead
+    of decisions and so is not capped by any of them.
+
+    Stages, cheapest loss first:
+
+    1. Drop ``origin_story.linked_decisions``, which re-inlines each record's
+       title, rationale and matched commits — all of it already in
+       ``decisions``.
+    2. Drop governing records from the tail, all the way to none if it comes
+       to that. They are sorted best-first, so the tail is review-queue noise,
+       and an empty list plus a marker beats a rejected response.
+    3. Drop the fallback blocks the ungoverned branch adds
+       (``code_rationale``, then ``git_archaeology``), then ``origin_story``
+       whole. What survives — mode, path, alignment, ``_meta`` — is bounded.
+
+    Every drop goes to the omission store, so the agent gets a
+    ``[repowise#<ref>]`` marker it can expand rather than a silently shortened
+    response. Call after ``_meta`` is set: the collector writes into it.
+
+    *collector* is the one a caller already started — the episode block caps
+    long bodies and banks the overflow before this runs. It must be reused
+    rather than joined by a second, because ``attach`` overwrites
+    ``_meta.omitted`` with its own refs and the loser's markers would then
+    point at content the response no longer advertises. It is also why the
+    under-budget path still attaches: a response that fits can still carry a
+    capped body whose remainder needs advertising.
+    """
+    # Reserved so the marker the collector appends after the last check cannot
+    # itself push the response back over the host cap.
+    budget = effective_char_budget() - _COLLECTOR_HEADROOM_CHARS
+
+    def _over() -> bool:
+        return len(json.dumps(result_data, separators=(",", ":"), default=str)) > budget
+
+    if not _over():
+        if collector is not None:
+            collector.attach(result_data)
+        return result_data
+
+    if collector is None:
+        collector = OmissionCollector("get_why", repo_root=repo_root)
+
+    def _drop_block(key: str, container: dict) -> None:
+        if _over() and container.get(key):
+            collector.add(key, container.pop(key))
+            result_data["truncated"] = True
+
+    origin_story = result_data.get("origin_story")
+    if isinstance(origin_story, dict):
+        _drop_block("linked_decisions", origin_story)
+
+    # Before the governing records, not after them: episodes are the newest
+    # evidence kind here and must only ever spend slack. Dropping them later in
+    # the sequence meant the decisions loop ran with the episode block still
+    # inflating the response, and a governing record was evicted to make room
+    # for an episode that then survived — measured, not theorised.
+    _drop_block("episodes", result_data)
+
+    decisions: list = result_data.get("decisions") or []
+    while decisions and _over():
+        dropped = decisions.pop()
+        collector.add(f"dropped governing decision {dropped.get('title', '')}", dropped)
+        result_data["truncated"] = True
+        result_data.setdefault("dropped_decisions", []).append(dropped.get("id", ""))
+
+    for key in ("code_rationale", "git_archaeology", "origin_story"):
+        _drop_block(key, result_data)
+
+    collector.attach(result_data)
+    return result_data
 
 
 async def _why_path(query: str, repo: str | None) -> dict:
@@ -209,24 +366,65 @@ async def _why_path(query: str, repo: str | None) -> dict:
 
         from repowise.core.persistence.decision_graph import build_lineage_chain
 
+        matched = [
+            d
+            for d in all_decisions
+            if query in json.loads(d.affected_files_json)
+            or query in json.loads(d.affected_modules_json)
+        ]
+        # Rank before capping, so the 8 that survive are the 8 that govern —
+        # not whichever 8 the table scan happened to yield first.
+        matched.sort(key=_path_decision_sort_key)
         governing = []
-        for d in all_decisions:
-            affected_files = json.loads(d.affected_files_json)
-            affected_modules = json.loads(d.affected_modules_json)
-            if query not in affected_files and query not in affected_modules:
-                continue
+        for rank, d in enumerate(matched[:_MAX_PATH_DECISIONS]):
             # Walk supersedes/refines back to roots so the answer is a
             # lineage chain (sessions → JWT → OAuth2), not a flat list.
             lineage = await build_lineage_chain(session, d.id)
-            governing.append(_governing_decision_entry(d, affected_files, lineage))
+            entry = _governing_decision_entry(d, json.loads(d.affected_files_json), lineage)
+            # Ask git whether the top record still holds — and only the top
+            # one. The query is ~60 ms, which is affordable once inside an MCP
+            # call and is not affordable eight times; the record ranked first
+            # is the one a reader acts on. Everything below it keeps the
+            # stored proportion, which needed no subprocess to compute.
+            if rank == 0:
+                sentence = await asyncio.to_thread(
+                    describe_decision_currency,
+                    ctx.path,
+                    created_at=d.created_at,
+                    nodes=json.loads(d.affected_files_json or "[]"),
+                )
+                if sentence:
+                    entry["still_true"] = sentence
+            governing.append(entry)
+
+        origin_story = _build_origin_story(query, git_meta, governing)
+        _trim_commit_text(origin_story)
 
         result_data: dict[str, Any] = {
             "mode": "path",
             "path": query,
             "decisions": governing,
-            "origin_story": _build_origin_story(query, git_meta, governing),
-            "alignment": _compute_alignment(query, governing, all_decisions),
+            "origin_story": origin_story,
+            # Alignment is scored over every matching record, not just the
+            # ones that survived the cap — it is a coverage number, and
+            # capping its input would make a well-governed hotspot look thin.
+            # It reads only status/staleness/title, so the cheap projection is
+            # the whole of what it needs.
+            "alignment": _compute_alignment(
+                query,
+                [
+                    {
+                        "title": d.title,
+                        "status": d.status,
+                        "staleness_score": d.staleness_score,
+                    }
+                    for d in matched
+                ],
+                all_decisions,
+            ),
         }
+        if len(matched) > _MAX_PATH_DECISIONS:
+            result_data["decisions_total"] = len(matched)
 
         # --- Fallback: git archaeology when no decisions found ---
         if not governing:
@@ -242,8 +440,20 @@ async def _why_path(query: str, repo: str | None) -> dict:
             if rationale:
                 result_data["code_rationale"] = rationale
 
+        # Episodes are additive rather than a fallback, unlike the two blocks
+        # above. A well-governed file still has a history, and "what happened
+        # here, dated" is the question this mode is asked; gating it on the
+        # absence of decisions would hide it exactly where there is most to say.
+        episodes, pending = await asyncio.to_thread(episode_evidence, ctx.path, paths=[query])
+        if episodes:
+            result_data["episodes"] = episodes
+        # Banked here, not in the thread above: the omission store is a
+        # sqlite3 connection bound to its creating thread, and this collector
+        # is finalised below on this one.
+        collector = bank_overflow(pending, tool="get_why", repo_root=ctx.path)
+
         result_data["_meta"] = _build_meta(repository=repository)
-        return result_data
+        return _fit_path_response(result_data, ctx.path, collector=collector)
 
 
 # Stop words removed before keyword matching for better signal.
@@ -302,10 +512,15 @@ def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str])
 
 
 async def _semantic_decision_results(ctx: Any, query: str) -> list:
-    """Semantic search of the page store, filtered to the decision: namespace."""
+    """Semantic search of the page store, filtered to the decision: namespace.
+
+    Empty on a keyless index: there is no lexical fallback here, and a window of
+    arbitrary decisions is worse than none for a tool whose whole job is
+    explaining why a specific thing is the way it is.
+    """
     decision_results: list = []
     with contextlib.suppress(Exception):
-        if ctx.vector_store is not None:
+        if ctx.vector_store is not None and store_has_semantic_vectors(ctx.vector_store):
             _raw = await ctx.vector_store.search(query, limit=50)
             decision_results = [
                 r for r in _raw if getattr(r, "page_id", "").startswith(DECISION_VECTOR_PREFIX)
@@ -314,11 +529,21 @@ async def _semantic_decision_results(ctx: Any, query: str) -> list:
 
 
 async def _semantic_doc_results(ctx: Any, query: str) -> list:
-    """Semantic search over documentation, falling back to FTS."""
+    """Semantic search over documentation, falling back to FTS.
+
+    A keyless index takes the FTS path directly rather than going through a
+    vector store that cannot rank, which is the same answer the ``except``
+    branch already produces for an unusable store.
+    """
+    if not store_has_semantic_vectors(getattr(ctx, "vector_store", None)):
+        doc_results: list = []
+        with contextlib.suppress(Exception):
+            doc_results = await ctx.fts.search(query, limit=3)
+        return doc_results
     try:
         return await ctx.vector_store.search(query, limit=3)
     except Exception:
-        doc_results: list = []
+        doc_results = []
         with contextlib.suppress(Exception):
             doc_results = await ctx.fts.search(query, limit=3)
         return doc_results
@@ -482,7 +707,32 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
             if rationale:
                 result_data["code_rationale"] = rationale
 
+    # Targets resolve through the node index; without them the question itself
+    # is the only handle, so it is ranked against the bodies.
+    episodes, pending = await asyncio.to_thread(
+        episode_evidence,
+        ctx.path,
+        paths=targets or None,
+        query=None if targets else query,
+    )
+    if episodes:
+        result_data["episodes"] = episodes
+
     result_data["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
+    # Deliberately *not* routed through `_fit_path_response`. This mode has no
+    # budget pass and predates this block, but that function is written for the
+    # path response's shape: search mode keeps `origin_story` and
+    # `git_archaeology` inside `target_context`, so the two blocks it would
+    # drop whole are no-ops here and the only thing it can actually shed is
+    # this mode's primary payload. Measured on a realistic six-target
+    # response, it emptied `decisions` entirely and was still over budget —
+    # strictly worse than leaving it alone. What this block adds is bounded by
+    # construction (three episodes, each body capped), which is the obligation
+    # it owes; giving the whole mode a budget pass is a separate change with
+    # its own drop order to design.
+    collector = bank_overflow(pending, tool="get_why", repo_root=ctx.path)
+    if collector is not None:
+        collector.attach(result_data)
     return result_data
 
 

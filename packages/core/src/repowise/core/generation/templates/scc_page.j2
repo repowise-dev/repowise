@@ -5,9 +5,18 @@
     advice on breaking the cycle; the decouple ranking below is the
     structural stand-in for it.
 -#}
-# Circular Dependency: {{ ctx.scc_id }}
+{#- ``default(..., true)`` so an absent *or* empty title both fall back: the
+    caller names the whole set at once and a caller that does not is still
+    entitled to a page. #}
+# {{ page_title | default("Circular Dependency: " ~ ctx.scc_id, true) }}
 
 {{ ctx.files | length }} files import each other in a loop, directly or transitively. Nothing in this group can be loaded, tested or extracted without the rest of it.
+
+{#- The id is no longer in the heading, and it is what logs, links and the
+    dependency tooling call this cycle, so it is stated once rather than being
+    findable only in the URL. #}
+
+**Cycle id:** `{{ ctx.scc_id }}`
 
 ## Files in the cycle
 {# Capped, here and in the two listings below: a test-suite cycle routed

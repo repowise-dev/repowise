@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
@@ -67,7 +68,7 @@ async def run_generation(
         PageGenerator,
     )
     from repowise.core.persistence.vector_store import InMemoryVectorStore
-    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.providers.embedding.base import KeylessEmbedder
 
     # Attach cost tracker to LLM client if available
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
@@ -83,7 +84,7 @@ async def run_generation(
     assembler = ContextAssembler(config)
 
     # Resolve embedder and vector store
-    embedder_impl = embedder if embedder is not None else MockEmbedder()
+    embedder_impl = embedder if embedder is not None else KeylessEmbedder()
 
     if vector_store is None:
         vector_store = InMemoryVectorStore(embedder_impl)
@@ -166,14 +167,28 @@ async def run_generation(
     }
     if progress:
         if onboarding_generated or promoted_present:
+            # Imported here, not at module scope: importing the onboarding
+            # package registers every subkind, and this module is on the CLI's
+            # import path where that cost buys nothing.
+            from repowise.core.generation.onboarding.slots import ONBOARDING_ORDER
+
             slots_made = sorted(
                 {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
             )
             progress.on_message(
                 "info",
-                f"Onboarding: {len(slots_made)}/8 slots — {', '.join(slots_made)}",
+                # Derived rather than written down: the denominator was a
+                # literal 8 and went stale the first time a slot was added.
+                f"Onboarding: {len(slots_made)}/{len(ONBOARDING_ORDER)} slots"
+                f" — {', '.join(slots_made)}",
             )
-        progress.on_message("info", f"Generated {len(generated_pages)} pages")
+        # Placeholders left behind by a failed provider call are in this list
+        # like any other page, and the run reports them as failures a line
+        # later. Counting the list here made the two lines disagree.
+        progress.on_message(
+            "info",
+            f"Generated {len(generated_pages) - count_stub_fallbacks(generated_pages)} pages",
+        )
         # Surface the FAQ-weighted budget tilt when session demand shaped it
         # (silent on fresh repos with no history — nothing to weight yet).
     _phase_done(progress, "onboarding")

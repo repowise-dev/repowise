@@ -87,6 +87,8 @@ are the only people who use repowise on repowise with fresh eyes.
 ## Looking for something to work on
 
 - **[Good first issues](https://github.com/repowise-dev/repowise/labels/good%20first%20issue)** on the tracker.
+- **[Help wanted](https://github.com/repowise-dev/repowise/labels/help%20wanted)** for
+  issues that are scoped and ready to pick up but need more context than a first issue.
 - **[The refactoring backlog](https://repowise.dev/repo/repowise-dev/repowise/refactoring).**
   Repowise ranks its own concrete refactoring plans (Extract Class, Split File, Break
   Cycle, and so on) with the blast radius attached. Each card has a copy-to-agent
@@ -94,6 +96,22 @@ are the only people who use repowise on repowise with fresh eyes.
   fastest way to learn how the health layer thinks.
 - **Language support.** Adding a language is one `.scm` query file and one config entry.
   See [docs/layers/LANGUAGE_SUPPORT.md](../docs/layers/LANGUAGE_SUPPORT.md).
+
+### Claiming an issue
+
+Issues are assigned to one person at a time, so that two contributors do not build the
+same fix in parallel and one of them has to throw the work away.
+
+- Comment on the issue saying you are taking it, and a maintainer will assign it to you.
+- Only the assignee should open a PR for that issue.
+- If you get pulled away, a one-line comment to unclaim is enough. It carries no
+  obligation and no hard feelings, and it frees the issue for someone else.
+- An assigned issue that goes quiet for two weeks goes back to unassigned.
+
+Questions about scope before you claim are welcome. Asking is not claiming.
+
+Some issues describe several separable pieces of work. Say which piece you are taking,
+and it can be split into its own issue so more than one person can work in parallel.
 
 Before you start, check the file you are about to edit:
 

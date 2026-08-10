@@ -213,6 +213,9 @@ async def test_reindex_persists_its_resolved_embedder(
         content = "hello"
         page_type = "file_page"
         target_path = "a.py"
+        # Non-nullable on the real model, so a stand-in that omits it is a
+        # stand-in for a page that cannot exist.
+        summary = "what a.py does"
 
     class _Result:
         def __init__(self, rows: list) -> None:
@@ -466,6 +469,59 @@ def test_mock_pin_never_proposes_re_embedding_a_real_store(
     assert _vector_dims(tmp_path) == (None, None)
 
 
+def test_a_mock_pin_never_reads_the_stored_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keyless default must not open LanceDB to learn nothing.
+
+    Reading the stored width costs an ``import lancedb`` (1.7s measured, versus
+    0.09s for the connect and schema read it is there for), and ``assess_store``
+    runs on every ``update`` including the no-op path a post-commit hook fires
+    on. A mock pin can never produce a verdict, so the read is pure waste and
+    the guards are ordered to skip it. Asserting the call count rather than the
+    timing: this is the invariant, the seconds are its consequence.
+    """
+    from repowise.cli.upgrade import _vector_dims
+
+    _write_config(tmp_path, embedder="mock")
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+
+    calls: list[Path] = []
+
+    def _spy(lance_dir):
+        calls.append(lance_dir)
+        return 8
+
+    monkeypatch.setattr("repowise.cli.providers.vector_store.existing_vector_dim", _spy)
+
+    assert _vector_dims(tmp_path) == (None, None)
+    assert calls == []
+
+
+def test_a_real_pin_still_reads_the_stored_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The saving must not have been bought by skipping the check that matters."""
+    from repowise.cli.upgrade import _vector_dims
+
+    _write_config(tmp_path, embedder="openai")
+    monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
+
+    calls: list[Path] = []
+
+    def _spy(lance_dir):
+        calls.append(lance_dir)
+        return 8
+
+    monkeypatch.setattr("repowise.cli.providers.vector_store.existing_vector_dim", _spy)
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+    )
+
+    assert _vector_dims(tmp_path) == (8, 1536)
+    assert len(calls) == 1
+
+
 async def test_auto_reembed_refuses_to_run_with_a_mock_embedder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -538,3 +594,57 @@ def test_duplicate_reembed_actions_run_once() -> None:
     )
     asyncio.run(apply_auto(verdict, _Ctx()))
     assert calls == 1
+
+
+# --- build_embedder must say when it degrades -----------------------------
+#
+# The fallback to keyless embeddings used to be a bare ``except`` that returned
+# a KeylessEmbedder with nothing printed anywhere. ``--embedder ollama`` against
+# a stopped Ollama therefore produced a repo that indexed and searched without
+# complaint and had no semantic retrieval at all, while ``doctor`` reported
+# healthy. The server path already recorded this as ``degraded: True``; the CLI
+# path recorded nothing at all.
+
+
+def _capture_console(monkeypatch) -> list[str]:
+    """Collect what build_embedder prints, without a real terminal."""
+    from repowise.cli import helpers
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        helpers.console, "print", lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+    )
+    return printed
+
+
+def test_build_embedder_reports_a_failed_real_backend(monkeypatch):
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    def _boom(name: str, **kwargs: object):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("repowise.core.providers.embedding.registry.get_embedder", _boom)
+    printed = _capture_console(monkeypatch)
+
+    embedder = providers.build_embedder("ollama")
+
+    # Still falls back rather than crashing the run: full-text search is
+    # unaffected and a hard failure here would break indexing outright.
+    assert isinstance(embedder, KeylessEmbedder)
+    said = " ".join(printed)
+    # The three things a user needs: which backend, why, and what it costs them.
+    assert "ollama" in said
+    assert "connection refused" in said
+    assert "semantic search" in said.lower()
+
+
+def test_build_embedder_is_silent_for_the_keyless_default(monkeypatch):
+    """``mock`` is what a no-key run resolves to. Reaching it is not a failure
+    and must not print a warning, or every keyless run cries wolf."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    printed = _capture_console(monkeypatch)
+    embedder = providers.build_embedder("mock")
+
+    assert isinstance(embedder, KeylessEmbedder)
+    assert printed == []

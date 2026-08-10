@@ -260,7 +260,7 @@ def _fake_rehydrated(template_ids: list[str]) -> RehydratedRepo:
         for pid in template_ids
     ]
     deps = build_page_dependencies(
-        module_groups=[], scc_groups=[], layer_page_of={}, repo_wide_ids=[]
+        module_groups=[], scc_groups=[], repo_wide_ids=[]
     )
     return RehydratedRepo(
         graph_builder=MagicMock(),

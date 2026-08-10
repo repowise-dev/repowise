@@ -14,6 +14,7 @@ prose never names its collaborators is still connected to them.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any
 
 import structlog
@@ -67,6 +68,114 @@ def _module_siblings(
     return siblings
 
 
+def _module_of_path(pages: list[Any]) -> dict[str, str]:
+    """``file path -> the module page id that documents it``.
+
+    Read from the pages' own recorded membership rather than from the run's
+    module groups, because the groups exist only during a full generation and
+    this has to work on the persistence-layer backfill too — which is how
+    every update flavor heals.
+
+    Ties break on the lowest page id, the same rule ``assign_page_tree`` uses
+    to decide file ownership. Two records of who documents a file that
+    disagreed would put a page's neighbours somewhere its children are not.
+    """
+    out: dict[str, str] = {}
+    for page in pages:
+        if getattr(page, "page_type", "") != "module_page":
+            continue
+        for member in page.metadata.get("file_paths") or []:
+            if not isinstance(member, str):
+                continue
+            current = out.get(member)
+            if current is None or page.page_id < current:
+                out[member] = page.page_id
+    return out
+
+
+def _module_adjacency(
+    module_of: dict[str, str],
+    import_edges: list[tuple[str, str]] | None,
+    git_meta_map: dict[str, dict] | None,
+) -> dict[str, dict[str, Counter]]:
+    """Per-module neighbour counts, keyed ``module id -> reason -> Counter``.
+
+    A module's neighbours are its members' neighbours, lifted to whichever
+    module documents them and counted. The count is the evidence: two
+    subsystems joined by forty import edges are more related than two joined
+    by one, and nothing else here carries a weight that means anything at
+    module scale.
+
+    Edges inside a module are dropped — a module is not related to itself, and
+    on a large group the self-edges would otherwise swamp every real one.
+    """
+    out: dict[str, dict[str, Counter]] = {}
+
+    def bump(mod: str, reason: str, other: str) -> None:
+        if not other or other == mod:
+            return
+        out.setdefault(mod, {}).setdefault(reason, Counter())[other] += 1
+
+    for src, dst in import_edges or []:
+        src_mod, dst_mod = module_of.get(src), module_of.get(dst)
+        if not src_mod or not dst_mod:
+            continue
+        bump(src_mod, "imports", dst_mod)
+        bump(dst_mod, "imported-by", src_mod)
+
+    for path, meta in (git_meta_map or {}).items():
+        mod = module_of.get(path)
+        if not mod:
+            continue
+        for partner, _count in _co_change_partners(meta):
+            bump(mod, "co-changes-with", module_of.get(partner, ""))
+
+    return out
+
+
+def _inherit_subtree_neighbours(
+    pages: list[Any], adjacency: dict[str, dict[str, Counter]]
+) -> None:
+    """Give a chapter that owns no files the neighbours of its subtree.
+
+    A chapter heading a subsystem whose files all belong to the pages beneath
+    it has no members, so it has no edges of its own and would be the one page
+    in the wiki with nothing across — which is the opposite of its job. Its
+    neighbours are its subsystem's: the union of its descendants' edges, minus
+    everything that lands back inside the subtree, because an edge to a page
+    it already links down to is not news.
+
+    Mutates *adjacency* in place. Only chapters with no members of their own
+    are filled; one that documents loose files has real edges already.
+    """
+    targets = {
+        page.page_id: page.target_path
+        for page in pages
+        if getattr(page, "page_type", "") == "module_page" and page.target_path
+    }
+    empty = [
+        page
+        for page in pages
+        if getattr(page, "page_type", "") == "module_page"
+        and not (page.metadata.get("file_paths") or [])
+        and page.target_path
+    ]
+    for page in empty:
+        prefix = page.target_path + "/"
+        inside = {
+            pid for pid, tp in targets.items() if tp == page.target_path or tp.startswith(prefix)
+        }
+        merged: dict[str, Counter] = {}
+        for pid in inside:
+            for reason, counts in adjacency.get(pid, {}).items():
+                bucket = merged.setdefault(reason, Counter())
+                for target, n in counts.items():
+                    if target not in inside:
+                        bucket[target] += n
+        if merged:
+            adjacency[page.page_id] = merged
+
+
 def attach_related_pages(
     pages: list[GeneratedPage],
     *,
@@ -76,10 +185,16 @@ def attach_related_pages(
     pagerank: dict[str, float] | None = None,
     prior_page_ids: Any = None,
 ) -> None:
-    """Populate ``metadata['related_pages']`` on file-backed pages.
+    """Populate ``metadata['related_pages']`` on file-backed and module pages.
 
     Mutates each :class:`GeneratedPage` in place. Idempotent — recomputed
     from scratch on every run.
+
+    A module page's neighbours are its members' neighbours lifted to module
+    scale and counted. Module pages were excluded while the pass was gated on
+    ``FILE_BACKED_PAGE_TYPES``, which left the pages that most need to name
+    their collaborators as the only ones that never did: a reader on a
+    subsystem page could reach its files and its parent, and nothing across.
 
     ``prior_page_ids`` widens resolution beyond this run's page set: on an
     incremental update only the affected pages are regenerated, so without
@@ -109,10 +224,21 @@ def attach_related_pages(
 
     siblings = _module_siblings(module_groups)
 
+    # Module neighbours, computed once over the whole page set rather than per
+    # page. Skipped entirely when no module page is present, which is the
+    # common case on a scoped file-page run.
+    module_of = _module_of_path(pages)
+    module_adj = (
+        _module_adjacency(module_of, import_edges, git_meta_map) if module_of else {}
+    )
+    if module_adj:
+        _inherit_subtree_neighbours(pages, module_adj)
+
     attached_pages = 0
     total_entries = 0
     for page in pages:
-        if page.page_type not in _FILE_BACKED or not page.target_path:
+        is_module = page.page_type == "module_page"
+        if (page.page_type not in _FILE_BACKED and not is_module) or not page.target_path:
             continue
         path = page.target_path
 
@@ -121,20 +247,36 @@ def attach_related_pages(
             link.get("target_page_id") for link in page.metadata.get("wiki_links") or []
         }
 
-        candidates: dict[str, list[tuple[str, float]]] = {
-            # Order within a reason: strongest evidence first. Import edges
-            # carry no weight of their own, so central targets go first.
-            "imports": sorted(
-                ((p, pr.get(p, 0.0)) for p in imports_of.get(path, ())),
-                key=lambda t: -t[1],
-            ),
-            "imported-by": sorted(
-                ((p, pr.get(p, 0.0)) for p in imported_by.get(path, ())),
-                key=lambda t: -t[1],
-            ),
-            "co-changes-with": _co_change_partners((git_meta_map or {}).get(path)),
-            "same-module": [(p, 0.0) for p in siblings.get(path, ())],
-        }
+        if is_module:
+            by_reason = module_adj.get(page.page_id, {})
+            candidates = {
+                # Already page ids, so resolution is a no-op below. Weight is
+                # the number of edges crossing the boundary.
+                reason: [
+                    (target, float(n))
+                    for target, n in by_reason.get(reason, Counter()).most_common()
+                ]
+                # ``same-module`` is meaningless for a module: it *is* the
+                # module. Left out rather than emitted empty, so the reason
+                # priority below skips straight past it.
+                for reason in ("imports", "imported-by", "co-changes-with")
+            }
+            candidates["same-module"] = []
+        else:
+            candidates = {
+                # Order within a reason: strongest evidence first. Import edges
+                # carry no weight of their own, so central targets go first.
+                "imports": sorted(
+                    ((p, pr.get(p, 0.0)) for p in imports_of.get(path, ())),
+                    key=lambda t: -t[1],
+                ),
+                "imported-by": sorted(
+                    ((p, pr.get(p, 0.0)) for p in imported_by.get(path, ())),
+                    key=lambda t: -t[1],
+                ),
+                "co-changes-with": _co_change_partners((git_meta_map or {}).get(path)),
+                "same-module": [(p, 0.0) for p in siblings.get(path, ())],
+            }
 
         seen: set[str] = {page.page_id} | prose_targets
         related: list[dict] = []
@@ -143,7 +285,7 @@ def attach_related_pages(
             for target_path, weight in candidates[reason]:
                 if kept >= _PER_REASON_CAP or len(related) >= _TOTAL_CAP:
                     break
-                target_id = index.resolve(target_path)
+                target_id = target_path if is_module else index.resolve(target_path)
                 if target_id is None or target_id in seen:
                     continue
                 seen.add(target_id)

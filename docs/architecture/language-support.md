@@ -23,6 +23,8 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
         |
         +-- Config/data language?  -> empty ParsedFile (passthrough)
         +-- Special format?        -> special_handlers.py (OpenAPI/Dockerfile/Makefile/SQL)
+        +-- Multi-language file?   -> sfc_source.py projects it to one
+        |                             grammar's language at identical offsets
         +-- Has grammar?           -> tree-sitter AST parsing
                 |
                 v
@@ -44,7 +46,9 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
                   (src/ + monorepo packages/*/src + PEP 420 namespace
                   packages), __init__.py re-export barrels, stem fallback
           TS/JS:  relative paths, tsconfig aliases, workspace exports,
-                  `export ... from` re-export barrels, node_modules
+                  `export ... from` re-export barrels, node_modules,
+                  package.json "imports" (`#alias/*`) subpath imports
+          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> src/lib
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
@@ -112,6 +116,7 @@ ingestion/
     registry.py        #   HintRegistry
     django.py  pytest_hints.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  cpp.py  luau.py  go.py  jvm.py
+  sfc_source.py        # Multi-language-file (SFC) projection (see below)
   parser.py            # ASTParser (language-agnostic orchestration)
   graph.py             # GraphBuilder (import/call/heritage resolution)
 
@@ -157,7 +162,8 @@ SPEC = LanguageSpec(
     scm_file="mylang.scm",                       # query file name
     heritage_node_types=frozenset({"class_declaration"}),
     entry_point_patterns=("main.ml",),
-    manifest_files=("mylang.toml",),
+    manifest_files=("mylang.toml", "mylang.build.json"),
+    build_config_manifests=("mylang.build.json",),  # usually empty — see below
     shebang_tokens=("mylang",),
     builtin_calls=frozenset({"print", "len"}),  # filter from call graph
     builtin_parents=frozenset({"Object"}),       # filter from heritage
@@ -165,11 +171,43 @@ SPEC = LanguageSpec(
 )
 ```
 
+#### `manifest_files` also decides package boundaries
+
+Every name in `manifest_files` that is *not* in `build_config_manifests` marks
+its directory as a **package root**. That drives two things beyond ingestion:
+monorepo detection (`RepoStructure.packages`), and code health's `module`
+attribution — the label the dashboard, the module rollups and `module:` target
+expansion all group on. Declaring your manifests is therefore all it takes to
+give a monorepo in your language proper per-package health; there is no second
+list to edit. `REGISTRY.package_manifest_filenames()` is the single source of
+truth, and both consumers read it.
+
+`build_config_manifests` defaults to empty, which is nearly always right. Add
+to it only when a name in `manifest_files` configures a build rather than
+declaring a distributable unit, because such files appear in directories that
+are not packages and each one becomes a false root that fragments the rollup.
+The shipped cases are the .NET `Directory.Build.props` / `global.json` family
+(measured in 135 non-package directories), `vite.config.js` / `nuxt.config.ts`,
+`svelte.config.js`, Cabal's `Setup.hs`, and `lean-toolchain`.
+
+`manifest_files` holds exact filenames only, so a language whose package file is
+a *pattern* cannot be expressed. .NET is the live example: `*.csproj` is the
+real package declaration, everything C# declares is build configuration, and a
+.NET monorepo therefore still falls back to the top-level directory.
+
+One caveat worth knowing: package roots are read from a **directory scan**, not
+from the indexed file list, because the traverser only emits files whose
+language it can detect and drops 18 manifest names on that rule (`go.mod`,
+`pom.xml`, `build.gradle`, `Gemfile`, `build.sbt` among them). So a manifest
+counts as a package root whether or not your language's files parse.
+
 Then register it in `languages/specs/__init__.py` by importing the module and
 slotting it into the `ALL_SPECS` tuple. **Order matters**: `LanguageRegistry`
 builds its extension map first-spec-wins, so place more specific languages
-ahead of ones that share an extension (e.g. TypeScript before JavaScript). You
-never edit `registry.py` itself.
+ahead of ones that share an extension (e.g. TypeScript before JavaScript). A
+spec using `shares_grammar_with` must also come *after* the spec it borrows
+from, which is resolved against the registry built so far. You never edit
+`registry.py` itself.
 
 ### Step 2: Add the `LanguageTag`
 
@@ -196,7 +234,10 @@ tree-sitter S-expression syntax. Follow the capture-name conventions:
 | `@call.receiver` | Object the call is made on | No |
 | `@call.arguments` | Call arguments | No |
 
-`python.scm` and `typescript.scm` are good starting points.
+`python.scm` and `typescript.scm` are good starting points. A language whose
+syntax *is* another's can skip this step entirely by pointing `scm_file` at the
+existing query file — that field names the query to load, so `svelte` declares
+`scm_file="typescript.scm"` and writes no `.scm` of its own.
 
 ### Step 4: Add a `LanguageConfig` entry
 
@@ -267,6 +308,83 @@ language sets from the registry automatically.
 
 ---
 
+## Multi-language files (the SFC pattern)
+
+Some file types hold more than one language. A `.svelte` or `.vue` component is
+TS/JS in its `<script>` blocks, framework-flavoured HTML in its markup, and CSS
+in `<style>`. The markup grammars parse the file but return each `<script>`
+body as one opaque `raw_text` node, so a `.scm` query against them captures no
+symbol, import, or call — a grammar alone cannot support such a language.
+
+`ingestion/sfc_source.py` solves this with a **byte-preserving projection**
+rather than a second coordinate space:
+
+1. a markup grammar *locates* the JS-bearing regions — every `<script>` body
+   and every markup expression;
+2. every byte outside those regions is blanked to a space, with newlines kept;
+3. each kept markup expression is fenced by rewriting its two surrounding
+   delimiter bytes to `;`, so adjacent expressions cannot run together and an
+   unterminated final script statement cannot swallow the following expression
+   via ASI.
+
+The result is valid TypeScript whose every byte offset and line number matches
+the original file. That single property is what makes the rest free: the spec
+declares `shares_grammar_with="typescript"` and `scm_file="typescript.scm"`, the
+`LanguageConfig` is an alias of TypeScript's, and the three health dialect
+registries alias the TS entries. Each consumer that hands raw bytes to a
+tree-sitter `Parser` calls `prepare_source(language, source)` first — the
+ingestion parser plus the complexity, dataflow, and duplication walkers. It is
+a no-op for every language without a registered locator.
+
+### The locator registry
+
+Only step 1 differs per language, so it lives behind `_LOCATORS`, a dict of
+`Locator(grammar_module, visit, component_name)`. The blanking, fencing,
+caching and offset invariants are shared; adding a markup language means adding
+a `Locator`, not a second copy of the walker.
+
+| | Svelte | Vue |
+|---|---|---|
+| Grammar | `tree-sitter-svelte` | `tree-sitter-html` |
+| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` |
+| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling |
+
+There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC
+cleanly anyway, because `<template>`, `<script>` and `<style>` are ordinary
+elements to it — so one dependency covers both Vue and plain HTML.
+
+**Plain HTML deliberately has no locator.** It reuses the same grammar but not
+the projection, and the distinction is the point: a projection exists to turn a
+`<script>` block into analysable TypeScript, which is worth it when that block
+is where the component lives. A plain `.html` file's inline script almost never
+carries a module import — 13 of the 6162 `.html` files in the validation corpus
+(0.2%) — so projecting would buy a rounding error and would mint symbols,
+contradicting HTML's import-only tier. Its `<script src>` / `<link href>`
+attributes are read directly in
+`lightweight_imports/html.py`, which is extractor work, not projection work.
+Adding a `Locator` for HTML purely for symmetry with Vue and Svelte would be a
+mistake; `_LOCATORS` is for languages whose *script blocks* need projecting.
+
+Vue's expressions live in attribute *values*, which is why the fence bytes are
+quotes rather than braces, and why only directive attributes (`:`, `@`, `v-`)
+are projected: `class="btn primary"` is a literal string, and projecting it
+would put two juxtaposed identifiers at statement position.
+
+Two things markup carries that the projection cannot express are minted
+separately: the component symbol itself (via
+`extractors/synthetic_symbols/sfc_component.py`, since the filename is the only
+thing that names a component) and `<Foo />` instantiation call edges (via
+`component_call_sites`, the analogue of `tsx.scm`'s JSX captures). For Vue both
+run the filename and the tag through the *same* normaliser, so
+`back-to-top.vue` and `<back-to-top />` cannot disagree about the name
+`BackToTop`.
+
+The same steps would fit Astro components; only the locator changes.
+
+---
+
 ## Optional language-specific passes
 
 Several pluggable hooks let a language opt into deeper resolution without
@@ -312,6 +430,26 @@ per-language plugin pattern, registered in a dict exactly like `resolvers/`:
   Java/Go contribute `regex_compile_in_loop`, C# contributes
   `blocking_sync_in_async`, and the Phase-7a loop markers are opt-in per
   dialect. Every method has a safe "no signal" default.
+
+  Three hooks answer questions that recur in every language, so a new dialect
+  reuses them instead of re-deriving them:
+  - `block_loop_body(node)` — the per-iteration body when the language's real
+    iteration idiom is a call taking a block/lambda (Ruby `items.each do … end`,
+    Kotlin `ids.forEach { … }`). The walker then applies every loop rule (body
+    scoping, constant-bound skip, nesting, the same-collection quadratic gate)
+    to it exactly as to a native loop. A lambda returned this way is *not*
+    treated as a deferred scope, so `loop_depth` survives the boundary.
+  - `loop_body(node)` — the per-iteration body of a *native* loop, defaulting to
+    the `body` field. Only tree-sitter-kotlin leaves that field unlabeled; the
+    override is what keeps a sink in a `for (u in repo.findAll())` **header**
+    from reading as a sink inside the loop.
+  - `resets_per_iteration(node, name, loop_kinds)` + `binds_name(node, name)` —
+    the shared answer to the top `string_concat_in_loop` false positive, an
+    accumulator declared fresh each pass (`var s = ""; s += part`) which is
+    bounded per iteration rather than an O(n²) rebuild. The traversal is shared;
+    only the "does this statement bind the name" question is per-grammar. (The
+    Python, Ruby and Dart dialects predate the hook and keep their own tuned
+    versions.)
 - **`analysis/health/dataflow/dialects/`** (`DEFUSE_DIALECTS`), the
   **dataflow** layer (intra-procedural CFG + def/use + reaching definitions,
   powering **Extract Method**). A `DefUseDialect` owns the read-vs-write
@@ -321,6 +459,17 @@ per-language plugin pattern, registered in a dict exactly like `resolvers/`:
   `LanguageNodeMap`). The full pass runs only for functions a structural marker
   already flagged (`large_method` / `brain_method` / `complex_method`), so it
   stays within the health-pass budget.
+
+  A dialect is only half the requirement: the CFG builder resolves bodies,
+  conditions and jumps through *field names* (`body` / `consequence` /
+  `alternative`) and *node types* (`break_kinds` / `continue_kinds`), so a
+  grammar that labels none of them cannot be served by a dialect alone. The
+  slicer additionally refuses any span containing a jump — which means an
+  untyped jump is worse than no signal, because it would license an extraction
+  that silently changes control flow. `find_extractions` also refuses a function
+  whose subtree carries a parse error (`Node.has_error`): macro-heavy C/C++
+  headers make tree-sitter emit one bogus `function_definition` spanning a whole
+  class, and proposing to lift "statements" out of that is a wrong suggestion.
 
 All tiers are purely additive and degrade to silence: an unmapped language
 produces no findings rather than wrong ones.

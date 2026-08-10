@@ -43,9 +43,7 @@ def _write_lock(repo: Path, payload: dict) -> None:
 def test_acquire_records_pid_and_create_token(tmp_path: Path) -> None:
     assert helpers.try_acquire_update_lock(tmp_path, "abc123") is None
 
-    payload = json.loads(
-        (tmp_path / ".repowise" / ".update.lock").read_text(encoding="utf-8")
-    )
+    payload = json.loads((tmp_path / ".repowise" / ".update.lock").read_text(encoding="utf-8"))
     assert payload["pid"] == os.getpid()
     assert payload["target_commit"] == "abc123"
     assert payload["pid_create_token"] == process_create_token(os.getpid())
@@ -143,8 +141,14 @@ def test_lock_without_pid_falls_back_to_wall_clock(tmp_path: Path) -> None:
     assert helpers.read_update_lock(tmp_path) is None
 
 
-def test_old_lock_is_stale_even_with_live_pid(tmp_path: Path) -> None:
-    """A hung-but-alive update must still hit the wall-clock ceiling."""
+def test_old_lock_with_live_pid_is_honored(tmp_path: Path) -> None:
+    """Age alone never evicts an owner we can positively see running.
+
+    The wall clock cannot tell a slow full update on a large repo apart from a
+    wedged one, and guessing wrong puts two updates on one index, both writing
+    the same state and the same page rows. Liveness is the better evidence, so
+    it wins; a long-held live lock is reported to the user instead.
+    """
     _write_lock(
         tmp_path,
         {
@@ -155,7 +159,88 @@ def test_old_lock_is_stale_even_with_live_pid(tmp_path: Path) -> None:
         },
     )
 
+    payload = helpers.read_update_lock(tmp_path)
+    assert payload is not None
+    assert payload["target_commit"] == "abc"
+
+
+def test_old_lock_with_dead_pid_is_still_stale(tmp_path: Path) -> None:
+    """Honouring live owners must not resurrect dead ones."""
+    _write_lock(
+        tmp_path,
+        {
+            "pid": _dead_pid(),
+            "target_commit": "abc",
+            "started_at": time.time() - helpers.UPDATE_LOCK_STALE_AFTER_SECONDS - 60,
+        },
+    )
+
     assert helpers.read_update_lock(tmp_path) is None
+
+
+def test_a_live_owner_is_never_evicted_by_a_contender(tmp_path: Path) -> None:
+    """The end-to-end consequence: no acquire can steal from a live owner."""
+    _write_lock(
+        tmp_path,
+        {
+            "pid": os.getpid(),
+            "pid_create_token": process_create_token(os.getpid()),
+            "target_commit": "wedged",
+            "started_at": time.time() - 9 * 3600,
+        },
+    )
+
+    blocked_by = helpers.try_acquire_update_lock(tmp_path, "contender")
+    assert blocked_by is not None
+    assert blocked_by["target_commit"] == "wedged"
+
+
+# ---------------------------------------------------------------------------
+# Age reporting — the half of a wedged update the user can act on
+# ---------------------------------------------------------------------------
+
+
+def test_lock_age_reads_started_at() -> None:
+    from repowise.core.update_lock import lock_age_seconds
+
+    assert lock_age_seconds({"started_at": time.time() - 120}) == pytest.approx(120, abs=5)
+    assert lock_age_seconds({}) is None
+    assert lock_age_seconds(None) is None
+    assert lock_age_seconds({"started_at": "not-a-number"}) is None
+
+
+def test_lock_age_never_reports_negative() -> None:
+    """A clock that moved backwards must not print a negative age."""
+    from repowise.core.update_lock import lock_age_seconds
+
+    assert lock_age_seconds({"started_at": time.time() + 600}) == 0.0
+
+
+def test_format_lock_age_coarsens_with_age() -> None:
+    """The nine-hour case has to read as hours, not as a five-digit second count."""
+    from repowise.core.update_lock import format_lock_age
+
+    assert format_lock_age(12) == "for 12s"
+    assert format_lock_age(20 * 60) == "for 20m"
+    assert format_lock_age(9 * 3600) == "for 9.0h"
+    assert format_lock_age(None) == "for an unknown time"
+
+
+def test_suspect_threshold_flags_a_long_held_lock() -> None:
+    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS
+
+    assert 60 < UPDATE_LOCK_SUSPECT_AFTER_SECONDS < 9 * 3600
+
+
+def test_deferred_repo_result_carries_the_lock_age(tmp_path: Path) -> None:
+    """The workspace summary can only report the age if the result carries it."""
+    from repowise.core.workspace.update import RepoUpdateResult
+
+    assert RepoUpdateResult(alias="a", updated=False).lock_age_seconds is None
+    assert (
+        RepoUpdateResult(alias="a", updated=False, lock_age_seconds=32400.0).lock_age_seconds
+        == 32400.0
+    )
 
 
 def test_unknown_probe_results_fall_back_to_wall_clock(

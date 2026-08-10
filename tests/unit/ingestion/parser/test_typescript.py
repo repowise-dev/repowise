@@ -250,6 +250,10 @@ export function Card() {
         targets = {c.target_name for c in result.calls}
         assert "StatRow" in targets
         assert "Section" in targets
+        # Intrinsic HTML tags must NOT be emitted as call targets
+        assert "div" not in targets
+        assert "span" not in targets
+        assert "h2" not in targets
 
     def test_jsx_element_call_works_for_jsx_grammar(self, parser: ASTParser) -> None:
         # Same behaviour for .jsx (plain JavaScript grammar already
@@ -267,6 +271,77 @@ export function Card() {
         result = parser.parse_file(fi, src)
         targets = {c.target_name for c in result.calls}
         assert "StatRow" in targets
+        assert "span" not in targets
+
+    def test_jsx_html_intrinsic_elements_filtered_and_member_expressions_captured(
+        self, parser: ASTParser
+    ) -> None:
+        # Test .tsx, .jsx, and member-expression components (<Form.Item />).
+        src = b"""
+import { Form, Button } from 'antd';
+
+export function MyForm() {
+  return (
+    <div className="container">
+      <form>
+        <Form.Item label="Username">
+          <input type="text" />
+        </Form.Item>
+        <Button type="primary">Submit</Button>
+      </form>
+    </div>
+  );
+}
+"""
+        fi = _make_file_info("ui/src/form.tsx", "typescript")
+        result = parser.parse_file(fi, src)
+        targets = {c.target_name for c in result.calls}
+        receivers = {c.receiver_name for c in result.calls if c.receiver_name}
+        assert "Button" in targets
+        assert "Item" in targets
+        # @call.receiver must be captured so Form.Item and Card.Item are disambiguated
+        assert "Form" in receivers
+        assert "div" not in targets
+        assert "form" not in targets
+        assert "input" not in targets
+
+    def test_jsx_motion_and_styled_components_filtered(
+        self, parser: ASTParser
+    ) -> None:
+        # Regression: framer-motion / styled-components bring lowercase member
+        # expressions like <motion.div>, <motion.span>, <styled.button> which
+        # are HTML wrappers and must NOT be emitted as call targets.
+        # Only <motion.Foo> where Foo starts with A-Z should be captured.
+        src = b"""
+import { motion } from 'framer-motion';
+import styled from 'styled-components';
+import { Form } from 'antd';
+
+export function AnimatedCard() {
+  return (
+    <motion.div animate={{ opacity: 1 }}>
+      <motion.span>Label</motion.span>
+      <styled.button>Click</styled.button>
+      <Form.Item>
+        <motion.input />
+      </Form.Item>
+    </motion.div>
+  );
+}
+"""
+        fi = _make_file_info("ui/src/AnimatedCard.tsx", "typescript")
+        result = parser.parse_file(fi, src)
+        targets = {c.target_name for c in result.calls}
+        receivers = {c.receiver_name for c in result.calls if c.receiver_name}
+        # Capitalized member property (Form.Item) is a real component
+        assert "Item" in targets
+        assert "Form" in receivers
+        # Lowercase member properties are HTML wrappers — must be filtered
+        assert "div" not in targets    # motion.div
+        assert "span" not in targets   # motion.span
+        assert "button" not in targets # styled.button
+        assert "input" not in targets  # motion.input
+
 
     def test_class_methods_still_extracted(self, parser: ASTParser) -> None:
         # Negative for D5: methods inside class bodies must still be
@@ -281,6 +356,41 @@ export class Service {
         result = parser.parse_file(fi, src)
         method_names = {s.name for s in result.symbols if s.kind == "method"}
         assert {"run", "helper"} <= method_names
+
+    def test_unparenthesized_arrow_functions_extracted(self, parser: ASTParser) -> None:
+        # Single-parameter unparenthesized arrow functions (x => x * 2) must be
+        # extracted as function symbols just like parenthesized ones ((x) => x * 2).
+        src = b"""
+export const double = x => x * 2;
+export const identity = (x: number) => x;
+export const square = n => n * n;
+export const add = (a: number, b: number) => a + b;
+const priv = x => x;
+"""
+        fi = _make_file_info("src/math.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        fn_symbols = {s.name: s for s in result.symbols if s.kind == "function"}
+        # All four must be present — no unparenthesized arrow silently dropped.
+        assert {"double", "identity", "square", "add", "priv"} <= set(fn_symbols.keys())
+        # Unparenthesized single param is normalised to name(param) form.
+        assert fn_symbols["double"].signature == "double(x)"
+        # Exported symbols are public; unexported are private.
+        assert fn_symbols["double"].visibility == "public"
+        assert fn_symbols["priv"].visibility == "private"
+
+    def test_unparenthesized_arrow_functions_extracted_javascript(
+        self, parser: ASTParser
+    ) -> None:
+        # javascript.scm was also patched — verify the same fix works for .js files.
+        src = b"""
+export const double = x => x * 2;
+export const add = (a, b) => a + b;
+"""
+        fi = _make_file_info("src/math.js", "javascript")
+        result = parser.parse_file(fi, src)
+        fn_symbols = {s.name: s for s in result.symbols if s.kind == "function"}
+        assert {"double", "add"} <= set(fn_symbols.keys())
+        assert fn_symbols["double"].signature == "double(x)"
 
 
 def test_mts_file_uses_typescript_parser(parser: ASTParser) -> None:

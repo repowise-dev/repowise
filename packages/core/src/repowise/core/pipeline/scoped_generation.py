@@ -208,6 +208,7 @@ async def execute_scoped_generation(
     from repowise.core.pipeline import run_generation
     from repowise.core.pipeline.persist import (
         mark_page_ids_stale,
+        sweep_retired_pages,
         sweep_superseded_generated_pages,
     )
 
@@ -248,6 +249,12 @@ async def execute_scoped_generation(
         swept_page_ids = await sweep_superseded_generated_pages(
             session, repo_id, generated_pages
         )
+        # Rows of a page type that no longer exists. Safe on a scoped run
+        # precisely because it does not ask what the run produced: nothing can
+        # emit a retired type, so absence is never evidence of a narrow scope.
+        # Here rather than only on the full path because an index that is only
+        # ever updated incrementally is exactly the one still serving them.
+        swept_page_ids += await sweep_retired_pages(session, repo_id)
         # A scoped run holds only the pages it was asked for, so it cannot
         # work out where they sit. Placement comes from the store, which has
         # the whole set; without this the pages it touched lose their place.
@@ -295,7 +302,13 @@ async def execute_scoped_generation(
             if swept_page_ids:
                 await fts.delete_many(swept_page_ids)
             for page in generated_pages:
-                await fts.index(page.page_id, page.title, page.content)
+                await fts.index(
+                    page.page_id,
+                    page.title,
+                    page.content,
+                    summary=page.summary,
+                    target_path=page.target_path,
+                )
         except Exception as exc:
             logger.debug("fts_index_skipped", error=str(exc))
 

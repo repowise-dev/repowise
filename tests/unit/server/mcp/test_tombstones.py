@@ -49,7 +49,7 @@ async def test_mark_tombstone_pages_sets_status_and_successors(setup_mcp, sessio
     )
     await session.commit()
 
-    assert marked == 1
+    assert marked == ["file_page:src/auth/service.py"]
     await session.refresh(page)
     assert page.freshness_status == "tombstone"
     assert json.loads(page.metadata_json)["successor_paths"] == ["src/auth/service_v2.py"]

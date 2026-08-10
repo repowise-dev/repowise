@@ -8,19 +8,25 @@ re-exported from the package ``__init__`` so the historical import path
 
 from __future__ import annotations
 
+import logging
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
+from ..information_floor import count_page_denied_a_vector, meets_information_floor
 from ..search import SearchResult
 
 __all__ = [
     "EMBED_BATCH_MAX_ITEMS",
     "EMBED_TEXT_MAX_CHARS",
+    "STORED_SNIPPET_CHARS",
     "VectorStore",
     "cosine_similarity",
+    "embed_item",
     "iter_embed_chunks",
 ]
+
+logger = logging.getLogger(__name__)
 
 # One embedder call per chunk of this many items. OpenAI rejects embedding
 # requests past 300k total tokens — a generation level of 275 full wiki
@@ -35,13 +41,120 @@ EMBED_BATCH_MAX_ITEMS = 16
 # ~8,192 tokens, and one oversized page must not sink its whole chunk.
 EMBED_TEXT_MAX_CHARS = 30_000
 
+# How much of a page's content a vector row keeps for its evidence snippet.
+#
+# Defined here rather than in a backend because it belongs to the item every
+# backend is handed, not to any one store: a row can only ever show what the
+# recipe put in front of it, so a store that cuts at a width the recipe never
+# reaches is cutting nothing. That is what happened when this widened — the
+# store raised its ceiling while the recipe still handed it 600 characters,
+# and on the paths that passed no content at all, an empty string.
+STORED_SNIPPET_CHARS = 2_000
+
+
+def embed_item(
+    page_id: str,
+    *,
+    title: str,
+    page_type: str,
+    target_path: str,
+    summary: str,
+    content: str,
+) -> tuple[str, str, dict] | None:
+    """Build the one ``(page_id, text, metadata)`` item every writer embeds.
+
+    Returns ``None`` when the page says too little to be worth a search slot,
+    which callers skip. See the information floor note below.
+
+    Four things write vectors for a page — generation, ``reindex``,
+    ``doctor --repair`` and the hosted indexer — and until now each built its
+    own text. One embedded the content alone, one prefixed the title, one
+    passed neither summary nor path. A vector was therefore not comparable
+    with another vector: whether a page could be found by its own name
+    depended on which command last wrote it, and nothing anywhere reported
+    the difference.
+
+    The text carries all four fields because each answers a question the
+    others cannot. ``target_path`` is the strongest one: a page about
+    ``search.py`` has no idea it is about ``search.py`` unless its prose
+    happens to say so, and prose usually does not repeat its own filename.
+
+    ``title`` is required. A page with no title is not a page whose title is
+    empty — it is a writer that lost it, and the row it produces looks
+    healthy while being unfindable by name, so this raises rather than
+    storing it. The other three may legitimately be empty (some page types
+    have no summary; a repository-wide page has no path).
+
+    **The information floor.** A page whose content says too little to answer
+    anything gets no vector, and ``None`` comes back instead. The full-text
+    index already applies the same rule, and it has to be the same rule: a
+    page held out of one arm and kept in the other is still fetched, still
+    occupies one of the fixed number of rows retrieval takes before it filters
+    anything, and still displaces a page that could have answered. The test is
+    applied to ``content`` alone for that reason — the same input the
+    full-text side measures, so the two arms cannot disagree about a page.
+
+    The page itself is untouched either way. It stays in ``wiki_pages``, still
+    resolves as a link target, and a reader who arrives at it still learns the
+    file exists. It is only kept out of the index, where its cost is paid by
+    other pages. The floor is 0 by default, which admits everything.
+    """
+    if not title.strip():
+        raise ValueError(
+            f"embed_item: page {page_id!r} has no title. A blank title writes a "
+            f"vector that cannot be found by name and reports nothing wrong; "
+            f"pass the page's real title."
+        )
+    if not meets_information_floor(content):
+        count_page_denied_a_vector()
+        return None
+    parts = [p for p in (title, target_path, summary, content) if p]
+    return (
+        page_id,
+        "\n".join(parts),
+        {
+            "title": title,
+            "page_type": page_type,
+            "target_path": target_path,
+            "summary": summary,
+            # Wide enough for a store to cut an evidence window out of, and a
+            # prefix rather than the page so a large corpus is not held twice.
+            "content": content[:STORED_SNIPPET_CHARS],
+        },
+    )
+
 
 def iter_embed_chunks(
     items: list[tuple[str, str, dict]],
 ) -> Iterator[tuple[list[tuple[str, str, dict]], list[str]]]:
-    """Yield ``(chunk, capped_texts)`` slices sized for one embedder request."""
+    """Yield ``(chunk, capped_texts)`` slices sized for one embedder request.
+
+    Text past :data:`EMBED_TEXT_MAX_CHARS` is dropped, and dropping it is
+    reported. The cap was sized when the largest page in a corpus was well
+    under it, so for a long time it bound on nothing; a corpus whose page mix
+    has since changed can push pages over it, and the characters past the cut
+    are simply absent from the vector. Nothing downstream can tell that apart
+    from a page that never said those words, so the only place the loss is
+    observable is here.
+
+    Reported at ``error`` although the run continues, because the CLI pins
+    ``repowise.core`` to that level unless ``--verbose`` is passed. Anything
+    quieter would be discarded by the very commands that write the index,
+    which is a report that exists only in the tests for it.
+    """
     for start in range(0, len(items), EMBED_BATCH_MAX_ITEMS):
         chunk = items[start : start + EMBED_BATCH_MAX_ITEMS]
+        for page_id, text, _meta in chunk:
+            if len(text) > EMBED_TEXT_MAX_CHARS:
+                logger.error(
+                    # ``page_id`` is empty for the raw ``embed_texts`` path,
+                    # which embeds loose strings belonging to no page.
+                    "embed_text_truncated page_id=%s chars=%d chars_dropped=%d cap=%d",
+                    page_id,
+                    len(text),
+                    len(text) - EMBED_TEXT_MAX_CHARS,
+                    EMBED_TEXT_MAX_CHARS,
+                )
         yield chunk, [text[:EMBED_TEXT_MAX_CHARS] for _, text, _ in chunk]
 
 

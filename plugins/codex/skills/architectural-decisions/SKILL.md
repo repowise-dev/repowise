@@ -16,11 +16,11 @@ Repowise captures architectural decisions: the rationale behind how code is buil
    target-anchored search; decisions touching the targets get boosted.
 4. `get_why()` — the decision-health dashboard.
 
-Decisions are mined from eight sources (ADR files, CHANGELOG, PR/commit bodies,
-inline markers, git archaeology, README/docs, code comments, and the doc pass)
-and linked by `supersedes` / `refines` / `relates_to` / `conflicts_with` edges,
-so a single answer can return a whole lineage chain. When no decision exists for
-a path, `get_why` falls back to git archaeology so the call is never empty.
+Decisions are mined from five sources (ADR files, PR and squash-commit bodies,
+inline markers, git archaeology, and centrality-bounded code comments). Each
+rationale traces to a verbatim source span, stamped exact / fuzzy / unverified.
+When no decision exists for a path, `get_why` falls back to git archaeology so
+the call is never empty.
 
 ## When The User Asks Why Something Exists
 

@@ -6,9 +6,9 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
@@ -220,6 +220,43 @@ async def save_health_metrics(
         await session.flush()
 
 
+async def backfill_module_attribution(
+    session: AsyncSession,
+    repository_id: str,
+    package_roots: set[str],
+) -> int:
+    """Recompute every metric row's ``module`` from the repo layout.
+
+    Returns the number of rows changed, so a caller can stay silent when there
+    was nothing to correct.
+
+    ``module`` is a pure function of ``(file_path, package_roots)`` — no parse,
+    no symbols, no git, no model — so correcting it never needs the rows
+    rewritten by a re-score, let alone a re-index. That is the whole point:
+    a directory label must not cost users an indexing run.
+
+    Idempotent by construction, and it converges with the indexer rather than
+    fighting it: both call the same :func:`module_for` over the same
+    disk-scanned roots, so a full index writing a *different* value would mean
+    the two disagree about the repo layout, and running this again would flip
+    it back rather than settle.
+    """
+    from ....ingestion.package_roots import module_for
+
+    result = await session.execute(
+        select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
+    )
+    changed = 0
+    for row in result.scalars().all():
+        expected = module_for(row.file_path, package_roots)
+        if row.module != expected:
+            row.module = expected
+            changed += 1
+    if changed:
+        await session.flush()
+    return changed
+
+
 async def _health_exclude_spec(session: AsyncSession, repository_id: str) -> Any:
     repo = await session.get(Repository, repository_id)
     if repo is None:
@@ -310,21 +347,144 @@ async def get_health_findings(
     )
 
 
+async def get_deduction_by_path(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: list[str] | None = None,
+    status: str = "open",
+) -> dict[str, float]:
+    """``{file_path: summed health_impact}`` over the repo's findings.
+
+    The pre-clamp deduction magnitude, aggregated in SQL rather than by
+    hydrating every finding. Each stored ``health_impact`` is already the
+    applied (capped) value, so the sum equals the breakdown endpoint's
+    ``total_deduction``.
+
+    Files with no findings are simply absent — a caller reading this as a
+    ranking key should treat a miss as 0.0 (a clean file has no magnitude).
+    """
+    totals: dict[str, float] = {}
+    base = select(
+        HealthFinding.file_path,
+        func.sum(HealthFinding.health_impact),
+    ).where(
+        HealthFinding.repository_id == repository_id,
+        HealthFinding.status == status,
+    )
+    # Batched like the other ``IN`` lookups here: SQLITE_MAX_VARIABLE_NUMBER is
+    # 999 before SQLite 3.32 and a module-scoped caller expands without bound.
+    chunks: list[list[str] | None] = (
+        [file_paths[i : i + _BATCH_SIZE] for i in range(0, len(file_paths), _BATCH_SIZE)]
+        if file_paths is not None
+        else [None]
+    )
+    for chunk in chunks:
+        q = base if chunk is None else base.where(HealthFinding.file_path.in_(chunk))
+        for path, total in (await session.execute(q.group_by(HealthFinding.file_path))).all():
+            totals[path] = float(total or 0.0)
+    return totals
+
+
+def sort_metrics_worst_first(
+    rows: list[Any], deduction_by_path: dict[str, float]
+) -> list[Any]:
+    """Order per-file metrics worst-first: ``(score asc, deduction desc, path)``.
+
+    ``score`` alone cannot rank the band that matters. It clamps at 1.0, so on
+    a real repo dozens of files tie there and any list sorted on score alone
+    comes back in whatever order the DB happened to return — path order, in
+    practice. That put this repo's single worst file (12.9 points of deduction)
+    at position 27 of a list capped at 20.
+
+    ``total_deduction`` is the pre-clamp magnitude, so it keeps ranking below
+    the floor: a -25 file sorts above a -9 file that prints the same 1.0. The
+    trailing ``file_path`` makes the order total, so a page boundary is stable
+    across requests instead of shuffling two equal rows.
+
+    Shared with the MCP ``get_health`` tool, which builds its own deduction map
+    from findings it has already loaded rather than re-querying. One comparator
+    so REST, MCP and hosted cannot drift into three different "worst files".
+    """
+    return sorted(
+        rows,
+        key=lambda m: (m.score, -deduction_by_path.get(m.file_path, 0.0), m.file_path),
+    )
+
+
 async def get_health_metrics(
     session: AsyncSession,
     repository_id: str,
     *,
     file_paths: list[str] | None = None,
 ) -> list[HealthFileMetric]:
+    """Per-file health metrics, ordered worst-first.
+
+    See :func:`sort_metrics_worst_first` for why the order is not a plain
+    ``ORDER BY score``.
+    """
     q = select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
     if file_paths is not None:
         q = q.where(HealthFileMetric.file_path.in_(file_paths))
-    q = q.order_by(HealthFileMetric.score.asc())
     result = await session.execute(q)
-    return _filter_excluded_paths(
+    rows = _filter_excluded_paths(
         list(result.scalars().all()),
         await _health_exclude_spec(session, repository_id),
     )
+    if len(rows) < 2:
+        # Nothing to order. Skips the aggregate for the single-file lookups
+        # (symbol drawer, file detail, one-plan refactoring view), which are
+        # per-request reads that would otherwise pay for a ranking they cannot
+        # use.
+        return rows
+    # Scoped to the caller's paths, not to ``rows``: a repo-wide read wants the
+    # single grouped scan, and the extra keys an exclude config leaves in the
+    # map are never looked up.
+    return sort_metrics_worst_first(
+        rows,
+        await get_deduction_by_path(session, repository_id, file_paths=file_paths),
+    )
+
+
+async def get_average_health(session: AsyncSession, repository_id: str) -> float | None:
+    """The repo's NLOC-weighted average health score, or ``None`` if unmeasured.
+
+    Numerically identical to ``get_health_summary()["average_health"]`` — same
+    weighting, same ``max(nloc, 1)`` floor, same 2dp rounding — for callers that
+    want *only* that number. The summary computes it as a by-product of building
+    twenty-odd KPIs, which costs a full ORM hydration of the metrics table, the
+    grouped deduction aggregate behind the worst-first ranking, the whole
+    findings table for the per-dimension counts, and the graph's language map
+    for perf coverage. The public badge endpoints want one float.
+
+    Three columns and the same exclusion filter every other health read applies.
+    That filter is a compiled ``pathspec``, not something SQL can express, which
+    is why this is a narrow select reduced in Python rather than an ``AVG()``:
+    a SQL average would quietly include files the dashboard excludes, and the
+    badge would then disagree with the page it links to.
+    """
+    rows = _filter_excluded_paths(
+        list(
+            (
+                await session.execute(
+                    select(
+                        HealthFileMetric.file_path,
+                        HealthFileMetric.score,
+                        HealthFileMetric.nloc,
+                    ).where(HealthFileMetric.repository_id == repository_id)
+                )
+            ).all()
+        ),
+        await _health_exclude_spec(session, repository_id),
+    )
+    if not rows:
+        return None
+    total_nloc = sum(max(r.nloc, 1) for r in rows)
+    if total_nloc:
+        avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
+    else:
+        avg = sum(r.score for r in rows) / len(rows)
+    return round(avg, 2)
 
 
 async def get_file_language_map(session: AsyncSession, repository_id: str) -> dict[str, str]:
@@ -348,14 +508,25 @@ async def get_perf_coverage(session: AsyncSession, repository_id: str) -> PerfCo
 
 
 async def get_health_summary(
-    session: AsyncSession, repository_id: str, *, metrics: list | None = None
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    metrics: list | None = None,
+    findings: list | None = None,
 ) -> dict:
     """Aggregate KPIs over the per-file metrics table.
 
-    *metrics* lets a caller that has already loaded the per-file rows hand them
-    over instead of paying for a second full read. Callers doing more than one
-    thing with them — the overview payload computes both these KPIs and the
-    defect-accuracy stat — would otherwise pull the whole table twice.
+    *metrics* and *findings* let a caller that has already loaded those rows
+    hand them over instead of paying for a second full read. Callers doing more
+    than one thing with them — the overview payload builds these KPIs, the
+    severity breakdown and the defect-accuracy stat off the same two tables —
+    would otherwise pull each table twice per request.
+
+    Both are expected to be exactly what this function would have read itself:
+    ``get_health_metrics(repository_id)`` and
+    ``get_health_findings(repository_id)``, i.e. every open row for the repo,
+    post-exclusion. Handing over a *filtered* subset would silently skew
+    ``open_findings`` and the per-dimension counts, which are repo headlines.
     """
     if metrics is None:
         metrics = await get_health_metrics(session, repository_id)
@@ -428,7 +599,8 @@ async def get_health_summary(
             worst_performance_path = perf_worst.file_path
             worst_performance_score = round(perf_worst.performance_score, 2)
 
-    findings = await get_health_findings(session, repository_id)
+    if findings is None:
+        findings = await get_health_findings(session, repository_id)
     by_dim: dict[str, int] = {}
     for finding in findings:
         dim = finding.dimension or "defect"
@@ -501,6 +673,7 @@ async def save_health_snapshot(
     worst_performer_path: str | None,
     worst_performer_score: float | None,
     per_file_scores: dict[str, float] | None = None,
+    per_file_deductions: dict[str, float] | None = None,
     taken_at: datetime | None = None,
 ) -> HealthSnapshot:
     """Append a snapshot; prune oldest rows past ``HEALTH_SNAPSHOT_RETENTION``.
@@ -508,6 +681,12 @@ async def save_health_snapshot(
     Returns the inserted row. Per-file scores are stored compactly as
     ``{path: score}`` JSON (no per-finding detail — that lives in
     ``HealthFinding`` rows; snapshots are a thin history layer).
+
+    ``per_file_deductions`` is the same shape for the files whose score is held
+    at the floor, where the stored score has stopped carrying information.
+    Build both with ``trends.snapshot_file_maps`` rather than by hand: a repo
+    whose writers disagree gets a history that changes depth depending on which
+    command last wrote it.
     """
     snap = HealthSnapshot(
         id=_new_uuid(),
@@ -520,6 +699,7 @@ async def save_health_snapshot(
             float(worst_performer_score) if worst_performer_score is not None else None
         ),
         per_file_scores_json=json.dumps(per_file_scores or {}, separators=(",", ":")),
+        per_file_deductions_json=json.dumps(per_file_deductions or {}, separators=(",", ":")),
     )
     session.add(snap)
     await session.flush()
@@ -558,6 +738,123 @@ async def list_health_snapshots(
     if limit is not None and len(rows) > limit:
         rows = rows[-limit:]
     return rows
+
+
+class HealthSnapshotScalars(NamedTuple):
+    """One snapshot's numeric columns, with no per-file map behind them."""
+
+    taken_at: datetime | None
+    average_health: float
+    hotspot_health: float
+
+
+class HealthSnapshotHeadline(NamedTuple):
+    """The snapshot figures a dashboard header actually reads.
+
+    ``recent`` is empty unless the caller asked for it, and is ordered
+    **oldest-first** to match ``list_health_snapshots`` — a trend line reads
+    left to right, and the newest row is ``recent[-1]``.
+    """
+
+    hotspot_health: float | None
+    taken_at: datetime | None
+    snapshot_count: int
+    recent: tuple[HealthSnapshotScalars, ...] = ()
+
+
+async def get_health_snapshot_headline(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    recent: int = 0,
+) -> HealthSnapshotHeadline:
+    """Latest snapshot's ``hotspot_health`` / ``taken_at``, plus how many exist.
+
+    ``list_health_snapshots`` hydrates whole entities, and every row carries a
+    ``per_file_scores_json`` blob sized by the repo's file count — on this
+    codebase that is ~186 KB each, 2.8 MB across the retained history and ~9 MB
+    at ``HEALTH_SNAPSHOT_RETENTION``. A caller that only needs scalars was
+    reading all of it to use a handful of floats.
+
+    Pass ``recent=N`` for the newest N rows' scalars as well — a sparkline and a
+    delta-vs-previous both want a bounded window of numbers, not the history.
+    ``snapshot_count`` is always the **true** total, independent of ``recent``,
+    so a capped window can never be mistaken for the whole history.
+
+    No JSON column is touched. Callers that genuinely need the per-file maps
+    (the trend routes, the file drawer's sparkline) should keep using
+    ``list_health_snapshots``; a caller that needs only their *sizes* wants
+    ``get_health_snapshot_file_counts``.
+    """
+    rows = (
+        await session.execute(
+            select(
+                HealthSnapshot.hotspot_health,
+                HealthSnapshot.taken_at,
+                HealthSnapshot.average_health,
+            )
+            .where(HealthSnapshot.repository_id == repository_id)
+            .order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
+        )
+    ).all()
+    if not rows:
+        return HealthSnapshotHeadline(None, None, 0)
+    hotspot_health, taken_at, _ = rows[-1]
+    window = rows[-recent:] if recent > 0 else []
+    return HealthSnapshotHeadline(
+        float(hotspot_health),
+        taken_at,
+        len(rows),
+        tuple(
+            HealthSnapshotScalars(r_taken_at, float(r_avg), float(r_hotspot))
+            for r_hotspot, r_taken_at, r_avg in window
+        ),
+    )
+
+
+async def get_health_snapshot_file_counts(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int = 2,
+) -> list[int]:
+    """How many files the newest *limit* snapshots scored, oldest-first.
+
+    The only thing the overview's ``file_count`` delta wants out of
+    ``per_file_scores_json`` is its key count, and it compares two rows. Loading
+    the whole retained history to measure two of its maps read 2.8 MB to use
+    375 KB of it.
+
+    Ordering matches ``list_health_snapshots`` exactly, so "the newest two"
+    cannot mean different rows here than there.
+
+    Anything that is not a ``{path: score}`` object counts 0 — unparseable, but
+    also a bare JSON array or string, which ``len()`` would happily measure into
+    a file count meaning nothing. The caller reads 0 as "unknown" and omits the
+    delta rather than publishing a number it cannot justify. This is deliberately
+    stricter than the ``len(json.loads(...))`` it replaced;
+    ``save_health_snapshot`` only ever writes an object, so it can only bite on
+    rows that did not come from it.
+    """
+    if limit <= 0:
+        return []
+    rows = (
+        await session.execute(
+            select(HealthSnapshot.per_file_scores_json)
+            .where(HealthSnapshot.repository_id == repository_id)
+            .order_by(HealthSnapshot.taken_at.desc(), HealthSnapshot.id.desc())
+            .limit(limit)
+        )
+    ).all()
+    counts: list[int] = []
+    for (blob,) in reversed(rows):
+        try:
+            parsed = json.loads(blob or "{}")
+        except (TypeError, ValueError):
+            counts.append(0)
+            continue
+        counts.append(len(parsed) if isinstance(parsed, dict) else 0)
+    return counts
 
 
 async def upsert_health_findings(

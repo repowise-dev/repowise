@@ -96,6 +96,23 @@ _MAX_SIGNIFICANT_COMMITS: int = 50
 # Truncation is byte-accurate (UTF-8) so the cap is a real storage ceiling.
 _MAX_COMMIT_BODY_BYTES: int = 1024
 
+
+def _truncate_body(body: str) -> str:
+    """Trim *body* to the byte ceiling, never splitting a UTF-8 sequence.
+
+    Lives beside its ceiling rather than in one of the two modules that need it
+    (``file_history`` retains bodies on significant-commit entries, the
+    prior-defect walk carries them on fix commits) so the cap has exactly one
+    implementation.
+    """
+    if not body:
+        return ""
+    encoded = body.encode("utf-8")
+    if len(encoded) <= _MAX_COMMIT_BODY_BYTES:
+        return body
+    return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
+
+
 # PR/squash-description markers — a body containing one of these reads like a
 # real PR write-up worth retaining for decision mining (mirrors the extractor's
 # ``_PR_BODY_MARKERS``; kept here to avoid a cross-package import at index time).

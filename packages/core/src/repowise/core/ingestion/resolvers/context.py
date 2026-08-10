@@ -40,6 +40,10 @@ class ResolverContext:
     go_modules: tuple[tuple[str, str], ...] = ()  # (module_dir_posix, module_path), longest-first
     has_sfc_files: bool = False  # any .vue/.svelte/.astro present in path_set
     parsed_files: dict | None = None  # for Rust crate root detection
+    # ``{file_info.path: raw source bytes}`` the pipeline already read, same
+    # keys as *parsed_files*. Warmups that scan file text use it in place of
+    # a second read; None (or a missing key) means read from disk.
+    source_map: dict[str, bytes] | None = field(default=None, repr=False)
     compile_commands_cache: dict[str, dict] | None = field(default=None, repr=False)
     # Lazy per-language indexes are stashed via getattr/setattr (e.g.
     # ``_php_psr4_map``, ``_ts_workspace_map``, ``_kotlin_index``,

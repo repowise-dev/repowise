@@ -16,7 +16,7 @@ import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.job_system import JobSystem
-from repowise.core.generation.models import GenerationConfig
+from repowise.core.generation.models import GenerationConfig, compute_page_id
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import (
@@ -290,6 +290,45 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
     assert vector_store.max_active_embeds == 1
 
 
+async def test_scoped_pipeline_adds_configured_repo_overview_evidence() -> None:
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+    config = GenerationConfig.from_repo_config(
+        {
+            "generation_context": {
+                "token_budget": 300,
+                "files": {"repo_overview": ["pkg/module_3.py"]},
+            }
+        },
+        max_tokens=256,
+        token_budget=1000,
+        cache_enabled=False,
+    )
+    provider = MockProvider()
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+    page_id = compute_page_id("repo_overview", "sample_repo")
+
+    pages = await generator.generate_all(
+        parsed_files,
+        source_map,
+        builder,
+        repo_structure,
+        "sample_repo",
+        only_page_ids={page_id},
+    )
+
+    assert [page.page_id for page in pages] == [page_id]
+    prompt = provider.calls[0]["user_prompt"]
+    assert '<repository-file path="pkg/module_3.py">' in prompt
+    assert "def function_3() -> int" in prompt
+    assert pages[0].metadata["source_evidence"]["included"] == [
+        {"path": "pkg/module_3.py", "truncated": False}
+    ]
+
+
 async def test_resume_reports_the_pages_it_skipped(tmp_path):
     """The preserved-id set survives every hand-off down to the generator.
 
@@ -403,7 +442,6 @@ class TestGenerationPipeline:
         types = [p.page_type for p in pages]
         assert types.count("architecture_diagram") == 0
         assert types.count("repo_overview") == 1
-
 
     def test_generates_file_page_for_py_files(self, pipeline_result):
         """There should be at least one file_page for Python files."""

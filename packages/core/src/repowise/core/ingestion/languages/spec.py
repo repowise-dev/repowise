@@ -119,6 +119,17 @@ class LanguageSpec:
     # -- Ecosystem -------------------------------------------------------
     entry_point_patterns: tuple[str, ...] = ()  # ("main.py", "app.py")
     manifest_files: tuple[str, ...] = ()  # ("pyproject.toml",)
+    # The subset of ``manifest_files`` that configures a build rather than
+    # declaring a distributable unit. Every name in ``manifest_files`` and not
+    # here is a *package root*: it marks its directory as a package boundary
+    # for monorepo detection and for health's ``module`` attribution. See
+    # ``LanguageRegistry.package_manifest_filenames``.
+    #
+    # Empty by default on purpose — a new language's manifests grant monorepo
+    # bucketing without a second edit, and over-inclusion only makes the
+    # rollup finer, where omission makes the language invisible. Populate it
+    # for names measured to sit in directories that are not packages.
+    build_config_manifests: tuple[str, ...] = ()  # ("vite.config.js",)
     lock_files: tuple[str, ...] = ()  # ("poetry.lock",)
     generated_suffixes: tuple[str, ...] = ()  # ("_pb2.py",)
     shebang_tokens: tuple[str, ...] = ()  # ("python",)

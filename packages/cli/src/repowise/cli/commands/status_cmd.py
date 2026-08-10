@@ -12,6 +12,7 @@ from rich.table import Table
 from repowise.cli.helpers import (
     CommandTarget,
     console,
+    db_configured,
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
@@ -90,7 +91,7 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
             await engine.dispose()
 
     db_path = get_repowise_dir(repo_path) / "wiki.db"
-    if not db_path.exists():
+    if not db_path.exists() and not db_configured():
         return 0, 0
     try:
         return run_async(_query())
@@ -133,7 +134,7 @@ def _query_page_count(repo_path: Path) -> int:
             await engine.dispose()
 
     db_path = get_repowise_dir(repo_path) / "wiki.db"
-    if not db_path.exists():
+    if not db_path.exists() and not db_configured():
         return 0
     try:
         return run_async(_query())
@@ -150,7 +151,7 @@ def _query_health_line(repo_path: Path) -> str | None:
         Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
     """
     db_path = get_repowise_dir(repo_path) / "wiki.db"
-    if not db_path.exists():
+    if not db_path.exists() and not db_configured():
         return None
 
     async def _q() -> dict | None:
@@ -423,8 +424,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool) -> Non
 
     # Page counts from DB
     db_path = repowise_dir / "wiki.db"
-    if not db_path.exists():
-        console.print("[yellow]Database not found.[/yellow]")
+    if not db_path.exists() and not db_configured():
+        console.print(f"[yellow]Database not found at {db_path}.[/yellow]")
         return
 
     async def _query_pages():

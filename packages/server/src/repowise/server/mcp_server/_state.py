@@ -16,6 +16,14 @@ _repo_path: str | None = None
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None
 
+# Set to an asyncio.Event by _lifespan; signals that the deferred `import
+# lancedb` has finished (successfully or not). Tool dispatch waits on this
+# before running any handler body, because that import runs on a worker thread
+# and holds import locks: a handler that lazily imports while it is in flight
+# deadlocks the event loop, and no asyncio timeout can recover a loop that is
+# itself blocked. ``None`` when no background import was started.
+_lancedb_ready: asyncio.Event | None = None
+
 # Workspace mode — set by _lifespan when a workspace is detected.
 _registry: Any = None          # RepoRegistry | None
 _workspace_root: str | None = None

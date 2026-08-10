@@ -28,20 +28,25 @@ Hot-path discipline (this fires on EVERY Bash tool call):
 
 Bailouts — commands never rewritten:
 
-  - redirections / compound commands (``> < && || ; &``), substitution
-    (backticks, ``$(``), multi-line commands: the wrapper would change
-    shell semantics. ``shell_lexer`` decides this structurally, so an
-    operator that only *looks* like one because it sits inside quotes
-    (``git commit -m "fix a|b"``) is not a bailout. Two safe tails are
-    carved out: a trailing ``2>&1`` (distill merges stderr into its
-    capture anyway) and, on POSIX hosts, a single pipe into a bare stdin
-    filter (``head``/``tail``/``grep``/``egrep``/``fgrep``/``rg``); the
-    whole pipeline is then quoted so it runs inside distill's own shell,
-    unchanged;
+  - stdout redirection, background ``&``, substitution (backticks,
+    ``$(``), multi-line commands: the wrapper would change shell
+    semantics. ``shell_lexer`` decides this structurally, so an operator
+    that only *looks* like one because it sits inside quotes
+    (``git commit -m "fix a|b"``) is not a bailout;
+  - anything containing ``$``: a wrapped command is expanded by distill's
+    shell rather than this one, and an unexported variable is empty there;
   - watch/follow modes (``--watch``, ``tail -f``): long-running,
     interactive by design;
   - the ignore-list of trivial or interactive commands (cd, echo, vim, …);
   - anything already invoking ``repowise``.
+
+Compound commands, on POSIX hosts, are rewritten when every top-level
+segment is separately safe — see ``_chain_families``. ``a && b``,
+``a; b``, and ``a | b`` are wrapped whole, as one single-quoted token, so
+the operators bind inside distill's own shell and the exit code and
+ordering are the shell's, unchanged. A trailing ``2>&1`` is stripped first
+(distill merges stderr into its capture anyway), and a stderr redirect
+anywhere in the chain is preserved as written.
 """
 
 from __future__ import annotations
@@ -55,7 +60,18 @@ import tempfile
 # import at module scope. (No pathlib: it costs double-digit milliseconds
 # of interpreter startup, which this hook pays on every Bash call.)
 from repowise.cli.agent_adapters.base import RewriteResult
-from repowise.cli.shell_lexer import analyze_pipeline
+
+# Free at module scope, and it has to be here rather than lazy: this module's
+# import is where the ledger's clock starts, so a firing's recorded cost covers
+# the whole invocation. Its own scope is ``os`` and ``time`` — sqlite3 is
+# deferred into the writer, so a command that bails never opens a database.
+from repowise.cli.hook_ledger import BAILED, REWRITTEN
+from repowise.cli.shell_lexer import (
+    SAFE_FINAL_TOOLS,
+    analyze_pipeline,
+    is_plain_stdin_filter,
+    tokenize,
+)
 
 # ---------------------------------------------------------------------------
 # Command normalization — a hot-path mirror of
@@ -79,17 +95,28 @@ _EXE_PATH_RE = re.compile(r'^(?:"[^"]*[\\/]|\S*[\\/])(?P<exe>[\w.-]+?)(?:\.exe)?
 
 
 def _normalize(command: str) -> str:
+    """Mirror of ``router.normalize_command`` — keep the two in step.
+
+    The hook cannot import ``repowise.core`` (hot-path discipline, see the
+    module docstring), so this is a deliberate copy rather than a shared
+    helper. Any fix here belongs there too.
+    """
     cmd = command.strip()
     for _ in range(4):
         previous = cmd
         cmd = _ENV_ASSIGN_RE.sub("", cmd)
+        # Strip the exe path *inside* the loop and before the wrapper table:
+        # a wrapper invoked by path (".venv/Scripts/python.exe -m pytest")
+        # only looks like a wrapper once the path is gone. Running this once
+        # at the end left "python -m pytest", whose first token is on the
+        # ignore-list, so every path-invoked test and lint run passed through.
+        cmd = _EXE_PATH_RE.sub(lambda m: m.group("exe"), cmd)
         cmd = _WRAPPER_RE.sub("", cmd)
         quoted = _WHOLE_QUOTED_RE.match(cmd)
         if quoted:
             cmd = quoted.group(1).strip()
         if cmd == previous:
             break
-    cmd = _EXE_PATH_RE.sub(lambda m: m.group("exe"), cmd)
     return cmd.lower()
 
 
@@ -136,7 +163,14 @@ FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("infra_plan", re.compile(r"^(?:terraform|tofu) plan\b|^helm (?:diff|upgrade)\b")),
     ("git_status", re.compile(r"^git status\b(?!.*--porcelain)")),
     ("git_log", re.compile(r"^git log\b")),
-    ("git_diff", re.compile(r"^git (?:diff|show)\b(?!.*--stat)")),
+    # `gh pr diff` emits a plain unified diff, so it distills as one. Only
+    # this one gh subcommand is listed: `gh` at large includes mutations
+    # (pr merge, pr close), and a rewrite is auto-allowed.
+    ("git_diff", re.compile(r"^git (?:diff|show)\b(?!.*--stat)|^gh pr diff\b")),
+    # The engine has had a git_diff_stat filter since the hunk filter started
+    # skipping --stat; the hook had no pattern that could route to it, so a
+    # diffstat was the one git shape that always passed through raw.
+    ("git_diff_stat", re.compile(r"^git (?:diff|show)\b(?=.*--stat)")),
     ("search_results", re.compile(r"^(rg\b|grep\b|egrep\b|fgrep\b|git grep\b)")),
     ("file_listing", re.compile(r"^(ls\b|tree\b|find\b|fd\b|git ls-files\b)")),
     ("logs", re.compile(r"^(tail\b|journalctl\b|docker logs\b|kubectl logs\b|cat\b.*\.log\b)")),
@@ -204,11 +238,26 @@ IGNORED_FIRST_TOKENS = frozenset(
 # the lexer runs so `pytest 2>&1 | grep FAIL` still classifies as pytest.
 _STDERR_MERGE_RE = re.compile(r"\s+2>&1(?=\s|$)")
 
-# Quoting the pipeline for distill's inner shell is only sound when nothing
-# in it can be re-expanded or break the quoting on the second pass. This
-# applies to the pipeline shape only: a command with no pipe is forwarded as
-# separate argv tokens, which distill re-quotes itself.
-_PIPE_UNSAFE_CHARS = ('"', "'", "$", "\\")
+# The one thing re-quoting cannot make safe. Everything else that used to
+# bail here (`"`, `'`, `\`) is a *quoting* problem, and `_single_quote`
+# solves quoting exactly; `$` is an *evaluation-timing* problem, which it
+# does not. The wrapped token is expanded by distill's shell rather than the
+# outer one, and a shell variable that was never exported is empty there.
+# Measured on 7 days of this repo's transcripts: admitting `$` would have
+# added 545 tokens on top of 55,517, so the timing question does not pay for
+# itself.
+_EXPANSION_CHAR = "$"
+
+#: Segment heads a wrapped chain may contain freely: read-only, not
+#: interactive, and carrying no output anyone wants filtered. Deliberately
+#: NOT ``IGNORED_FIRST_TOKENS``, which also holds rm/mv/chmod/kill — those
+#: are ignored because wrapping them is pointless, not because they are safe
+#: to auto-allow inside something larger.
+_INERT_SEGMENT_TOKENS = frozenset({"cd", "echo", "printf", "pwd", "true", ":"})
+
+#: Ops that only sequence commands. A bare ``&`` (background) is absent on
+#: purpose: distill would capture the output of a job that has not run yet.
+_CHAIN_OPS = frozenset({"&&", "||", ";"})
 
 # distill executes via the system shell (cmd.exe on Windows, where
 # head/tail/grep don't exist), so the safe-pipeline rewrite is
@@ -256,11 +305,117 @@ def _split_safe_tail(command: str) -> tuple[str, bool] | None:
         return None
     if pipeline.final_tool is None:
         return pipeline.producer, False
-    # A pipeline is re-quoted as one token, so anything the inner shell would
-    # re-expand or that could break out of the quoting bails.
-    if not _POSIX_HOST or any(ch in command for ch in _PIPE_UNSAFE_CHARS):
+    # A pipeline is re-quoted as one token. `_single_quote` makes the quoting
+    # itself airtight, so only re-expansion is left to bail on.
+    if not _POSIX_HOST or _EXPANSION_CHAR in command:
         return None
     return pipeline.producer, True
+
+
+def _single_quote(command: str) -> str:
+    """POSIX single-quote *command* so a shell re-reads it verbatim.
+
+    ``shlex.quote`` in one line, inlined rather than imported: this module
+    fires on every Bash tool call and its docstring commits to a stdlib-only,
+    minimal-import scope. A single-quoted run ends at the next ``'``, so the
+    only escape needed is to close, emit a literal quote, and reopen.
+    """
+    return "'" + command.replace("'", "'\\''") + "'"
+
+
+def _chain_families(command: str) -> tuple[str, ...] | None:
+    """Families of a chain whose every segment is safe to wrap wholesale.
+
+    ``_split_safe_tail`` handles one simple command and the single-pipe
+    shape. Anything else -- ``a && b``, ``a; b``, a pipeline with more than
+    one producer -- used to bail outright, and that bail is where most of the
+    unrealised savings sit: on 7 days of this repo's transcripts, 89% of the
+    tokens ``repowise saved --missed`` reports were declined for command
+    shape, not for being unrecognized.
+
+    A chain is admitted only when *every* top-level segment is one of:
+
+      - a command ``_classify_head`` recognizes (the same closed set a lone
+        command must be in),
+      - an inert builtin (``_INERT_SEGMENT_TOKENS``),
+      - a bare stdin filter on the right of a pipe (``SAFE_FINAL_TOOLS``),
+
+    and at least one segment is recognized. That rule is the whole safety
+    argument: a rewrite is auto-allowed, and wrapping a chain of things the
+    agent could already run approval-free grants it nothing new. One
+    unrecognized segment -- ``git status && ./deploy.sh`` -- and the whole
+    command passes through, because wrapping it would auto-allow the part
+    nobody vetted.
+
+    Returns None when the chain is not admissible; otherwise the recognized
+    families in order, whose first element names the rewrite.
+    """
+    if not _POSIX_HOST:
+        # Same reason ``_split_safe_tail`` gates the pipeline shape: distill
+        # re-runs the wrapped token through the system shell, which is
+        # cmd.exe here, and these are POSIX command lines.
+        return None
+    declawed = _STDERR_MERGE_RE.sub("", command.strip())
+    if _EXPANSION_CHAR in declawed:
+        return None
+
+    segments: list[list[str]] = [[]]
+    piped_from: set[int] = set()
+    skip_next_arg = False
+    for token in tokenize(declawed):
+        if token.kind == "arg":
+            if skip_next_arg:  # a redirect target, not part of the command
+                skip_next_arg = False
+                continue
+            segments[-1].append(token.text)
+        elif token.kind == "op":
+            if token.text not in _CHAIN_OPS:
+                return None  # background &, substitution, backtick, newline
+            segments.append([])
+        elif token.kind == "pipe":
+            if token.text != "|":  # `|&` also pipes stderr
+                return None
+            segments.append([])
+            piped_from.add(len(segments) - 1)
+        elif token.kind == "redirect":
+            # stdout redirects send the output somewhere distill will never
+            # see. A stderr redirect only decides whether distill's
+            # errors-first rendering has errors to lead with, which is the
+            # caller's business either way.
+            if not token.text.startswith("2"):
+                return None
+            skip_next_arg = True
+    if skip_next_arg:
+        return None  # trailing redirect with no target: malformed, bail
+
+    families: list[str] = []
+    for index, segment in enumerate(segments):
+        if not segment:
+            continue
+        head = " ".join(segment)
+        normalized = _normalize(head)
+        if not normalized:
+            # An assignment with nothing after it (`FOO=bar`) normalizes
+            # away. It sets state the wrapped shell would not share.
+            return None
+        first = normalized.split(None, 1)[0]
+        if first in _INERT_SEGMENT_TOKENS:
+            continue
+        if index in piped_from and first in SAFE_FINAL_TOOLS:
+            # grep/tail are both producer families and stdin filters, and on
+            # the right of a pipe they are the latter -- so this has to be
+            # judged before `_classify_head`, which would happily call
+            # `grep -f patterns.txt` a search and wave it through. Membership
+            # is not the test either: `grep -f` reads a pattern file and
+            # `tail -F` never closes the pipe. Ask the lexer, which owns both.
+            if not is_plain_stdin_filter(segment):
+                return None
+            continue
+        family = _classify_head(head)
+        if family is None:
+            return None
+        families.append(family)
+    return tuple(families) or None
 
 
 # Watch/follow modes are long-running; wrapping them buffers forever.
@@ -282,15 +437,27 @@ _STREAMING_FAMILIES = frozenset({"logs"})
 _PS_CMDLET_RE = re.compile(r"^[a-z]+-[a-z]")
 _DASHED_TOOL_TOKENS = frozenset({"golangci-lint"})
 
+# `find`/`fd` sit in the listing family, but these flags turn a listing into
+# an arbitrary-command runner: `find . -name '*.tmp' -exec rm {} \;` is a
+# delete, not an `ls`. A rewrite is auto-allowed, so a command that merely
+# *starts* like something recognized must not inherit that approval. Kept
+# per-tool because the spellings collide with unrelated flags elsewhere
+# (`-x` is fd's exec, and also `pytest -x`, which stays rewritable).
+_ACTION_FLAG_RES = (
+    ("find", re.compile(r"(?:^|\s)-(?:exec(?:dir)?|ok(?:dir)?|delete)(?:\s|$)")),
+    ("fd", re.compile(r"(?:^|\s)(?:-[xX]|--exec(?:-batch)?)(?:\s|$)")),
+)
+
 
 def classify(command: str) -> str | None:
     """Return the distill family for *command*, or None to pass through."""
     if not command:
         return None
     split = _split_safe_tail(command)
-    if split is None:
-        return None
-    return _classify_head(split[0])
+    if split is not None:
+        return _classify_head(split[0])
+    families = _chain_families(command)
+    return families[0] if families else None
 
 
 def _classify_head(head_command: str) -> str | None:
@@ -305,6 +472,9 @@ def _classify_head(head_command: str) -> str | None:
         return None
     if _WATCH_RE.search(normalized):
         return None
+    for tool, action_re in _ACTION_FLAG_RES:
+        if first == tool and action_re.search(normalized):
+            return None
     for family, pattern in FAMILY_PATTERNS:
         if pattern.match(normalized):
             if family in _STREAMING_FAMILIES and _FOLLOW_FLAG_RE.search(normalized):
@@ -399,6 +569,23 @@ _PS_ALIAS_TOKENS = frozenset(
 )
 
 
+#: Why a command was not rewritten. One of these lands in the ledger for every
+#: shell command the hook sees, so the shape of what passes through stops being
+#: guesswork: an ``updatedInput`` rewrite is invisible in a transcript, and so
+#: is a bail, which means the hook's whole population was previously unmeasured.
+#:
+#: ``no_repo`` is recorded for completeness and can never actually be written —
+#: a command outside a repowise repo has no ledger to write to. Naming it is
+#: cheaper than leaving a reader to wonder where those went.
+BAIL_SHAPE = "shape"  # shell syntax the wrapper cannot preserve
+BAIL_UNRECOGNIZED = "unrecognized"  # not a command family we distill
+BAIL_PS_ALIAS = "ps_alias"  # PowerShell alias that would not survive a wrap
+BAIL_NO_REPO = "no_repo"  # cwd is not inside a repowise repo
+BAIL_DISABLED = "disabled"  # this repo turned command rewriting off
+BAIL_FAMILY_OFF = "family_off"  # this family specifically is off
+BAIL_PERMISSION = "permission"  # agent cannot honour the decided posture
+
+
 def decide(
     command: str, cwd: str, shell: str = "posix", source: str | None = None
 ) -> RewriteResult | None:
@@ -407,31 +594,56 @@ def decide(
     *source* overrides the ledger tag for agents with their own surface
     (``hook-codex``); by default it derives from the shell dialect.
     """
-    split = _split_safe_tail(command) if command else None
-    if split is None:
-        return None
-    head_command, needs_inner_shell = split
-    family = _classify_head(head_command)
-    if family is None:
-        return None
+    return _decide(command, cwd, shell, source)[0]
 
-    if shell == "powershell":
-        first = _normalize(head_command).split(None, 1)[0]
-        if first in _PS_ALIAS_TOKENS:
-            return None
+
+def _decide(
+    command: str, cwd: str, shell: str = "posix", source: str | None = None
+) -> tuple[RewriteResult | None, str, str | None]:
+    """:func:`decide`, plus why it said no and which repo it was asked about.
+
+    Split out rather than folded in because the hook has to *count* itself: the
+    outcome and the repo root are what a ledger row needs, and the public
+    ``decide`` contract is a result or None. On a rewrite the reason is the
+    distill family, so one column carries both distributions.
+    """
+    split = _split_safe_tail(command) if command else None
+    chain: tuple[str, ...] = ()
+    if split is not None:
+        head_command, needs_inner_shell = split
+        family = _classify_head(head_command)
+        if family is None:
+            return None, BAIL_UNRECOGNIZED, _find_repo_root(cwd)
+        if shell == "powershell":
+            first = _normalize(head_command).split(None, 1)[0]
+            if first in _PS_ALIAS_TOKENS:
+                return None, BAIL_PS_ALIAS, _find_repo_root(cwd)
+    elif command and shell != "powershell":
+        # A chain is POSIX shell syntax by construction (`&&`, `;`, `|`), so
+        # it is only ever offered to the POSIX dialect.
+        chain = _chain_families(command) or ()
+        if not chain:
+            return None, BAIL_SHAPE, _find_repo_root(cwd)
+        family, needs_inner_shell = chain[0], True
+    else:
+        return None, BAIL_SHAPE, _find_repo_root(cwd)
 
     # Only act inside repos that opted into repowise; the hook is installed
     # globally, but a repo without .repowise/ gets untouched commands.
     repo_root = _find_repo_root(cwd)
     if repo_root is None:
-        return None
+        return None, BAIL_NO_REPO, None
 
     enabled, permission, families = _load_commands_config(repo_root)
     if not enabled:
-        return None
+        return None, BAIL_DISABLED, repo_root
+    # Every family the command touches has to be allowed, not just the one
+    # that names the rewrite: otherwise `git_diff: off` would be bypassable
+    # by chaining a git diff behind anything still on.
+    for touched in chain or (family,):
+        if families.get(touched) in _OFF_VALUES:
+            return None, BAIL_FAMILY_OFF, repo_root
     family_setting = families.get(family)
-    if family_setting in _OFF_VALUES:
-        return None
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
 
@@ -439,18 +651,25 @@ def decide(
     # --by source` can tell hook surfaces apart from direct CLI use.
     if source is None:
         source = "hook-powershell" if shell == "powershell" else "hook-bash"
-    # A safe pipeline is passed as ONE quoted token so the pipe binds inside
-    # distill's shell (distill re-runs a single token verbatim via shell=True)
-    # instead of piping distill's own rendering. _split_safe_tail already
-    # rejected commands containing quotes, so the wrap can't be broken out of.
-    wrapped = f'"{command.strip()}"' if needs_inner_shell else command.strip()
-    return RewriteResult(
-        command=f"repowise distill --source {source} {wrapped}",
-        permission=permission,
-        reason=(
-            f"repowise distill: compact {family} rendering; full output stays "
-            f"recoverable via `repowise expand <ref>`"
+    # A pipeline or chain is passed as ONE quoted token so its operators bind
+    # inside distill's shell (distill re-runs a single token verbatim via
+    # shell=True) instead of binding to the wrapper. Single quotes, so the
+    # inner shell reads the token back byte for byte; `$` already bailed, so
+    # nothing in it re-expands.
+    wrapped = _single_quote(command.strip()) if needs_inner_shell else command.strip()
+    # The reason on a rewrite is the family: one ledger column then carries
+    # both distributions, what we rewrite and what we decline.
+    return (
+        RewriteResult(
+            command=f"repowise distill --source {source} {wrapped}",
+            permission=permission,
+            reason=(
+                f"repowise distill: compact {family} rendering; full output stays "
+                f"recoverable via `repowise expand <ref>`"
+            ),
         ),
+        family,
+        repo_root,
     )
 
 
@@ -460,20 +679,21 @@ def _select_adapter(argv: list[str]):
     Each agent's hook config registers its own flavor (Codex hooks run
     ``repowise-rewrite --agent codex``) — the payloads are near-identical
     JSON, so argv is the only reliable discriminator.
+
+    Resolution goes through the shared registry rather than a name test here.
+    This used to be its own ``if agent == "codex"`` ladder, which meant adding
+    a harness was a registration *and* an edit in this file — the thing the
+    registry exists to stop.
     """
+    from repowise.cli.agent_adapters import adapter_for
+
     agent = ""
     for i, arg in enumerate(argv):
         if arg == "--agent" and i + 1 < len(argv):
             agent = argv[i + 1]
         elif arg.startswith("--agent="):
             agent = arg.split("=", 1)[1]
-    if agent == "codex":
-        from repowise.cli.agent_adapters.codex import CodexAdapter
-
-        return CodexAdapter()
-    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
-
-    return ClaudeCodeAdapter()
+    return adapter_for(agent)
 
 
 def main() -> None:
@@ -481,20 +701,51 @@ def main() -> None:
         adapter = _select_adapter(sys.argv[1:])
         request = adapter.parse_hook_payload(sys.stdin.read())
         if request is not None:
-            source = "hook-codex" if adapter.name == "codex" else None
-            result = decide(request.command, request.cwd, request.shell, source=source)
+            source = adapter.savings_source
+            result, reason, repo_root = _decide(
+                request.command, request.cwd, request.shell, source=source
+            )
+            outcome = BAILED
             # An agent that can't honor the decided posture gets a
             # passthrough, never a silently escalated rewrite (Codex has no
             # ask-with-mutation — only families set to `allow` rewrite).
-            if result is not None and result.permission in adapter.rewrite_permissions:
-                sys.stdout.write(adapter.render_response(result))
-                sys.stdout.flush()
+            if result is not None:
+                if result.permission in adapter.rewrite_permissions:
+                    sys.stdout.write(adapter.render_response(result))
+                    sys.stdout.flush()
+                    outcome = REWRITTEN
+                else:
+                    reason = BAIL_PERMISSION
+            _count_decision(repo_root, request.session_id, outcome, reason)
     except (SystemExit, KeyboardInterrupt):
         raise
     except BaseException:
         # A hook failure must never surface in the agent transcript.
         pass
     sys.exit(0)
+
+
+def _count_decision(repo_root: str | None, session_id: str, outcome: str, reason: str) -> None:
+    """Record what this invocation decided. After stdout, and never fatal.
+
+    Deferred past the response for the reason every ledger write here is: the
+    agent must not wait on accounting. Skipped entirely outside a repowise repo
+    — there is no sidecar to write to — and skipped when the harness offered no
+    session id, because a row nothing can be attributed to is not worth the
+    write.
+
+    This is the only instrument this hook has. A rewrite leaves no trace in a
+    transcript, and neither does a passthrough, so without these counters the
+    busiest surface in the system reports nothing at all.
+    """
+    if not repo_root or not session_id:
+        return
+    try:
+        from repowise.cli.hook_ledger import record_rewrite
+
+        record_rewrite(repo_root, session_id, outcome=outcome, reason=reason)
+    except Exception:
+        return
 
 
 if __name__ == "__main__":

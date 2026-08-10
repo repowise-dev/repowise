@@ -102,6 +102,14 @@ def _patch_agreement_pipeline(monkeypatch, answer_mod, *, top_both: bool):
     """
 
     async def _fake_retrieve(question, ctx):
+        # The real hybrid_retrieve opens a fresh per-request leg record as its
+        # first act, and the confidence grade now reads that record. Mimic it,
+        # or this fake inherits whatever leg statuses an earlier test left in
+        # the ambient context and the grade gets computed from another test's
+        # run. (A test that calls begin_leg_record outside a task leaks it.)
+        import repowise.server.mcp_server._answer_pipeline as _pipeline
+
+        _pipeline.begin_leg_record()
         top = {"page_id": "file_page:pkg/alpha/one.py", "score": 6.0, "_fts_rank": 0}
         if top_both:
             top["_vec_rank"] = 0
@@ -219,3 +227,197 @@ async def test_flag_off_restores_pure_ratio(setup_mcp, monkeypatch):
 
     result = await get_answer("how does upload streaming chunk data")
     assert result["confidence"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# Keyless indexes: the second opinion is the symbol leg
+# ---------------------------------------------------------------------------
+#
+# #1378 made a keyless index skip the vector leg outright, so `_vec_rank` is
+# never written on any hit for any question. A fixed FTS+vector pair therefore
+# made agreement permanently unreachable for every keyless user, and since
+# agreement can only LIFT, every keyless answer fell back to the pure RRF ratio
+# gate - the exact gate this signal exists because it mis-reads. The symbol leg
+# runs on every index and already records `_sym_rank`, which nothing else reads.
+
+
+class TestKeylessAgreementFallsBackToSymbol:
+    def test_fts_and_symbol_consensus_lifts_when_the_leg_is_keyless(self) -> None:
+        hits = [
+            {"_fts_rank": 0, "_sym_rank": 0},
+            {"_fts_rank": 1, "_sym_rank": 1},
+        ]
+        assert _agreement_dominant(hits, vector_leg_keyless=True) is True
+
+    def test_symbol_disagreement_still_does_not_lift(self) -> None:
+        """The fallback must be conservative, not a free pass.
+
+        Note this case is rejected by the rank-0 ceiling, not by the runner-up
+        disagreement logic — at that ceiling the gap check cannot reject
+        anything, since two hits cannot share rank 0 in one leg. Kept because
+        the property (sources disagreeing must not lift) is what matters, not
+        which clause enforces it.
+        """
+        hits = [
+            {"_fts_rank": 1, "_sym_rank": 0},
+            {"_fts_rank": 0, "_sym_rank": 2},
+        ]
+        assert _agreement_dominant(hits, vector_leg_keyless=True) is False
+
+    def test_fts_only_does_not_lift_on_a_keyless_index(self) -> None:
+        """One retriever is one retriever, whichever legs are available."""
+        hits = [{"_fts_rank": 0}, {"_fts_rank": 1}]
+        assert _agreement_dominant(hits, vector_leg_keyless=True) is False
+
+    def test_symbol_pair_needs_an_exact_rank_zero_tie(self) -> None:
+        """FTS and symbol read overlapping text — the indexed page carries the
+        symbol table the symbol leg matches on — so "#1 or #2" is too loose for
+        that pair even though it is the right ceiling for FTS+vector."""
+        hits = [
+            {"_fts_rank": 1, "_sym_rank": 1},
+            {"_fts_rank": 3, "_sym_rank": 3},
+        ]
+        assert _agreement_dominant(hits, vector_leg_keyless=True) is False
+        # The identical rank shape DOES lift under the vector pair's ceiling,
+        # which is what makes this a deliberate asymmetry rather than a typo.
+        assert (
+            _agreement_dominant(
+                [{"_fts_rank": 1, "_vec_rank": 1}, {"_fts_rank": 3, "_vec_rank": 3}]
+            )
+            is True
+        )
+
+    def test_a_keyed_index_never_substitutes_the_symbol_leg(self) -> None:
+        """The regression the explicit parameter exists to prevent.
+
+        `hits` is capped to the top 5 before the grade is computed, so "no
+        _vec_rank in this list" is ALSO what a keyed index looks like when its
+        vector leg timed out, errored, was scope-filtered, or was outranked by
+        five FTS-and-symbol hits. Those are precisely the states where evidence
+        is weakest, so inferring the substitution from the hits would
+        manufacture high confidence out of a retrieval failure.
+        """
+        hits = [
+            {"_fts_rank": 0, "_sym_rank": 0},
+            {"_fts_rank": 1, "_sym_rank": 1},
+        ]
+        assert _agreement_dominant(hits, vector_leg_keyless=False) is False
+        # The default is the safe one, for any caller that forgets to pass it.
+        assert _agreement_dominant(hits) is False
+
+    def test_a_live_vector_leg_that_disagrees_still_suppresses(self) -> None:
+        hits = [
+            {"_fts_rank": 0, "_sym_rank": 0, "_vec_rank": 7},
+            {"_fts_rank": 1, "_sym_rank": 1, "_vec_rank": 0},
+        ]
+        assert _agreement_dominant(hits) is False
+
+
+# ---------------------------------------------------------------------------
+# The call-site seam
+# ---------------------------------------------------------------------------
+#
+# `vector_leg_keyless` defaults to the safe value, which means dropping the
+# kwarg at the call site silently restores the keyless hole and every unit test
+# above still passes. This is the one seam the explicit-parameter design
+# created, so it gets an end-to-end test that goes through `retrieval_legs()`.
+
+
+def _patch_keyless_agreement_pipeline(monkeypatch, answer_mod, pipeline_mod, *, leg: str):
+    """FTS+symbol consensus, no vector ranks, and a declared vector leg status."""
+
+    async def _fake_retrieve(question, ctx):
+        # begin_leg_record() installs the per-request contextvar and hands back
+        # the dict the real legs mutate by reference; do the same here.
+        record = pipeline_mod.begin_leg_record()
+        record["vector"] = leg
+        record["fts"] = "ok"
+        return [
+            {
+                "page_id": "file_page:pkg/alpha/one.py",
+                "score": 6.0,
+                "_fts_rank": 0,
+                "_sym_rank": 0,
+            },
+            {
+                "page_id": "file_page:pkg/alpha/two.py",
+                "score": 5.9,
+                "_fts_rank": 1,
+                "_sym_rank": 1,
+            },
+        ]
+
+    async def _fake_hydrate(hits, ctx, *, scope=None):
+        for i, h in enumerate(hits):
+            h["target_path"] = h["page_id"].removeprefix("file_page:")
+            h["title"] = h["target_path"]
+            h["summary"] = "Upload module summary."
+            h["snippet"] = ""
+            h["page_type"] = "file_page"
+            if i == 0:
+                h["symbols"] = [dict(_MATCHED_SYMBOL)]
+        return hits
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+
+
+@pytest.mark.asyncio
+async def test_keyless_leg_status_reaches_the_grade(setup_mcp, monkeypatch):
+    """A recorded `keyless` vector leg lets FTS+symbol consensus lift to high."""
+    import repowise.server.mcp_server._answer_pipeline as pipeline_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    monkeypatch.setenv("REPOWISE_ANSWER_AGREEMENT_CONFIDENCE", "on")
+    monkeypatch.setenv("REPOWISE_ANSWER_SYMBOL_AGREEMENT", "on")
+    monkeypatch.setenv("REPOWISE_ANSWER_EARN_HIGH_GROUNDING", "off")
+    _patch_keyless_agreement_pipeline(monkeypatch, answer_mod, pipeline_mod, leg="keyless")
+    _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
+
+    result = await get_answer("how does upload chunking work")
+    assert result["confidence"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_vector_leg_is_not_treated_as_keyless(setup_mcp, monkeypatch):
+    """The regression that matters: identical hits, but the vector leg TIMED OUT.
+
+    A keyed index whose vector leg timed out presents exactly like a keyless one
+    once `hits` is capped to five, and it must NOT earn the lift — that is the
+    state where the evidence is weakest, not strongest.
+    """
+    import repowise.server.mcp_server._answer_pipeline as pipeline_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    monkeypatch.setenv("REPOWISE_ANSWER_AGREEMENT_CONFIDENCE", "on")
+    monkeypatch.setenv("REPOWISE_ANSWER_SYMBOL_AGREEMENT", "on")
+    monkeypatch.setenv("REPOWISE_ANSWER_EARN_HIGH_GROUNDING", "off")
+    _patch_keyless_agreement_pipeline(monkeypatch, answer_mod, pipeline_mod, leg="timeout")
+    _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
+
+    result = await get_answer("how does upload chunking work")
+    assert result["confidence"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_symbol_agreement_flag_is_independently_reversible(setup_mcp, monkeypatch):
+    """Turning the keyless pair off must not turn the measured vector pair off."""
+    import repowise.server.mcp_server._answer_pipeline as pipeline_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    monkeypatch.setenv("REPOWISE_ANSWER_AGREEMENT_CONFIDENCE", "on")
+    monkeypatch.setenv("REPOWISE_ANSWER_SYMBOL_AGREEMENT", "off")
+    monkeypatch.setenv("REPOWISE_ANSWER_EARN_HIGH_GROUNDING", "off")
+    _patch_keyless_agreement_pipeline(monkeypatch, answer_mod, pipeline_mod, leg="keyless")
+    _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
+
+    result = await get_answer("how does upload chunking work")
+    assert result["confidence"] == "medium"
+
+    # ...and the vector pair still lifts with the symbol flag off.
+    _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=True)
+    _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
+    assert (await get_answer("how does upload chunking work again"))["confidence"] == "high"

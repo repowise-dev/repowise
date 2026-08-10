@@ -22,14 +22,26 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
-from repowise.core.sessions.adapters.base import HarnessAdapter
-from repowise.core.sessions.events import Event, ToolResult, ToolUse
+from repowise.core.sessions.adapters.base import (
+    INTENT_SHELL_CALLS,
+    INTENT_TOOL_CALLS,
+    INTENT_TURNS,
+    HarnessAdapter,
+    RawPrefilter,
+)
+from repowise.core.sessions.adapters.registry import register_adapter
+from repowise.core.sessions.events import Event, ToolResult, ToolUse, parse_timestamp
 
 _NON_SLUG_RE = re.compile(r"[^A-Za-z0-9-]")
+
+#: Conversation turns in Claude Code's JSONL. One alternation rather than a
+#: tuple of both JSON spellings: a tuple scans the whole (often huge) line
+#: once per token and silently stops matching the day a writer pretty-prints
+#: with two spaces. Same trade the security scan already makes.
+_TURN_RE = re.compile(r'"type":\s*"(?:user|assistant)"')
 
 
 def transcript_dir_for(repo_root: Path, projects_root: Path | None = None) -> Path:
@@ -41,16 +53,7 @@ def transcript_dir_for(repo_root: Path, projects_root: Path | None = None) -> Pa
     return root / _NON_SLUG_RE.sub("-", str(repo_root))
 
 
-def parse_timestamp(value: Any) -> float | None:
-    """Epoch seconds from an ISO-8601 transcript timestamp, or None."""
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
+@register_adapter
 class ClaudeCodeAdapter(HarnessAdapter):
     """Normalizes Claude Code session JSONL into the shared Event stream."""
 
@@ -61,6 +64,20 @@ class ClaudeCodeAdapter(HarnessAdapter):
         if not directory.is_dir():
             return []
         return sorted(directory.glob("*.jsonl"))
+
+    def prefilter(self, intent: str) -> RawPrefilter | None:
+        """Claude Code's raw-line gates, keyed by what the consumer wants.
+
+        ``toolUseResult`` is a Claude-Code-only key and appears here rather
+        than in any miner. Every predicate reads the raw string only.
+        """
+        if intent == INTENT_SHELL_CALLS:
+            return _shell_calls_prefilter
+        if intent == INTENT_TOOL_CALLS:
+            return _tool_calls_prefilter
+        if intent == INTENT_TURNS:
+            return _turns_prefilter
+        return None
 
     def normalize(self, raw_line: str) -> Event | None:
         try:
@@ -137,6 +154,26 @@ class ClaudeCodeAdapter(HarnessAdapter):
                         )
                     )
         event.text = "\n".join(texts)
+
+
+def _shell_calls_prefilter(raw: str) -> bool:
+    """Only shell tool_use lines and result lines are worth parsing."""
+    return ('"tool_use"' in raw and '"command"' in raw) or '"toolUseResult"' in raw
+
+
+def _tool_calls_prefilter(raw: str) -> bool:
+    """Only tool_use lines and result lines are worth parsing."""
+    return '"tool_use"' in raw or '"tool_result"' in raw
+
+
+def _turns_prefilter(raw: str) -> bool:
+    """Dialog lines only; skips the fat non-dialog entries.
+
+    User prose, assistant prose, tool uses and results all ride "user" and
+    "assistant" entries; what this drops is file-history snapshots, queue
+    operations and system hooks.
+    """
+    return _TURN_RE.search(raw) is not None
 
 
 def _str_or_none(value: Any) -> str | None:

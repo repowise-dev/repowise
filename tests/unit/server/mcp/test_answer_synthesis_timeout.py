@@ -398,6 +398,7 @@ def test_both_failure_modes_return_the_same_payload_shape(reason):
         "degraded",
         "fallback_targets",
         "retrieval",
+        "candidates",
         "note",
         "_meta",
     }

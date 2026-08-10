@@ -415,6 +415,14 @@ export interface FileSignals {
 export interface FileTrendPoint {
   taken_at: string | null;
   score: number;
+  /**
+   * `score` with the 1.0 floor undone, so a file too deep to move the visible
+   * score still has a line that moves. Equal to `score` unless the snapshot
+   * recorded the file's real depth, which only happens once it is on the
+   * floor; may go below 0. Optional: the hosted backend does not send it, and
+   * neither do rows written before deductions were captured.
+   */
+  unclamped_score?: number;
 }
 
 /**
@@ -431,6 +439,12 @@ export interface FileHealthTrend {
   current: number | null;
   previous: number | null;
   delta: number | null;
+  /**
+   * Movement in the unclamped score between the last two points. Equal to
+   * `delta` whenever the floor is not involved, so it can be read
+   * unconditionally. Optional for hosted, which does not send it.
+   */
+  unclamped_delta?: number | null;
   declining: boolean;
   snapshot_count: number;
 }
@@ -463,7 +477,13 @@ export interface HealthTrendResponse {
     delta: number;
     message: string;
   }>;
+  /** Largest movements first, in either direction, capped server-side. */
   file_deltas: Array<{ file_path: string; before: number; after: number; delta: number }>;
+  /**
+   * How many files moved in total, before the cap. Optional: the hosted
+   * backend does not send it, so consumers fall back to `file_deltas.length`.
+   */
+  file_deltas_total?: number;
   snapshot_count: number;
 }
 
@@ -506,7 +526,14 @@ export interface CoverageSummary {
 export interface HealthCoverageResponse {
   summary: CoverageSummary;
   files: CoverageFileRow[];
+  /** Capped by the request's `module_limit`, which is independent of `limit`. */
   modules: ModuleCoverageRow[];
+  /**
+   * How many modules exist, whatever `modules` carries — so a trimmed or
+   * declined rollup is never read as the repo having that few. Optional: the
+   * hosted backend does not send it yet.
+   */
+  modules_total?: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -531,6 +558,13 @@ export interface RefactoringTarget {
   biomarkers: string[];
   effort_bucket: "S" | "M" | "L" | "XL";
   impact_per_effort: number;
+  /**
+   * No longer served by the OSS `/health/refactoring-targets` route: building it
+   * for every file with findings, before the `limit` slice, cost 1.8 MB per
+   * request to feed two click-gated consumers. Fetch a file's findings from
+   * `GET /health/findings?file_path=` instead. Kept optional because the hosted
+   * backend still sends it and a client may hold a cached older payload.
+   */
   all_findings?: Array<{
     id: string;
     biomarker_type: string;

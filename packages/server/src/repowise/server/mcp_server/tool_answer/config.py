@@ -8,6 +8,8 @@ with a coverage re-ranker, not of any particular codebase.
 
 from __future__ import annotations
 
+from repowise.server.mcp_server._query_terms import STOPWORDS
+
 # How many top retrieval hits to enrich with WikiSymbol context. Enriching
 # every hit produces large responses that bloat the cached prompt prefix on
 # multi-turn agent sessions without changing the answer — the agent typically
@@ -41,6 +43,30 @@ _INLINE_BODY_MAX_SYMBOLS = 2
 # the get_symbol follow-up the field exists to remove. 120 serves the whole
 # body of ~99% of symbols in one shot; the rest carry a continuation token.
 _INLINE_BODY_MAX_LINES = 120
+
+# `candidates[].defines` — what each ranked file actually contains.
+#
+# `candidates` names up to 20 files and, until now, carried nothing about any of
+# them beyond an optional line span. Measured on the 25 flow questions, 434 of
+# the 499 paths a get_answer response served carried no content at all, and the
+# Layer B taxonomy judged 89% of the agent's post-answer searches as EXPAND: it
+# took a name we served and went to fetch the substance we did not attach. A
+# file named without its definitions is a Grep the agent has to run.
+#
+# This is bounded hard rather than generously, because the same measurements say
+# our payload is ALREADY the larger context (13,958 chars against a bare agent's
+# 12,735) and scores lower. The goal is substance per served path, not more
+# chars: names and line numbers, no signatures, no docstrings, no bodies.
+#
+# `_DEFINES_CHAR_BUDGET` is the ceiling for the whole block in one response and
+# is spent in retrieval-rank order, so the best-ranked file is the one that
+# always gets described. `_DEFINES_PER_CANDIDATE` stops a 200-symbol module from
+# consuming the budget before the second candidate is reached.
+_DEFINES_PER_CANDIDATE = 6
+_DEFINES_CHAR_BUDGET = 1500
+# Files whose symbols get looked up at all. Matches _CANDIDATE_LIMIT: querying
+# beyond what `candidates` can emit is wasted work.
+_DEFINES_MAX_FILES = 20
 
 # Synthesis-body depth for the top question-relevant symbols. The default
 # _MATCHED_SYMBOL_SOURCE_LINES (40) excerpt cuts a docstring-heavy definition
@@ -137,6 +163,18 @@ _COVERAGE_THRESHOLD = 0.66
 # The top hit must rank no lower than this in EACH retriever (0-indexed, so
 # 1 == "#1 or #2 in both").
 _AGREEMENT_TOP_RANK_MAX = 1
+# The same ceiling for the FTS+symbol pair a keyless index has to use instead:
+# no vector leg runs there, so it can never produce a rank, and a fixed
+# FTS+vector pair would make agreement permanently unreachable for those users.
+# Stricter than the vector pair on purpose — an exact rank-0 tie in both, not
+# "#1 or #2". FTS and the symbol leg read overlapping text (the indexed wiki
+# page carries the public symbol table the symbol leg matches on), so the two
+# agreeing is nearer to one lexical match counted twice than to two independent
+# retrievers concurring. `_SYMBOL_LEG_RRF_K` (180 vs `_RRF_K` 60) already prices
+# that leg at a third of the others' in ranking, after a same-named React
+# component displaced the right file on the 99-question eval; this stops the
+# confidence gate from handing the same signal a full vote.
+_SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail the top by at least this many ranks in at least one
 # source (when it was found by both). 1 == "top is strictly ahead somewhere".
 _AGREEMENT_RANK_GAP = 1
@@ -191,15 +229,24 @@ _HEDGE_MARKERS = (
 # retrieval with a coverage re-ranker on top, not of any particular repository;
 # tune if a deployment shows systematic over- or under-gating.
 
-# When the gate triggers and we drop synthesis, fetch this many chars of
-# real page content per top hit so the agent has substantive raw material
-# to ground in (vs. one-line summary that's too thin to act on). 1500 chars
-# is enough for a page's opening section plus a code reference; at 600 the
-# excerpt stopped mid-context and agents fell back to native exploration
-# anyway (context-tool bench transcripts, 2026-07-17). Three hits at 1500
-# chars is ~1.1k tokens — well under any MCP output budget.
+# How many chars of real page content to attach per top hit, for the synthesis
+# prompt and for the pointer payload alike. 1500 chars is enough for a page's
+# opening section plus a code reference; at 600 the excerpt stopped mid-context
+# and agents fell back to native exploration anyway (context-tool bench
+# transcripts, 2026-07-17).
 _GATED_EXCERPT_CHARS = 1500
+
+# How many hits the low-confidence payload hands back to the agent.
 _GATED_RETURN_HITS = 3
+
+# How many top hits get their page content attached. Retrieval is capped at 5
+# and all 5 reach the synthesis prompt, so this is 5: a hit the model is asked
+# to read with no prose behind it is one it can only answer from symbol names.
+# This is the cost knob for the feature — 5 hits × 1500 chars is roughly 2k
+# prompt tokens on top of the symbol block, measured at +24% of the tool's own
+# synthesis spend. Lower it to spend less; hits below the cut fall back to
+# their one-line summaries.
+_PAGE_EXCERPT_HITS = 5
 
 # Path-prefix domain heuristics — down-weight cross-domain retrievals so a
 # clearly backend question doesn't anchor on a same-vocabulary UI file (and
@@ -317,7 +364,11 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # answer-grounding earns high on a non-dominant retrieval. Cached pre-v11 rows
 # carry the old body-dump / dominance-only grade and must bypass so the
 # recalibrated confidence reaches callers.
-_ANSWER_SCHEMA_VERSION = 11
+# v12: `candidates[].defines` — each ranked file now names the definitions it
+# contains. Cached pre-v12 rows carry the bare {path, lines} shape, which is the
+# named-but-not-carried payload this version exists to replace, so they must
+# bypass rather than serve the old block back.
+_ANSWER_SCHEMA_VERSION = 12
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
@@ -351,102 +402,10 @@ _RELATIONAL_CONNECTIVES = (
 # of their raw BM25 (vs 1.0 for a hit covering 3/3). Conjunctive coverage
 # becomes a tie-breaker rather than a hard filter.
 _COVERAGE_FLOOR = 0.5
-# English stopwords — minimal list, just enough to keep "what is the" from
-# dominating coverage. Not language-specific, not repo-specific.
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "of",
-        "to",
-        "in",
-        "on",
-        "at",
-        "by",
-        "for",
-        "with",
-        "from",
-        "as",
-        "that",
-        "this",
-        "these",
-        "those",
-        "it",
-        "its",
-        "and",
-        "or",
-        "but",
-        "not",
-        "no",
-        "do",
-        "does",
-        "did",
-        "done",
-        "have",
-        "has",
-        "had",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "whose",
-        "when",
-        "where",
-        "why",
-        "how",
-        "can",
-        "could",
-        "should",
-        "would",
-        "may",
-        "might",
-        "will",
-        "shall",
-        "i",
-        "you",
-        "he",
-        "she",
-        "we",
-        "they",
-        "me",
-        "him",
-        "her",
-        "us",
-        "them",
-        "my",
-        "your",
-        "his",
-        "their",
-        "our",
-        "if",
-        "then",
-        "than",
-        "so",
-        "such",
-        "there",
-        "here",
-        "about",
-        "into",
-        "through",
-        "between",
-        "across",
-        "over",
-        "under",
-        "up",
-        "down",
-        "out",
-        "off",
-        "via",
-    }
-)
+# English stopwords. Defined in ``_query_terms`` (stdlib-only, imported by
+# nothing in this package) so the coverage re-ranker here and the prose-keyed
+# symbol leg in ``_prose_symbols`` share one list instead of drifting apart.
+_STOPWORDS = STOPWORDS
 # Cap on bytes read from source per symbol when we recover a real signature
 # from disk (multi-line def with type annotations). Anything longer than this
 # gets truncated; the agent can call get_symbol for the full body.

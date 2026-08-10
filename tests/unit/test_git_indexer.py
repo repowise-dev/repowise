@@ -536,6 +536,12 @@ class TestPriorDefectCount:
         batched ``--no-walk --patch`` shape pass. *diffs* overrides the patch for
         a record by index; the default is a plain code change, so a commit that
         the subject rule matches also classifies as ``code_fix``.
+
+        The record shape mirrors the real format exactly, terminator included:
+        this fixture stands in for git, so a format it does not emit is a test
+        that passes on output git would never produce. Each record carries a
+        one-line commit body, because a body is the field the terminator exists
+        to separate from the path block.
         """
         mock_repo = MagicMock()
         mock_repo.head.commit.hexsha = "HEADSHA"
@@ -543,8 +549,11 @@ class TestPriorDefectCount:
         patches = {}
         for i, (subject, paths) in enumerate(records):
             sha = f"{i:040d}"
-            body = "\n".join(paths)
-            chunks.append(f"\x00{sha}\x1f{1_700_000_000 - i}\x1f{subject}\n{body}")
+            path_block = "\n".join(paths)
+            chunks.append(
+                f"\x00{sha}\x1f{1_700_000_000 - i}\x1f{subject}"
+                f"\x1fwhy commit {i} happened\x02\n{path_block}"
+            )
             patches[sha] = (diffs or {}).get(i, self._code_diff(paths))
         log_out = "\n".join(chunks)
 
@@ -650,7 +659,7 @@ class TestPriorDefectCount:
                 return "PRIORSHA"
             if "--no-walk" in args:
                 raise RuntimeError("git exploded")
-            return "\x00" + "0" * 40 + "\x1f1700000000\x1ffix: crash\nsrc/app.py"
+            return "\x00" + "0" * 40 + "\x1f1700000000\x1ffix: crash\x1fwhy\x02\nsrc/app.py"
 
         repo.git.log.side_effect = _log
         result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)

@@ -9,6 +9,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    db_configured,
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
@@ -67,9 +68,10 @@ def _run_repo_checks(
 
     # 3. Database connectable?
     db_path = repowise_dir / "wiki.db"
+    probed = db_path.exists() or db_configured()
     db_ok = False
     page_count = 0
-    if db_path.exists():
+    if probed:
         try:
 
             async def _check_db():
@@ -99,7 +101,7 @@ def _run_repo_checks(
             checks.append(_check("Database", False, str(e)))
     if db_ok:
         checks.append(_check("Database", True, f"{page_count} pages"))
-    elif not db_path.exists():
+    elif not probed:
         checks.append(_check("Database", False, "wiki.db not found"))
 
     # 4. state.json valid?
@@ -228,6 +230,9 @@ def _run_repo_checks(
                     get_session,
                     list_pages,
                 )
+                from repowise.core.persistence.information_floor import (
+                    meets_information_floor,
+                )
                 from repowise.core.persistence.vector_store import (
                     LanceDBVectorStore,
                 )
@@ -244,7 +249,14 @@ def _run_repo_checks(
                         await engine.dispose()
                         return set(), set(), set(), set()
                     pages = await list_pages(session, repo.id, limit=10000)
-                    sql_ids = {p.page_id for p in pages}
+                    # ``Page``'s primary key is the column ``id``; there is no
+                    # ``page_id`` attribute. The old spelling raised here on
+                    # every run, was swallowed below, and left both store
+                    # reconciliations reporting "Could not check" — so neither
+                    # drift was ever detected and --repair never had anything
+                    # to repair. The FTS repair block had the same defect and
+                    # was fixed; this half was missed.
+                    sql_ids = {p.id for p in pages}
                     # The page vector store also holds decision embeddings under
                     # the "decision:<id>" namespace, so they belong on the SQL
                     # side of the ORPHAN check (but NOT FTS, which only indexes
@@ -253,6 +265,18 @@ def _run_repo_checks(
                     # match text, swallowed embed failure) and repair cannot
                     # re-embed it, so flagging it would be permanent noise.
                     vector_sql_ids = sql_ids | await _decision_vector_ids(session, repo.id)
+                    # A page below the information floor is held out of both
+                    # indexes on purpose, so its absence is the correct state
+                    # and not drift. Without this it is reported missing on
+                    # every run and ``--repair`` cannot fix it, because the
+                    # repair applies the same rule and declines — the same
+                    # permanent-noise argument the decision namespace is
+                    # excluded for, one line above. It stays on the ORPHAN
+                    # side: a stored vector for a page now below the floor is
+                    # real drift, and deleting it is a repair that works.
+                    indexable_ids = {
+                        p.id for p in pages if meets_information_floor(p.content or "")
+                    }
 
                 # Check vector store
                 vs_ids: set[str] = set()
@@ -266,7 +290,7 @@ def _run_repo_checks(
                     except Exception:
                         pass  # LanceDB not available
 
-                m_vec = sql_ids - vs_ids if vs_ids else set()
+                m_vec = indexable_ids - vs_ids if vs_ids else set()
                 o_vec = vs_ids - vector_sql_ids if vs_ids else set()
 
                 # Check FTS
@@ -275,7 +299,7 @@ def _run_repo_checks(
                     fts_ids = await fts.list_indexed_ids()
                 except Exception:
                     fts_ids = set()
-                m_fts = sql_ids - fts_ids if fts_ids else set()
+                m_fts = indexable_ids - fts_ids if fts_ids else set()
                 o_fts = fts_ids - sql_ids if fts_ids else set()
 
                 await engine.dispose()
@@ -300,8 +324,18 @@ def _run_repo_checks(
                 else (f"{len(missing_from_fts)} missing, {len(orphaned_fts)} orphaned")
             )
             checks.append(_check("SQL ↔ FTS Index", fts_ok, fts_detail))
-        except Exception:
-            checks.append(_check("Store consistency", True, "Could not check"))
+        except Exception as exc:
+            # Name the failure. "Could not check" is reported as OK, so a
+            # reconciliation that raises on every run looks exactly like one
+            # that had nothing to reconcile — which is how a plain attribute
+            # error stayed hidden here across releases.
+            checks.append(
+                _check(
+                    "Store consistency",
+                    True,
+                    f"Could not check: {type(exc).__name__}: {exc}",
+                )
+            )
 
     # 10. AtomicStorageCoordinator drift check
     coord_drift: float | None = None
@@ -464,7 +498,31 @@ def _run_repo_checks(
             # Repair FTS: re-index missing pages, delete orphaned
             if missing_from_fts or orphaned_fts:
                 fts = FullTextSearch(engine)
-                await fts.ensure_index()
+                try:
+                    await fts.ensure_index()
+                except Exception as exc:
+                    # The schema upgrade is not what was asked for, and it must
+                    # not take the repair down with it. It used to: the upgrade
+                    # refused on a drifted store and the error it raised told
+                    # the user to run this very command (issue #1309), so the
+                    # only command that could fix the drift was the one the
+                    # drift killed. Both repairs below work on either column
+                    # set, so say what failed and carry on.
+                    console.print(
+                        f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]"
+                    )
+                # Orphans first, deliberately. Deleting one needs nothing but
+                # its page_id, so it works on any column set this class has
+                # ever written — including the one an upgrade just failed to
+                # leave behind. Re-indexing a missing page writes every column
+                # and would raise there, taking the repair that *can* run down
+                # with it.
+                if orphaned_fts:
+                    # One transaction for the lot. Per-id deletes cost a write
+                    # lock each, and the store that needs this most is the one
+                    # with thousands of them.
+                    await fts.delete_many(list(orphaned_fts))
+                    repaired += len(orphaned_fts)
                 if missing_from_fts:
                     # Fetch full page data for missing pages
                     async with get_session(sf) as session:
@@ -479,11 +537,14 @@ def _run_repo_checks(
                             select(Page).where(Page.id.in_(list(missing_from_fts)))
                         )
                         for page in rows.scalars().all():
-                            await fts.index(page.id, page.title, page.content)
+                            await fts.index(
+                                page.id,
+                                page.title,
+                                page.content,
+                                summary=page.summary,
+                                target_path=page.target_path,
+                            )
                             repaired += 1
-                for pid in orphaned_fts:
-                    await fts.delete(pid)
-                    repaired += 1
 
             # Repair vector store: re-embed missing pages, delete orphaned
             lance_dir = repowise_dir / "lancedb"
@@ -525,20 +586,44 @@ def _run_repo_checks(
                             from sqlalchemy import select
 
                             from repowise.core.persistence.models import Page
+                            from repowise.core.persistence.vector_store import embed_item
 
                             rows = await session.execute(
                                 select(Page).where(Page.id.in_(list(missing_from_vector)))
                             )
                             for page in rows.scalars().all():
-                                await vs.embed_and_upsert(
+                                if not (page.title or "").strip():
+                                    # A repair that writes an unfindable row is
+                                    # not a repair. Leave it reported as missing
+                                    # rather than filling the gap with a vector
+                                    # no search can reach by name.
+                                    console.print(
+                                        f"  [yellow]Skipped {page.id}: no title to "
+                                        f"index it by.[/yellow]"
+                                    )
+                                    continue
+                                # Same recipe as generation and ``reindex``, so a
+                                # repaired page is comparable with its neighbours
+                                # instead of being embedded on different terms.
+                                item = embed_item(
                                     page.id,
-                                    page.content,
-                                    {
-                                        "title": page.title,
-                                        "page_type": page.page_type,
-                                        "target_path": page.target_path,
-                                    },
+                                    title=page.title,
+                                    page_type=page.page_type or "",
+                                    target_path=page.target_path or "",
+                                    summary=page.summary or "",
+                                    content=page.content or "",
                                 )
+                                if item is None:
+                                    # Below the information floor, so its absence
+                                    # from the store is correct and there is
+                                    # nothing to repair. Said out loud, because a
+                                    # page silently left missing by the repair
+                                    # reads as the repair having failed on it.
+                                    console.print(
+                                        f"  [dim]Left out {page.id}: too thin to index.[/dim]"
+                                    )
+                                    continue
+                                await vs.embed_and_upsert(*item)
                                 repaired += 1
 
                     for pid in orphaned_vector:
@@ -697,7 +782,20 @@ def _distill_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
         codex = CodexAdapter()
         if codex.detect():
             surfaces.append(("codex", codex))
-        installed_names = [name for name, a in surfaces if a.rewrite_hook_installed()]
+        # Registered and live are different questions: an entry whose matcher
+        # predates a tool rename is registered and fires on some or none of
+        # the agent's shell tools. Say which, rather than calling all three
+        # "installed".
+        installed_names = []
+        for name, adapter in surfaces:
+            status = adapter.rewrite_hook_status()
+            if not status.installed:
+                continue
+            if not status.unmatched:
+                installed_names.append(name)
+            else:
+                misses = ", ".join(status.unmatched)
+                installed_names.append(f"{name} (matcher misses {misses})")
         if installed_names:
             commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else None
             opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False

@@ -125,6 +125,127 @@ def test_full_persist_collects_degraded_steps(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A retirement has to reach an index nobody re-indexes
+# ---------------------------------------------------------------------------
+
+
+async def _seed_pages(repo_path: Path, repo_name: str, page_ids: list[str]) -> None:
+    """Write page rows and their FTS entries the way an older release left them."""
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        FullTextSearch,
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.models import Page
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name=repo_name, local_path=str(repo_path))
+            now = datetime.now(UTC)
+            for page_id in page_ids:
+                page_type, target = page_id.split(":", 1)
+                session.add(
+                    Page(
+                        id=page_id,
+                        repository_id=repo.id,
+                        page_type=page_type,
+                        title=target,
+                        content=f"body of {target}",
+                        target_path=target,
+                        source_hash="x" * 64,
+                        model_name="mock",
+                        provider_name="mock",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+        fts = FullTextSearch(engine)
+        await fts.ensure_index()
+        for page_id in page_ids:
+            await fts.index(page_id, page_id, f"body of {page_id}")
+    finally:
+        await engine.dispose()
+
+
+async def _page_ids(repo_path: Path) -> set[str]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.models import Page
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            return set((await session.execute(select(Page.id))).scalars().all())
+    finally:
+        await engine.dispose()
+
+
+async def _fts_ids(repo_path: Path) -> set[str]:
+    import aiosqlite
+
+    async with aiosqlite.connect(repo_path / ".repowise" / "wiki.db") as db:
+        rows = await (await db.execute("SELECT page_id FROM page_fts")).fetchall()
+    return {r[0] for r in rows}
+
+
+def test_update_sweeps_pages_retired_since_the_index_was_built(tmp_path: Path) -> None:
+    """The contract that makes a retirement reach an existing user.
+
+    An update runs ``file_pages_only``, so the generation ladder returns before
+    the repo-wide levels and never visits an onboarding row to notice it should
+    not exist. If the sweep is not called here, a user who never re-indexes is
+    served the retired pages forever — which is the state this whole retirement
+    mechanism exists to prevent.
+    """
+    from repowise.core.generation.page_redirects import RETIRED_IDS
+
+    (tmp_path / ".repowise").mkdir()
+    retired = sorted(RETIRED_IDS)
+    assert retired, "no retired ids to exercise"
+    survivor = "onboarding:onboarding/key_concepts"
+    asyncio.run(_seed_pages(tmp_path, "repo", [*retired, survivor]))
+
+    asyncio.run(
+        _persist_full_update_async(
+            repo_path=tmp_path,
+            repo_name="repo",
+            generated_pages=[_page("file_page:a.py")],
+            file_diffs=[],
+            git_meta_map={},
+            new_decision_markers=[],
+            decision_vector_store=None,
+            provider=None,
+            partial_health_report=None,
+            dead_code_report=None,
+            graph_builder=None,
+            knowledge_graph_result=None,
+            degraded=[],
+        )
+    )
+
+    remaining = asyncio.run(_page_ids(tmp_path))
+    assert not remaining & set(retired)
+    # The survivor shares page_type='onboarding' with all three. Losing it here
+    # would mean the sweep is matching on type, and the whole orientation
+    # collection would go with the retirement.
+    assert survivor in remaining
+
+    # A row deleted from `pages` but left in FTS still answers search in full,
+    # hydrated from the FTS copy, pointing at a page that now 404s.
+    fts_left = asyncio.run(_fts_ids(tmp_path))
+    assert not fts_left & set(retired)
+    assert survivor in fts_left
+
+
+# ---------------------------------------------------------------------------
 # Lock contention: exactly one winner
 # ---------------------------------------------------------------------------
 

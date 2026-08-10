@@ -2,6 +2,22 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.39.0
+
+### Changed
+- Version bump to track the repowise 0.39.0 release. The MCP tool surface, the
+  CLI flags the commands document and the hook matchers in `hooks/hooks.json`
+  are unchanged this cycle; the parity check found no drift. `get_answer`
+  gained a field in its response payload (#1306), which no command or skill
+  documents.
+
+## 0.38.0
+
+### Changed
+- Version bump to track the repowise 0.38.0 release. The MCP tool surface, the
+  CLI flags the commands document and the hook matchers in `hooks/hooks.json`
+  are unchanged this cycle; the parity check found no drift.
+
 ## 0.37.0
 
 ### Added

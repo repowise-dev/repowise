@@ -28,7 +28,7 @@ _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "gemini": ("repowise.core.providers.embedding.gemini", "GeminiEmbedder"),
     "ollama": ("repowise.core.providers.embedding.ollama", "OllamaEmbedder"),
     "openrouter": ("repowise.core.providers.embedding.openrouter", "OpenRouterEmbedder"),
-    "mock": ("repowise.core.providers.embedding.base", "MockEmbedder"),
+    "mock": ("repowise.core.providers.embedding.base", "KeylessEmbedder"),
 }
 
 _custom_embedders: dict[str, Callable[..., Embedder]] = {}

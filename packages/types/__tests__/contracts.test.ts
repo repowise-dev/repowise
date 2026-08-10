@@ -11,6 +11,8 @@
  *   - DeadCodeFinding: optional enrichment fields stay optional so canonical
  *     artifacts still satisfy the contract without them.
  *   - DecisionRecord: status + source are union literals, not bare strings.
+ *   - Episode: tier excludes the per-machine transcript tier, and a summary
+ *     never grows a body.
  *   - Hotspot key shape: canonical Hotspot uses `file_path`, not `path`, so
  *     raw entries with a `path` key must adapt before assignment.
  */
@@ -27,6 +29,11 @@ import type {
 import type { GraphLink } from "../src/graph.js";
 import type { DeadCodeFinding } from "../src/dead-code.js";
 import type { DecisionRecord, DecisionStatus } from "../src/decisions.js";
+import type {
+  EpisodeDetail,
+  EpisodeSummary,
+  EpisodeTier,
+} from "../src/episodes.js";
 import type { Hotspot } from "../src/git.js";
 import type {
   HeritageKind,
@@ -216,5 +223,32 @@ describe("C4 io_kind parity", () => {
       is_dev_dep: false,
     };
     expect(untyped.io_kind).toBeNull();
+  });
+});
+
+describe("Episode tier is an allowlist, not a bare string", () => {
+  it("excludes the per-machine transcript tier", () => {
+    // The engine has a third tier. It never crosses HTTP, and the type is
+    // where that stays true for a consumer: widening this to `string` would
+    // let a component render a session somebody else's laptop recorded.
+    expectTypeOf<EpisodeTier>().toEqualTypeOf<"structural" | "git">();
+    expectTypeOf<EpisodeSummary["tier"]>().toEqualTypeOf<EpisodeTier>();
+    expectTypeOf<EpisodeDetail["tier"]>().toEqualTypeOf<EpisodeTier>();
+  });
+
+  it("keeps a summary bodyless and a detail's verdict non-null", () => {
+    // A summary that grew a `body` would mean a list route started paying
+    // for one; `still_true` non-optional on a detail is what makes the
+    // checked verdict impossible to forget to render.
+    expectTypeOf<Extract<keyof EpisodeSummary, "body">>().toEqualTypeOf<never>();
+    // Indexed rather than `keyof`, which survives both optionality and a
+    // widening to `unknown` and so only ever catches outright deletion.
+    expectTypeOf<EpisodeDetail["body"]>().toEqualTypeOf<string>();
+    expectTypeOf<EpisodeDetail["still_true"]>().toEqualTypeOf<string>();
+    expectTypeOf<EpisodeDetail["current"]>().toEqualTypeOf<boolean>();
+    // Required-but-nullable, not optional: the engine field has a default and
+    // pydantic serializes defaults, so the key is always on the wire. A
+    // consumer discriminating "unchecked" by key presence would never see it.
+    expectTypeOf<EpisodeSummary["still_true"]>().toEqualTypeOf<string | null>();
   });
 });

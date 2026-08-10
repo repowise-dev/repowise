@@ -368,3 +368,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(),
     ),
 }
+
+# An SFC's <script> block IS TypeScript, and sfc_source hands the parser a TS
+# buffer, so the TypeScript config applies verbatim. Aliasing rather than
+# copying keeps them from drifting apart.
+LANGUAGE_CONFIGS["svelte"] = LANGUAGE_CONFIGS["typescript"]
+LANGUAGE_CONFIGS["vue"] = LANGUAGE_CONFIGS["typescript"]

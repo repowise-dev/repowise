@@ -71,3 +71,67 @@ class MockEmbedder:
                 norm = 1.0
             results.append([x / norm for x in raw])
         return results
+
+
+class KeylessEmbedder(MockEmbedder):
+    """What an index built without an API key embeds with.
+
+    Identical arithmetic to :class:`MockEmbedder`, and a separate type on
+    purpose. The two produce the same vectors and mean opposite things:
+
+    - In a **test**, ``MockEmbedder`` stands in for a real embedder. The suite
+      wants the vector leg to run, and controls what comes back by seeding the
+      store or scripting ``search``, so the vectors themselves are incidental.
+    - In **production**, this class is what you get when nobody supplied a key.
+      Its vectors are the only ones there are, they carry no signal, and the
+      vector leg must therefore not run at all.
+
+    One class cannot be told apart at the point that decision is made, which is
+    the whole reason this one exists. Nothing else differs, and subclassing
+    keeps ``isinstance(x, MockEmbedder)`` true for the width and dimension
+    checks that already depend on it.
+
+    Why the vectors carry no signal: every component is non-negative, so they
+    all lie in the positive orthant of an 8-dimensional space and no two can
+    point meaningfully different ways. Measured over 2,000 texts, two
+    *unrelated* strings score 0.750 cosine on average, never below 0.207, and
+    the nearest neighbours of any query sit at 0.926-0.962. They are distinct,
+    which is what the base class promises; they are not discriminative, which
+    is what a retriever needs.
+    """
+
+
+def is_semantic_embedder(embedder: object) -> bool:
+    """Whether *embedder* produces vectors worth ranking on.
+
+    False for :class:`KeylessEmbedder` and for nothing else. **Deliberately
+    fails open**: anything unrecognised, including ``None``, counts as semantic.
+
+    The asymmetry is the point. This predicate exists to switch off a leg that
+    is actively harmful in one identifiable configuration, so it should refuse
+    only what it can positively identify. Failing closed would mean any store
+    this cannot introspect loses semantic search with no error and no log line,
+    which is a far worse failure than the one being fixed: it would hit custom
+    and out-of-tree stores that hold a perfectly good embedder somewhere other
+    than the attribute below.
+    """
+    return not isinstance(embedder, KeylessEmbedder)
+
+
+def store_has_semantic_vectors(store: object) -> bool:
+    """Whether *store*'s vectors carry signal, i.e. whether to run its vector leg.
+
+    Reads the embedder off the store rather than off any module-level server
+    state, because workspace mode builds one context per repo through its own
+    registry and factory (``core/workspace/registry.py``), so there is no single
+    global that describes them all.
+
+    Every concrete store takes an embedder as a required constructor argument
+    and keeps it on ``_embedder``, so in this repo the attribute is always
+    there. A store without one still returns True, per the fail-open rule in
+    :func:`is_semantic_embedder`; only ``None`` is False, and that means "no
+    store", not "a store that cannot rank".
+    """
+    if store is None:
+        return False
+    return is_semantic_embedder(getattr(store, "_embedder", None))

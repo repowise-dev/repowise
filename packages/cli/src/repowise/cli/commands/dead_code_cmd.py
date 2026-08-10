@@ -150,11 +150,15 @@ def dead_code_command(
         include_nested_repos=include_nested_repos,
     )
 
+    # Kept alongside the parse so the analyzer's marker prepasses reuse these
+    # bytes instead of re-reading the repo four more times.
+    source_map: dict[str, bytes] = {}
     for fi in file_infos:
         try:
             source = PathlibPath(fi.abs_path).read_bytes()
             parsed = parser.parse_file(fi, source)
             graph_builder.add_file(parsed)
+            source_map[fi.path] = source
         except Exception:
             pass
 
@@ -166,6 +170,7 @@ def dead_code_command(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
+    graph_builder.set_source_map(source_map)
     graph_builder.build()
 
     # Framework-aware synthetic edges (Django, Laravel, TYPO3, ...). Without
@@ -209,7 +214,10 @@ def dead_code_command(
     # bundler resolve.alias targets, export-alias maps) — without it those
     # classes false-positive on the CLI path while init stays clean.
     analyzer = DeadCodeAnalyzer(
-        graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+        graph_builder.graph(),
+        git_meta_map,
+        parsed_files=graph_builder._parsed_files,
+        source_map=source_map,
     )
     report = analyzer.analyze(config)
 

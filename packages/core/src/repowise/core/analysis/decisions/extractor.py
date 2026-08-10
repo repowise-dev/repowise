@@ -3,21 +3,28 @@
 Capture sources (see ``decision_provenance.SOURCE_RANK`` for the trust ladder):
     1. Inline markers     (# WHY:, # DECISION:, etc.)
     2. Git archaeology    (significant commit messages)
-    3. README / docs mining (implicit decisions in prose)
-    4. ADR auto-discovery (Nygard/MADR records — deterministic parse first)
-    5. CHANGELOG mining   (keep-a-changelog Changed/Removed/Deprecated)
-    6. PR / squash-body mining (commit bodies captured in git indexing)
-    7. Comment archaeology (LLM rationale prose on high-centrality code)
+    3. ADR auto-discovery (Nygard/MADR records — deterministic parse first)
+    4. PR / squash-body mining (commit bodies captured in git indexing)
+    5. Comment archaeology (LLM rationale prose on high-centrality code)
     + CLI capture (manual entry)
 
 Sources can be disabled per-repo via ``decisions.sources`` in
 ``.repowise/config.yaml`` (see :data:`SOURCE_NAMES` /
-:meth:`DecisionExtractor.extract_all`). The former Source 8 (repo-wide
-deterministic rationale-comment harvest, ``code_comment``) was removed: the
-query-time live-grep miner (``mcp_server/_code_rationale.py``) serves the same
-comments fresh, so persisting them only flooded the proposed queue (#751).
+:meth:`DecisionExtractor.extract_all`).
 
-Determinism-first: ADR/CHANGELOG are parsed structurally before any LLM call.
+Three sources have been retired, all for the same reason: they mined prose that
+describes a repo rather than evidence of a choice made in it, and the records
+they produced were never acted on. ``code_comment`` went first (#751) — the
+query-time live-grep miner serves the same comments fresh, so persisting them
+only flooded the proposed queue. ``readme_mining`` and ``changelog`` follow:
+between them they produced 153 records in this project's own store and **zero**
+that ever became active, while accounting for most of a 214-deep review queue.
+Retired source names are kept in ``SOURCE_RANK`` so rows written before the
+removal still rank, and :data:`RETIRED_SOURCES` drives the one-shot purge on the
+persist path. The ADR miner still borrows ``README_MINING_PROMPT`` for its
+unstructured-file fallback; that is the prompt, not the source.
+
+Determinism-first: ADRs are parsed structurally before any LLM call.
 Every extracted decision passes an anti-hallucination substring gate
 (:meth:`DecisionExtractor._apply_substring_gate`) — fields not grounded in the
 verbatim source span are dropped, and evidence-less decisions are rejected.
@@ -40,10 +47,10 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
+from repowise.core.analysis.decisions.scope import resolve_module_nodes
 
 from .prompts import (
     _SYSTEM_PROMPT,
-    CHANGELOG_MINING_PROMPT,
     COMMENT_ARCHAEOLOGY_PROMPT,
     GIT_ARCHAEOLOGY_PROMPT,
     INLINE_MARKER_PROMPT,
@@ -72,6 +79,25 @@ def _truncate_title(text: str, limit: int) -> str:
     return window[:cut].rstrip() + "…"
 
 
+def _coerce_line(value: object) -> int | None:
+    """Read an LLM-reported line number, or ``None`` if it isn't one.
+
+    Models answer ``12``, ``"12"`` and ``"line 12"`` interchangeably; anything
+    that isn't a positive integer is no attribution at all and must not be
+    guessed at.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        digits = re.search(r"\d+", value)
+        if digits:
+            line = int(digits.group())
+            return line if line > 0 else None
+    return None
+
+
 def _as_aware_utc(value: datetime) -> datetime:
     """Return ``value`` as a timezone-aware UTC datetime.
 
@@ -82,6 +108,17 @@ def _as_aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _coerce_dt(value: datetime | str) -> datetime:
+    """Parse an ISO string into a datetime, passing datetimes through.
+
+    Both shapes reach staleness: the ORM hands back datetimes, while the git
+    metadata map carries whatever was persisted, which for SQLite is a string.
+    """
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +165,7 @@ class DecisionExtractionReport:
 SOURCE_NAMES: tuple[str, ...] = (
     "inline_marker",
     "git_archaeology",
-    "readme_mining",
     "adr",
-    "changelog",
     "pr",
     "comment",
 )
@@ -251,7 +286,7 @@ DECISION_SIGNAL_KEYWORDS = [
 ]
 
 # ---------------------------------------------------------------------------
-# ADR / CHANGELOG / PR / comment source configuration (Phase 1B)
+# ADR / PR / comment source configuration
 # ---------------------------------------------------------------------------
 
 # Directories conventionally holding Architecture Decision Records, plus a
@@ -283,14 +318,6 @@ _ADR_STATUS_MAP = {
     "superseded": "superseded",
 }
 
-# CHANGELOG / HISTORY / NEWS filenames (case-insensitive match on the stem).
-_CHANGELOG_NAMES = frozenset(
-    {"changelog", "history", "news", "changes", "releasenotes", "release-notes"}
-)
-# keep-a-changelog section headers that carry decision signal. "Added" is
-# excluded — additions are rarely *decisions* about structure, just features.
-_CHANGELOG_DECISION_SECTIONS = frozenset({"changed", "removed", "deprecated", "security"})
-_MAX_CHANGELOG_VERSIONS = 15
 
 # PR/squash body markers — a body containing any of these reads like a PR
 # description worth mining (vs an incidental multi-line commit message).
@@ -431,23 +458,35 @@ class DecisionExtractor:
             # Get 1-hop graph neighbors for affected_files
             affected = self._get_neighbors(file_path)
 
-            # The concatenated marker contexts are the verbatim source span the
-            # substring gate verifies the structured decision against.
-            marker_source_text = "\n".join(m.get("context", "") for m in markers)
+            markers_by_line = {m["line"]: m for m in markers}
 
             if self._provider:
                 # Use LLM to structure markers
                 try:
                     llm_decisions = await self._structure_markers_via_llm(file_path, markers)
                     for d in llm_decisions:
+                        # Attribute the decision to the one marker it was drawn
+                        # from (the prompt asks for `marker_line`, which the
+                        # parser lands in `evidence_line`). Joining every
+                        # marker's context into one span and handing it to all
+                        # of them let the substring gate stamp a decision
+                        # `exact` against a *different* marker's text, and put
+                        # marker 1's line number on marker 3's decision. A
+                        # decision we cannot attribute gets no source span at
+                        # all: the gate then leaves it `unverified`, which is
+                        # the honest verdict, rather than verifying it against
+                        # a neighbour.
+                        marker = markers_by_line.get(d.evidence_line)
+                        if marker is None and len(markers) == 1:
+                            marker = markers[0]  # unambiguous without the hint
                         d.evidence_file = file_path
-                        d.evidence_line = markers[0]["line"] if markers else None
+                        d.evidence_line = marker["line"] if marker else None
                         d.affected_files = list({file_path} | set(affected))
                         d.affected_modules = self._infer_modules(d.affected_files)
                         d.source = "inline_marker"
                         d.status = "active"
                         d.confidence = 0.95
-                        d.source_text = marker_source_text
+                        d.source_text = marker.get("context", "") if marker else ""
                     decisions.extend(llm_decisions)
                 except Exception:
                     logger.warning(
@@ -633,85 +672,7 @@ class DecisionExtractor:
         return decisions
 
     # ------------------------------------------------------------------
-    # Source 3: README / docs mining
-    # ------------------------------------------------------------------
-
-    async def mine_readme_docs(self) -> list[ExtractedDecision]:
-        """Extract decisions from documentation files."""
-        if not self._provider:
-            return []
-
-        doc_patterns = [
-            "README.md",
-            "CLAUDE.md",
-            "ARCHITECTURE.md",
-            "CONTRIBUTING.md",
-            "DESIGN.md",
-            "DECISIONS.md",
-        ]
-        doc_files: list[Path] = []
-
-        for pattern in doc_patterns:
-            p = self._repo_path / pattern
-            if p.is_file():
-                doc_files.append(p)
-
-        # Also check docs/ directory
-        docs_dir = self._repo_path / "docs"
-        if docs_dir.is_dir():
-            for md_file in docs_dir.rglob("*.md"):
-                if len(doc_files) >= 10:
-                    break
-                doc_files.append(md_file)
-
-        decisions: list[ExtractedDecision] = []
-
-        for doc_path in doc_files[:10]:
-            try:
-                content = doc_path.read_text(encoding="utf-8", errors="replace")
-            except (OSError, UnicodeDecodeError):
-                continue
-
-            # Skip very large files
-            if len(content) > 50_000:
-                continue
-
-            # Strip fenced code blocks to avoid treating example markers
-            # (e.g. `# WHY: ...` in code examples) as real decisions.
-            content = self._strip_code_blocks(content)
-
-            try:
-                rel_path = str(doc_path.relative_to(self._repo_path))
-            except ValueError:
-                rel_path = str(doc_path)
-
-            try:
-                prompt = README_MINING_PROMPT.format(
-                    file_path=rel_path,
-                    content=content[:15_000],  # Limit token usage
-                )
-                response = await self._provider.generate(
-                    _SYSTEM_PROMPT, prompt, max_tokens=3000, temperature=0.2
-                )
-                extracted = self._parse_decisions_json(response.content)
-                for d in extracted:
-                    d.source = "readme_mining"
-                    d.status = "proposed"
-                    d.confidence = 0.60
-                    d.evidence_file = rel_path
-                    d.affected_modules = self._infer_modules_from_text(d.title + " " + d.decision)
-                    d.source_text = content
-                decisions.extend(extracted)
-            except Exception:
-                logger.warning(
-                    "decision_extractor.readme_mining_failed",
-                    file=rel_path,
-                )
-
-        return decisions
-
-    # ------------------------------------------------------------------
-    # Source 4: ADR auto-discovery (deterministic-first)
+    # Source 3: ADR auto-discovery (deterministic-first)
     # ------------------------------------------------------------------
 
     async def discover_adrs(self) -> list[ExtractedDecision]:
@@ -875,138 +836,7 @@ class DecisionExtractor:
         )
 
     # ------------------------------------------------------------------
-    # Source 5: CHANGELOG mining
-    # ------------------------------------------------------------------
-
-    async def mine_changelog(self) -> list[ExtractedDecision]:
-        """Mine keep-a-changelog Changed/Removed/Deprecated sections."""
-        path = self._find_changelog()
-        if path is None:
-            return []
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
-            return []
-        try:
-            rel = str(path.relative_to(self._repo_path))
-        except ValueError:
-            rel = str(path)
-
-        entries = self._parse_changelog(content)
-        if not entries:
-            return []
-
-        if self._provider:
-            return await self._structure_changelog_entries(entries, rel, content)
-
-        # No LLM — emit raw decisions straight from the decision-y bullets.
-        decisions: list[ExtractedDecision] = []
-        for section, bullet in entries[:50]:
-            decisions.append(
-                ExtractedDecision(
-                    title=_truncate_title(bullet, 100),
-                    decision=bullet,
-                    context=f"CHANGELOG · {section.title()}",
-                    source="changelog",
-                    status="proposed",
-                    confidence=0.50,
-                    evidence_file=rel,
-                    source_quote=bullet,
-                    source_text=content,
-                    tags=self._infer_tags(bullet),
-                )
-            )
-        return decisions
-
-    def _find_changelog(self) -> Path | None:
-        """Locate a CHANGELOG/HISTORY/NEWS file (any extension).
-
-        Checks the repo root first, then the conventional documentation
-        subdirectories (``docs/``, ``doc/``, ``.github/``). Many projects keep
-        their changelog under ``docs/`` rather than at the root, so a root-only
-        scan silently skips this source.
-        """
-        search_dirs = [
-            self._repo_path,
-            self._repo_path / "docs",
-            self._repo_path / "doc",
-            self._repo_path / ".github",
-        ]
-        for directory in search_dirs:
-            if not directory.is_dir():
-                continue
-            for p in sorted(directory.glob("*")):
-                if not p.is_file():
-                    continue
-                stem = re.sub(r"[^a-z]", "", p.stem.lower())
-                if stem in _CHANGELOG_NAMES:
-                    return p
-        return None
-
-    def _parse_changelog(self, content: str) -> list[tuple[str, str]]:
-        """Return ``(section, bullet)`` pairs from decision-relevant sections."""
-        entries: list[tuple[str, str]] = []
-        version_count = 0
-        current_section: str | None = None
-        in_version = True
-        for line in content.splitlines():
-            h2 = re.match(r"^##\s+(.+)$", line)
-            if h2:
-                name = h2.group(1).strip().lower().strip("[]")
-                base = name.split()[0] if name else ""
-                if base in _CHANGELOG_DECISION_SECTIONS:
-                    # Some changelogs use H2 section headers directly.
-                    current_section = base
-                else:
-                    version_count += 1
-                    in_version = version_count <= _MAX_CHANGELOG_VERSIONS
-                    current_section = None
-                continue
-            h3 = re.match(r"^###\s+(.+)$", line)
-            if h3:
-                current_section = h3.group(1).strip().lower()
-                continue
-            if not in_version or current_section not in _CHANGELOG_DECISION_SECTIONS:
-                continue
-            s = line.strip()
-            if s.startswith(("-", "*", "+")):
-                bullet = s[1:].strip()
-                if bullet:
-                    entries.append((current_section, bullet))
-        return entries
-
-    async def _structure_changelog_entries(
-        self, entries: list[tuple[str, str]], rel: str, content: str
-    ) -> list[ExtractedDecision]:
-        """LLM-structure the highest-signal changelog bullets into decisions."""
-        signal = [
-            (s, b)
-            for (s, b) in entries
-            if s in ("removed", "deprecated")
-            or any(k in b.lower() for k in DECISION_SIGNAL_KEYWORDS)
-        ]
-        chosen = (signal or entries)[:40]
-        block = "\n".join(f"- [{s.title()}] {b}" for s, b in chosen)
-        prompt = CHANGELOG_MINING_PROMPT.format(entries_block=block)
-        try:
-            response = await self._provider.generate(
-                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
-            )
-        except Exception:
-            logger.warning("decision_extractor.changelog_mining_failed", file=rel)
-            return []
-        extracted = self._parse_decisions_json(response.content)
-        for d in extracted:
-            d.source = "changelog"
-            d.status = "proposed"
-            d.confidence = 0.60
-            d.evidence_file = rel
-            d.source_text = content
-            d.affected_modules = self._infer_modules_from_text(d.title + " " + d.decision)
-        return extracted
-
-    # ------------------------------------------------------------------
-    # Source 6: PR / squash-body mining (consumes commit bodies from 1A)
+    # Source 4: PR / squash-body mining (consumes commit bodies from 1A)
     # ------------------------------------------------------------------
 
     async def mine_pr_bodies(self) -> list[ExtractedDecision]:
@@ -1090,7 +920,7 @@ class DecisionExtractor:
         return decisions
 
     # ------------------------------------------------------------------
-    # Source 7: Comment archaeology (centrality-bounded)
+    # Source 5: Comment archaeology (centrality-bounded)
     # ------------------------------------------------------------------
 
     async def mine_comment_archaeology(self) -> list[ExtractedDecision]:
@@ -1298,22 +1128,6 @@ class DecisionExtractor:
     # Staleness computation (static method)
     # ------------------------------------------------------------------
 
-    # Keywords that signal a decision may have been contradicted or superseded.
-    _CONFLICT_SIGNALS = frozenset(
-        {
-            "replace",
-            "remove",
-            "deprecate",
-            "switch from",
-            "migrate away",
-            "drop",
-            "revert",
-            "undo",
-            "disable",
-            "eliminate",
-        }
-    )
-
     @staticmethod
     def compute_staleness(
         decision_created_at: datetime,
@@ -1321,92 +1135,47 @@ class DecisionExtractor:
         git_meta_map: dict[str, dict],
         decision_text: str = "",
     ) -> float:
-        """Compute staleness score for a decision. Returns 0.0-1.0.
+        """Fraction of *affected_files* that have changed since the record's birth.
 
-        In addition to commit volume and age, checks whether recent commit
-        messages contain keywords that conflict with the decision text
-        (e.g. decision says "use Redis" but a recent commit says "migrate
-        away from Redis").  This boosts staleness when the underlying code
-        may have diverged from the decision's intent.
+        A fact about the code, not a judgement about the record: 0.0 means
+        nothing it governs has moved, 1.0 means all of it has. There is no
+        tuned constant left in it, which is the point — the previous formula
+        was ``commit_count / 15 * 0.7 + age_days / 365 * 0.3``, whose divisors
+        were fitted to one repository's history and produced ~0 for almost
+        every record here regardless of whether the code had moved.
+
+        Also gone: a keyword boost that read recent commit *messages* for words
+        like "migrate away". That inferred intent from English prose, which
+        does not travel, and it mixed a guess into a value other surfaces
+        store and compare.
+
+        *decision_text* is accepted and unused, so the two call sites keep
+        working; it goes when they do.
+
+        A file with no git metadata **after** the caller's gap fill counts as
+        changed: the record names something the repository does not track, so
+        it cannot be shown to still hold.
         """
         if not affected_files:
+            # No scope, so the question cannot be asked. Callers distinguish
+            # this from a genuine 0.0 by the empty file list, and
+            # `decision health` reports it as unscoped rather than fresh.
             return 0.0
 
-        now = datetime.now(UTC)
-        scores: list[float] = []
-        decision_lower = decision_text.lower()
-
+        created = _as_aware_utc(_coerce_dt(decision_created_at)) if decision_created_at else None
+        changed = 0
         for fp in affected_files:
             meta = git_meta_map.get(fp)
             if meta is None:
-                scores.append(1.0)  # File missing / not tracked
+                changed += 1  # named but not tracked — cannot be shown to hold
                 continue
-
             last_commit = meta.get("last_commit_at")
-            if last_commit and decision_created_at:
-                if isinstance(last_commit, str):
-                    last_commit = datetime.fromisoformat(last_commit.replace("Z", "+00:00"))
-                last_commit = _as_aware_utc(last_commit)
-                _created = decision_created_at
-                if isinstance(_created, str):
-                    _created = datetime.fromisoformat(_created.replace("Z", "+00:00"))
-                _created = _as_aware_utc(_created)
-                if last_commit > _created:
-                    age_days = (now - _created).days
-                    commit_count = meta.get("commit_count_90d", 0)
-                    base_score = min(
-                        1.0,
-                        commit_count / 15 * 0.7 + age_days / 365 * 0.3,
-                    )
+            if not last_commit or created is None:
+                continue
+            if _as_aware_utc(_coerce_dt(last_commit)) > created:
+                changed += 1
 
-                    # Keyword conflict boost: check if recent commits
-                    # contradict the decision's content.
-                    conflict_boost = 0.0
-                    if decision_lower:
-                        sig_json = meta.get("significant_commits_json", "[]")
-                        try:
-                            sig_commits = (
-                                json.loads(sig_json) if isinstance(sig_json, str) else sig_json
-                            )
-                        except (json.JSONDecodeError, TypeError):
-                            sig_commits = []
-                        for sc in sig_commits:
-                            sc_date = sc.get("date", "")
-                            # Only consider commits after the decision was created
-                            if sc_date and sc_date > _created.isoformat():
-                                msg_lower = sc.get("message", "").lower()
-                                for signal in DecisionExtractor._CONFLICT_SIGNALS:
-                                    if signal in msg_lower:
-                                        # Check if the commit message shares meaningful
-                                        # words with the decision text (context overlap)
-                                        msg_words = set(msg_lower.split())
-                                        dec_words = set(decision_lower.split())
-                                        overlap = msg_words & dec_words - {
-                                            "the",
-                                            "a",
-                                            "an",
-                                            "to",
-                                            "in",
-                                            "for",
-                                            "and",
-                                            "or",
-                                            "of",
-                                            "is",
-                                            "was",
-                                            "with",
-                                        }
-                                        if len(overlap) >= 2:
-                                            conflict_boost = max(conflict_boost, 0.3)
-                                            break
-
-                    score = min(1.0, base_score + conflict_boost)
-                    scores.append(score)
-                else:
-                    scores.append(0.0)
-            else:
-                scores.append(0.0)
-
-        return round(sum(scores) / len(scores), 3) if scores else 0.0
+        return round(changed / len(affected_files), 3)
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -1464,9 +1233,7 @@ class DecisionExtractor:
         all_sources: list[tuple[str, Any]] = [
             ("inline_marker", self.scan_inline_markers),
             ("git_archaeology", self.mine_git_archaeology),
-            ("readme_mining", self.mine_readme_docs),
             ("adr", self.discover_adrs),
-            ("changelog", self.mine_changelog),
             ("pr", self.mine_pr_bodies),
             ("comment", self.mine_comment_archaeology),
         ]
@@ -1668,25 +1435,32 @@ class DecisionExtractor:
         return "\n".join(out)
 
     def _infer_modules(self, file_paths: list[str]) -> list[str]:
-        """Infer top-level module paths from file paths."""
-        modules: set[str] = set()
-        for fp in file_paths:
-            parts = fp.replace("\\", "/").split("/")
-            if len(parts) > 1:
-                modules.add(parts[0])
-        return sorted(modules)
+        """Infer the module paths a record governs from the files it names."""
+        return resolve_module_nodes(file_paths)
 
     def _infer_modules_from_text(self, text: str) -> list[str]:
-        """Infer module names by matching text against graph nodes."""
+        """Infer module paths by matching *text* against graph directories.
+
+        Used only by the sources that name no files (git archaeology, PRs), so
+        the text is all the linkage there is. Matching is on the *deepest*
+        directory mentioned rather than its first segment: in a packages/
+        layout every node starts with ``packages``, so a first-segment match
+        fires on any text that happens to say the word.
+        """
         if not self._graph:
             return []
-        modules: set[str] = set()
         text_lower = text.lower()
+        candidates: set[str] = set()
         for node in self._graph.nodes:
-            parts = node.replace("\\", "/").split("/")
-            if len(parts) > 1 and parts[0].lower() in text_lower:
-                modules.add(parts[0])
-        return sorted(modules)[:5]
+            parent, sep, _ = str(node).replace("\\", "/").strip("/").rpartition("/")
+            if sep and parent:
+                candidates.add(parent)
+
+        matched = {d for d in candidates if d.lower() in text_lower}
+        # Keep only the deepest match on each branch: a text naming
+        # ``packages/core/.../decisions`` should not also claim every ancestor.
+        deepest = {d for d in matched if not any(o != d and o.startswith(d + "/") for o in matched)}
+        return sorted(deepest, key=lambda d: (-d.count("/"), d))[:5]
 
     def _infer_tags(self, text: str) -> list[str]:
         """Infer tags from decision text."""
@@ -1750,6 +1524,10 @@ class DecisionExtractor:
                     consequences=item.get("consequences", []),
                     tags=item.get("tags", []),
                     evidence_commits=[item["commit_sha"]] if "commit_sha" in item else [],
+                    # Which marker this came from, for the inline-marker miner's
+                    # per-marker attribution. Absent (and left None) for every
+                    # other prompt — they scope by sha or by file instead.
+                    evidence_line=_coerce_line(item.get("marker_line")),
                     source_quote=item.get("source_quote", ""),
                 )
             )

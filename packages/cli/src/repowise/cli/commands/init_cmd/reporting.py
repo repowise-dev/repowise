@@ -243,13 +243,20 @@ def show_completion(
         total_tokens = sum(p.total_tokens for p in _pages)
         # Split model-written from the zero-LLM deterministic coverage tail so
         # broad coverage reads as thoroughness, not padding.
+        # A stub standing in for a failed provider call is in ``_pages`` like
+        # any other page, so counting the list here reported it as generated
+        # while the same run reported it as failed one line down.
+        from repowise.core.generation.models import count_stub_fallbacks
+
+        _stubs = count_stub_fallbacks(_pages)
+        _written = len(_pages) - _stubs
         _det = sum(1 for p in _pages if getattr(p, "provider_name", "") == "template")
         _ai = len(_pages) - _det
-        _pages_label = str(len(_pages))
+        _pages_label = str(_written)
         if _failed_ids:
-            _pages_label = f"{len(_pages)} ({len(_failed_ids)} failed)"
+            _pages_label = f"{_written} ({len(_failed_ids)} failed)"
         elif _det:
-            _pages_label = f"{len(_pages)} ({_ai} model-written · {_det} from structure)"
+            _pages_label = f"{_written} ({_ai} model-written · {_det} from structure)"
         # The ledger has the real figure; before this the panel reported
         # millions of tokens and no dollars, on a run the user had just
         # approved a dollar estimate for.
@@ -291,6 +298,30 @@ def show_completion(
         for _line in build_mcp_status_lines(setup):
             console.print(_line)
         console.print()
+
+    _show_generation_checks(result)
+
+
+def _show_generation_checks(result: Any) -> None:
+    """Report the generation quality checks on the pages this run wrote.
+
+    ``init`` built no report at all, so the checks ran on a later ``update``
+    and never on the first index — which is the run that creates a repository's
+    pages, and so the run where duplication first appears.
+
+    Only the checks are shown, not the statistics table: the completion panel
+    above already carries the page count, cost and token totals.
+    """
+    try:
+        from repowise.core.generation.report import GenerationReport, render_generation_checks
+
+        render_generation_checks(GenerationReport.from_pages(result.generated_pages or []), console)
+    except Exception as exc:
+        # A first index that could not check itself must not read like one that
+        # checked itself clean. The run still exits 0; the wiki is written.
+        console.print(
+            f"[bold red]Generation checks did not run:[/bold red] {type(exc).__name__}: {exc}"
+        )
 
 
 def show_workspace_completion(

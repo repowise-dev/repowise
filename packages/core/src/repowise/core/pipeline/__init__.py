@@ -20,6 +20,7 @@ from .persist import (
     persist_git,
     persist_ingestion,
     persist_pipeline_result,
+    tombstone_absent_file_pages,
 )
 from .phase_timing import PhaseTimingRecorder
 from .progress import LoggingProgressCallback, ProgressCallback
@@ -41,4 +42,5 @@ __all__ = [
     "run_generation",
     "run_pipeline",
     "sweep_stale_generated_pages",
+    "tombstone_absent_file_pages",
 ]

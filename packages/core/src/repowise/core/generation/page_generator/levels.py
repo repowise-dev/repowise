@@ -9,19 +9,20 @@ object. Behaviour mirrors the original inline ``generate_all`` exactly.
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from repowise.core.ids import is_external
 
-from ...analysis.knowledge_graph import _slugify
 from .. import onboarding as _onboarding
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
 from .helpers import _is_infra_file
 
 if TYPE_CHECKING:
+    from ..concept_tree.vocabulary import HouseTerm
     from .orchestrate import _GenerationRun
 
 log = structlog.get_logger(__name__)
@@ -186,15 +187,45 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     return coros
 
 
+def _scc_titles(scc_groups: list[Any]) -> dict[str, str]:
+    """``scc id -> title``, unique across the run's cycles.
+
+    Names are computed here rather than per page because uniqueness is a
+    property of the set: several cycles through one subsystem all describe
+    themselves the same way — three of this repository's seventeen are
+    "Ingestion Resolvers" — and two identical rows in the tree are
+    indistinguishable to a reader.
+
+    Resolved over the whole set even when the run emits a subset, so a scoped
+    run gives a cycle the same name a full one does.
+    """
+    from ..concept_tree.naming import disambiguate_titles, scc_where
+
+    pairs: list[tuple[str, str]] = []
+    for scc_id, scc_files in scc_groups:
+        where = scc_where(sorted(scc_files))
+        pairs.append((f"Circular Dependency: {where}" if where else "Circular Dependency", scc_id))
+    # Ties break on the cycle's own id, which is a hash of its members, so the
+    # discriminator is stable for an unchanged cycle.
+    titles = disambiguate_titles(pairs)
+    return {
+        scc_id: (title if title != "Circular Dependency" else f"Circular Dependency: {scc_id}")
+        for title, (_t, scc_id) in zip(titles, pairs, strict=True)
+    }
+
+
 def build_level3_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 3 (scc_page), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
+    titles = _scc_titles(list(run.sel_scc_groups))
     for scc_id, scc_files in run.sel_scc_groups:
         fc_list = [run.file_page_contexts[f] for f in scc_files if f in run.file_page_contexts]
         pid = compute_page_id("scc_page", scc_id)
         if run._emit(pid):
-            coros.append((pid, gen.generate_scc_page(scc_id, scc_files, fc_list)))
+            coros.append(
+                (pid, gen.generate_scc_page(scc_id, scc_files, fc_list, title=titles.get(scc_id)))
+            )
     return coros
 
 
@@ -223,7 +254,11 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     for mg in run.sel_module_groups:
-        fcs = [run.file_page_contexts[fp] for fp in mg.file_paths if fp in run.file_page_contexts]
+        # Read from the wider set: a chapter's prose is about its whole
+        # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
+        # documents what. They are the same list for every leaf.
+        material = getattr(mg, "context_paths", ()) or mg.file_paths
+        fcs = [run.file_page_contexts[fp] for fp in material if fp in run.file_page_contexts]
         if not fcs:
             # A concept group whose files all failed to build a context. The
             # partition is total, so this is a hole in the tree rather than a
@@ -232,7 +267,7 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             log.warning(
                 "module_page.skipped_no_file_contexts",
                 target_path=mg.key,
-                members=len(mg.file_paths),
+                members=len(material),
             )
             continue
         page_id = compute_page_id("module_page", mg.key)
@@ -267,95 +302,89 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                         if getattr(mg, "is_rollup", False)
                         else None
                     ),
-                    owns_files=not getattr(mg, "is_rollup", False),
+                    # Ownership is what ``file_paths`` says, not what the page's
+                    # shape implies: a chapter that is also a leaf directory
+                    # heads its children *and* documents its own loose files.
+                    owns_files=bool(mg.file_paths),
                 ),
             )
         )
     return coros
 
 
-def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
-    """Level 5 (layer_page): one page per KG layer with >= 3 files."""
-    gen = run.gen
-    coros: list[tuple[str, Any]] = []
-    if not run.kg_ctx.available:
-        return coros
+async def _module_corroboration(run: _GenerationRun) -> list[str]:
+    """What the structural side calls the parts of the system.
 
-    from ..architecture_mermaid import ArchitectureMermaidBuilder
-    from ..context_assembler import LayerPageContext
+    One string per module group: its title, plus its summary. A module group
+    is cut from the dependency graph and named from the code, so a mined term
+    appearing in one was arrived at twice — from the documents and from the
+    structure — independently.
 
-    min_layer_files = 3
+    Titles alone are about ninety short strings, which is too thin a net: it
+    misses "Knowledge Graph" and "Code Health" while letting "Architecture"
+    and "Workspace" through on an incidental word. The summaries are what make
+    the corroboration mean something.
 
-    # One builder per run: indexes the graph once, then draws each layer.
-    diagram_builder = ArchitectureMermaidBuilder(run.kg_ctx)
+    Summaries come from this run when level 4 wrote the page, and from the
+    store when it did not. Both together, because either alone is wrong: the
+    run alone empties the corpus on every scoped update and the section
+    vanishes from the front page, and the store alone is one generation stale
+    on a full run. Never raises — a store that cannot answer costs reach, not
+    a page.
 
-    for layer in run.kg_ctx.get_layers():
-        node_ids = layer.get("nodeIds", [])
-        file_paths = [nid[5:] for nid in node_ids if nid.startswith("file:")]
-        if len(file_paths) < min_layer_files:
-            continue
+    Memoised on the run. Two levels want it — the overview at 6 and the
+    glossary at 8 — and it costs a batched store read, so the second caller
+    reuses the first's answer rather than paying it again. A run that emits
+    neither page never reaches this.
+    """
+    cached = getattr(run, "_module_corroboration_corpus", None)
+    if cached is not None:
+        return cached
 
-        layer_name = layer.get("name", "")
-        # Key the page by the layer's STABLE slug id (``layer:<slug>``), not its
-        # display name: the LLM layer-name enrichment rewrites ``name`` after
-        # generation, so a name-keyed page would no longer join to its KG layer.
-        # ``id`` is derived from the deterministic heuristic name at curation
-        # time and never changes under enrichment.
-        layer_id = layer.get("id", "") or f"layer:{_slugify(layer_name)}"
-        page_id = compute_page_id("layer_page", layer_id)
-        if not run._emit(page_id):
-            continue
+    groups = run.sel_module_groups
+    if not groups:
+        run._module_corroboration_corpus = []
+        return []
 
-        key_files: list[dict] = []
-        entry_points: list[str] = []
-        edge_connectors: list[str] = []
-        tour_steps_seen: set[int] = set()
-        tour_steps: list[dict] = []
+    summaries: dict[str, str] = {}
+    missing: list[str] = []
+    for mg in groups:
+        written = run.completed_page_summaries.get(mg.key)
+        if written:
+            summaries[mg.key] = written
+        else:
+            missing.append(mg.key)
 
-        ranked = sorted(
-            file_paths,
-            key=lambda p: run.pagerank.get(p, 0.0),
-            reverse=True,
-        )
-        for fp in ranked[:10]:
-            fc = run.kg_ctx.get_file_context(fp)
-            entry: dict = {
-                "path": fp,
-                "role": fc.role if fc else "internal",
-                "summary": (run.completed_page_summaries.get(fp) or "")[:200],
-            }
-            key_files.append(entry)
-            if fc:
-                if fc.role == "entry_point":
-                    entry_points.append(fp)
-                elif fc.role == "edge_connector":
-                    edge_connectors.append(fp)
-                if fc.tour_step and fc.tour_step["order"] not in tour_steps_seen:
-                    tour_steps_seen.add(fc.tour_step["order"])
-                    tour_steps.append(fc.tour_step)
+    if missing and run.vector_store is not None:
+        try:
+            batch = await run.vector_store.get_page_summaries_by_paths(missing)
+        except Exception as exc:
+            # Reach, not correctness. Said out loud because a quietly thinner
+            # corpus reads downstream as "the structure does not name this".
+            log.warning(
+                "generation.overview_corroboration_store_read_failed",
+                repo_name=run.repo_name,
+                wanted=len(missing),
+                error=str(exc),
+            )
+        else:
+            for path, payload in batch.items():
+                summary = (payload or {}).get("summary")
+                if summary:
+                    summaries[path] = summary
 
-        deps_out, deps_in = run.kg_ctx.get_inter_layer_edges(layer)
-        tour_steps.sort(key=lambda s: s["order"])
-
-        ctx = LayerPageContext(
-            layer_name=layer_name,
-            layer_id=layer_id,
-            layer_description=layer.get("description", ""),
-            file_count=len(file_paths),
-            key_files=key_files,
-            deps_out=deps_out,
-            deps_in=deps_in,
-            tour_steps=tour_steps,
-            entry_points=entry_points,
-            edge_connectors=edge_connectors,
-            diagram_mermaid=diagram_builder.layer(layer) or "",
-        )
-        coros.append((page_id, gen.generate_layer_page(ctx)))
-
-    return coros
+    log.info(
+        "generation.overview_corroboration_corpus",
+        groups=len(groups),
+        from_this_run=sum(1 for mg in groups if run.completed_page_summaries.get(mg.key)),
+        with_summary=len(summaries),
+    )
+    corpus = [f"{mg.display}\n{summaries.get(mg.key, '')}" for mg in groups]
+    run._module_corroboration_corpus = corpus
+    return corpus
 
 
-def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 6 (repo_overview).
 
     The overview carries the architecture map. That map used to sit on a page
@@ -365,6 +394,7 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     uniquely had, so it moved here and the page retired; its id redirects.
     """
     from ..architecture_mermaid import build_overview_mermaid
+    from ..overview_tables import select_capabilities
 
     gen = run.gen
     overview_mermaid = build_overview_mermaid(run.kg_ctx)
@@ -378,6 +408,24 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         )
     coros: list[tuple[str, Any]] = []
     if run._emit(compute_page_id("repo_overview", run.repo_name)):
+        # What the repository calls its own capabilities, in its own words.
+        # Mined once per run and shared with level 8. A term reaches the page
+        # only when the structural side names it too, so the front page never
+        # carries a word the documents used and the graph never confirmed.
+        #
+        # Module *groups*, not written module pages: a group is cut and named
+        # on every run, so a scoped run that regenerates the overview alone
+        # selects the same rows as a full one.
+        capabilities = select_capabilities(_mine_house_terms(run), await _module_corroboration(run))
+        if not capabilities:
+            # No table beats an empty one, but a front-page section that
+            # quietly stops appearing is the failure shape this repository has
+            # shipped before. Said out loud with the counts that explain it.
+            log.info(
+                "generation.overview_capability_table_absent",
+                repo_name=run.repo_name,
+                module_groups=len(run.sel_module_groups),
+            )
         coros.append(
             (
                 compute_page_id("repo_overview", run.repo_name),
@@ -392,6 +440,13 @@ def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     external_systems=run.external_systems,
                     decision_records=run.decisions_all[:10],
                     overview_mermaid=overview_mermaid,
+                    source_map=run.source_map,
+                    # Per-package file counts come from the files this run
+                    # actually parsed, not from the package manifests, so a
+                    # directory the walker skipped reads as zero rather than
+                    # going unmentioned.
+                    parsed_files=run.parsed_files,
+                    capabilities=capabilities,
                 ),
             )
         )
@@ -414,11 +469,70 @@ def build_level7_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     ]
 
 
-def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+def _mine_house_terms(run: _GenerationRun) -> tuple[HouseTerm, ...]:
+    """The repository's own vocabulary, read once per run.
+
+    Mined here rather than inside a subkind because reading it walks the
+    repository: once per run is a cost, once per slot is the same cost eight
+    times over for the same answer. Two levels want it now — the overview at
+    6 and onboarding at 8 — so the result is memoised on the run rather than
+    the walk being paid twice. A run that emits neither still pays nothing,
+    because neither caller reaches this.
+
+    ``repo_path`` is optional on every generation entry point, and a run
+    without one has nothing to read. That is reported rather than absorbed —
+    an empty vocabulary from a repository that was never opened looks exactly
+    like an empty vocabulary from a repository that writes about nothing, and
+    the two want opposite responses.
+    """
+    from ..concept_tree.vocabulary import extract_house_terms
+    from ..report import record_house_terms
+
+    cached = getattr(run, "_house_terms", None)
+    if cached is not None:
+        return cached
+
+    if not run.repo_path:
+        log.warning(
+            "onboarding.house_terms_skipped",
+            repo_name=run.repo_name,
+            reason="no_repo_path",
+        )
+        record_house_terms(None)
+        run._house_terms = ()
+        return ()
+
+    # The names the codebase defines. A term matching one may be rendered in
+    # backticks; a coined term may not, because the grounding pass strips
+    # backticks off any token it cannot resolve to a symbol.
+    known_symbols = {sym.name for pf in run.parsed_files for sym in pf.symbols if sym.name}
+    terms = tuple(extract_house_terms(Path(run.repo_path), known_symbols=known_symbols))
+    record_house_terms(terms)
+    if not terms:
+        log.warning(
+            "onboarding.house_terms_empty",
+            repo_name=run.repo_name,
+            known_symbols=len(known_symbols),
+        )
+    else:
+        log.info(
+            "onboarding.house_terms_mined",
+            repo_name=run.repo_name,
+            terms=len(terms),
+            top=[t.term for t in terms[:8]],
+        )
+    run._house_terms = terms
+    return terms
+
+
+async def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     """Level 8 (curated onboarding collection)."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
     if not getattr(run.config, "enable_onboarding", True):
+        for page_key in run.config.source_evidence_files:
+            if page_key.startswith("onboarding/"):
+                gen._disabled_source_evidence(page_key, "onboarding_disabled")
         return coros
     specs = _onboarding.iter_specs()
     if not specs:
@@ -426,11 +540,34 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if run.on_subphase is not None:
         with contextlib.suppress(Exception):
             run.on_subphase("onboarding", len(specs))
+    # Which pages this run will actually write, decided before anything is
+    # assembled for them. ``_emit`` carries a side effect (a resumed run
+    # records the ids it is protecting from the stale sweep), so it is called
+    # exactly once per spec here and not again below. Assembling the signals
+    # costs a walk of the repository, and a scoped run that asked for one file
+    # page should not pay it to emit nothing.
+    emitted: list[tuple[str, Any]] = []
+    for spec in specs:
+        page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))
+        if run._emit(page_id):
+            emitted.append((page_id, spec))
+    if not emitted:
+        return coros
+
     kg_layers: tuple[dict, ...] = ()
     kg_tour_steps: tuple[dict, ...] = ()
     if run.kg_ctx and run.kg_ctx.available:
         kg_layers = tuple(run.kg_ctx.get_layers())
         kg_tour_steps = tuple(run.kg_ctx.get_tour())
+
+    # The corpus costs a batched store read, so only a run emitting a subkind
+    # that declared it wants one pays for it. Memoised, so a run that also
+    # emits the overview builds it once for both.
+    module_corroboration = (
+        tuple(await _module_corroboration(run))
+        if any(spec.needs_module_corroboration for _page_id, spec in emitted)
+        else ()
+    )
 
     signals = _onboarding.OnboardingSignals(
         repo_name=run.repo_name,
@@ -451,10 +588,9 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         kg_tour_steps=kg_tour_steps,
         tour_stops=tuple(run.tour_stops),
         layer_order=tuple(run.layer_order),
+        house_terms=_mine_house_terms(run),
+        module_corroboration=module_corroboration,
     )
-    for spec in specs:
-        page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))
-        if not run._emit(page_id):
-            continue
+    for page_id, spec in emitted:
         coros.append((page_id, gen.generate_onboarding_page(spec, signals)))
     return coros

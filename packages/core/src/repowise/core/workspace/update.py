@@ -11,7 +11,6 @@ import json as _json
 import logging
 import sqlite3
 import subprocess
-import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -25,6 +24,9 @@ from typing import Any
 # bypassing the CLI lock acquisition in update_cmd, so workspace updates are
 # themselves single-flight per repo.
 from repowise.core.update_lock import (
+    lock_age_seconds as _lock_age_seconds,
+)
+from repowise.core.update_lock import (
     release_update_lock as _release_lock,
 )
 from repowise.core.update_lock import (
@@ -32,6 +34,7 @@ from repowise.core.update_lock import (
 )
 
 from ..docs_mode import docs_mode_state_fields
+from ..ingestion.change_detector import has_working_tree_changes
 from .config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -75,6 +78,10 @@ class RepoUpdateResult:
     alias: str
     updated: bool  # True if an update was performed
     skipped_reason: str | None = None  # "up_to_date", "missing_directory", etc.
+    # How long the winning update had held the lock, when this repo deferred to
+    # one. Carried on the result because the caller reports the deferral and
+    # the age is the part that tells a slow update apart from a wedged one.
+    lock_age_seconds: float | None = None
     file_count: int = 0
     symbol_count: int = 0
     error: str | None = None
@@ -83,6 +90,12 @@ class RepoUpdateResult:
     # KG; None means the persisted block is still current. State-file writes
     # stay with the caller (_update_one), so the block rides on the result.
     kg_state: dict[str, Any] | None = None
+    # Repo-relative paths this run indexed from the working tree rather than
+    # from a commit. Persisted as state.json "working_tree_paths" so the next
+    # run can tell which of them have since been reverted or deleted — working
+    # tree state has no ``last_sync_commit`` to diff against. None on the
+    # commit-anchored path, which leaves the stored list alone.
+    working_tree_paths: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +339,7 @@ async def _incremental_repo_update(
     state: dict[str, Any],
     base_ref: str,
     exclude_patterns: list[str] | None = None,
+    include_working_tree: bool = False,
 ) -> RepoUpdateResult | None:
     """Refresh an already-indexed repo through the incremental update path.
 
@@ -340,7 +354,7 @@ async def _incremental_repo_update(
 
     Raises on failure — the caller falls back to the full pipeline.
     """
-    from ..ingestion.change_detector import ChangeDetector
+    from ..ingestion.change_detector import ChangeDetector, merge_file_diffs
     from ..pipeline.incremental import (
         persist_incremental_index,
         rebuild_graph_and_git,
@@ -352,12 +366,30 @@ async def _incremental_repo_update(
     head = get_head_commit(repo_path) or "HEAD"
 
     detector = ChangeDetector(repo_path)
-    file_diffs = detector.get_changed_files(base_ref, head)
+    working_tree_diffs: list = []
+    working_tree_paths: list[str] | None = None
+    if include_working_tree:
+        working_tree_diffs = detector.get_working_tree_changes()
+        dirty = {fd.path for fd in working_tree_diffs}
+        # Re-diff anything the last run indexed from the working tree that no
+        # longer diverges from HEAD, so a reverted edit or a deleted untracked
+        # file stops being served. See ``stale_working_tree_diffs``.
+        working_tree_diffs += detector.stale_working_tree_diffs(
+            state.get("working_tree_paths") or [], dirty
+        )
+        working_tree_paths = sorted(dirty)
+
+    file_diffs = merge_file_diffs(
+        detector.get_changed_files(base_ref, head),
+        working_tree_diffs,
+    )
     if not file_diffs:
         # New commits but nothing the index cares about changed (merge/empty
         # commits, or every change excluded). Report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
-        return RepoUpdateResult(alias=alias, updated=True)
+        return RepoUpdateResult(
+            alias=alias, updated=True, working_tree_paths=working_tree_paths
+        )
 
     # Per-repo config, like the single-repo update path. The workspace-level
     # ``exclude_patterns`` (when provided) apply on top.
@@ -372,7 +404,7 @@ async def _incremental_repo_update(
     git_decay_map: dict[str, dict] = {}
     (
         parsed_files,
-        _source_map,
+        source_map,
         graph_builder,
         _structure,
         file_count,
@@ -390,7 +422,13 @@ async def _incremental_repo_update(
     )
 
     partial_health_report, dead_code_report = run_partial_analysis(
-        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs, log=_log.info
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        parsed_files,
+        file_diffs,
+        source_map=source_map,
+        log=_log.info,
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
@@ -448,6 +486,7 @@ async def _incremental_repo_update(
         file_count=file_count,
         symbol_count=sum(len(pf.symbols) for pf in parsed_files),
         kg_state=kg_state,
+        working_tree_paths=working_tree_paths,
     )
 
 
@@ -456,6 +495,7 @@ async def update_single_repo_index(
     *,
     commit_depth: int = 500,
     exclude_patterns: list[str] | None = None,
+    include_working_tree: bool = False,
     progress: Any | None = None,
 ) -> RepoUpdateResult:
     """Refresh the index for a single repo.
@@ -504,6 +544,7 @@ async def update_single_repo_index(
                 state=state,
                 base_ref=str(base_ref),
                 exclude_patterns=exclude_patterns,
+                include_working_tree=include_working_tree,
             )
             if incremental_result is not None:
                 return incremental_result
@@ -567,6 +608,7 @@ async def update_workspace(
     dry_run: bool = False,
     commit_depth: int = 500,
     exclude_patterns: list[str] | None = None,
+    include_working_tree: bool = False,
     on_repo_start: Callable[[str], None] | None = None,
     on_repo_done: Callable[[RepoUpdateResult], None] | None = None,
 ) -> list[RepoUpdateResult]:
@@ -587,6 +629,10 @@ async def update_workspace(
         dry_run: If True, detect staleness but don't actually update.
         commit_depth: Max commits to analyze per file.
         exclude_patterns: Gitignore-style patterns to exclude.
+        include_working_tree: Count uncommitted work as staleness, and index
+            it. Off for every commit-anchored caller (hooks, webhooks, a
+            manual sync); ``repowise watch --workspace`` sets it, because a
+            repo it is watching normally has no new commits at all.
         on_repo_start: Called with alias when a repo update begins.
         on_repo_done: Called with result when a repo update finishes.
 
@@ -644,6 +690,12 @@ async def update_workspace(
             stored_commit,
         )
 
+        # A watched repo's changes are uncommitted by definition, so the
+        # commit-to-commit staleness check above says "up to date" for exactly
+        # the work the watcher woke up for.
+        if not is_stale and include_working_tree and has_working_tree_changes(abs_path):
+            is_stale = True
+
         if not is_stale:
             # Nothing to regenerate, but the DB freshness stamp can still be
             # behind (e.g. a row left drifted by a pre-fix run). Reconcile it so
@@ -690,15 +742,15 @@ async def update_workspace(
             # Check + acquire are one atomic exclusive create.
             existing = _try_acquire_lock(path, new_head)
             if existing is not None:
-                elapsed = int(time.time() - existing.get("started_at", time.time()))
+                age = _lock_age_seconds(existing)
                 target_short = (existing.get("target_commit") or "")[:8]
                 _log.info(
                     "workspace_update: skipping %s — update already in flight "
-                    "(pid=%s target=%s elapsed=%ds)",
+                    "(pid=%s target=%s elapsed=%ss)",
                     alias,
                     existing.get("pid"),
                     target_short,
-                    elapsed,
+                    int(age) if age is not None else "?",
                 )
                 # Record pending so the running update can roll forward.
                 with suppress(OSError):
@@ -707,6 +759,7 @@ async def update_workspace(
                     alias=alias,
                     updated=False,
                     skipped_reason="in_flight",
+                    lock_age_seconds=age,
                 )
 
             try:
@@ -714,6 +767,7 @@ async def update_workspace(
                     path,
                     commit_depth=commit_depth,
                     exclude_patterns=exclude_patterns,
+                    include_working_tree=include_working_tree,
                 )
             finally:
                 _release_lock(path)
@@ -736,6 +790,8 @@ async def update_workspace(
                 state["last_sync_commit"] = new_head
                 if result.kg_state:
                     state["knowledge_graph"] = result.kg_state
+                if result.working_tree_paths is not None:
+                    state["working_tree_paths"] = result.working_tree_paths
                 # Stamp the config fingerprint so the drift check in
                 # update_single_repo_index stays calibrated (and legacy repos
                 # without one stop re-triggering the full re-index).

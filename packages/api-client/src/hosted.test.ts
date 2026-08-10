@@ -7,6 +7,7 @@ import {
   mapHostedPage,
   mapHostedRepo,
   mapHostedSearchResult,
+  toPageSummary,
 } from "./hosted";
 
 // ---------------------------------------------------------------------------
@@ -144,6 +145,30 @@ describe("mapHostedPage", () => {
 
   it("falls back to page_id when the id alias is absent (old snapshots)", () => {
     expect(mapHostedPage({ page_id: "p1" }, "r").id).toBe("p1");
+  });
+
+  it("promotes the layer stamp so it survives the summary trim", () => {
+    // The docs tree groups modules under their layer from this stamp and is
+    // drawn from a summary listing, which drops `metadata` wholesale. Left
+    // inside the blob the stamp would vanish, and every layer group with it.
+    const page = mapHostedPage(
+      {
+        page_id: "module_page:src/api",
+        page_type: "module_page",
+        target_path: "src/api",
+        metadata: { layer_id: "layer:api", layer_name: "API Surface" },
+      },
+      "repo-1",
+    );
+    expect(page.layer_id).toBe("layer:api");
+    expect(page.layer_name).toBe("API Surface");
+    expect(toPageSummary(page).layer_id).toBe("layer:api");
+  });
+
+  it("reports no layer rather than an empty one when nothing stamped it", () => {
+    const page = mapHostedPage({ page_id: "p1", metadata: {} }, "r");
+    expect(page.layer_id).toBeNull();
+    expect(page.layer_name).toBeNull();
   });
 });
 

@@ -9,6 +9,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.39.0] — 2026-08-05
+
+A small release. `get_answer` stops handing back bare file paths, the docs sidebar reads as an outline instead of a directory listing, and a store upgraded from 0.37.0 opens again instead of taking the whole wiki down with its search index.
+
+### Added
+- **`get_answer` names what each candidate file defines,** not just its path. Of 499 paths served across the 25 flow questions, 65 carried any content at all, and 89% of the agent's post-answer searches were the same shape: take a name the payload gave, go fetch the substance it did not attach. Each candidate now carries its declarations as `name:line` pairs, question-named symbols first, imports and private names dropped. Substance per served path goes from 0.130 to 0.864, for 10% of the response and no change to which paths are served or in what order. (#1306)
+
+### Changed
+- **The docs sidebar reads as a table of contents.** Every group on the top rung opens on load and nothing below it does, so a chapter that parents sub-chapters no longer expands wherever it sits and makes the tree read as a filesystem. The four-digit file corpus closes the tree instead of fronting it, selecting a page opens the chapters above it, and outline rows drop the folder glyph the no-icons rule had never reached. (#1312)
+- **Mermaid diagrams scale to the column they are read in.** They rendered at natural size inside a scroll box, so the architecture map arrived clipped mid-subgraph behind two scrollbars. Width only, never above 1:1, with the scaled height reserved so a fitted diagram does not sit in a pool of empty space. Maximize still pans and zooms for the dense ones. (#1312)
+
+### Fixed
+- **A store upgraded from 0.37.0 no longer refuses to open.** 0.38.0 widened `page_fts` from three columns to five, and FTS5 cannot be altered, so the index is dropped and refilled from `wiki_pages` the first time an upgraded install opens the store. That rebuild refused whenever the index held more rows than `wiki_pages` could account for, and the error it raised told the reader to run `repowise doctor --repair` — which opens the store the same way, hit the same refusal, and died before repairing anything. `serve` and the MCP server died there too, so a search index took the entire wiki down with it. The excess rows are orphans: pages swept from SQL whose index delete never ran, because it runs after the commit, outside the transaction, on a best-effort path, and nothing ever reconciled them. An orphan answers a query in full and 404s when the reader opens it, so the rebuild discards it and reports the count rather than refusing. (#1309)
+- **An interrupted sweep heals itself.** `ensure_index` prunes orphaned index rows on every open, which is the only thing that ever reconciled the two halves of the store; the residue could otherwise only grow. The scan is read-only and takes the write lock only when there is something to delete.
+- **`doctor --repair` finishes what it was called for.** A failing full-text schema upgrade is reported and stepped over instead of aborting the repair, and orphans are deleted in one transaction rather than one per id.
+- **`serve` and the MCP server start on a store whose index cannot be prepared,** falling back to whatever shape the index is in plus the vector arm, with a warning. Every other surface — the wiki, the graph, code health — was unreachable over a keyword index.
+
+### Documentation
+- **The benchmarks are rescored on the sealed half** after the retrieval gate fixes, and the token-efficiency figures are refreshed. The agent-loop result is reported as its own number rather than folded into the payload one, which measured a different thing. (#1307, #1308, #1310)
+
+### Dependencies
+- aiohttp 3.14.1 → 3.14.3, cryptography 48.0.1 → 50.0.0, gitpython 3.1.55 → 3.1.58, postcss 8.5.22 → 8.5.25, and the dev-only undici 7.28.0 → 7.29.0 and fast-uri 3.1.4 → 3.1.5. Clears the open security advisories against the tree. The cryptography floor moves rather than only its ceiling, so a fresh install of the published wheel cannot resolve back into the vulnerable range. (#1313)
+
+---
+
+## [0.38.0] — 2026-08-04
+
+Four new languages, an orientation set rebuilt around what a reader actually needs, and a wiki that draws on the repository's own vocabulary instead of writing generic prose about it. Svelte and Vue reach the Full tier through a byte-preserving projection into TypeScript; HTML lands at the import tier; reStructuredText documents are read as reStructuredText rather than silently yielding nothing. Onboarding is six pages now, ending in a glossary built entirely from mined terms, and a directory that heads a subsystem gets a chapter even when it also holds files of its own. Full-text search was rebuilt on both backends after the query shape turned out to match 65% of the corpus on a median question. The agent hooks got measurement first and then acted on it: the Grep flood is replaced by its digest instead of ranked next to it, triage ranks the files the search actually matched, and the three hot index lookups dropped an ORM import that cost a second per hook fire.
+
+### Added
+- **Svelte and Vue at the Full tier.** A markup grammar locates the JavaScript-bearing regions of a single-file component, every other byte is blanked to a space with newlines preserved, and each markup expression is fenced by rewriting its two surrounding delimiter bytes. The result is valid TypeScript at byte-identical offsets, so the TypeScript queries, language config and all three health dialects apply unchanged; only region location differs per language. Components reach the file tree, git history, wiki and health for the first time. (#1221, #1232)
+- **HTML at the import tier,** via `script src` and `link href`. HTML has no functions, classes or calls, so this ships an import-only tier and says so on every surface rather than minting symbols that do not exist. Template dialects are out of scope and that is stated: `{% extends %}` is plain text to an HTML grammar, and 744 of 749 measured dialect files produce no edges. (#1235)
+- **reStructuredText is read as reStructuredText.** Every pattern in the document miner was markdown-only, so a repository that documents itself in `.rst` looked identical to one that says nothing. flask, requests and django were all in that position. Underline-length, directive bodies and roles are each handled, and `.rst` prose written under a `.txt` extension is picked up too. (#1238, #1247)
+- **A glossary page, written entirely in the repository's own words.** House vocabulary (blast radius, change risk, co-change, distill) had no definition anywhere a reader could reach. Each row is a term, the repository's own defining sentence, where it is used and which document it was written in. The page has no model in its path at all: every cell is a fact the run already holds, so it costs no tokens and cannot hallucinate. (#1276)
+- **Subject chapters.** A parent directory was disqualified from heading its children whenever it also held loose files of its own, because both pages would collide on one page id. That excluded exactly the directories a reader most wants a chapter for, and did it silently: nine of thirteen chapters suppressed on this repository, five of six on django. (#1282)
+- **Perf dialects for Kotlin and C++, and a dataflow def/use dialect for C++,** which moves C++ to the Full tier with intra-procedural CFG, reaching definitions and Extract Method suggestions. C++ deliberately omits three markers other languages carry, each of which would be a guaranteed false positive there. (#1224, #1225)
+- **A page says how far it can be trusted.** `confidence` had been a constant 1.0 on every page ever generated, so the reader's low-confidence banner had never rendered for anyone and retrieval could not weight by it. A wiki where a provider outage left hundreds of structural stubs looked exactly as trustworthy as a complete one. (#1213)
+- **File pages and symbol spotlights name the questions they answer,** built from structure rather than prose, and emitted only where the page can actually answer them. (#1209, #1210)
+- **Hook efficacy measurement.** Four of five hook surfaces wrote rows nobody read, and the Read surface wrote none at all, so a nudge could fire 500 times at a 0.2% action rate with nothing in the product noticing. Transcripts are replayed to pair each emission with the tool calls that followed it. (#1272)
+- **Vocabulary mining with provenance.** Mined terms now carry their defining sentence, the document they were read from and every document that names them, which is what the overview, onboarding, key concepts and the glossary are built on. (#1233, #1241, #1242, #1249)
+- **`get_answer` meters what one synthesis call costs,** and configurable synthesis evidence lets a deployment choose how much the model is shown. (#1180, #1227)
+- **Retired page ids keep resolving,** and a retired page can hand off to the repository overview instead of dead-ending. (#1163, #1166)
+- **The OpenAI embedder honours a configured output width,** for deployments pinning a narrower vector than the model's default. (#1254)
+- **`update` names the orientation pages an index has never been offered** and points at `--full`, which is the path that can actually deliver them. An incremental run reads a changed-file slice, and every onboarding gate reads whole-repo signals. (#1288)
+
+### Changed
+- **The docs tree opens on the shape of the repository, not its contents.** Layers used to open by default, which was fine when a layer held a handful of children and wrong once layers grouped every module: roughly ninety module rows on the first screen, burying the layer names and the chapters alike. Layers start closed, the file corpus sits above the layer outline rather than under it, and an unclaimed module no longer poses as a layer. (#1184, #1185, #1186, #1187)
+- **A search hit's snippet is centred on what the query matched.** It used to be the first 200 characters of the page, which on a generated page is the same `## Overview` opener every time: identical across thousands of hits, and never the passage that matched. (#1191)
+- **The Grep flood is served as its digest, not ranked beside it.** Ranking a flood you also keep is a lens, not a saving; the digest was being added next to output the agent had already been billed for. It replaces the flood now, the same trade `distill` makes for shell output. Measured over real Grep payloads in 25 transcripts, the digest is 0.30 of the flood. (#1283)
+- **Grep triage ranks the files the search actually matched.** It built candidates from name and path matches ranked by PageRank without ever reading the grep output; replayed over 1,899 real Grep calls, 83 of the 111 files it named were not in the grep results at all. (#1296)
+- **The Read hook serves the skeleton instead of recommending it.** (#1275)
+- **`distill` rewrites safe command chains instead of bailing on their shape.** `repowise saved --missed` reported 138,827 tokens over 478 runs in 7 days that never reached distill. The binding gate was a re-quoting rule that refused any command containing a quote, a dollar sign or a backslash, so `grep -n "a\|b" f.py | head` bailed on the quotes it obviously contains. What `--missed` counts is corrected alongside. (#1291)
+- **Module pages name their own symbols** and stop opening with the same sentence as every other module page. (#1211, #1212)
+- **The overview carries the architecture map, counts its packages** rather than describing them, and says what the repository does in the repository's own words. (#1164, #1246, #1249)
+- **One recipe for every page vector,** with a page below the information floor getting no vector at all and pages that lose text at the embedding cap named rather than silently truncated. (#1200, #1192, #1203)
+- **Running one CLI command stops paying for the whole import graph.** Three module-level imports were charging their dependency tree to every invocation, including every hook fire: `repowise --version` drops from 1,240ms to 150ms, and a silent hook from 965ms to 167ms. (#1273)
+- **The three hot index lookups read through stdlib `sqlite3`.** Reaching the index from a hook cost a second, 95% of it a single import that none of the three plain SELECTs needed. (#1297)
+- **A command no longer waits out its own telemetry POST.** (#1286)
+- **Decisions rank a person above a document,** two sources that never landed are retired, and `get_why` path mode is bounded. (#1290, #1293)
+- **Layers group the docs tree without needing a page to hang off,** and pages carry the provenance of the layer that groups them. (#1165, #1170, #1171)
+
+### Fixed
+- **Full-text search was asking for most of the corpus.** Both backends built a MATCH expression that could not retrieve, failing in opposite directions: SQLite OR-ed every token with a prefix wildcard, so on a 3,678-page corpus the median question matched 65% of it and one matched everything; PostgreSQL handed the raw question to `plainto_tsquery`, which ANDs every lexeme and therefore matched almost nothing. A tombstoned page is also dropped from the index now, and a page can be too thin to be worth indexing. (#1188, #1190, #1198)
+- **The served skeleton never reached the agent.** `updatedToolOutput` is validated against the schema of the tool being replaced; the hook emitted a bare string where Read's output is an object, so Claude Code rejected it, used the original file, and the hook went on recording a saving. Every firing since the feature landed was a no-op that reported success. (#1278)
+- **The answer prompt formatter halved every page excerpt it fetched,** page content is attached on every retrieval rather than only the weak ones, and decision vectors and pageless ids stay out of the answer. (#1168, #1169, #1183)
+- **The first MCP tool call raced the lancedb import,** and the embedder API key is resolved from persisted config rather than the environment alone. (#1230, #1231)
+- **The data-shape fast path reads the question, not the whole paste,** and the early returns hand back the ranked pool they already hold. (#1284, #1289)
+- **Generation rejects pages that talk to the prompter,** refuses a structurally-keyed page with no key, drops sections a page cannot fill, tombstones a page whose file is gone, grounds flow narratives in exact source, and reads execution flows by the field names they have. A definition is taken to be prose the author wrote, not the markup below it. (#1172, #1201, #1202, #1206, #1207, #1208, #1229, #1245, #1248)
+- **JS/TS extraction picks up unparenthesized single-parameter arrow functions,** and HTML intrinsic elements no longer pose as JSX component call targets. (#1215, #1217)
+- **Python aliased imports parse correctly,** and a Node.js package `exports` wildcard may cross directory boundaries. (#1243, #1256)
+- **`doctor` reconciles the store against the database again.** (#1196)
+- **The Python perf dialect knows `pathlib` is filesystem I/O.** (#1269)
+- **The betweenness pool is bounded, live update locks are kept, and a failed page is counted once.** (#1262)
+- **Generation checks reach a normal run of `init` and `update`.** (#1178)
+- **Docker:** `/data` is created before `chown`, the image moves to `node:20-bookworm-slim` for glibc compatibility, and `.gitattributes` enforces LF on `.sh` files so the entrypoint runs on a Windows checkout. (#1266, #1268, #1270)
+- **The Stats punch card's UTC footnote describes rather than prescribes.** (#1240)
+
+### Documentation
+- The README carries media that renders on GitHub, a section and a picture for the PR bot, and cites the 21-repo health validation. (#1197, #1205, #1218)
+- Published measured results with a comparison against real peers. (#1287)
+- A `structurizr` export walkthrough in the examples and in the CLI package README. (#1175, #1176)
+- CONTRIBUTING documents how to claim an issue. (#1263)
+- The vocabulary overlap thresholds record what they actually measure. (#1181)
+
+### Dependencies
+- `tree-sitter-svelte` and `tree-sitter-html` are new, for Svelte and Vue respectively. There is no `tree-sitter-vue` on PyPI, and `tree-sitter-html` parses a Vue single-file component cleanly because `<template>`, `<script>` and `<style>` are ordinary elements to it.
+
+---
+
 ## [0.37.0] — 2026-07-29
 
 The release where the web UI got taken apart and put back together. Fourteen surfaces moved onto one design language: sections and hairlines instead of a grid of near-identical bordered cards, a sentence above every figure saying what the figure means, and a header row plus a key row on the pages whose canvas is the page. Overview, Docs, Commits, Contributors, Code Health, Coverage, Dead code, Chat, Settings, Decisions, Stats, Files, Refactoring, Knowledge Graph and Architecture all changed shape. The Architecture and Knowledge Graph canvases also got their marks named and their per-frame cost cut, and the docs page stopped downloading 38 MB of page bodies to draw a tree. Away from the UI there is a Structurizr DSL export, a first-run pass over interactive `init`, refreshed provider model defaults, and three MCP response fixes.

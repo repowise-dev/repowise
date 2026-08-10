@@ -99,3 +99,32 @@ async def test_no_map_available_leaves_the_page_alone(model_gen, sample_repo_str
     page = await _overview(model_gen, sample_repo_structure, "")
     assert "```mermaid" not in page.content
     assert page.content.strip()
+
+
+async def test_overview_prompt_includes_repository_source_evidence(
+    model_gen, sample_repo_structure
+):
+    config = replace(
+        model_gen._config,
+        source_evidence_files={
+            "repo_overview": ("README.md", "docs/ARCHITECTURE.md"),
+        },
+    )
+    generator = PageGenerator(model_gen._provider, ContextAssembler(config), config)
+    await generator.generate_repo_overview(
+        sample_repo_structure,
+        pagerank={},
+        sccs=[],
+        community={},
+        repo_name="demo",
+        source_map={
+            "README.md": b"Demo turns source archives into indexed documentation.",
+            "docs/ARCHITECTURE.md": b"The parser feeds a graph and then a wiki generator.",
+        },
+    )
+
+    prompt = generator._provider.calls[-1]["user_prompt"]
+    assert "## Additional repository evidence" in prompt
+    assert '<repository-file path="README.md">' in prompt
+    assert "turns source archives into indexed documentation" in prompt
+    assert '<repository-file path="docs/ARCHITECTURE.md">' in prompt

@@ -31,6 +31,7 @@ from .java_records import java_record_synthetic_symbols
 from .jvm_codegen import jvm_codegen_synthetic_symbols
 from .kotlin_jvm import kotlin_synthetic_symbols
 from .lombok import lombok_synthetic_symbols
+from .sfc_component import sfc_component_symbols
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -51,12 +52,12 @@ _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
     "kotlin": [kotlin_synthetic_symbols],
     "cpp": [cpp_macro_synthetic_symbols],
     "c": [cpp_macro_synthetic_symbols],
+    "svelte": [sfc_component_symbols],
+    "vue": [sfc_component_symbols],
 }
 
 
-def extract_synthetic_symbols(
-    root: Node, src: str, file_info: FileInfo
-) -> list[Symbol]:
+def extract_synthetic_symbols(root: Node, src: str, file_info: FileInfo) -> list[Symbol]:
     """Dispatch to the language-appropriate synthetic-symbol providers.
 
     Returns an empty list for languages with no registered provider.

@@ -1,0 +1,5 @@
+# Ensure shell scripts always use LF line endings in the repo and on checkout.
+# Without this, git on Windows converts .sh files to CRLF, producing a
+# "#!/bin/bash\r" shebang that Linux cannot resolve, causing:
+#   exec /app/entrypoint.sh: no such file or directory
+*.sh text eol=lf

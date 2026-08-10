@@ -9,6 +9,14 @@
     symbols, its neighbours' file paths and its layer in full, because those
     are the identifiers a question embeds near. Nobody reads a file page end
     to end, so where readability and retrieval disagree, retrieval wins.
+
+    Every section below the Overview is conditional. A heading with nothing
+    under it costs a reader a stop and puts the same stock sentence into the
+    search index on thousands of pages, where it matches every query and
+    distinguishes none of them. The Overview is the one exception: it is
+    generated rather than looked up, so it always has something to say, and
+    ``_extract_summary`` reads it back as the summary shown in search results
+    and the wiki list.
 -#}
 {%- set public_syms = ctx.symbols | selectattr("visibility", "equalto", "public") | list -%}
 # {{ ctx.file_path }}
@@ -16,35 +24,110 @@
 ## Overview
 
 {% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` is a {{ ctx.language }} {% if ctx.is_entry_point %}entry-point {% endif %}{% if ctx.is_test %}test {% endif %}source file{% if ctx.kg_layer_name %} in the {{ ctx.kg_layer_name }} layer{% endif %}{% if ctx.community_label %}, part of the {{ ctx.community_label }} module cluster{% endif %}.{% endif %}
+{%- if public_syms %}
 
-{% if public_syms %}It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | length != 1 else "" }}{% if ctx.dependencies %} and depends on {{ ctx.dependencies | length }} other file{{ "s" if ctx.dependencies | length != 1 else "" }}{% endif %}.{% endif %}
+It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | length != 1 else "" }}{% if ctx.dependencies %} and depends on {{ ctx.dependencies | length }} other file{{ "s" if ctx.dependencies | length != 1 else "" }}{% endif %}.
 
 ## Public API
 
-{% if public_syms %}| Symbol | Kind | Signature |
+| Symbol | Kind | Signature |
 | --- | --- | --- |
-{% for s in public_syms %}| `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
-{% endfor %}{% else %}_No public symbols were extracted from this file._
-{% endif %}
-## Depends on
+{%- for s in public_syms %}
+| `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
+{%- endfor %}
+{%- endif %}
+{%- if ctx.dependencies %}
 
-{% if ctx.dependencies %}{% for dep in ctx.dependencies[:25] %}- `{{ dep }}`
-{% endfor %}{% if ctx.dependencies | length > 25 %}
+## Depends on
+{% for dep in ctx.dependencies[:25] %}
+- `{{ dep }}`
+{%- endfor %}
+{%- if ctx.dependencies | length > 25 %}
+
 _and {{ ctx.dependencies | length - 25 }} more._
-{% endif %}{% else %}_No internal dependencies resolved._
-{% endif %}
+{%- endif %}
+{%- endif %}
+{%- if ctx.dependents %}
+
 ## Used by
 
-{% if ctx.dependents %}Imported by {{ ctx.dependents | length }} file{{ "s" if ctx.dependents | length != 1 else "" }} in this repository.
+Imported by {{ ctx.dependents | length }} file{{ "s" if ctx.dependents | length != 1 else "" }} in this repository.
+{% for dep in ctx.dependents[:25] %}
+- `{{ dep }}`
+{%- endfor %}
+{%- if ctx.dependents | length > 25 %}
 
-{% for dep in ctx.dependents[:25] %}- `{{ dep }}`
-{% endfor %}{% if ctx.dependents | length > 25 %}
 _and {{ ctx.dependents | length - 25 }} more._
-{% endif %}{% else %}_No internal callers were resolved for this file._
-{% endif %}
-{% if ctx.community_label or ctx.kg_layer_name %}## Usage Notes
+{%- endif %}
+{%- endif %}
+{%- if ctx.community_label or ctx.kg_layer_name %}
 
-{% if ctx.community_label %}Part of the **{{ ctx.community_label }}** module cluster.
-{% endif %}{% if ctx.kg_layer_name %}**Layer:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **Role:** {{ ctx.kg_layer_role }}{% endif %}
-{% endif %}
-{% endif %}{% include "_footer.j2" %}
+## Usage Notes
+{% if ctx.community_label %}
+Part of the **{{ ctx.community_label }}** module cluster.
+{%- endif %}
+{%- if ctx.kg_layer_name %}
+**Layer:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **Role:** {{ ctx.kg_layer_role }}{% endif %}
+{%- endif %}
+{%- endif %}
+{#- Question-shaped text, built from structure rather than prose.
+
+    Every search query is a question and this page is a declarative reference,
+    so the two share almost no vocabulary. The identifiers are the whole point:
+    thousands of file pages asking the same question differ only in the file
+    and symbol they name, and without those they would be one sentence
+    repeated across the corpus, matching everything and distinguishing nothing.
+
+    A question is emitted only where the page can answer it. A question whose
+    answer is not below it puts the words of a promise into the index and then
+    breaks it, which is the failure this block exists to avoid. Last on the
+    page so it cannot become the summary ``_extract_summary`` reads back.
+
+    Built as a list and capped, because a fully-connected file qualifies for
+    more of them than are worth carrying: past three the block stops being
+    question-shaped text and starts being padding on every page in the corpus.
+-#}
+{%- set questions = [] -%}
+{%- if public_syms -%}
+{%- set _ = questions.append("What does `" ~ ctx.file_path ~ "` export?") -%}
+{%- set _ = questions.append("Where is `" ~ public_syms[0].name ~ "` defined?") -%}
+{%- endif -%}
+{%- if ctx.dependents -%}
+{%- set _ = questions.append("What imports `" ~ ctx.file_path ~ "`?") -%}
+{%- endif -%}
+{%- if ctx.dependencies -%}
+{%- set _ = questions.append("What does `" ~ ctx.file_path ~ "` depend on?") -%}
+{%- endif -%}
+{%- if questions %}
+
+## Questions this page answers
+{% for q in questions[:3] %}
+- {{ q }}
+{%- endfor %}
+{%- endif %}
+{#- The words the file itself uses.
+
+    Everything above is a description of the file. This is the file's own
+    vocabulary: field names, string literals, help text, comment prose. The
+    page could describe a file accurately and still be unfindable by any
+    question about what it does, because a question is asked in the words of
+    the source and none of those words were on the page.
+
+    Per-file, and that is the whole point. Repo-level vocabulary rendered here
+    would be byte-identical across every file page in the corpus, which is the
+    failure this template's own header warns about: it would match every query
+    and distinguish none of them.
+
+    Last on the page, below the questions block, for the same reason that
+    block is low: ``_extract_summary`` reads back from the top, and a bag of
+    words is not a summary. Conditional, like every section below the
+    Overview, so a file that yields no vocabulary renders no heading.
+-#}
+{%- if ctx.file_vocabulary %}
+
+## In the code
+
+{{ ctx.file_vocabulary }}
+{%- endif %}
+
+{% include "_footer.j2" %}

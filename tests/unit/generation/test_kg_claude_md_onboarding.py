@@ -16,9 +16,6 @@ from repowise.core.generation.editor_files.data import (
 )
 from repowise.core.generation.kg_context import KnowledgeGraphContext
 from repowise.core.generation.onboarding.signals import OnboardingSignals
-from repowise.core.generation.onboarding.subkinds.codebase_map import (
-    CodebaseMapContext,
-)
 from repowise.core.generation.onboarding.subkinds.how_it_works import (
     HowItWorksContext,
     _build,
@@ -114,15 +111,22 @@ class TestClaudeMdKGSection:
         tmpl = jinja_env.get_template("claude_md.j2")
         rendered = tmpl.render(data=self._data())
         assert "### How to work in this repo" in rendered
-        assert "### Trust protocol" in rendered
+        # The trust rule survives as a bullet rather than its own section. The
+        # separate "### Trust protocol" heading was five bullets of protocol for
+        # a response shape the agent sees rarely, and it was cut for size; the
+        # load-bearing clause is what has to stay reachable.
+        assert "`verified: true`" in rendered
+        assert "never re-read those lines" in rendered
         # Pre-edit framing: the mandatory Read of edit targets is conceded.
         assert "raw Read of any file you will Edit" in rendered
         # The tool table renders from the single-source module.
         assert "| Tool | When and why |" in rendered
         assert "`get_answer(question)`" in rendered
-        # Protocol comes before the repo-facts data blocks.
+        # Protocol comes before the repo-facts data blocks. Anchored on the
+        # trust rule rather than on the first heading in the file, which would
+        # be ordered correctly by construction and could not fail.
         if "Entry points" in rendered:
-            assert rendered.index("Trust protocol") < rendered.index("Entry points")
+            assert rendered.index("`verified: true`") < rendered.index("Entry points")
 
 
 # ---------------------------------------------------------------------------
@@ -257,52 +261,6 @@ class TestHowItWorksWithTour:
         )
         ctx = _build(signals)
         assert ctx is None
-
-
-# ---------------------------------------------------------------------------
-# CodebaseMap + KG layers tests
-# ---------------------------------------------------------------------------
-
-
-class TestCodebaseMapWithLayers:
-    def test_layers_in_context(self):
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-            kg_layers=[{"name": "Core", "description": "Core logic", "nodeIds": ["file:a.py"]}],
-        )
-        assert len(ctx.kg_layers) == 1
-
-    def test_template_renders_layers(self, onboarding_env):
-        tmpl = onboarding_env.get_template("codebase_map.j2")
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-            kg_layers=[
-                {
-                    "name": "Core",
-                    "description": "Core business logic",
-                    "nodeIds": ["file:a.py", "file:b.py"],
-                },
-                {"name": "API", "description": "REST API layer", "nodeIds": ["file:c.py"]},
-            ],
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "## Architectural Layers" in rendered
-        assert "**Core**" in rendered
-        assert "**API**" in rendered
-
-    def test_template_no_layers_section(self, onboarding_env):
-        tmpl = onboarding_env.get_template("codebase_map.j2")
-        ctx = CodebaseMapContext(
-            repo_name="test",
-            total_files=10,
-            total_loc=500,
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "Architectural Layers" not in rendered
 
 
 # ---------------------------------------------------------------------------

@@ -23,8 +23,9 @@ from rich.table import Table
 
 from repowise.cli.helpers import console
 
-#: Pricing model used for the dollar estimate. Saved tokens are input-side
-#: tokens the coding agent never had to read, so the input rate applies.
+#: Fallback pricing model for the dollar estimate. Saved tokens are input-side
+#: tokens the coding agent never had to read, so the input rate applies. Used
+#: only when no agent session can be detected — see :func:`_resolve_pricing`.
 DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
 
 
@@ -47,10 +48,13 @@ DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
 @click.option(
     "--model",
     "pricing_model",
-    default=DEFAULT_PRICING_MODEL,
-    show_default=True,
+    default=None,
     metavar="MODEL",
-    help="Pricing model for the dollar estimate (input-token rate).",
+    help=(
+        "Pricing model for the dollar estimate (input-token rate). Defaults to "
+        "the model detected from this repo's most recent agent session, and "
+        f"falls back to {DEFAULT_PRICING_MODEL} when there is none."
+    ),
 )
 @click.option(
     "--missed",
@@ -70,7 +74,7 @@ def saved_command(
     path: str | None,
     group_by: str,
     since: str | None,
-    pricing_model: str,
+    pricing_model: str | None,
     show_missed: bool,
     missed_days: float,
 ) -> None:
@@ -86,6 +90,7 @@ def saved_command(
     since_ts = _parse_since(since)
 
     start = Path(path).resolve() if path else Path.cwd()
+    pricing_model, pricing_note = _resolve_pricing(start, pricing_model)
 
     if show_missed:
         _print_missed_report(start, missed_days, pricing_model)
@@ -112,6 +117,12 @@ def saved_command(
         if since_ts is not None:
             msg += f" since {since}"
         console.print(f"[yellow]{msg}.[/yellow]")
+        # Before returning, not after. Declining the init prompt turns off
+        # distill rewrites *and* skeleton-served Reads in the same write, so
+        # the cohort the counterfactual exists to inform is exactly the cohort
+        # with zero distillation events — and returning here first would make
+        # its rows unreadable by the only command that reports them.
+        _print_forgone_read_skeleton_line(start, db_path, since_ts)
         return
 
     saved = summary["saved_tokens"]
@@ -123,8 +134,12 @@ def saved_command(
         border_style="dim",
         show_footer=True,
         caption=(
-            "Covers the 'repowise distill' command/hook path plus MCP "
-            "counterfactual savings (mcp:<tool>); group by source to split them."
+            "Covers the 'repowise distill' command/hook path, MCP "
+            "counterfactual savings (mcp:<tool>), and the hooks that replace a "
+            "tool result: a Read served as a skeleton (read_skeleton), an "
+            "unchanged re-read served as a pointer (read_reread), and a search "
+            "flood served as a digest (search_digest). Group by filter or "
+            "source to split them."
         ),
     )
     table.add_column(group_by.capitalize(), style="cyan", footer="[bold]TOTAL[/bold]")
@@ -150,13 +165,253 @@ def saved_command(
     console.print(table)
     console.print(
         f"  Estimated saved: [bold green]${usd:.4f}[/bold green] "
-        f"[dim](at ${rate:.2f}/M input tokens, {pricing_model}; "
+        f"[dim](at ${rate:.2f}/M input tokens, {pricing_note}; "
         f"tokens are chars/4 estimates)[/dim]"
     )
     console.print(f"  [dim]Ledger: {db_path}[/dim]")
+    _print_mcp_truncation_line(db_path, since_ts)
+    _print_net(start, saved, since_ts)
     _print_missed_summary_line(start, missed_days)
     _print_reread_summary_line(start, missed_days)
+    _print_forgone_read_skeleton_line(start, db_path, since_ts)
     console.print()
+
+
+def _print_net(start: Path, saved_tokens: int, since_ts: float | None = None) -> None:
+    """Gross saved, gross spent, net — and the net may be negative.
+
+    This is the only line here that can answer "is this worth mounting". The
+    table above counts credits and structurally cannot report a loss, which
+    made every figure it printed an advertisement rather than a measurement.
+
+    Three honesty rules are load-bearing.
+
+    **The two sides have to cover the same window.** The debit side cannot be
+    windowed: the resident prefix is a property of the file as it is now, not
+    of any date range. So under ``--since`` this prints nothing at all rather
+    than setting a windowed credit against an all-time cost, which produced a
+    confident negative that was an artifact of the window and nothing else.
+
+    **Sessions that predate the debit ledger have no cost rows**, so a net
+    across them credits savings whose cost was never recorded.
+
+    **The debit total is a lower bound**: some real costs are not computable
+    from local data. They are named rather than dropped, so the net reads as
+    "no better than this".
+    """
+    if since_ts is not None:
+        console.print(
+            "\n  [dim]No net under --since: savings can be windowed by date and the "
+            "resident cost of the CLAUDE.md block cannot, so the two would not "
+            "describe the same period. Run without --since for the net.[/dim]"
+        )
+        return
+    try:
+        from repowise.cli.helpers import find_repowise_repo_root
+        from repowise.core.sessions.efficacy import advisory_cost
+        from repowise.core.sessions.footprint import measure
+        from repowise.core.sessions.staging import SessionStagingStore, default_store_path
+
+        repo_root = find_repowise_repo_root(start) or start
+        advisory_chars = advisory_firings = 0
+        if default_store_path(repo_root).exists():
+            store = SessionStagingStore.open_default(repo_root)
+            try:
+                advisory_chars, advisory_firings = advisory_cost(store.efficacy_rows())
+            finally:
+                store.close()
+        footprint = measure(
+            repo_root,
+            advisory_chars=advisory_chars,
+            advisory_firings=advisory_firings,
+        )
+    except Exception:
+        return
+    if not footprint.debits:
+        return
+
+    amp = footprint.amplification
+    multiplier = amp.ratio if amp.known else 1.0
+    billed_saved = int(saved_tokens * multiplier)
+    net = billed_saved - footprint.billed_total
+    colour = "green" if net > 0 else "red"
+
+    console.print()
+    console.print("  [bold]Net[/bold] [dim](billed tokens, after amplification)[/dim]")
+    console.print(f"    gross saved   [green]{billed_saved:>12,}[/green]")
+    console.print(f"    gross spent   [yellow]{footprint.billed_total:>12,}[/yellow]")
+    console.print(f"    net           [{colour}]{net:>12,}[/{colour}]")
+    for debit in footprint.debits:
+        console.print(
+            f"      [dim]{debit.label}: {debit.billed_tokens:,} "
+            f"({debit.raw_tokens:,} raw — {debit.detail})[/dim]"
+        )
+    if amp.known:
+        console.print(
+            f"      [dim]amplification {amp.ratio:.1f}x, measured over {amp.sessions} "
+            f"sessions at a median {amp.calls} API calls each. It is a function of "
+            "session length, not a constant.[/dim]"
+        )
+    else:
+        console.print(
+            "      [dim]no cache figures on disk, so nothing was amplified and "
+            "both sides are raw tokens.[/dim]"
+        )
+    for missing in footprint.unmeasured:
+        console.print(f"      [dim]not counted as a cost: {missing}.[/dim]")
+    console.print(
+        "      [dim]Savings recorded before the cost side existed have no debit "
+        "rows behind them, so this net is a ceiling on how good the trade is, "
+        "never a floor.[/dim]"
+    )
+
+
+#: One entry per replacing hook surface: the savings-ledger source that tags
+#: its forgone rows, how to read its on/off verdict, and how to name it. The
+#: source filter is load-bearing: every surface writes into the one
+#: ``forgone_savings`` table, so an unfiltered sum would report a search
+#: saving as a Read one.
+_FORGONE_SURFACES = (
+    (
+        "hook-read",
+        "read_skeleton",
+        "skeleton-served Reads",
+        "file",
+        "repowise hook read-skeleton install",
+    ),
+    (
+        "hook-search",
+        "search_digest",
+        "digest-served searches",
+        "search",
+        "repowise hook search-digest install",
+    ),
+    (
+        "hook-read",
+        "read_reread",
+        "collapsed re-reads",
+        "re-read",
+        "repowise hook read-reread install",
+    ),
+)
+
+
+def _print_mcp_truncation_line(db_path: Path, since_ts: float | None) -> None:
+    """MCP savings the table above structurally cannot show.
+
+    Two MCP signals exist. Counterfactual rows (``source='mcp:<tool>'`` in
+    ``savings``) are already in the table, because they went through
+    ``record_saving`` like everything else. Truncation drops are not: a tool
+    with no counterfactual estimator writes only to ``omissions``, never
+    calls ``record_saving``, and so is invisible to ``savings_summary`` --
+    real savings that happened, sitting one table over.
+
+    They are printed rather than folded into the footer because the table's
+    columns are raw/distilled pairs and a drop has no raw counterpart to
+    put in them. ``mcp_savings_summary`` merges with counterfactual
+    precedence, so taking only the ``truncation`` rows adds each tool once.
+    """
+    import sqlite3
+
+    from repowise.core.distill import tracking
+
+    try:
+        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
+        try:
+            summary = tracking.mcp_savings_summary(con, since=since_ts)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return  # no such table: this repo has never served MCP, not an error
+
+    rows = [r for r in summary["per_tool"] if r["kind"] == "truncation"]
+    if not rows:
+        return
+    tokens = sum(r["tokens"] for r in rows)
+    events = sum(r["events"] for r in rows)
+    tools = ", ".join(r["tool"] for r in rows[:3])
+    if len(rows) > 3:
+        tools += f", +{len(rows) - 3} more"
+    console.print(
+        f"  [dim]Not counted above:[/dim] [green]{tokens:,}[/green] tokens dropped past "
+        f"the response budget by {events:,} MCP call(s) ([dim]{tools}[/dim]) - tools with "
+        "no counterfactual estimator yet, so only the truncation is measurable."
+    )
+
+
+def _print_forgone_read_skeleton_line(start: Path, db_path: Path, since_ts: float | None) -> None:
+    """What each replacing surface would have saved, for repos that have it off.
+
+    Read out of its own table rather than the savings ledger, and printed
+    below the total rather than inside it, because none of it happened.
+
+    The caveat is not decoration. This number is exactly half the question:
+    it says what the replacement would have taken off the bill, and it cannot
+    say what the agent would then have had to read back, because nothing was
+    replaced and so nothing was recovered. A repo can show a large figure here
+    and still be one where serving skeletons is a bad trade.
+    """
+    import sqlite3
+
+    from repowise.cli.helpers import find_repowise_repo_root
+
+    repo_root = find_repowise_repo_root(start) or start
+    printed = False
+    for source, flag, label, noun, install_cmd in _FORGONE_SURFACES:
+        try:
+            con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2)
+            try:
+                # Filtered on the surface's *filter*, not its source: the
+                # skeleton and the re-read collapse share ``hook-read``, so a
+                # source-only sum would report each one's counterfactual twice.
+                # Rows predating the ``filter`` column carry '' and land under
+                # the surface that was the only one writing when they were made.
+                legacy = " OR (filter = '' AND source = ?)" if flag == "read_skeleton" else ""
+                params: tuple = (flag, source) if legacy else (flag,)
+                where = f" WHERE (filter = ?{legacy})"
+                if since_ts is not None:
+                    where += " AND created_at >= ?"
+                    params = (*params, since_ts)
+                items, raw, distilled = con.execute(
+                    "SELECT COUNT(DISTINCT path), COALESCE(SUM(raw_tokens),0), "
+                    f"COALESCE(SUM(distilled_tokens),0) FROM forgone_savings{where}",
+                    params,
+                ).fetchone()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return  # no such table: this repo never measured, which is not an error
+        if not items:
+            continue
+
+        # Rows outlive the setting that produced them, and nothing prunes them,
+        # so the state has to be read rather than inferred from their presence,
+        # or a repo that measured for a week and then turned the feature on gets
+        # told forever that it is off and should turn it on.
+        from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
+
+        printed = True
+        plural = "" if items == 1 else "s"
+        if not hook_flag_enabled(repo_root, flag):
+            console.print(
+                f"  [dim]Not saved:[/dim] {label} are [yellow]off[/yellow] here: "
+                f"{items:,} {noun}{plural} would have cost "
+                f"[bold]{raw - distilled:,}[/bold] fewer tokens ({raw:,} → {distilled:,}). "
+                f"[dim]Turn on with `{install_cmd}`.[/dim]"
+            )
+        else:
+            console.print(
+                f"  [dim]Measured before {label} was turned on:[/dim] {items:,} "
+                f"{noun}{plural} would have cost "
+                f"[bold]{raw - distilled:,}[/bold] fewer tokens ({raw:,} → {distilled:,}). "
+                "[dim]Savings since then are in the table above.[/dim]"
+            )
+    if printed:
+        console.print(
+            "  [dim]This is what the replacement would have taken off the bill, and only "
+            "that: nothing was replaced, so nothing was read back, so it says nothing "
+            "about how often the agent would have needed the whole thing anyway.[/dim]"
+        )
 
 
 def _missed_report(start: Path, days: float) -> dict | None:
@@ -268,20 +523,48 @@ def _render_missed_distill_table(
     console.print()
 
 
+def _resolve_pricing(repo_root: Path, override: str | None) -> tuple[str, str]:
+    """The model to price saved tokens at, and how it was arrived at.
+
+    The Costs endpoint has always priced this ledger at the model detected from
+    the repo's most recent agent session; this command assumed Sonnet. Same
+    tokens, two dollar figures, on two surfaces a reader takes for one — and
+    the assumed one understates an Opus session by two thirds. Detection is
+    shared with the endpoint rather than reimplemented, and any failure lands
+    on the documented default rather than an error.
+    """
+    if override:
+        return override, override
+    try:
+        from repowise.core.distill.session_model import resolve_session_model
+
+        resolved = resolve_session_model(repo_root)
+    except Exception:
+        return DEFAULT_PRICING_MODEL, f"{DEFAULT_PRICING_MODEL}, assumed"
+    return resolved.model, f"{resolved.model}, {resolved.source}"
+
+
 def _rewrite_hook_installed() -> bool:
-    """True when any agent surface has the rewrite hook wired up.
+    """True when any agent surface has a rewrite hook that can actually fire.
 
     Mirrors the doctor check: Claude Code is always considered, Codex only
-    when it is actually present on the machine.
+    when it is actually present on the machine. Registered is not enough — an
+    entry whose matcher names a renamed tool fires on nothing, and telling
+    someone their hook is installed is the one answer that hides why the rows
+    below it are still there.
     """
     try:
         from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
         from repowise.cli.agent_adapters.codex import CodexAdapter
 
-        if ClaudeCodeAdapter().rewrite_hook_installed():
+        def live(adapter) -> bool:
+            status = adapter.rewrite_hook_status()
+            return status.installed and not status.unmatched
+
+        if live(ClaudeCodeAdapter()):
             return True
         codex = CodexAdapter()
-        return codex.detect() and codex.rewrite_hook_installed()
+        return codex.detect() and live(codex)
     except Exception:
         return False
 

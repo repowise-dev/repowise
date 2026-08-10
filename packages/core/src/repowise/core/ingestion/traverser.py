@@ -22,6 +22,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import pathspec
 import structlog
@@ -62,9 +63,22 @@ class TraversalStats:
     skipped_submodule: int = 0
     skipped_nested_repo: int = 0
     lang_counts: dict[str, int] = field(default_factory=dict)
+    nested_repo_paths: list[str] = field(default_factory=list)
+    """Repo-relative paths of the nested git repos behind ``skipped_nested_repo``.
+
+    The counter alone cannot say *which* directories are separate checkouts,
+    which is what makes the fact actionable ("run git from inside them"). Capped
+    at :data:`_MAX_NESTED_REPO_PATHS` — a memory bound on a pathological tree,
+    not a threshold: the count stays exact either way.
+    """
+    nested_repo_paths_truncated: bool = False
+    """True once the cap above dropped a name, so a reader can say "at least"."""
 
 
 log = structlog.get_logger(__name__)
+
+#: Cap on the nested-repo names retained in :class:`TraversalStats`.
+_MAX_NESTED_REPO_PATHS = 50
 
 # ---------------------------------------------------------------------------
 # Blocklists
@@ -167,6 +181,12 @@ _BLOCKED_FILENAME_PATTERNS: list[str] = [
     "*.lock",
 ]
 
+#: ``_BLOCKED_FILENAME_PATTERNS`` compiled once. Matched against a bare
+#: filename, so it is equally usable from :func:`is_candidate_source_path`.
+_BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
+    "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
+)
+
 # Generated file markers (checked in first 512 bytes)
 _GENERATED_MARKERS: tuple[str, ...] = (
     "Code generated",
@@ -180,9 +200,12 @@ _GENERATED_MARKERS: tuple[str, ...] = (
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Manifest files that indicate a package root (for monorepo detection)
-_MANIFEST_FILES: frozenset[str] = frozenset(
-    {"pyproject.toml", "package.json", "Cargo.toml", "go.mod"}
-)
+# Registry-derived, so registering a language grants its repos monorepo
+# detection with no edit here. This was a hardcoded four (pyproject.toml,
+# package.json, Cargo.toml, go.mod), which is why a Maven, Ruby or Scala
+# monorepo reported no packages at all. .NET still does: its package file is
+# the ``.csproj`` glob, which an exact-filename list cannot express.
+_MANIFEST_FILES: frozenset[str] = _LANG_REGISTRY.package_manifest_filenames()
 
 # Entry-point evidence, all registry-derived: exact filenames (Main.kt,
 # config.ru), "*"-prefixed filename suffixes (OTP's <name>_app.erl), and
@@ -211,13 +234,7 @@ _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
 # adds no value.
 # Languages for which generated-file detection is skipped — same as parser's
 # passthrough set (no AST parsing, so reading 512 bytes for markers is pointless).
-_SKIP_GENERATED_CHECK: frozenset[str] = frozenset(
-    spec.tag
-    for spec in _LANG_REGISTRY.all_specs()
-    if spec.is_passthrough
-    and (not spec.is_code or spec.is_infra)
-    and spec.tag not in ("openapi", "unknown")
-)
+_SKIP_GENERATED_CHECK: frozenset[str] = _LANG_REGISTRY.unparseable_data_languages()
 
 
 class FileTraverser:
@@ -258,9 +275,7 @@ class FileTraverser:
         self._extra_ignore_filename = extra_ignore_filename
         self._gitignore = _load_gitignore_spec(self.repo_root)
         self._extra_ignore = _load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
-        self._blocked_patterns = pathspec.PathSpec.from_lines(
-            "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
-        )
+        self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
         self._extra_exclude = _compile_gitignore(patterns)
         # Per-directory ignore cache: absolute dir path -> PathSpec built from
@@ -277,14 +292,14 @@ class FileTraverser:
         self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
         self._include_submodules = include_submodules
         self._include_nested_repos = include_nested_repos
-        # Dotted-module targets of pyproject console scripts. A CLI entry
-        # module (``repowise-augment = "repowise.cli.augment_hook:main"``)
-        # has no in-repo importer, so without this it reads as unreachable
-        # unless its filename happens to match an entry-stem heuristic.
-        self._console_script_modules = _collect_console_script_modules(
-            self.repo_root,
-            prune_nested_git=not (include_submodules or include_nested_repos),
-        )
+        # Console-script tables are read lazily: collecting them walks the
+        # tree parsing every pyproject.toml, which measured at 2.0s of a 2.3s
+        # construction on this repo — and callers that only want the boundary
+        # test (:meth:`package_root_dirs`, :meth:`dir_chain_skipped`) never
+        # need them. Building one per `repowise update` is the reason this is
+        # not eager.
+        self._console_scripts: ConsoleScriptTables | None = None
+        self._console_scripts_prune_nested = not (include_submodules or include_nested_repos)
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
         log.info(
@@ -295,6 +310,36 @@ class FileTraverser:
             submodules_skipped=0 if include_submodules else len(self._submodule_paths),
             include_nested_repos=include_nested_repos,
         )
+
+    # ------------------------------------------------------------------
+    # Console scripts (lazy — see __init__)
+    # ------------------------------------------------------------------
+
+    def _console_script_tables(self) -> ConsoleScriptTables:
+        """Dotted-module targets of pyproject console scripts, read once.
+
+        A CLI entry module (``repowise-augment =
+        "repowise.cli.augment_hook:main"``) has no in-repo importer, so
+        without this it reads as unreachable unless its filename happens to
+        match an entry-stem heuristic.
+        """
+        if self._console_scripts is None:
+            self._console_scripts = _collect_console_scripts(
+                self.repo_root, prune_nested_git=self._console_scripts_prune_nested
+            )
+        return self._console_scripts
+
+    @property
+    def _console_script_names(self) -> frozenset[str]:
+        return self._console_script_tables().names
+
+    @property
+    def _console_script_modules(self) -> frozenset[str]:
+        return self._console_script_tables().modules
+
+    @property
+    def _distributions(self) -> frozenset[str]:
+        return self._console_script_tables().distributions
 
     # ------------------------------------------------------------------
     # Public API
@@ -420,6 +465,10 @@ class FileTraverser:
         # to the gitignore/exclude checks below).
         if not self._include_nested_repos and not is_submodule and _is_nested_git_repo(abs_path):
             self.stats.skipped_nested_repo += 1
+            if len(self.stats.nested_repo_paths) < _MAX_NESTED_REPO_PATHS:
+                self.stats.nested_repo_paths.append(rel_str)
+            else:
+                self.stats.nested_repo_paths_truncated = True
             log.debug("Skipping nested git repo", path=rel_str)
             return True
         if self._gitignore.match_file(rel_str + "/"):
@@ -557,7 +606,7 @@ class FileTraverser:
                 rel_pkg = rel_pkg_path.as_posix()
                 if rel_pkg in seen_paths:
                     continue
-                if self._dir_chain_skipped(rel_pkg_path):
+                if self.dir_chain_skipped(rel_pkg_path):
                     continue
                 seen_paths.add(rel_pkg)
                 lang = _primary_language_in(pkg_dir, prune_nested_git=prune_nested)
@@ -577,17 +626,41 @@ class FileTraverser:
         packages.sort(key=lambda p: p.path)
         return packages, len(packages) > 1
 
-    def _dir_chain_skipped(self, rel_dir: Path) -> bool:
+    def package_root_dirs(self) -> set[str]:
+        """Every directory holding a package manifest, at any depth.
+
+        Shares :func:`.package_roots.scan_package_roots` with health's module
+        attribution, and this traverser's own skip semantics, so the two agree
+        on what a package is. Distinct from :meth:`get_repo_structure`'s
+        ``packages``, which stops at depth 2 and pays for language and
+        entry-point detection per package.
+        """
+        from .package_roots import scan_package_roots
+
+        return scan_package_roots(self.repo_root, is_pruned=self.dir_chain_skipped)
+
+    def dir_chain_skipped(self, rel_dir: Path) -> bool:
         """True if *rel_dir* (or any ancestor) would be pruned by ``_walk``.
 
         Reuses :meth:`_should_skip_dir` level by level so monorepo package
         detection has exactly the same boundary semantics as file traversal
         (blocked dirs, submodules, nested git repos, gitignore/excludes).
+
+        That includes each level's *nested* ignore spec, which this used to
+        omit: ``_should_skip_dir`` takes the containing directory's spec as an
+        argument and got ``None`` here, so a directory ignored by a nested
+        ``.gitignore`` was reported as walkable even though ``_walk`` prunes
+        it. On this repo that let ``packages/vscode/.vscode-test`` — a
+        downloaded VS Code archive ignored by ``packages/vscode/.gitignore`` —
+        through, carrying 500 vendored ``package.json`` files with it.
         """
         cur = Path()
         for part in rel_dir.parts:
+            parent_abs = self.repo_root / cur
             cur = cur / part
-            if self._should_skip_dir(part, cur, self.repo_root / cur):
+            if self._should_skip_dir(
+                part, cur, self.repo_root / cur, self._get_dir_ignore(parent_abs)
+            ):
                 return True
         return False
 
@@ -674,28 +747,46 @@ def _stem_is_entry_point(abs_path: Path) -> bool:
     return stem in _ENTRY_POINT_STEMS
 
 
-def _collect_console_script_modules(
+class ConsoleScriptTables(NamedTuple):
+    """What one pass over the repo's ``pyproject.toml`` files yields."""
+
+    names: frozenset[str]
+    """Launcher names an installer drops in the environment's script dir."""
+    modules: frozenset[str]
+    """Dotted module targets, used for entry-point detection."""
+    distributions: frozenset[str]
+    """``[project].name`` values — the distributions this repo installs as."""
+
+
+def _collect_console_scripts(
     repo_root: Path, *, prune_nested_git: bool = True
-) -> frozenset[str]:
-    """Dotted-module targets declared in pyproject console-script tables.
+) -> ConsoleScriptTables:
+    """Console-script names, module targets and distribution names.
 
     Reads ``[project.scripts]``, ``[project.gui-scripts]``, and every
     ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
     repo. Values look like ``"repowise.cli.augment_hook:main"`` — the part
-    before the colon names the module a console launcher imports at runtime.
+    before the colon names the module a console launcher imports at runtime;
+    the key is the launcher an installer drops in the environment's script
+    directory, and ``[project].name`` is the distribution it installs as.
+    All three come out of the same read: entry-point detection wants the
+    modules, shadowed-launcher detection wants the names and needs the
+    distribution to tell this repo's editable install from a dependency's.
     Best-effort: unparsable files are skipped.
     """
     import tomllib
 
     from repowise.core.fs_walk import iter_glob
 
+    names: set[str] = set()
     modules: set[str] = set()
+    distributions: set[str] = set()
     try:
         config_files = list(
             iter_glob(repo_root, ("pyproject.toml",), prune_nested_git=prune_nested_git)
         )
     except OSError:
-        return frozenset()
+        return ConsoleScriptTables(frozenset(), frozenset(), frozenset())
     for config_file in config_files:
         try:
             data = tomllib.loads(config_file.read_text(encoding="utf-8"))
@@ -704,19 +795,29 @@ def _collect_console_script_modules(
         project = data.get("project")
         if not isinstance(project, dict):
             continue
-        groups = [project.get("scripts"), project.get("gui-scripts")]
+        dist = project.get("name")
+        if isinstance(dist, str) and dist.strip():
+            distributions.add(dist.strip())
+        # Only [project.scripts] / [project.gui-scripts] produce a launcher on
+        # PATH; other entry-point groups are plugin registrations, so their
+        # keys are collected as modules only.
+        launcher_groups = [project.get("scripts"), project.get("gui-scripts")]
+        groups = list(launcher_groups)
         entry_points = project.get("entry-points")
         if isinstance(entry_points, dict):
             groups.extend(entry_points.values())
         for group in groups:
             if not isinstance(group, dict):
                 continue
-            for target in group.values():
+            is_launcher = any(group is g for g in launcher_groups)
+            for name, target in group.items():
+                if is_launcher and isinstance(name, str) and name.strip():
+                    names.add(name.strip())
                 if isinstance(target, str):
                     module = target.split(":", 1)[0].strip()
                     if module:
                         modules.add(module)
-    return frozenset(modules)
+    return ConsoleScriptTables(frozenset(names), frozenset(modules), frozenset(distributions))
 
 
 def _is_console_script_target(rel_path: str, modules: frozenset[str]) -> bool:
@@ -810,6 +911,45 @@ def _parse_gitmodules(repo_root: Path) -> frozenset[str]:
     except Exception:
         log.warning("Failed to parse .gitmodules", path=str(gitmodules))
         return frozenset()
+
+
+def is_candidate_source_path(rel_path: str) -> bool:
+    """Whether *rel_path* is shaped like a file this repo would index.
+
+    Path-shape only: the directory blocklist, the blocked extensions/filename
+    patterns, and the known-language extension map. No disk access, no
+    gitignore, no binary/size/generated checks — so a ``True`` answer means
+    "worth handing to the pipeline", never "will be indexed". :class:`FileTraverser`
+    still applies the full test on the files it walks.
+
+    It exists for the two change sources that only ever see a path: the
+    working-tree diff (untracked files, which ``git`` reports without
+    consulting our blocklists) and the file watcher (which must not wake an
+    update for ``.git/index.lock`` or a ``node_modules`` write). Both were
+    reading the blocklists' intent by hand and drifting from it.
+
+    One known false negative: an extensionless script that :class:`FileTraverser`
+    accepts by shebang is rejected here, because deciding that means reading the
+    file and this must stay a pure path test. Such a file is indexed on a full
+    run and by any commit that touches it; only the two path-only sources above
+    miss it.
+    """
+    parts = Path(rel_path.replace("\\", "/")).parts
+    if not parts:
+        return False
+    if any(part in _BLOCKED_DIRS for part in parts[:-1]):
+        return False
+
+    name = parts[-1]
+    if name in SPECIAL_FILENAMES:
+        return True
+
+    suffix = Path(name).suffix.lower()
+    if suffix in _BLOCKED_EXTENSIONS:
+        return False
+    if _BLOCKED_FILENAME_SPEC.match_file(name):
+        return False
+    return suffix in EXTENSION_TO_LANGUAGE
 
 
 def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:

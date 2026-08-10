@@ -21,12 +21,17 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+import structlog
 
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_KEY_CONCEPTS, SLOT_TITLES
+
+log = structlog.get_logger(__name__)
 
 _GATE_MIN_CONCEPTS = 4
 _TOP_CONCEPTS = 6
@@ -224,6 +229,101 @@ def _relations_among(
     return relations
 
 
+# The words of a name, however it is spelled. The documents write "blast
+# radius", the code writes ``BlastRadius`` or ``blast_radius``, and a term is
+# only useful here if those three meet.
+_NAME_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def _name_key(text: str) -> tuple[str, ...]:
+    return tuple(word.lower() for word in _NAME_WORDS.findall(text))
+
+
+def _document_frequency(signals: OnboardingSignals) -> dict[tuple[str, ...], int]:
+    """How many of the repository's documents name each mined term.
+
+    Keyed on the term's words rather than its spelling, so a heading of
+    "Blast radius" answers for a class called ``BlastRadius``. Empty whenever
+    nothing was mined, which leaves ranking exactly as it was.
+    """
+    frequency: dict[tuple[str, ...], int] = {}
+    for term in signals.house_terms:
+        key = _name_key(term.term)
+        if key:
+            frequency[key] = max(frequency.get(key, 0), term.doc_frequency)
+    return frequency
+
+
+def _prose_hits(name: str, frequency: dict[tuple[str, ...], int]) -> int:
+    """How many documents name the idea this symbol is named after.
+
+    A term rarely *is* a class name. Codebases name the type after the idea
+    and then say what it does with it — the documents here say "dead code"
+    and the code says ``DeadCodeAnalyzer``, ``DeadCodeReport``,
+    ``DeadCodeFinding``. Matching the term exactly found two classes in this
+    repository; matching it as a run of words inside the name found 175, and
+    the difference is entirely names of that shape.
+
+    One asymmetry, because the two cases are not equally good evidence. A
+    multi-word term may sit anywhere in the name: ``CrossRepoBlastRadius`` is
+    about blast radius wherever the words fall. A single-word term has to
+    lead the name, or be the whole of it. Without that, "risk" claims
+    ``OwnershipRiskDetector`` and "stats" claims ``CFGPassStats`` — names
+    that contain the word while being about something else, and there are
+    many more of them than there are real matches.
+    """
+    if not frequency:
+        # The common case: nothing was mined, so nothing can match and the
+        # name never needs splitting. Checked here rather than at the call
+        # site because this runs once per candidate symbol, and a large
+        # repository offers tens of thousands.
+        return 0
+    words = _name_key(name)
+    best = 0
+    for size in range(len(words), 0, -1):
+        for start in range(len(words) - size + 1):
+            if size == 1 and start != 0:
+                continue
+            best = max(best, frequency.get(words[start : start + size], 0))
+    return best
+
+
+#: Phrases in a symbol's own docstring that say it exists to support
+#: development rather than to do the work. Deliberately about purpose rather
+#: than about implementation: "for unit tests" says what a thing is for in any
+#: repository, while "in-memory" describes plenty of production caches and
+#: would demote them.
+_SCAFFOLD_PHRASES = (
+    "for unit tests",
+    "for testing",
+    "for tests",
+    "in tests",
+    "test double",
+    "test fixture",
+    "test harness",
+    "test helper",
+    "not for production",
+    "not intended for production",
+    "development use",
+    "development only",
+)
+
+
+def _is_scaffolding(docstring: str) -> bool:
+    """Whether a symbol's own docstring marks it as scaffolding.
+
+    Used to demote, never to exclude. A test helper that the rest of the
+    system genuinely leans on can still reach the page — it just stops
+    outranking the types the reader came for. The signal is the symbol's own
+    words about itself, which is the cheapest honest evidence available:
+    ``InMemoryVectorStore`` describes itself as "primarily tailored for unit
+    tests" and was ranked as a load-bearing concept of the system regardless,
+    because nothing in the ranking read what it said.
+    """
+    folded = docstring.lower()
+    return any(phrase in folded for phrase in _SCAFFOLD_PHRASES)
+
+
 def _is_trivial(name: str, kind: str) -> bool:
     """Drop dunders, constructors, tiny names, and trivial accessors."""
     if name.startswith("__") and name.endswith("__"):
@@ -354,8 +454,11 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     candidates: list[ConceptSymbol] = []
     id_by_name: dict[str, str] = {}
     seen_names: set[str] = set()
-    scored: list[tuple[int, float, int, int, ConceptSymbol]] = []
+    scored: list[tuple[int, int, int, float, int, int, ConceptSymbol]] = []
     any_symbol_signal = False
+    document_frequency = _document_frequency(signals)
+    written_about = 0
+    scaffolding = 0
     for raw in _iter_raw_symbols(signals, gs):
         path = raw["file_path"]
         if path in test_files:
@@ -381,8 +484,16 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
             cluster=cluster_of(path),
             cross_file_callers=xcallers,
         )
+        prose_hits = _prose_hits(name, document_frequency)
+        if prose_hits:
+            written_about += 1
+        is_scaffolding = _is_scaffolding(concept.docstring)
+        if is_scaffolding:
+            scaffolding += 1
         scored.append(
             (
+                0 if is_scaffolding else 1,
+                prose_hits,
                 xcallers,
                 spr,
                 1 if raw["is_exported"] else 0,
@@ -395,15 +506,30 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     if not scored:
         return None
 
+    # Two signals lead, and both are about what the repository says rather than
+    # what its graph does.
+    #
+    # Scaffolding sorts last because a symbol that describes itself as existing
+    # for tests is not the mental model, however many callers it has — and one
+    # such symbol was shipped as a core concept of this system for exactly that
+    # reason. It is a demotion and not a filter: a genuinely central helper can
+    # still fill a slot the concepts left empty.
+    #
+    # Then how many of the repository's own documents name the symbol. A class
+    # the team writes about outranks a class the graph merely calls, which the
+    # remaining four keys cannot express: they measure how much code leans on a
+    # symbol, and never whether a human found it worth explaining.
     if any_symbol_signal:
-        # Importance: cross-file callers, then symbol PageRank, then export
-        # marker, then presence of a docstring (a deliberate public surface).
-        scored.sort(key=lambda t: (t[0], t[1], t[2], t[3]), reverse=True)
+        # Then cross-file callers, symbol PageRank, export marker, and the
+        # presence of a docstring (a deliberate public surface).
+        scored.sort(key=lambda t: t[:6], reverse=True)
     else:
         # No resolved symbol edges (thin / rehydrated graph): fall back to the
-        # file's PageRank so a page still generates on small repos.
+        # file's PageRank so a page still generates on small repos. The two
+        # prose signals still lead — a thin graph is the case where they carry
+        # the most, because everything they sit above is close to noise.
         scored.sort(
-            key=lambda t: (signals.pagerank.get(t[4].file_path, 0.0), t[3]),
+            key=lambda t: (t[0], t[1], signals.pagerank.get(t[6].file_path, 0.0), t[5]),
             reverse=True,
         )
 
@@ -412,7 +538,7 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     # callers and no export marker are not something the rest of the system
     # depends on, so they pad the gate but never a full page.
     filler: list[ConceptSymbol] = []
-    for _, _, exported_flag, _, concept in scored:
+    for *_, exported_flag, _has_doc, concept in scored:
         if concept.name in seen_names:
             continue
         seen_names.add(concept.name)
@@ -426,6 +552,23 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
     )
     if len(concept_symbols) < _GATE_MIN_CONCEPTS:
         return None
+
+    # Said out loud because both new signals fail quietly. A repository whose
+    # vocabulary was never mined ranks exactly as it did before and looks
+    # identical from outside, and a scaffolding list that stops matching
+    # anything reads the same as a repository with no scaffolding in it.
+    log.info(
+        "onboarding.key_concepts_ranked",
+        repo_name=signals.repo_name,
+        candidates=len(scored),
+        house_terms=len(signals.house_terms),
+        symbols_written_about=written_about,
+        symbols_demoted_as_scaffolding=scaffolding,
+        chosen_written_about=sum(
+            1 for c in concept_symbols if _prose_hits(c.name, document_frequency)
+        ),
+        chosen=[c.name for c in concept_symbols],
+    )
 
     relations = _relations_among(signals.graph_builder, concept_symbols, id_by_name)
 

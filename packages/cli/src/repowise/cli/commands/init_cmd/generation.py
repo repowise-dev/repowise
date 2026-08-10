@@ -38,6 +38,7 @@ from repowise.cli.providers import (
     flush_cost_tracker,
 )
 from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER, MaybeCountColumn, RichProgressCallback
+from repowise.core.generation.models import count_stub_fallbacks
 
 __all__ = [
     "COST_GATE_USD",
@@ -366,22 +367,43 @@ def run_repo_generation(
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids
 
+    # A page whose provider call failed is still handed back, as a stub rendered
+    # from structure alone, so that the row exists and a later run can find it
+    # and refill it. That makes it a member of ``generated_pages`` like any
+    # other page, and counting the list is what let the summary report the same
+    # page as generated and as failed at once.
+    stub_count = count_stub_fallbacks(generated_pages)
+    written_count = len(generated_pages) - stub_count
+
     if failed_page_ids:
         type_counts = Counter(pid.split(":")[0] for pid in failed_page_ids)
         console.print(
-            f"  [yellow]⚠[/yellow] Generated [bold]{len(generated_pages)}[/bold] pages "
+            f"  [yellow]⚠[/yellow] Generated [bold]{written_count}[/bold] pages "
             f"([bold yellow]{len(failed_page_ids)} failed[/bold yellow])\n"
         )
         console.print("  [bold yellow]Failed pages by type:[/bold yellow]")
         for page_type, count in sorted(type_counts.items(), key=lambda x: -x[1]):
             console.print(f"    • {page_type}: {count}")
+        # Saying only "missing" sends the user looking for absent pages and
+        # finding present ones, which reads as the report being wrong. Most
+        # failures leave a placeholder behind; --resume replaces those too,
+        # because a placeholder is deliberately kept out of the record of what
+        # is already done.
+        placeholder_note = (
+            f"  [dim]{stub_count} of them left a placeholder page rendered from "
+            "structure alone, so the wiki has a page there but not a written "
+            "one. The rest produced no page at all.[/dim]\n"
+            if stub_count
+            else ""
+        )
         console.print(
             "\n  [yellow]The wiki is incomplete due to provider failures.[/yellow]\n"
-            "  [dim]Run [bold]repowise init --resume[/bold] to generate missing pages "
-            "without re-spending on completed ones.[/dim]\n"
+            f"{placeholder_note}"
+            "  [dim]Run [bold]repowise init --resume[/bold] to generate the pages that "
+            "failed, without re-spending on the ones that succeeded.[/dim]\n"
         )
     elif verbose:
-        console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
+        console.print(f"  [green]✓[/green] Generated [bold]{written_count}[/bold] pages")
 
     # KG enrichment is layer naming and the guided tour, both pure prompting.
     # A deterministic run has no model to ask, and the skeleton's structural

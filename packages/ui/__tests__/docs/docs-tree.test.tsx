@@ -183,6 +183,37 @@ describe("DocsTree", () => {
     expect(rowLabels().some((l) => l.startsWith("3") && l.includes("Alpha API"))).toBe(true);
   });
 
+  it("numbers only the top-level rows that continue the run from 1", () => {
+    // A module no layer claimed keeps the global number generation stamped on
+    // it, so it can land on the top rung as "41" beside onboarding's "1".
+    const unclaimed = makePage({
+      id: "module_page:odd/bits",
+      page_type: "module_page",
+      title: "Module: odd/bits",
+      target_path: "odd/bits",
+      parent_page_id: ROOT.id,
+      display_order: 41,
+      section_number: "41",
+    });
+    render(
+      <DocsTree
+        pages={[...SPINE, unclaimed]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    const labels = rowLabels();
+    // The unbroken run keeps its numbers, so a render-nothing implementation
+    // cannot pass this either.
+    expect(labels.some((l) => l.startsWith("1") && l.includes("Getting Started"))).toBe(true);
+    expect(labels.some((l) => l.startsWith("2") && l.includes("Zebra Runtime"))).toBe(true);
+    expect(labels.some((l) => l.startsWith("3") && l.includes("Alpha API"))).toBe(true);
+    // The row that breaks the run shows no number at all.
+    const stray = labels.find((l) => l.includes("odd/bits")) ?? "";
+    expect(stray).not.toBe("");
+    expect(stray).not.toMatch(/^\d/);
+  });
+
   it("opens the layer spine by default and keeps files out of the outline", () => {
     render(
       <DocsTree pages={SPINE} selectedPageId={null} onSelectPage={() => {}} />,
@@ -315,6 +346,495 @@ describe("DocsTree", () => {
     expect(screen.getByText("infra-0.yml")).toBeInTheDocument();
   });
 
+  // -------------------------------------------------------------------------
+  // Layer grouping from the stamp on the members
+  // -------------------------------------------------------------------------
+  //
+  // The wiki no longer writes a page per layer, so a module cannot be parented
+  // onto one. Every module and cycle carries the layer that claims it, and the
+  // tree builds the grouping row from that.
+
+  /** A repo whose modules hang straight off the overview, each stamped. */
+  const SPINE_IDS = ["layer:runtime", "layer:api"];
+  const layeredRoot = (metadata: Record<string, unknown> = {}) =>
+    makePage({
+      id: "repo_overview:demo",
+      page_type: "repo_overview",
+      title: "Repository Overview: demo",
+      target_path: "demo",
+      parent_page_id: null,
+      display_order: 0,
+      metadata,
+    });
+  const stampedModule = (
+    id: string,
+    title: string,
+    stamp: { layer_id?: string; layer_name?: string } = {},
+    order = 1,
+  ) =>
+    makePage({
+      id,
+      page_type: "module_page",
+      title,
+      target_path: id.replace("module_page:", ""),
+      parent_page_id: "repo_overview:demo",
+      display_order: order,
+      ...stamp,
+    });
+
+  it("groups modules under a layer row built from the stamp on the modules", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The layer row exists even though no page describes the layer.
+    expect(screen.getByText("Zebra Runtime")).toBeInTheDocument();
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+    // Ordered by the overview's spine, which disagrees with the alphabet — so
+    // this cannot pass on an alphabetical grouping.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Alpha API"));
+    expect("Zebra Runtime".localeCompare("Alpha API")).toBeGreaterThan(0);
+    // Each module reads under its own layer, not beside it. The layers open on
+    // load, so their members are there without a click.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("runtime/engine"));
+    expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Alpha API"));
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("api/routes"));
+  });
+
+  it("opens every layer row on load, and closes one on a click", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The first screen is a table of contents: every layer named, and what each
+    // one holds listed under it, with no click spent to get there.
+    expect(screen.getByText("Zebra Runtime")).toBeInTheDocument();
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+    expect(screen.getByText("runtime/engine")).toBeInTheDocument();
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
+
+    // One click shuts one layer and leaves the other open — so this cannot
+    // pass on a tree that merely ignores the expansion state.
+    fireEvent.click(screen.getByText("Zebra Runtime"));
+    expect(screen.queryByText("runtime/engine")).not.toBeInTheDocument();
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
+  });
+
+  it("puts the file corpus below the layers, so it never fronts the outline", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          makePage({
+            id: "onboarding:onboarding/getting_started",
+            page_type: "onboarding",
+            title: "Getting Started",
+            target_path: "onboarding/getting_started",
+            parent_page_id: "repo_overview:demo",
+            display_order: 1,
+          }),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          makePage({ id: "f1", target_path: "src/foo.ts", title: "foo.ts" }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // Orientation, then the layer outline, then the way into the files. The
+    // corpus is a reference rather than a section, and a row whose count runs
+    // to four digits sitting mid-outline reads as the point of the sidebar.
+    const corpus = indexOfRow("Auto-documented files (1)");
+    expect(indexOfRow("Repository Overview: demo")).toBeLessThan(indexOfRow("Getting Started"));
+    expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Zebra Runtime"));
+    expect(indexOfRow("Alpha API")).toBeLessThan(corpus);
+    // The layers keep their own order ahead of it, so this cannot pass on a
+    // build that merely shuffled the top-level rows.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Alpha API"));
+    // Still a deliberate drill-in, not opened on load.
+    expect(screen.queryByText("foo.ts")).not.toBeInTheDocument();
+  });
+
+  it("labels a layer by its id when no member carries the display name", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(screen.getByText("layer:api")).toBeInTheDocument();
+  });
+
+  it("leaves a layer grouping row unnumbered, and the stray beside it too", () => {
+    const onboarding = makePage({
+      id: "onboarding:onboarding/getting_started",
+      page_type: "onboarding",
+      title: "Getting Started",
+      target_path: "onboarding/getting_started",
+      metadata: { subkind: "getting_started" },
+      parent_page_id: "repo_overview:demo",
+      display_order: 1,
+      section_number: "1",
+    });
+    const unclaimed = {
+      ...stampedModule("module_page:odd/bits", "Module: odd/bits", {}, 41),
+      section_number: "41",
+    };
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          onboarding,
+          unclaimed,
+          stampedModule(
+            "module_page:api/routes",
+            "Module: api/routes",
+            { layer_id: "layer:api", layer_name: "Alpha API" },
+            2,
+          ),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    const labels = rowLabels();
+    // The chapter that starts the run keeps its number.
+    expect(labels.some((l) => l.startsWith("1") && l.includes("Getting Started"))).toBe(true);
+    // A layer is a grouping row, not a page — it has no number to show.
+    const layer = labels.find((l) => l.includes("Alpha API")) ?? "";
+    expect(layer).not.toBe("");
+    expect(layer).not.toMatch(/^\d/);
+    // The row holding the modules no layer claimed is a grouping row too, so
+    // it has no number of its own either. (The unclaimed module itself is no
+    // longer on the top rung under a declared spine — it sits inside this row.
+    // The case where it does reach the top rung, on a repo with no spine at
+    // all, is covered by the test above.)
+    const unlayeredRow = labels.find((l) => l.includes("Modules with no layer")) ?? "";
+    expect(unlayeredRow).not.toBe("");
+    expect(unlayeredRow).not.toMatch(/^\d/);
+    // And it does not show its global number once opened, either.
+    fireEvent.click(screen.getByText("Modules with no layer (1)"));
+    const stray = rowLabels().find((l) => l.includes("odd/bits")) ?? "";
+    expect(stray).not.toBe("");
+    expect(stray).not.toMatch(/^\d/);
+  });
+
+  it("reads the stamp out of metadata when the row was fetched in full", () => {
+    // A hydrated row carries the blob rather than the promoted column.
+    const module = makePage({
+      id: "module_page:api/routes",
+      page_type: "module_page",
+      title: "Module: api/routes",
+      target_path: "api/routes",
+      parent_page_id: "repo_overview:demo",
+      metadata: { layer_id: "layer:api", layer_name: "Alpha API" },
+    });
+    render(
+      <DocsTree
+        pages={[layeredRoot({ layer_order_ids: ["layer:api"] }), module]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+  });
+
+  it("warns when the overview names a spine but nothing carries a stamp", () => {
+    // A listing that dropped the stamp and a repo with no layers at all look
+    // identical in the rendered tree, so the two must not be told apart by
+    // eye. The overview declaring a spine is the signal something is wrong.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule("module_page:api/routes", "Module: api/routes"),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(" ")).toContain("layer");
+    // The pages are still shown — a missing grouping never hides a page. An
+    // unstamped module now waits in the trailing group rather than posing as a
+    // layer on the top rung, so it takes one click to reach.
+    fireEvent.click(screen.getByText("Modules with no layer (1)"));
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it("stays quiet on a repo that genuinely has no layers", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot(),
+          stampedModule("module_page:api/routes", "Module: api/routes"),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(warn).not.toHaveBeenCalled();
+    expect(screen.getByText("api/routes")).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it("warns about a stamped layer the spine does not list, and still shows it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+          stampedModule("module_page:odd/bits", "Module: odd/bits", {
+            layer_id: "layer:ghost",
+            layer_name: "Ghost",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(warn.mock.calls.flat().join(" ")).toContain("layer:ghost");
+    // Off-spine layers sort last rather than disappearing.
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Ghost"));
+    // Without this the spy outlives the case and every later test that reads
+    // console.warn sees this call too.
+    warn.mockRestore();
+  });
+
+  it("keeps an unstamped module off the top rung, in a trailing group of its own", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          // Listed first and named so the alphabet would put it at the very
+          // top: an implementation that leaves it at depth 0 cannot pass.
+          stampedModule("module_page:aaa/config", "Module: aaa/config", {}, 1),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }, 2),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }, 3),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // Not a sibling of the layer rows, where it would be styled as one.
+    expect(screen.queryByText("aaa/config")).not.toBeInTheDocument();
+    // The trailing row says what it is, and does not read like a layer.
+    const group = screen.getByText("Modules with no layer (1)");
+    // After every layer row, and before the bottom folder.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("Modules with no layer"));
+    expect(indexOfRow("Alpha API")).toBeLessThan(indexOfRow("Modules with no layer"));
+    // Collapsed on load — only layer keys join the default-expanded set.
+    fireEvent.click(group);
+    expect(screen.getByText("aaa/config")).toBeInTheDocument();
+  });
+
+  it("moves only the unstamped module, leaving a stamped one under its layer", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          stampedModule("module_page:aaa/config", "Module: aaa/config", {}, 1),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }, 2),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The layer opens on load; the leftovers bucket is one of the two rows that
+    // does not, so open it to see where its member landed.
+    fireEvent.click(screen.getByText("Modules with no layer (1)"));
+    // The stamped module reads under its layer; the unstamped one reads under
+    // the trailing group, which sits below every layer.
+    expect(indexOfRow("Zebra Runtime")).toBeLessThan(indexOfRow("runtime/engine"));
+    expect(indexOfRow("runtime/engine")).toBeLessThan(indexOfRow("Modules with no layer"));
+    expect(indexOfRow("Modules with no layer")).toBeLessThan(indexOfRow("aaa/config"));
+  });
+
+  it("leaves the onboarding chapters on the top rung, ahead of the layers", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          ONBOARDING,
+          stampedModule("module_page:aaa/config", "Module: aaa/config", {}, 4),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }, 5),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // Only the module was moved — the chapter is not swept into the group.
+    expect(screen.getByText("Modules with no layer (1)")).toBeInTheDocument();
+    expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Zebra Runtime"));
+    expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("Modules with no layer"));
+  });
+
+  it("warns about an unstamped module by name, and not about the chapters", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: SPINE_IDS }),
+          ONBOARDING,
+          stampedModule("module_page:aaa/config", "Module: aaa/config", {}, 4),
+          stampedModule("module_page:runtime/engine", "Module: runtime/engine", {
+            layer_id: "layer:runtime",
+            layer_name: "Zebra Runtime",
+          }, 5),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    const said = warn.mock.calls.flat().join(" ");
+    expect(warn).toHaveBeenCalled();
+    expect(said).toContain("aaa/config");
+    // The chapter legitimately belongs on the top rung — complaining about it
+    // would make the warning noise on every healthy repo.
+    expect(said).not.toContain("getting_started");
+    warn.mockRestore();
+  });
+
+  it("changes nothing on a repo that declares no layer spine at all", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot(),
+          ONBOARDING,
+          stampedModule("module_page:aaa/config", "Module: aaa/config", {}, 4),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // With no spine there is nothing for a module to be missing from: it keeps
+    // its place, no trailing group appears, and nobody complains.
+    expect(screen.queryByText(/Modules with no layer/)).not.toBeInTheDocument();
+    expect(screen.getByText("aaa/config")).toBeInTheDocument();
+    expect(indexOfRow("Getting Started")).toBeLessThan(indexOfRow("aaa/config"));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // A chapter with chapters of its own — the rung below the one that opens.
+  const SUB_MODULE = makePage({
+    id: "module_page:runtime/engine/codecs",
+    page_type: "module_page",
+    title: "Module: runtime/engine/codecs",
+    target_path: "runtime/engine/codecs",
+    parent_page_id: MODULE.id,
+    display_order: 1,
+    section_number: "2.1.1",
+  });
+
+  it("opens the top rung only, leaving a chapter's own chapters shut", () => {
+    render(
+      <DocsTree
+        pages={[...SPINE, SUB_MODULE]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // The layer is open, so its chapter is on the first screen...
+    expect(screen.getByText("runtime/engine")).toBeInTheDocument();
+    // ...but the rung below it is not. Without this the outline came out four
+    // deep on load and the indentation stopped carrying rank.
+    expect(screen.queryByText("runtime/engine/codecs")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("runtime/engine"));
+    expect(screen.getByText("runtime/engine/codecs")).toBeInTheDocument();
+  });
+
+  it("reveals the selected page by opening the chapters above it", () => {
+    render(
+      <DocsTree
+        pages={[...SPINE, SUB_MODULE]}
+        selectedPageId={SUB_MODULE.id}
+        onSelectPage={() => {}}
+      />,
+    );
+    // Reached by a deep link rather than a click, so nothing opened its parent.
+    // A selected row inside a shut chapter is a highlight a reader cannot see.
+    expect(screen.getByText("runtime/engine/codecs")).toBeInTheDocument();
+  });
+
+  it("carries no link on a layer row — the outline is rows of text", () => {
+    render(
+      <DocsTree
+        pages={[
+          layeredRoot({ layer_order_ids: ["layer:api"] }),
+          stampedModule("module_page:api/routes", "Module: api/routes", {
+            layer_id: "layer:api",
+            layer_name: "Alpha API",
+          }),
+        ]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    // The row itself is untouched — this cannot pass on a tree that dropped the
+    // layer along with its trailing button.
+    expect(screen.getByText("Alpha API")).toBeInTheDocument();
+  });
+
   it("lifts a concept's file pages to the bottom folder, leaving the concept a clean leaf", () => {
     // The concept stays a pure title in the outline; its files move wholesale
     // into the single bottom folder rather than sitting beside it.
@@ -338,5 +858,45 @@ describe("DocsTree", () => {
     expect(screen.queryByText("a.py")).not.toBeInTheDocument();
     // Both files are in the single bottom folder.
     expect(screen.getByText("Auto-documented files (2)")).toBeInTheDocument();
+  });
+
+  // Three orientation slots were retired, and their rows survive in every
+  // index built before the sweep that removes them. `ONBOARDING_SLOT_TITLES`
+  // still lists all three on purpose, and this is the reason: in *folder*
+  // view a dedicated onboarding page whose slot is not in that map does not
+  // disappear, it falls through to path-based grouping and surfaces as a stray
+  // top-level `onboarding/` directory beside the Onboarding folder. That reads
+  // as a bug rather than a retirement.
+  //
+  // The default domain view is unaffected either way — it places pages by the
+  // stamped parent_page_id and labels them from page.title — so folder view is
+  // what this has to assert on.
+  it("keeps a retired onboarding slot in the Onboarding folder rather than a stray directory", () => {
+    const retired = makePage({
+      id: "onboarding:onboarding/codebase_map",
+      page_type: "onboarding",
+      title: "Codebase Map",
+      target_path: "onboarding/codebase_map",
+      metadata: { subkind: "codebase_map" },
+      parent_page_id: ROOT.id,
+      display_order: 3,
+    });
+    render(
+      <DocsTree
+        pages={[ROOT, ONBOARDING, retired]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Switch to folder view"));
+
+    // Both slots are in the one Onboarding folder, the retired one labelled
+    // from the map, which is exactly what keeping its entry buys.
+    const onboardingRow = rowLabels().find((l) => l.includes("Onboarding")) ?? "";
+    expect(onboardingRow).not.toBe("");
+    expect(screen.getByText("Codebase Map")).toBeInTheDocument();
+    expect(screen.getByText("Getting Started")).toBeInTheDocument();
+    // The failure mode if the entry were dropped: a bare `onboarding` row.
+    expect(rowLabels().some((l) => l.trim() === "onboarding")).toBe(false);
   });
 });

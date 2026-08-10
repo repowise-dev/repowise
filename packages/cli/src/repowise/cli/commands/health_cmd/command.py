@@ -17,6 +17,7 @@ from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     err_console,
+    load_config,
     load_state,
     resolve_command_target,
     run_async,
@@ -175,11 +176,18 @@ def health_command(
     state = load_state(repo_path)
     include_submodules = bool(state.get("include_submodules", False))
     include_nested_repos = bool(state.get("include_nested_repos", False))
+    # `repowise health` persists metrics into the same rows the indexer writes,
+    # so it has to analyze the same file set. Without the config's exclude
+    # patterns it scored — and overwrote rows for — files the index had
+    # deliberately dropped, and on a repo excluding a manifest directory it
+    # could write a different `module` than the index did.
+    exclude_patterns: list[str] = list(load_config(repo_path).get("exclude_patterns") or [])
 
     traverser = FileTraverser(
         repo_path,
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
+        extra_exclude_patterns=exclude_patterns or None,
     )
     file_infos = list(traverser.traverse())
     parser = ASTParser()
@@ -230,6 +238,7 @@ def health_command(
         parsed_files=parsed_files,
         coverage_map=coverage_map,
         duplication_cache_dir=Path(repo_path) / ".repowise",
+        repo_root=repo_path,
     )
     # Load any .repowise/health-rules.json the user keeps in the repo.
     from repowise.core.analysis.health.config import HealthConfig

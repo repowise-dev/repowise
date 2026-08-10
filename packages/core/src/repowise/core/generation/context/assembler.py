@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -23,6 +25,7 @@ from .contexts import (
     SymbolSpotlightContext,
     _TopFile,
 )
+from .file_vocabulary import file_vocabulary
 from .graph_intelligence import (
     extract_call_graph,
     extract_community_meta,
@@ -54,6 +57,149 @@ def _is_foreign_edge(node: str, path: str) -> bool:
 _MAX_IMPORTS = 30
 # Maximum top-files to include in repo overview
 _MAX_TOP_FILES = 20
+# How many rows the concept index may carry. A module page groups directories,
+# so a wide one can reach several hundred public symbols and the table would
+# then be longer than the page it is attached to. Rows past this are counted
+# rather than dropped silently, so a truncated table cannot read as a complete
+# public surface.
+_MAX_CONCEPT_ROWS = 40
+
+# Identifier word splits: a snake_case underscore, or the boundary before a
+# capital that starts a new word. The second pattern keeps acronym runs whole —
+# ``HTTPAdapter`` is two words, not nine — which matters because the acronym is
+# usually the word a reader would actually say.
+_IDENTIFIER_SPLIT = re.compile(r"_+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+# A language has to reach this share of a package's files to be named as one of
+# its languages. Below it the mention is noise: nearly every TypeScript package
+# holds a JSON fixture and a shell script, and listing them makes the column
+# longer without making it more true.
+_PACKAGE_LANGUAGE_FLOOR = 0.10
+
+
+def _package_stats(repo_structure: RepoStructure, parsed_files: list[ParsedFile]) -> list[dict]:
+    """Count files and observe languages per package, largest package first.
+
+    ``PackageInfo.language`` is a single tag chosen when the package was
+    detected, so it calls a package with a hundred TypeScript files and one
+    build script "typescript" and says nothing about the mix. These counts come
+    from the files the run actually parsed.
+
+    A package with no parsed files still gets a row: the walker skipping a
+    directory is a fact about the run, and dropping the row would shorten the
+    table with no way to tell that from the package not existing.
+    """
+    packages = getattr(repo_structure, "packages", None) or []
+    if not packages:
+        return []
+
+    # Longest path first so a nested package claims its files before its parent
+    # does — ``packages/ui/src/foo`` is not one of ``packages/ui``'s files if a
+    # package sits in between.
+    by_path = sorted(packages, key=lambda p: len(p.path), reverse=True)
+    counts: dict[str, int] = {p.path: 0 for p in packages}
+    langs: dict[str, Counter[str]] = {p.path: Counter() for p in packages}
+
+    for parsed in parsed_files:
+        path = getattr(getattr(parsed, "file_info", None), "path", "")
+        if not path:
+            continue
+        for pkg in by_path:
+            if path.startswith(f"{pkg.path}/"):
+                counts[pkg.path] += 1
+                language = getattr(parsed.file_info, "language", "") or ""
+                if language:
+                    langs[pkg.path][language] += 1
+                break
+
+    stats: list[dict] = []
+    for pkg in packages:
+        total = counts[pkg.path]
+        observed = [
+            lang
+            for lang, n in langs[pkg.path].most_common()
+            if total and n / total >= _PACKAGE_LANGUAGE_FLOOR
+        ]
+        stats.append(
+            {
+                "name": pkg.name,
+                "path": pkg.path,
+                "files": total,
+                # Falls back to the detected tag when nothing was parsed, so a
+                # skipped package still names a language rather than a dash.
+                "languages": observed or ([pkg.language] if not total and pkg.language else []),
+            }
+        )
+    # Biggest first: the table doubles as a reading order. Name breaks ties so
+    # a repository whose packages are all the same size does not reorder its
+    # own overview between runs.
+    stats.sort(key=lambda s: (-s["files"], s["name"]))
+    return stats
+
+
+def concept_wording(identifier: str) -> str:
+    """Spell an identifier the way prose would say it.
+
+    ``ResolverContext`` becomes "Resolver context" — the noun a reader who has
+    only read the page's prose would use, next to the token they have to type
+    to find it. Derived rather than written: a described column could name a
+    symbol that is not there, and the point of this table is that it cannot.
+    """
+    words = [w for w in _IDENTIFIER_SPLIT.split(identifier) if w]
+    if not words:
+        return identifier
+    # An acronym inside a camel-cased name keeps its case ("HTTPAdapter" →
+    # "HTTP adapter"), because the acronym is the word a reader would say. An
+    # underscore-separated name is lowered whole: ``EMBED_BATCH_MAX_ITEMS`` is a
+    # constant spelled in caps, not four acronyms.
+    keep_case = "_" not in identifier
+    spelled = [w if keep_case and w.isupper() and len(w) > 1 else w.lower() for w in words]
+    first = spelled[0]
+    return " ".join([first[:1].upper() + first[1:], *spelled[1:]])
+
+
+def build_concept_index(
+    file_contexts: list[FilePageContext],
+) -> tuple[list[dict[str, str]], int]:
+    """Rows pairing each public symbol's prose name with its identifier and file.
+
+    Returns the rows and how many were left off by the cap.
+
+    Module pages are written by the model and come out as prose: a real run
+    produced 89 of them carrying four fenced code blocks between them. So the
+    identifiers a reader needs to grep for, and an identifier-exact query needs
+    to match, are not on the page in any spelling. These rows put them there,
+    straight from the assembled symbol data, which is why the table can be
+    trusted where the surrounding prose has to be read as a summary.
+
+    Only top-level public symbols. Methods would multiply the table by the size
+    of the classes without adding a name a reader would search for on its own,
+    and a private symbol is not a route into the module.
+    """
+    ranked = sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True)
+    rows: list[dict[str, str]] = []
+    total = 0
+    for fc in ranked:
+        for symbol in sorted(fc.symbols, key=lambda s: s.get("start_line") or 0):
+            name = (symbol.get("name") or "").strip()
+            if not name or name.startswith("_"):
+                continue
+            if symbol.get("visibility") != "public":
+                continue
+            # A method's own name is rarely what a reader searches for, and
+            # including them turns a 40-row cap into 40 rows of one class.
+            if symbol.get("parent_name"):
+                continue
+            total += 1
+            if len(rows) < _MAX_CONCEPT_ROWS:
+                rows.append(
+                    {
+                        "concept": concept_wording(name),
+                        "symbol": name,
+                        "file": fc.file_path,
+                    }
+                )
+    return rows, total - len(rows)
 
 
 def _file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[str]:
@@ -248,6 +394,13 @@ class ContextAssembler:
             kg_tour_step=kg_context.tour_step if kg_context else None,
             kg_tags=kg_context.tags if kg_context else [],
             kg_node_summary=kg_context.node_summary if kg_context else "",
+            # Computed from the whole decoded source, not from ``snippet``.
+            # The snippet is budget-trimmed and on a large file is replaced by
+            # a structural summary, so reading it would make the vocabulary of
+            # the biggest files the thinnest, which is backwards. This section
+            # carries its own cap and is not charged against the prompt budget
+            # because it is page content rather than model input.
+            file_vocabulary=file_vocabulary(source_text),
         )
 
     # ------------------------------------------------------------------
@@ -569,6 +722,7 @@ class ContextAssembler:
         repo_name: str | None = None,
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
+        parsed_files: list[ParsedFile] | None = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending, path breaking ties. Leaf
@@ -577,13 +731,13 @@ class ContextAssembler:
         # list is a different list on every run.
         sorted_pr = sorted(pagerank.items(), key=lambda x: (-x[1], x[0]))
         top_files = [
-            _TopFile(path=p, score=s)
-            for p, s in sorted_pr[:_MAX_TOP_FILES]
-            if not is_external(p)
+            _TopFile(path=p, score=s) for p, s in sorted_pr[:_MAX_TOP_FILES] if not is_external(p)
         ]
 
         # SCCs with len > 1 are true circular deps
         circular_count = sum(1 for scc in sccs if len(scc) > 1)
+
+        package_stats = _package_stats(repo_structure, parsed_files or [])
 
         # Community metadata from graph builder
         communities_list: list[dict] = []
@@ -603,22 +757,46 @@ class ContextAssembler:
                 # label, so the label is not a total order.
                 communities_list.sort(key=lambda c: (-c["size"], c["id"]))
                 communities_list = communities_list[:10]
-            except Exception:
-                pass
+            except Exception as exc:
+                # Same silent shape as the flow block below, which is how that
+                # one went a year unnoticed. Say something.
+                log.warning(
+                    "overview_communities_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
             try:
                 flow_report = graph_builder.execution_flows()
                 if flow_report and hasattr(flow_report, "flows"):
-                    for flow in flow_report.flows[:5]:
+                    # Highest-scoring first: the templates render the first
+                    # five, so the order here is the selection.
+                    ranked = sorted(
+                        flow_report.flows,
+                        key=lambda f: (-f.entry_point_score, f.entry_point_id),
+                    )
+                    for flow in ranked[:5]:
                         execution_flows_list.append(
                             {
-                                "entry_point": flow.entry_point,
-                                "score": round(flow.score, 3),
+                                "entry_point": flow.entry_point_id,
+                                "entry_point_name": flow.entry_point_name,
+                                "score": round(flow.entry_point_score, 3),
                                 "trace_length": len(flow.trace) if hasattr(flow, "trace") else 0,
                             }
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                # This was a bare ``except: pass`` reading ``flow.entry_point``
+                # and ``flow.score`` off a dataclass whose fields are
+                # ``entry_point_id`` and ``entry_point_score``. The
+                # AttributeError was swallowed, the list stayed empty, and the
+                # template's ``{% if %}`` guard dropped the section — so no
+                # overview has ever carried an execution flow. An empty
+                # section is a fine outcome; a silent one is not.
+                log.warning(
+                    "overview_execution_flows_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
         return RepoOverviewContext(
             # RepoStructure carries no name, so the old getattr fallback made
@@ -636,6 +814,7 @@ class ContextAssembler:
             execution_flows=execution_flows_list,
             external_systems=external_systems or [],
             decision_records=decision_records or [],
+            package_stats=package_stats,
         )
 
     # ------------------------------------------------------------------

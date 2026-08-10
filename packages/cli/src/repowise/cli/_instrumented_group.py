@@ -45,7 +45,59 @@ def _option_name(token: str) -> str:
 
 
 class InstrumentedGroup(click.Group):
-    """Root group that emits one telemetry event per invocation."""
+    """Root group that emits one telemetry event per invocation.
+
+    Also the lazy half of the CLI registry: a command can be registered
+    as a ``"module:attr"`` string and is imported only when it is the one
+    being run. Dispatching ``repowise status`` used to import all ~35
+    command modules; now it imports one.
+
+    ``--help`` still resolves everything, because Click needs each
+    command's ``short_help`` to render the listing. That is deliberate:
+    the alternative is a duplicated static help map that drifts, and
+    ``--help`` is human-interactive while hooks, MCP and scripts never
+    call it.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        #: name -> "module:attr", for commands not yet imported.
+        self._lazy_commands: dict[str, str] = {}
+
+    def add_lazy_command(self, name: str, target: str) -> None:
+        """Register *name* without importing the module that defines it."""
+        # Last registration wins, which is what ``click.Group.add_command``
+        # does and therefore what plugin overrides have always relied on.
+        # Without this drop, an already-resolved (or eagerly registered)
+        # command of the same name would keep winning in ``get_command``,
+        # silently inverting precedence between a plugin and the OSS CLI.
+        self.commands.pop(name, None)
+        self._lazy_commands[name] = target
+
+    def add_command(self, cmd: click.Command, name: str | None = None) -> None:
+        """Attach *cmd*, superseding any lazy registration of the same name."""
+        super().add_command(cmd, name)
+        self._lazy_commands.pop(name or cmd.name or "", None)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        """Every command name, resolved and unresolved, importing nothing."""
+        return sorted({*super().list_commands(ctx), *self._lazy_commands})
+
+    def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
+        """Resolve one command, importing its module on first use."""
+        resolved = super().get_command(ctx, name)
+        if resolved is not None:
+            return resolved
+        target = self._lazy_commands.get(name)
+        if target is None:
+            return None
+        from repowise.core.registry import LazyCommand
+
+        command = LazyCommand(name, target).load()
+        # Cached on the group, so a second lookup in the same process
+        # (``--help`` after dispatch, telemetry's tail match) is free.
+        self.add_command(command, name)
+        return command
 
     def invoke(self, ctx: click.Context):
         from repowise.cli.platform import telemetry

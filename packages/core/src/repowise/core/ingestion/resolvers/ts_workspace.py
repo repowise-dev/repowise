@@ -452,12 +452,9 @@ def _expand_exports_wildcard(
             continue
         if suffix and not candidate.endswith(suffix):
             continue
-        # Reject paths whose captured segment crosses a directory boundary
-        # unless the pattern itself spans dirs (``**`` is not part of the
-        # spec; ``*`` matches a single segment).
-        captured = candidate[len(base_prefix) : len(candidate) - len(suffix) if suffix else len(candidate)]
-        if "/" in captured and exports_pattern.endswith("/*"):
-            continue
+        # Node.js package exports spec explicitly allows the `*` wildcard
+        # to match any string including `/` (directory boundaries).
+        # We previously incorrectly rejected paths spanning directories.
         matches.add(candidate)
     return matches
 

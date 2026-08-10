@@ -27,7 +27,7 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.models import GenerationJob
 from repowise.core.persistence.search import FullTextSearch
-from repowise.core.providers.embedding.base import MockEmbedder
+from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
     blast_radius,
@@ -39,6 +39,7 @@ from repowise.server.routers import (
     coupling,
     dead_code,
     decisions,
+    episodes,
     external_systems,
     feedback,
     files,
@@ -123,7 +124,7 @@ def _build_embedder():
     logger.warning(
         "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, or ollama for real RAG"
     )
-    return MockEmbedder()
+    return KeylessEmbedder()
 
 
 @asynccontextmanager
@@ -185,9 +186,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("stale_job_reset_failed", extra={"error": str(exc)})
 
-    # Full-text search
+    # Full-text search. A failure here used to abort startup, so a store whose
+    # index could not be upgraded served no documentation at all (issue #1309):
+    # the wiki, the graph and the health pages were all unreachable over a
+    # search index. Keyword search degrades to whatever shape the index is
+    # already in, or to the vector arm alone; everything else keeps working.
     fts = FullTextSearch(engine)
-    await fts.ensure_index()
+    try:
+        await fts.ensure_index()
+    except Exception as exc:
+        logger.warning("fts_ensure_index_failed", extra={"error": str(exc)})
 
     # Reuse the repo-local LanceDB index written by CLI init/update. A fresh
     # in-memory store is used only when this database cannot be associated with
@@ -476,6 +484,7 @@ def create_app() -> FastAPI:
     app.include_router(coupling.router)
     app.include_router(claude_md.router)
     app.include_router(decisions.router)
+    app.include_router(episodes.router)
     app.include_router(chat.router)
     app.include_router(providers.router)
     app.include_router(mcp.router)

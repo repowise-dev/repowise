@@ -18,7 +18,14 @@ import fnmatch
 from dataclasses import dataclass, field
 
 # Page freshness values that count as "needs refresh" for ``--stale``.
-_STALE_STATUSES = frozenset({"stale", "expired"})
+#
+# Public because it is the product's one definition of the word. The MCP
+# ``get_context`` freshness block reports the same judgement to an agent that
+# ``repowise generate --stale`` acts on, and it used to reach that judgement by
+# thresholding ``confidence`` instead, which is a different axis and on a
+# keyless index a permanently wrong answer. Two spellings of "stale" in one
+# product is how they drift apart, so there is one.
+STALE_STATUSES = frozenset({"stale", "expired"})
 
 
 @dataclass(frozen=True)
@@ -38,7 +45,7 @@ class PageRecord:
 
     @property
     def is_stale(self) -> bool:
-        return self.freshness_status in _STALE_STATUSES
+        return self.freshness_status in STALE_STATUSES
 
 
 @dataclass(frozen=True)

@@ -13,6 +13,19 @@ embedding and lexical relevance to the question. Within that ~200-file
 neighbourhood a far endpoint that lost the corpus-wide retrieval wins, so it
 rises; the top few contest the bottom served slot. The head is never reordered,
 so a gold already surfaced can't be demoted.
+
+**The motion-cue gate was removed and put back, 2026-08-02.** Running the walk
+on every question is the obviously-right-looking change: phrasing is not a
+property of the graph, and this module's own note argues the precision controls
+are the walk and the contested slot rather than the gate. Measured on the
+99-question eval it cost 6.4 points of recall@5. The mechanism is specific: the
+stage re-ranks everything below ``_KEEP_TOP`` by fused relevance and injects
+**file** pages, and on a subsystem-shaped question ("what does the health
+subsystem cover") the answer is a *module* page sitting in one of those lower
+slots. Fabricated file neighbours evict it. The gate was accidentally load-
+bearing, not because flow questions are the only ones with far endpoints, but
+because they are the ones whose answer is never a module page. Reaching the
+other questions needs the injection to respect page type, not a wider gate.
 """
 
 from __future__ import annotations
@@ -23,6 +36,8 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.models import Page
+from repowise.core.providers.embedding import store_has_semantic_vectors
+from repowise.server.mcp_server._answer_pipeline import question_vector, vector_search
 from repowise.server.mcp_server._flow_path import _is_plumbing, _load_file_adjacency
 
 # Motion cues that mark a data-flow question. Loose on purpose: the walk (reaches
@@ -136,17 +151,32 @@ def _walk_neighborhood(adj: dict[str, set[str]], seeds: list[str]) -> set[str]:
     return {n for n in reached if n not in seed_set and not _is_plumbing(n)}
 
 
-async def _relevance_order(searcher: Any, question: str, pool: set[str]) -> list[str]:
+async def _relevance_order(
+    searcher: Any, question: str, pool: set[str], *, vector: list[float] | None = None
+) -> list[str]:
     """Rank ``pool`` members by a store's relevance to ``question``.
 
     One corpus-wide search, kept in the store's returned order — order is all RRF
     consumes, so the two stores' score scales never need reconciling. Returns []
     on any store failure; the other arm then drives the fusion alone.
+
+    ``vector`` is the question's already-computed embedding. Passing it spares
+    the embedding arm a second round-trip for text the main fetch already
+    embedded; the lexical arm has no use for it and ignores it.
     """
     if searcher is None or not pool:
         return []
+    # Checked here and not only inside ``vector_search``: on a keyless index
+    # ``question_vector`` returns None, which routes to the ``else`` arm below
+    # and would reach the store directly, re-embedding the question on the way
+    # to vectors that cannot rank. The guard has to sit above the branch.
+    if not store_has_semantic_vectors(searcher):
+        return []
     try:
-        results = await searcher.search(question, limit=_RANK_SCAN)
+        if vector is not None:
+            results = await vector_search(searcher, question, _RANK_SCAN, vector=vector)
+        else:
+            results = await searcher.search(question, limit=_RANK_SCAN)
     except Exception:
         return []
     order, seen = [], set()
@@ -197,7 +227,12 @@ async def expand_via_neighbor_rerank(
     # Fuse embedding + lexical relevance over the pool AND the seeds (so buried
     # originals contest on the same signal), reusing the pipeline's two stores.
     scored = pool | set(seed_paths)
-    vec_order = await _relevance_order(getattr(ctx, "vector_store", None), question, scored)
+    vec_order = await _relevance_order(
+        getattr(ctx, "vector_store", None),
+        question,
+        scored,
+        vector=await question_vector(ctx, question),
+    )
     fts_order = await _relevance_order(getattr(ctx, "fts", None), question, scored)
     fused = _rrf_fuse(vec_order, fts_order)
     if not fused:

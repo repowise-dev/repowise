@@ -77,6 +77,15 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     fn_node = analysis.fn_node
     if fn_node is None:
         return []
+    # A subtree tree-sitter could not parse is not a function whose statements
+    # we understand, so no span in it is safe to lift. This fires on macro-heavy
+    # C/C++ headers, where an unterminated function-like macro
+    # (``ABSL_NAMESPACE_BEGIN``) makes the parser emit one bogus
+    # ``function_definition`` spanning a whole class or namespace — proposing to
+    # extract "statements" from that is a wrong suggestion, not a weak one.
+    # Language-agnostic and strictly subtractive: a clean parse is unaffected.
+    if fn_node.has_error:
+        return []
     body = fn_node.child_by_field_name("body")
     if body is None:
         return []

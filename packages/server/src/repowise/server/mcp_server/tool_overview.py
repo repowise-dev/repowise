@@ -718,10 +718,14 @@ def _resolve_title(overview_page: Page | None, repository: Any) -> str:
 async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
     """Headline code-health KPIs; empty when health hasn't been run on this repo."""
     try:
-        health_summary = await _get_health_summary(session, repository.id)
+        # Metrics first, handed to the summary: it reads the same table, and
+        # that read now also aggregates the per-file deduction used to rank
+        # floored files, so letting it load its own copy pays for the ranking
+        # twice.
         metrics_rows = await _get_health_metrics(session, repository.id)
         if not metrics_rows:
             return {}
+        health_summary = await _get_health_summary(session, repository.id, metrics=metrics_rows)
         # Hotspot health: NLOC-weighted avg over the top-25% files by NLOC,
         # matching the dashboard KPI definition.
         sorted_by_nloc = sorted(metrics_rows, key=lambda m: m.nloc or 0, reverse=True)

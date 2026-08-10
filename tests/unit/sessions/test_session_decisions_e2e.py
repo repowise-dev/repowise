@@ -224,6 +224,79 @@ async def test_init_pipeline_respects_session_mining_gate(tmp_path, monkeypatch)
     assert "session" not in report.by_source
 
 
-def test_session_rank_sits_between_adr_and_commit():
-    assert SOURCE_RANK["session"] == 7
-    assert SOURCE_RANK["adr"] > SOURCE_RANK["session"] > SOURCE_RANK["commit"]
+def test_session_rank_sits_above_adr_and_below_cli():
+    """A transcript is the user speaking; an ADR is a write-up of it.
+
+    This used to assert ``adr > session``, which meant the ``>=`` promotion
+    branch in ``crud.decisions`` never fired for a transcript and a mined
+    document overwrote the user's own words.
+    """
+    assert SOURCE_RANK["session"] == 8
+    assert SOURCE_RANK["cli"] > SOURCE_RANK["session"] > SOURCE_RANK["adr"]
+
+
+# ---------------------------------------------------------------------------
+# One read, two consumers
+# ---------------------------------------------------------------------------
+
+
+async def test_the_transcript_read_serves_episodes_without_a_provider(tmp_path):
+    """Keyless is the primary path, and this pass is where transcripts are read.
+
+    Gating the read on a provider would leave a user with no API key no
+    transcript supply at all, while the episode half needs no model. The
+    structuring pass is what skips.
+    """
+    from repowise.core.precedent.store import TIER_TRANSCRIPT, EpisodeStore
+    from repowise.core.precedent.store import default_store_path as episode_store_path
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".repowise").mkdir(parents=True)
+    projects_root = tmp_path / "projects"
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    decisions = await mine_session_decisions(
+        repo_root, provider=None, projects_root=projects_root, now=100.0
+    )
+
+    assert decisions == []  # nothing can be structured without a model
+    with EpisodeStore(episode_store_path(repo_root)) as store:
+        (row,) = store.list_episodes(tier=TIER_TRANSCRIPT)
+    assert CORRECTION in row["body"]
+    assert row["subject"].endswith("one.jsonl")
+
+
+async def test_the_episode_write_leaves_decision_mining_unchanged(tmp_path):
+    """The tee must not perturb the stream it rides.
+
+    Measured on the real corpus as well: 426 transcripts produced 547 candidates
+    with and without the recorder attached.
+    """
+    repo_root = tmp_path / "repo"
+    (repo_root / ".repowise").mkdir(parents=True)
+    projects_root = tmp_path / "projects"
+    provider = FakeProvider()
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    decisions = await mine_session_decisions(
+        repo_root, provider=provider, projects_root=projects_root, now=100.0
+    )
+
+    (decision,) = decisions
+    assert decision.source == "session"
+    assert decision.source_quote == CORRECTION
+
+
+async def test_a_repo_with_no_transcripts_derives_nothing_and_deletes_nothing(tmp_path):
+    """Rule 3a's test: the CI case must be degraded, never broken."""
+    from repowise.core.precedent.store import default_store_path as episode_store_path
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".repowise").mkdir(parents=True)
+    projects_root = tmp_path / "projects"
+
+    decisions = await mine_session_decisions(
+        repo_root, provider=None, projects_root=projects_root, now=100.0
+    )
+    assert decisions == []
+    assert not episode_store_path(repo_root).exists()

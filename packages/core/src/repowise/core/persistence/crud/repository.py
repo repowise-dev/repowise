@@ -139,6 +139,7 @@ async def update_repo_git_totals(
     first_commit_subject: str | None = None,
     total_lines_added: int | None = None,
     total_lines_deleted: int | None = None,
+    churn_anchor_sha: str | None = None,
 ) -> None:
     """Store a repo's whole-history git totals, captured at index time (#730).
 
@@ -156,6 +157,11 @@ async def update_repo_git_totals(
         "first_commit_subject": first_commit_subject,
         "total_lines_added": total_lines_added,
         "total_lines_deleted": total_lines_deleted,
+        # Rides with the churn pair by construction: the capture sets it only
+        # when the walk produced numbers, so "applied only when non-None" keeps
+        # anchor and totals moving together rather than letting one advance
+        # past the other.
+        "churn_anchor_sha": churn_anchor_sha,
     }
     if all(v is None for v in updates.values()):
         return

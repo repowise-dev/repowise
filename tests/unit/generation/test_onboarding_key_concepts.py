@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import networkx as nx
 
 from repowise.core.generation import onboarding
+from repowise.core.generation.concept_tree.vocabulary import HouseTerm
 from repowise.core.generation.models import compute_source_hash
 from repowise.core.generation.onboarding.grounding import check_grounding, collect_known
 from repowise.core.generation.onboarding.signals import OnboardingSignals
@@ -24,6 +25,7 @@ from repowise.core.generation.onboarding.slots import (
 from repowise.core.generation.onboarding.subkinds.key_concepts import (
     ConceptSymbol,
     KeyConceptsContext,
+    _prose_hits,
 )
 from repowise.core.ingestion.models import FileInfo, ParsedFile, RepoStructure, Symbol
 
@@ -117,8 +119,21 @@ def _graph_builder(files: list[ParsedFile], edges: list[tuple[str, str, str]]):
     )
 
 
+def _term(term: str, *, docs: int = 1) -> HouseTerm:
+    """One mined term, with the fields ranking reads set truthfully."""
+    return HouseTerm(
+        term=term,
+        definition=None,
+        definition_source=None,
+        source_paths=tuple(f"docs/{i}.md" for i in range(docs)),
+        doc_frequency=docs,
+        code_frequency=1,
+        is_indexed_symbol=True,
+    )
+
+
 def _signals(
-    files, graph_builder, *, kg_layers=(), layer_order=(), community=None
+    files, graph_builder, *, kg_layers=(), layer_order=(), community=None, house_terms=()
 ) -> OnboardingSignals:
     paths = [f.file_info.path for f in files]
     return OnboardingSignals(
@@ -140,6 +155,7 @@ def _signals(
         sccs=(),
         kg_layers=kg_layers,
         layer_order=layer_order,
+        house_terms=tuple(house_terms),
     )
 
 
@@ -315,6 +331,157 @@ def test_key_concepts_uses_full_graph_when_parsed_files_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Ranking on what the repository says, not only on what its graph does
+# ---------------------------------------------------------------------------
+
+
+def _repo_for_ranking(*, scaffold_doc: str = "The vector store.") -> list[ParsedFile]:
+    """Five concepts, one per directory so no spread cap can reorder them.
+
+    ``VectorStore`` is the graph's favourite: every caller reaches it. Nothing
+    written down mentions it. ``BlastRadius`` has one caller and is what the
+    documents are about.
+    """
+    files = [
+        _file(
+            "store/db.py",
+            [_sym("store/db.py", "VectorStore", "class", exported=True, doc=scaffold_doc)],
+        ),
+        _file(
+            "analysis/blast.py",
+            [
+                _sym(
+                    "analysis/blast.py",
+                    "BlastRadius",
+                    "class",
+                    exported=True,
+                    doc="What a change can reach.",
+                )
+            ],
+        ),
+        _file(
+            "analysis/risk.py",
+            [_sym("analysis/risk.py", "ChangeRisk", "class", exported=True, doc="Scores a diff.")],
+        ),
+        _file("io/reader.py", [_sym("io/reader.py", "Reader", "class", exported=True)]),
+        _file("io/writer.py", [_sym("io/writer.py", "Writer", "class", exported=True)]),
+    ]
+    edges: list[tuple[str, str, str]] = []
+    for i in range(9):
+        caller = f"caller/c{i}.py"
+        files.append(_file(caller, [_sym(caller, f"use{i}", "function")]))
+        edges.append((f"{caller}::use{i}", "store/db.py::VectorStore", "calls"))
+        if i < 5:
+            edges.append((f"{caller}::use{i}", "io/reader.py::Reader", "calls"))
+        if i < 4:
+            edges.append((f"{caller}::use{i}", "io/writer.py::Writer", "calls"))
+        if i < 2:
+            edges.append((f"{caller}::use{i}", "analysis/risk.py::ChangeRisk", "calls"))
+        if i < 1:
+            edges.append((f"{caller}::use{i}", "analysis/blast.py::BlastRadius", "calls"))
+    return files, edges
+
+
+def _rank(*, house_terms=(), scaffold_doc: str = "The vector store.") -> list[str]:
+    files, edges = _repo_for_ranking(scaffold_doc=scaffold_doc)
+    signals = _signals(files, _graph_builder(files, edges), house_terms=house_terms)
+    ctx = onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(signals)
+    assert ctx is not None
+    return [c.name for c in ctx.concept_symbols]
+
+
+def test_a_symbol_the_documents_name_outranks_one_the_graph_merely_calls() -> None:
+    """A class the team writes about beats a class with nine callers.
+
+    The four original keys all measure how much code leans on a symbol. None
+    of them can see whether a human thought it worth explaining.
+    """
+    graph_only = _rank()
+    assert graph_only.index("VectorStore") < graph_only.index("BlastRadius")
+
+    with_prose = _rank(house_terms=[_term("Blast radius", docs=3), _term("Change risk", docs=2)])
+    assert with_prose.index("BlastRadius") < with_prose.index("VectorStore")
+    # Two documents beat one, so the ranking reads the count and not just the
+    # fact of a match.
+    assert with_prose.index("BlastRadius") < with_prose.index("ChangeRisk")
+
+
+def test_a_mined_term_matches_however_the_code_spells_it() -> None:
+    """The documents write "blast radius"; the code writes ``BlastRadius``."""
+    assert _rank(house_terms=[_term("blast radius")]).index("BlastRadius") == 0
+    assert _rank(house_terms=[_term("Blast Radius")]).index("BlastRadius") == 0
+
+
+def test_a_term_matches_the_type_named_after_it() -> None:
+    """A term is rarely a class name; it is the idea the class is named after.
+
+    Matching "blast radius" exactly finds nothing in a codebase whose class
+    is ``BlastRadiusReport``, which is how codebases are usually named.
+    """
+    assert _prose_hits("BlastRadiusReport", {("blast", "radius"): 2}) == 2
+    assert _prose_hits("CrossRepoBlastRadius", {("blast", "radius"): 2}) == 2
+    assert _prose_hits("blast_radius_of", {("blast", "radius"): 2}) == 2
+    assert _prose_hits("RadiusBlast", {("blast", "radius"): 2}) == 0
+
+
+def test_a_single_word_term_has_to_lead_the_name() -> None:
+    """Otherwise the short terms claim every name that contains the word.
+
+    "risk" would take ``OwnershipRiskDetector`` and "stats" would take
+    ``CFGPassStats`` — names that contain the word while being about
+    something else, and there are far more of those than real matches.
+    """
+    assert _prose_hits("Risk", {("risk",): 3}) == 3
+    assert _prose_hits("RiskDirective", {("risk",): 3}) == 3
+    assert _prose_hits("OwnershipRiskDetector", {("risk",): 3}) == 0
+
+
+def test_ranking_is_unchanged_when_no_vocabulary_was_mined() -> None:
+    """Most repositories will mine nothing. They must rank as they always did."""
+    assert _rank(house_terms=()) == _rank(house_terms=[_term("Nothing In This Repository")])
+
+
+def test_a_symbol_that_says_it_is_for_tests_is_demoted() -> None:
+    """Demoted, not excluded — the page can still fall back to it."""
+    ordinary = _rank()
+    assert ordinary[0] == "VectorStore"
+
+    demoted = _rank(scaffold_doc="An in-memory store, primarily tailored for unit tests.")
+    assert demoted[-1] == "VectorStore"
+    assert "VectorStore" in demoted
+
+
+def test_scaffolding_outranks_nothing_even_when_the_documents_name_it() -> None:
+    """The demotion leads, so a written-about test double still sinks."""
+    demoted = _rank(
+        house_terms=[_term("Vector store", docs=5)],
+        scaffold_doc="A store used in tests and small-scale development.",
+    )
+    assert demoted[-1] == "VectorStore"
+
+
+def test_every_concept_still_carries_its_path_for_the_page_to_cite() -> None:
+    """The path citations are what ``get_answer`` quotes off this page.
+
+    Asserted as a count against the concepts, not as a presence check: a
+    prompt that lost the path on one concept of six still contains the word.
+    """
+    files, edges = _repo_for_ranking()
+    signals = _signals(
+        files, _graph_builder(files, edges), house_terms=[_term("Blast radius", docs=3)]
+    )
+    ctx = onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(signals)
+    assert ctx is not None
+
+    rendered = _render_key_concepts(ctx)
+    assert len(ctx.concept_symbols) >= 4
+    for concept in ctx.concept_symbols:
+        assert f"`{concept.file_path}`" in rendered
+    assert rendered.count("`") >= 2 * len(ctx.concept_symbols)
+    assert "**Where it lives:**" in rendered
+
+
 def _render_key_concepts(ctx) -> str:
     from pathlib import Path
 
@@ -414,6 +581,286 @@ def test_grounding_catches_fabricated_path_and_symbol() -> None:
     # Text preserved (sentence not deleted).
     assert "dotnet/index.py" in cleaned
     assert "SecretOrchestrator" in cleaned
+
+
+def test_qualified_symbol_cannot_borrow_an_unrelated_member() -> None:
+    ctx = {"known": "Real.run"}
+
+    cleaned, ungrounded = check_grounding("`Ghost.run` is fabricated.", ctx)
+
+    assert ungrounded == ["Ghost.run"]
+    assert "`Ghost.run`" not in cleaned
+
+
+def test_qualified_symbol_cannot_borrow_a_known_owner() -> None:
+    cleaned, ungrounded = check_grounding("`Real.fabricated` is absent.", {"known": "Real.run"})
+
+    assert ungrounded == ["Real.fabricated"]
+    assert "`Real.fabricated`" not in cleaned
+
+
+def test_grounding_accepts_citations_established_only_by_added_evidence() -> None:
+    ctx = _ctx_for_grounding()
+    content = (
+        "The `EvidenceRouter.dispatch` in `docs/runtime_flow.py` selects the worker, "
+        "while `FabricatedWorker` is not established."
+    )
+    evidence = {
+        "docs/runtime_flow.py": (
+            "EvidenceRouter.dispatch validates the request before selecting a worker."
+        )
+    }
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`EvidenceRouter.dispatch`" in cleaned
+    assert "`docs/runtime_flow.py`" in cleaned
+    assert "FabricatedWorker" in ungrounded
+    assert "`FabricatedWorker`" not in cleaned
+
+
+def test_evidence_grounding_requires_complete_identifier_and_path() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"src/foo.py": "Existing.run"}
+    content = "`Existing.run` is real; `FabricatedType.run` and `other/place/foo.py` are not."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`Existing.run`" in cleaned
+    assert ungrounded == ["FabricatedType.run", "other/place/foo.py"]
+    assert "`FabricatedType.run`" not in cleaned
+    assert "`other/place/foo.py`" not in cleaned
+
+
+def test_evidence_grounding_requires_qualified_path_member_to_occur() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"src/foo.py": "ExistingWorker handles requests."}
+    content = (
+        "`src/foo.py` is included, but `src/foo.py::FabricatedWorker` and "
+        "`src/foo.py#FabricatedWorker` are not established."
+    )
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`src/foo.py`" in cleaned
+    assert ungrounded == ["src/foo.py::FabricatedWorker", "src/foo.py#FabricatedWorker"]
+    assert "`src/foo.py::FabricatedWorker`" not in cleaned
+    assert "`src/foo.py#FabricatedWorker`" not in cleaned
+
+
+def test_evidence_grounding_validates_configured_documentation_paths() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        "README.md": "Project purpose.",
+        "docs/ARCHITECTURE.md": "System boundaries.",
+    }
+    content = (
+        "Read `README.md` and `docs/ARCHITECTURE.md`, not "
+        "`docs/FABRICATED.md` or `other/guide.rst`."
+    )
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert "`README.md`" in cleaned
+    assert "`docs/ARCHITECTURE.md`" in cleaned
+    assert ungrounded == ["docs/FABRICATED.md", "other/guide.rst"]
+    assert "`docs/FABRICATED.md`" not in cleaned
+    assert "`other/guide.rst`" not in cleaned
+
+
+def test_evidence_grounding_validates_arbitrary_sibling_repository_paths() -> None:
+    evidence = {
+        "schemas/order.proto": "message Order {}",
+        "services/real.py": "def real(): pass",
+    }
+    content = "Do not cite `schemas/fabricated.proto` or `services/fabricated.py`."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding(), evidence)
+
+    assert ungrounded == ["schemas/fabricated.proto", "services/fabricated.py"]
+    assert "`schemas/fabricated.proto`" not in cleaned
+    assert "`services/fabricated.py`" not in cleaned
+
+
+def test_evidence_grounding_validates_extensionless_repository_paths() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"deploy/Dockerfile": "Build instructions."}
+
+    cleaned, ungrounded = check_grounding(
+        "Use `deploy/Dockerfile`, not `docs/LICENSE` or `deploy/Fakefile`.",
+        ctx,
+        evidence,
+    )
+
+    assert "`deploy/Dockerfile`" in cleaned
+    assert ungrounded == ["docs/LICENSE", "deploy/Fakefile"]
+    assert "`docs/LICENSE`" not in cleaned
+    assert "`deploy/Fakefile`" not in cleaned
+
+
+def test_grounding_does_not_treat_urls_routes_or_commands_as_repository_paths() -> None:
+    content = (
+        "Call `https://example.com/docs`, `github.com/org/repo`, `api/v1/users`, "
+        "`api/V1/users`, `localhost:3000/api`, `v2/users`, `V2/users`, "
+        "`service/v1/users`, `service/v2/schema.yaml`, `api/v1/openapi.json`, "
+        "`localhost/openapi.json`, `users/V2/profile`, `users/profile`, "
+        "`v1/openapi.json`, `accounts/v1/users.json`, `GET/api`, "
+        "`npm:test`, `NPM:test`, `example.com`, `EXAMPLE.COM`, "
+        "`example.xyz/path`, `EXAMPLE.XYZ/path`, `Github.COM/org/repo`, "
+        "`API/v1/users`, `Service/v1/users`, `GET /health`, or `/health`."
+    )
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
+
+    assert cleaned == content
+    assert ungrounded == []
+
+
+def test_grounding_validates_paths_in_versioned_repository_directories() -> None:
+    content = (
+        "Do not cite `docs/v2/fake.md`, `src/v1/missing.py`, `v1/src/handler`, or `V1/Src/handler`."
+    )
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
+
+    assert ungrounded == [
+        "docs/v2/fake.md",
+        "src/v1/missing.py",
+        "v1/src/handler",
+        "V1/Src/handler",
+    ]
+    assert "`docs/v2/fake.md`" not in cleaned
+    assert "`src/v1/missing.py`" not in cleaned
+    assert "`v1/src/handler`" not in cleaned
+    assert "`V1/Src/handler`" not in cleaned
+
+
+def test_grounding_validates_structured_paths_under_api_directory() -> None:
+    cleaned, ungrounded = check_grounding("Do not cite `api/openapi.yaml`.", _ctx_for_grounding())
+
+    assert ungrounded == ["api/openapi.yaml"]
+    assert "`api/openapi.yaml`" not in cleaned
+
+
+def test_qualified_evidence_paths_cannot_borrow_a_structured_bare_path() -> None:
+    ctx = {"known_files": ["src/foo.py", "README.md"]}
+    evidence = {
+        "src/foo.py": "RealWorker handles requests.",
+        "README.md": "Documented setup.",
+    }
+    content = "`src/foo.py::FabricatedWorker` and `README.md#fabricated` are not established."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert ungrounded == ["src/foo.py::FabricatedWorker", "README.md#fabricated"]
+    assert "`src/foo.py::FabricatedWorker`" not in cleaned
+    assert "`README.md#fabricated`" not in cleaned
+
+
+def test_grounding_validates_root_documentation_paths_with_punctuation() -> None:
+    content = "Do not cite `MIGRATION-GUIDE.md` or `CODE-OF-CONDUCT.md#policy`."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
+
+    assert ungrounded == ["MIGRATION-GUIDE.md", "CODE-OF-CONDUCT.md#policy"]
+    assert "`MIGRATION-GUIDE.md`" not in cleaned
+    assert "`CODE-OF-CONDUCT.md#policy`" not in cleaned
+
+
+def test_grounding_validates_qualified_root_build_and_config_paths() -> None:
+    content = "Do not cite `pom.xml#fake`, `Cargo.lock#fake`, or `justfile#fake`."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding())
+
+    assert ungrounded == ["pom.xml#fake", "Cargo.lock#fake", "justfile#fake"]
+    for token in ungrounded:
+        assert f"`{token}`" not in cleaned
+
+
+def test_evidence_grounding_preserves_exact_dot_prefixed_paths() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        ".github/CONTRIBUTING.md": "Contribution workflow.",
+        ".env.example": "EXAMPLE=true",
+    }
+
+    cleaned, ungrounded = check_grounding(
+        (
+            "Read `.github/CONTRIBUTING.md` and `.env.example`, not "
+            "`.github/FAKE.md` or `.env.production`."
+        ),
+        ctx,
+        evidence,
+    )
+
+    assert "`.github/CONTRIBUTING.md`" in cleaned
+    assert "`.env.example`" in cleaned
+    assert ungrounded == [".github/FAKE.md", ".env.production"]
+    assert "`.github/FAKE.md`" not in cleaned
+    assert "`.env.production`" not in cleaned
+
+
+def test_grounding_keeps_documentation_paths_from_structured_context() -> None:
+    ctx = {"hot_files": ["docs/guide.md"]}
+
+    cleaned, ungrounded = check_grounding("Read `docs/guide.md` first.", ctx)
+
+    assert cleaned == "Read `docs/guide.md` first."
+    assert ungrounded == []
+
+
+def test_evidence_path_match_uses_path_boundaries() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {"docs/notes.md": "old/src/foo.py.bak differs; use src/real.py instead."}
+    content = "`src/foo.py` is fabricated; `src/real.py` is established."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert ungrounded == ["src/foo.py"]
+    assert "`src/foo.py`" not in cleaned
+    assert "`src/real.py`" in cleaned
+
+
+def test_evidence_path_match_uses_complete_fragment_boundaries() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        "docs/notes.md": (
+            "README.md#setup#fabricated and src/foo.py#Worker#fabricated are unrelated."
+        )
+    }
+    content = "`README.md#setup` and `src/foo.py#Worker` are not established."
+
+    cleaned, ungrounded = check_grounding(content, ctx, evidence)
+
+    assert ungrounded == ["README.md#setup", "src/foo.py#Worker"]
+    assert "`README.md#setup`" not in cleaned
+    assert "`src/foo.py#Worker`" not in cleaned
+
+
+def test_evidence_symbol_match_uses_qualified_identifier_boundaries() -> None:
+    ctx = _ctx_for_grounding()
+    evidence = {
+        "docs/notes.md": (
+            "Other.EvidenceRouter.dispatch, EvidenceRouter.dispatch.extra, "
+            "Other/EvidenceRouter.dispatch, and Other#EvidenceRouter.dispatch are unrelated."
+        )
+    }
+
+    cleaned, ungrounded = check_grounding("Use `EvidenceRouter.dispatch`.", ctx, evidence)
+
+    assert ungrounded == ["EvidenceRouter.dispatch"]
+    assert "`EvidenceRouter.dispatch`" not in cleaned
+
+
+def test_grounding_validates_non_dot_qualified_symbols() -> None:
+    evidence = {"docs/notes.md": "Router#real Router:real Router/real"}
+    content = "`Router#fabricated`, `Router:fabricated`, and `Router/fabricated` are absent."
+
+    cleaned, ungrounded = check_grounding(content, _ctx_for_grounding(), evidence)
+
+    assert ungrounded == ["Router#fabricated", "Router:fabricated", "Router/fabricated"]
+    for token in ungrounded:
+        assert f"`{token}`" not in cleaned
 
 
 def test_grounding_cleans_reused_page_content() -> None:

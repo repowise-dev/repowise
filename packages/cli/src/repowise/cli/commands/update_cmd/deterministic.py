@@ -279,14 +279,17 @@ async def _persist_async(
             except Exception as exc:
                 degraded.append(f"Stale-page decay: {exc}")
 
-            # Placement depends on the whole page set, which on an incremental
-            # run lives in the store rather than in the pages just generated.
-            try:
-                from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
-
-                await rebuild_page_tree(session, repo_id)
-            except Exception as exc:
-                degraded.append(f"Page tree rebuild: {exc}")
+            # No page-tree rebuild here. ``persist_incremental_index`` runs one
+            # unconditionally right after this call returns (see the caller in
+            # ``update_cmd/command.py``), and it runs it *after* the sweeps and
+            # tombstones this session cannot see — so it is strictly the better
+            # placed of the two, and doing it twice only pays for a repo-wide
+            # page read that the second pass immediately repeats. Same reason as
+            # the related-pages backfill above. The cost of deferring is
+            # atomicity: placement no longer commits in the same session as the
+            # pages, so if the process dies between the two, this run's pages
+            # sit unplaced until the next update. Recovery needs nothing to
+            # re-render, since that rebuild runs unconditionally.
 
             # Real DB total, not an accumulation: regeneration upserts, so
             # adding len(generated_pages) each run inflates the count forever.
@@ -310,7 +313,13 @@ async def _persist_async(
             fts = FullTextSearch(engine)
             await fts.ensure_index()
             for page in generated_pages:
-                await fts.index(page.page_id, page.title, page.content)
+                await fts.index(
+                    page.page_id,
+                    page.title,
+                    page.content,
+                    summary=page.summary,
+                    target_path=page.target_path,
+                )
         except Exception as exc:
             degraded.append(f"Full-text index: {exc}")
     finally:
@@ -356,6 +365,64 @@ async def _load_file_page_render_keys(repo_path: Path) -> dict[str, str]:
     except Exception:
         # Never block an update on this. Returning nothing means no page looks
         # stale, so the run does what it would have done before the salt.
+        return {}
+    finally:
+        await engine.dispose()
+
+
+def load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
+    """``defining file path -> render keys`` for the wiki's symbol spotlights.
+
+    Grouped by file rather than returned per page id because that is the unit
+    the sweep and the regeneration both work in: a spotlight's target path is
+    ``<file>::<symbol>``, and one stale spotlight makes its whole file the work
+    item. A row with no key is kept as an empty string, which is what a page
+    written before spotlights carried a fingerprint looks like.
+    """
+    return run_async(_load_spotlight_render_keys(repo_path))
+
+
+async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        import json
+
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.generation.page_generator.structural import RENDER_KEY
+        from repowise.core.persistence.models import Page
+
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                sa_select(Page.target_path, Page.metadata_json).where(
+                    Page.page_type == "symbol_spotlight"
+                )
+            )
+            keys: dict[str, list[str]] = {}
+            for target_path, meta_json in rows:
+                if not target_path or "::" not in target_path:
+                    # Not a shape this sweep can attribute to a file. Skipping
+                    # it means the page is left alone rather than re-rendered
+                    # on every run against an expectation we cannot compute.
+                    continue
+                try:
+                    meta = json.loads(meta_json or "{}")
+                except (TypeError, ValueError):
+                    meta = {}
+                file_path = target_path.split("::", 1)[0]
+                keys.setdefault(file_path, []).append(str(meta.get(RENDER_KEY) or ""))
+            return keys
+    except Exception as exc:
+        # Same contract as the file-page loader: never block an update on it.
+        # Said out loud rather than swallowed, because the failure is silent by
+        # construction — returning nothing makes every spotlight look current,
+        # so an improved template would quietly never land and the run would
+        # still report success. Printed rather than logged: the CLI sets the
+        # logger to ERROR, so a warning there would not survive.
+        console.print(f"[yellow]Could not read spotlight render keys: {exc}[/yellow]")
         return {}
     finally:
         await engine.dispose()

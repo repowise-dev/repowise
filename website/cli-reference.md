@@ -327,7 +327,7 @@ repowise dead-code [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--min-confidence` | float | 0.4 | Minimum confidence threshold (0.0–1.0) |
+| `--min-confidence` | float | 0.5 | Minimum confidence threshold (0.0–1.0) |
 | `--safe-only` | flag | false | Only show findings marked `safe_to_delete` |
 | `--kind` | choice | — | Filter by type: `unreachable_file`, `unused_export`, `unused_internal`, `zombie_package` |
 | `--format` | choice | table | Output format: `table`, `json`, or `md` |
@@ -340,6 +340,191 @@ repowise dead-code --safe-only              # Only confirmed safe to delete
 repowise dead-code --kind unused_export     # Only unused exports
 repowise dead-code --format json            # Machine-readable output
 repowise dead-code --min-confidence 0.8     # High confidence only
+```
+
+---
+
+## `health`
+
+Compute per-file code-health scores from deterministic markers. No LLM by
+default.
+
+```bash
+repowise health [PATH] [OPTIONS]
+```
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--file` | string | — | Deep-dive a single file (relative path) |
+| `--module` | string | — | Restrict to files whose path starts with this prefix |
+| `--refactoring-targets` | flag | false | Ranked refactoring candidates by impact/effort |
+| `--trend` | flag | false | Last health snapshots + declining alerts |
+| `--badge` | flag | false | Ready-to-paste health badge Markdown |
+| `--format` | choice | table | `table`, `json`, or `md` |
+| `--generate-code` | string | — | Opt-in LLM refactoring patch for one target (needs a provider) |
+
+### Examples
+
+```bash
+repowise health
+repowise health --refactoring-targets
+repowise health --file packages/server/app.py
+repowise health --trend
+```
+
+---
+
+## `risk`
+
+Score the defect risk of a *change* (commit or `base..head` range). No LLM.
+
+```bash
+repowise risk [REVSPEC] [OPTIONS]
+```
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--path` | path | cwd | Git repository path |
+| `--ext` | string | all | Comma-separated suffixes to count (e.g. `.py,.ts`) |
+| `-x, --exclude` | pattern | — | Gitignore-style exclude (repeatable) |
+| `--format` | choice | table | `table` or `json` |
+
+### Examples
+
+```bash
+repowise risk                 # score HEAD
+repowise risk main..HEAD      # score a branch / PR range
+repowise risk --ext .ts,.tsx
+```
+
+---
+
+## `security`
+
+Security signal scanning. Working-tree scanning already runs during `init` /
+`update`. Use this group to walk **full git history** for leaked secrets.
+
+```bash
+repowise security scan --history [OPTIONS]
+```
+
+Without `--history`, the command prints a hint and exits (it does not re-run
+the working-tree scan).
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--history` | flag | false | Required for a real scan: walk full git history |
+| `--since` | rev | all | Lower bound (exclusive) |
+| `--to` | rev | HEAD | Upper bound (inclusive) |
+| `--path` | string | cwd | Repo path |
+| `--all-patterns` | flag | false | Also report code-smell patterns (default: secrets only) |
+| `--output` | choice | table | `table` or `json` |
+
+### Examples
+
+```bash
+repowise security scan --history
+repowise security scan --history --since v1.0.0 --output json
+```
+
+---
+
+## `coverage`
+
+Ingest and inspect test-coverage reports (LCOV, Cobertura/Clover, coverage.py).
+
+```bash
+repowise coverage SUBCOMMAND [OPTIONS]
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `add [PATHS...]` | Ingest reports (auto-discovers when none given); builds per-test map when contexts are present |
+| `status` | Show ingested coverage + test-to-code map counts |
+
+### Examples
+
+```bash
+repowise coverage add
+repowise coverage add coverage.lcov
+repowise coverage add .coverage
+repowise coverage status
+```
+
+---
+
+## `impacted-tests`
+
+Print the tests whose coverage intersects a change's changed lines. Requires a
+per-test map from `coverage add`.
+
+```bash
+repowise impacted-tests [REVSPEC] [OPTIONS]
+```
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--path` | string | cwd | Repo path |
+| `--staged` | flag | when no revspec | Diff staged changes |
+| `--format` | choice | table | `table`, `json`, or `list` (pipeable test ids) |
+
+### Examples
+
+```bash
+repowise impacted-tests
+repowise impacted-tests main..HEAD
+repowise impacted-tests main..HEAD --format list | xargs pytest
+```
+
+---
+
+## `workspace`
+
+Manage multi-repo workspaces.
+
+```bash
+repowise workspace SUBCOMMAND [OPTIONS]
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `add` | Add a repo and (by default) index it |
+| `list` | Show workspace repos and status |
+| `remove` | Remove a repo from the workspace |
+| `scan` | Find new repos under the workspace root |
+| `set-default` | Change the primary repo |
+| `check` | Architecture lint (dependency rules / cycles) |
+| `metrics` | Architecture metrics |
+| `diagnostics` | Explain cross-repo contract link counts |
+
+---
+
+## `distill`
+
+Run a command and print a compact, reversible rendering of its output.
+
+```bash
+repowise distill <command>...
+```
+
+### Examples
+
+```bash
+repowise distill pytest -x
+repowise distill git status
+repowise distill npm run build
 ```
 
 ---
@@ -369,7 +554,7 @@ repowise decision SUBCOMMAND [OPTIONS]
 | Flag | Type | Description |
 |------|------|-------------|
 | `--status` | choice | Filter by status: `proposed`, `active`, `deprecated`, `superseded`, `all` |
-| `--source` | choice | Filter by origin: `git_archaeology`, `inline_marker`, `readme_mining`, `cli`, `all` |
+| `--source` | choice | Filter by origin: `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | flag | Show only proposed decisions |
 | `--stale-only` | flag | Show only decisions with staleness score ≥ 0.5 |
 

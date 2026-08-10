@@ -252,6 +252,15 @@ export function mapHostedPage(raw: Record<string, unknown>, repoId: string): Pag
   const num = (k: string, fallback = 0): number =>
     typeof raw[k] === "number" ? (raw[k] as number) : fallback;
   const content = str("content");
+  const metadata = (raw.metadata as Record<string, unknown> | undefined) ?? {};
+  // The layer stamp gets a field of its own because `toPageSummary` drops the
+  // whole metadata blob, and the docs tree groups pages by this stamp off a
+  // summary listing. Blank reads as `null`, never "", so "no layer claimed
+  // this page" cannot be mistaken for a layer whose name is empty.
+  const stamp = (key: string): string | null => {
+    const value = metadata[key];
+    return typeof value === "string" && value ? value : null;
+  };
   return {
     id: str("id") || str("page_id"),
     repository_id: repoId,
@@ -270,7 +279,9 @@ export function mapHostedPage(raw: Record<string, unknown>, repoId: string): Pag
     version: num("version", 1),
     confidence: num("confidence", 1),
     freshness_status: str("freshness_status") || "fresh",
-    metadata: (raw.metadata as Record<string, unknown> | undefined) ?? {},
+    metadata,
+    layer_id: stamp("layer_id"),
+    layer_name: stamp("layer_name"),
     human_notes: null,
     created_at: str("created_at"),
     updated_at: str("updated_at") || str("created_at"),

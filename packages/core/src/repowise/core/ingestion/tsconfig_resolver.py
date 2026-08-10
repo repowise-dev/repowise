@@ -30,8 +30,23 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-# Extensions probed in TypeScript module resolution order.
-_TS_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx")
+# Extensions probed in TypeScript module resolution order. The SFC extensions
+# trail the real TS/JS ones so a genuine ``.ts`` always wins, but they must be
+# present: a Vue/Nuxt app aliases ``@/* -> src/*`` in jsconfig.json and then
+# lazy-loads every route as ``import('@/views/user/profile')`` with no
+# extension. Without ``.vue`` here that specifier resolved to nothing, the
+# component carried no inbound edge, and the whole route table read as dead.
+_TS_EXTENSIONS = (
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".cts",
+    ".js",
+    ".jsx",
+    ".vue",
+    ".svelte",
+    ".astro",
+)
 _INDEX_FILES = (
     "index.ts",
     "index.tsx",
@@ -39,6 +54,9 @@ _INDEX_FILES = (
     "index.cts",
     "index.js",
     "index.jsx",
+    "index.vue",
+    "index.svelte",
+    "index.astro",
 )
 
 
@@ -455,7 +473,9 @@ def wire_tsconfig_resolver(
 
     Needs to be called after add_file() but before build().
     """
-    _ts_langs = {"typescript", "javascript"}
+    # Svelte counts: a SvelteKit app's aliases live in its tsconfig, and a
+    # .svelte component's imports go through the same TS/JS resolver.
+    _ts_langs = {"typescript", "javascript", "svelte", "vue"}
 
     # We duck-type graph_builder to avoid circular imports. It has ._parsed_files.
     parsed_files = graph_builder._parsed_files.values()

@@ -28,11 +28,9 @@ DECISION_EXTRACTION_TIMEOUT_SECS = 300
 _DECISION_SOURCE_LABELS: tuple[tuple[str, str], ...] = (
     ("inline_marker", "from inline markers"),
     ("adr", "from ADR files"),
-    ("changelog", "from changelogs"),
     ("pr", "from pull requests"),
     ("git_archaeology", "from git history"),
     ("comment", "from comments"),
-    ("readme_mining", "from docs"),
     ("session", "from agent sessions"),
 )
 
@@ -41,6 +39,7 @@ async def _run_dead_code_analysis(
     graph_builder: Any,
     git_meta_map: dict[str, dict],
     *,
+    source_map: dict[str, bytes] | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Run dead code detection (pure graph traversal, no LLM)."""
@@ -54,7 +53,10 @@ async def _run_dead_code_analysis(
             progress.on_phase_start("dead_code", dead_code_steps)
 
         analyzer = DeadCodeAnalyzer(
-            graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+            graph_builder.graph(),
+            git_meta_map,
+            parsed_files=graph_builder._parsed_files,
+            source_map=source_map,
         )
 
         def _step(_stage: str) -> None:
@@ -208,6 +210,7 @@ async def _run_health_analysis(
             module_map=module_map,
             coverage_map=coverage_map,
             duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
+            repo_root=repo_path,
         )
 
         # Load per-file override rules from `.repowise/health-rules.json`.
@@ -312,7 +315,11 @@ async def _run_decision_extraction(
                 session_mining_enabled,
             )
 
-            if llm_client is not None and session_mining_enabled(repo_cfg):
+            # Not gated on a provider: the same pass records transcript
+            # episodes, which need no model, and gating the read on a key
+            # would leave a keyless index with no transcript supply at all.
+            # The miner skips its own structuring pass when provider is None.
+            if session_mining_enabled(repo_cfg):
                 session_decisions = await asyncio.wait_for(
                     mine_session_decisions(repo_path, provider=llm_client),
                     timeout=DECISION_EXTRACTION_TIMEOUT_SECS,

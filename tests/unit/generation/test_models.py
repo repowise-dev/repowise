@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -147,6 +149,8 @@ def test_generation_config_defaults():
     assert config.max_tokens == 16384
     assert config.temperature == 0.3
     assert config.token_budget == 48000
+    assert config.source_evidence_token_budget == 8000
+    assert config.source_evidence_files == {}
     assert config.max_concurrency == 12
     assert config.embed_concurrency == 12
     assert config.cache_enabled is True
@@ -157,9 +161,187 @@ def test_generation_config_defaults():
     assert config.reasoning == "auto"
 
 
+def test_generation_config_preserves_existing_positional_constructor_order():
+    config = GenerationConfig(4096, 0.2, 12000, 4)
+
+    assert config.max_concurrency == 4
+    assert config.source_evidence_token_budget == 8000
+
+
+def test_generation_config_remains_hashable_and_evidence_mapping_is_immutable():
+    config = GenerationConfig.from_repo_config(
+        {"generation_context": {"files": {"repo_overview": ["README.md"]}}}
+    )
+
+    assert isinstance(hash(config), int)
+    assert "repo_overview" in config.source_evidence_files
+    assert ("repo_overview", ("README.md",)) not in config.source_evidence_files
+    assert config.source_evidence_files != tuple(config.source_evidence_files.items())
+    assert tuple(config.source_evidence_files.items()) != config.source_evidence_files
+    with pytest.raises(TypeError):
+        config.source_evidence_files["repo_overview"] = ("other.md",)  # type: ignore[index]
+    with pytest.raises(TypeError):
+        dict.__setitem__(config.source_evidence_files, "repo_overview", ("other.md",))  # type: ignore[arg-type]
+    with pytest.raises((AttributeError, TypeError)):
+        config.source_evidence_files._items = ()  # type: ignore[attr-defined]
+    # The backing store itself is read-only, so a reachable private handle
+    # cannot mutate it in place and corrupt the cached hash.
+    with pytest.raises(TypeError):
+        config.source_evidence_files._items["repo_overview"] = ("other.md",)  # type: ignore[index]
+
+    reordered = GenerationConfig(
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/flow.md",),
+            "repo_overview": ("README.md",),
+        }
+    )
+    original_order = GenerationConfig(
+        source_evidence_files={
+            "repo_overview": ("README.md",),
+            "onboarding/how_it_works": ("docs/flow.md",),
+        }
+    )
+    assert reordered == original_order
+    assert hash(reordered) == hash(original_order)
+
+
+def test_generation_config_to_dict_preserves_public_evidence_mapping_shape():
+    config = GenerationConfig(
+        source_evidence_files={"repo_overview": ("README.md",)},
+    )
+
+    snapshot = config.to_dict()
+
+    assert type(snapshot["source_evidence_files"]) is dict
+    assert snapshot["source_evidence_files"] == {"repo_overview": ("README.md",)}
+    restored = GenerationConfig(**snapshot)
+    assert restored.source_evidence_files == config.source_evidence_files
+
+
+def test_generation_config_remains_copyable_with_immutable_evidence_mapping():
+    config = GenerationConfig(
+        source_evidence_files={"repo_overview": ("README.md",)},
+    )
+
+    assert copy.copy(config) == config
+    assert copy.deepcopy(config) == config
+    assert pickle.loads(pickle.dumps(config)) == config
+
+
 def test_generation_config_reads_repo_max_tokens():
     config = GenerationConfig.from_repo_config({"max_tokens": "2345"})
     assert config.max_tokens == 2345
+
+
+def test_generation_config_reads_source_evidence_settings():
+    config = GenerationConfig.from_repo_config(
+        {
+            "generation_context": {
+                "token_budget": 4321,
+                "files": {
+                    "repo_overview": ["README.md", "docs/architecture.md"],
+                    "onboarding/how_it_works": ["docs/flow.md"],
+                },
+            }
+        }
+    )
+
+    assert config.source_evidence_token_budget == 4321
+    assert config.source_evidence_files == {
+        "repo_overview": ("README.md", "docs/architecture.md"),
+        "onboarding/how_it_works": ("docs/flow.md",),
+    }
+
+
+@pytest.mark.parametrize(
+    "generation_context",
+    [
+        [],
+        {"token_budget": -1},
+        {"token_budget": True},
+        {"files": []},
+        {"files": {"module_page": ["README.md"]}},
+        {"files": {"onboarding/project_overview": ["README.md"]}},
+        {"files": {"repo_overview": "README.md"}},
+    ],
+)
+def test_generation_config_rejects_invalid_source_evidence_settings(generation_context):
+    with pytest.raises(ValueError, match="generation_context"):
+        GenerationConfig.from_repo_config({"generation_context": generation_context})
+
+
+def test_direct_generation_config_rejects_an_unconsumed_evidence_key() -> None:
+    with pytest.raises(ValueError, match="project_overview is configured as repo_overview"):
+        GenerationConfig(
+            source_evidence_files={
+                "onboarding/project_overview": ("README.md",),
+            }
+        )
+
+
+def test_direct_generation_config_frames_evidence_errors_with_the_field_name() -> None:
+    # Direct construction reports against the internal field, not the config
+    # key from_repo_config uses -- the two framings are deliberate, so pin both.
+    with pytest.raises(ValueError, match=r"^source_evidence_files keys must name"):
+        GenerationConfig(source_evidence_files={"module_page": ("README.md",)})
+    with pytest.raises(ValueError, match=r"^source_evidence_files\.repo_overview must be a list"):
+        GenerationConfig(source_evidence_files={"repo_overview": "README.md"})
+
+
+class TestRetiredEvidenceKeysDoNotBreakAnUpgrade:
+    """A key naming a retired page is dropped, not raised on.
+
+    The strictness elsewhere in this validator is aimed at a typo, which is
+    only ever a mistake. A retired key is a config that was correct when it was
+    written, and every user carrying one would hit a hard generation failure on
+    their first update after the release that retired the page.
+    """
+
+    def test_a_retired_key_is_ignored_rather_than_rejected(self) -> None:
+        from repowise.core.generation.page_redirects import RETIRED_IDS
+
+        retired_keys = [
+            page_id.split(":", 1)[1]
+            for page_id in sorted(RETIRED_IDS)
+            if page_id.startswith("onboarding:")
+        ]
+        assert retired_keys, "no retired onboarding keys to exercise"
+
+        for key in retired_keys:
+            config = GenerationConfig.from_repo_config(
+                {"generation_context": {"files": {key: ["docs/x.md"]}}}
+            )
+            assert key not in config.source_evidence_files
+
+    def test_a_retired_key_alongside_a_live_one_keeps_the_live_one(self) -> None:
+        config = GenerationConfig.from_repo_config(
+            {
+                "generation_context": {
+                    "files": {
+                        "onboarding/codebase_map": ["docs/old.md"],
+                        "repo_overview": ["README.md"],
+                    }
+                }
+            }
+        )
+
+        assert config.source_evidence_files == {"repo_overview": ("README.md",)}
+
+    def test_a_genuine_typo_still_raises(self) -> None:
+        """The leniency is scoped to the retirement table, not to unknown keys."""
+        with pytest.raises(ValueError, match="must name repo_overview"):
+            GenerationConfig.from_repo_config(
+                {"generation_context": {"files": {"onboarding/codebase_maps": ["docs/x.md"]}}}
+            )
+
+
+def test_direct_generation_config_normalizes_evidence_keys_like_the_config_loader() -> None:
+    # Sharing one validator also aligns key normalization: direct construction
+    # now strips keys before the membership check, as from_repo_config always
+    # did. A padded key is accepted and stored trimmed, not rejected.
+    config = GenerationConfig(source_evidence_files={" repo_overview ": ("README.md",)})
+
+    assert config.source_evidence_files == {"repo_overview": ("README.md",)}
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "not-a-number"])

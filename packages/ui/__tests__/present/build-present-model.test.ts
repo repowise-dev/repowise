@@ -184,4 +184,24 @@ describe("buildPresentModel", () => {
     const model = buildPresentModel([bareOverview, layerCore]);
     expect(model.walkthrough.length).toBeGreaterThan(0);
   });
+
+  // The assumption the Guided Tour page's retirement rests on. The page is
+  // gone; the ordered stops it used to narrate are still computed and still
+  // written to the overview's metadata, and every consumer outside that page
+  // read the metadata rather than the page. If that were ever untrue, this is
+  // where it would show: a deck built from an index that has no onboarding
+  // page at all must still walk the tour.
+  it("builds a full deck and walkthrough with no onboarding page in the index", () => {
+    const pages = [overview, arch, layerApi, layerCore, mainFile];
+    expect(pages.some((p) => p.page_type === "onboarding")).toBe(false);
+
+    const model = buildPresentModel(pages);
+
+    expect(model.deck.some((s) => s.kind === "title")).toBe(true);
+    expect(model.deck.some((s) => s.kind === "diagram")).toBe(true);
+    expect(model.deck.length).toBeGreaterThan(3);
+    expect(model.walkthrough).toHaveLength(2);
+    expect(model.walkthrough.map((w) => w.title)).toEqual(["main.py", "core.py"]);
+    expect(model.totalMinutes).toBeGreaterThan(0);
+  });
 });

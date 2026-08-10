@@ -39,6 +39,9 @@ _DISPATCH: dict[str, Callable[[Node, str], tuple[list[str], list[NamedBinding]]]
     "python": extract_python_bindings,
     "typescript": extract_ts_js_bindings,
     "javascript": extract_ts_js_bindings,
+    # A component's <script> imports are ordinary ESM.
+    "svelte": extract_ts_js_bindings,
+    "vue": extract_ts_js_bindings,
     "go": extract_go_bindings,
     "rust": extract_rust_bindings,
     "java": extract_java_bindings,

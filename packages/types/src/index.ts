@@ -13,6 +13,7 @@ export * from "./graph.js";
 export * from "./git.js";
 export * from "./docs.js";
 export * from "./decisions.js";
+export * from "./episodes.js";
 export * from "./dead-code.js";
 export * from "./symbols.js";
 export * from "./chat.js";

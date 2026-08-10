@@ -54,6 +54,10 @@ def test_file_trend_to_dict_thin_history() -> None:
         "current": None,
         "previous": None,
         "delta": None,
+        # Null alongside ``delta``, not absent: a thin history has no movement
+        # to report on either series, and a consumer reading
+        # ``unclamped_delta ?? delta`` must not fall through to a stale number.
+        "unclamped_delta": None,
         "declining": False,
         "snapshot_count": 1,
     }
@@ -65,20 +69,29 @@ def test_file_trend_to_dict_serializes_points() -> None:
     t = FileTrend(
         file_path="a.py",
         points=[
-            FileTrendPoint(taken_at=datetime(2026, 1, 1, tzinfo=UTC), score=8.0),
-            FileTrendPoint(taken_at=None, score=6.5),
+            FileTrendPoint(
+                taken_at=datetime(2026, 1, 1, tzinfo=UTC), score=8.0, unclamped_score=8.0
+            ),
+            # Sitting on the floor with the real depth recorded: the point the
+            # serializer has to carry both numbers for.
+            FileTrendPoint(taken_at=None, score=1.0, unclamped_score=-2.9),
         ],
-        current=6.5,
+        current=1.0,
         previous=8.0,
-        delta=-1.5,
+        delta=-7.0,
+        unclamped_delta=-10.9,
         declining=True,
         snapshot_count=2,
     )
     d = _file_trend_to_dict(t)
     assert d["points"][0]["taken_at"] == "2026-01-01T00:00:00+00:00"
     assert d["points"][0]["score"] == 8.0
+    assert d["points"][0]["unclamped_score"] == 8.0
     assert d["points"][1]["taken_at"] is None
-    assert d["delta"] == -1.5
+    assert d["points"][1]["score"] == 1.0
+    assert d["points"][1]["unclamped_score"] == -2.9
+    assert d["delta"] == -7.0
+    assert d["unclamped_delta"] == -10.9
     assert d["declining"] is True
 
 

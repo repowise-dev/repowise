@@ -121,11 +121,14 @@ def test_the_progress_module_does_not_drag_in_the_pipeline_package() -> None:
 def test_the_cli_entry_point_does_not_drag_in_the_pipeline_package() -> None:
     """The guard above covers one module; this covers the whole entry point.
 
-    ``repowise.cli.main`` imports every command module at module scope, so a
-    single ``from repowise.core.pipeline...`` anywhere under it is paid by every
-    invocation — ``repowise --help`` and each post-commit hook run included.
+    ``repowise.cli.main`` now registers commands lazily, so this no longer
+    covers the command modules themselves — but the entry point still imports
+    the root group, the registry and click, and a single
+    ``from repowise.core.pipeline...`` on that path would be paid by every
+    invocation, ``repowise --help`` and each post-commit hook run included.
     Generation is the only thing that needs the package, and it is always
     reached through a function body, so nothing here should load it.
+    (Per-command import cost is guarded in ``test_lazy_commands.py``.)
     """
     import subprocess
     import sys

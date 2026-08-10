@@ -48,6 +48,26 @@ export interface DocPageSummary {
    */
   content?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Which layer of the architecture spine this page belongs to, stamped at
+   * generation time. Promoted out of `metadata` because a *list* needs it: the
+   * docs tree groups modules under their layer from this stamp, and a listing
+   * drops the metadata blob. Absent or `null` means no layer claimed the page
+   * — a repo with no curated spine, or a page the grouping leaves where it is.
+   */
+  layer_id?: string | null;
+  layer_name?: string | null;
+  /**
+   * Whether this module page heads a chapter: a subsystem's landing page,
+   * with the module pages of its directory nested under it.
+   *
+   * Promoted out of `metadata` for the same reason as the layer stamp: a
+   * chapter's `page_type` is `module_page`, exactly like the pages beneath it,
+   * so a listing that drops the blob cannot tell a chapter from an ordinary
+   * module that happens to have children. Absent on every page written before
+   * chapters shipped, which reads as `false`.
+   */
+  is_chapter?: boolean;
   human_notes: string | null;
   /**
    * Position in the wiki outline, computed once at generation time so every

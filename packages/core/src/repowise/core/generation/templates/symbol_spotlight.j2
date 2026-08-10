@@ -4,47 +4,71 @@
     the containing module, not verified call sites. The LLM template hedges
     the same way; a template that claimed otherwise would over-state what the
     graph actually knows.
+
+    Every section but the Overview is conditional: a heading with nothing
+    under it costs a reader a stop and repeats a stock sentence across
+    thousands of pages, where it matches every query and distinguishes none.
+
+    The Overview is the exception, and its no-docstring sentence stays even
+    though it reads like a placeholder. It is what ``_extract_summary`` reads
+    back as the page summary, and it names the symbol, its kind and its file —
+    the identifiers this page exists to carry. Deleting it would blank the
+    summary for every undocumented symbol.
 -#}
 # {{ ctx.qualified_name }}
 
 **Kind:** {{ ctx.kind }}{% if ctx.is_async %} (async){% endif %} | **Defined in:** `{{ ctx.file_path }}`{% if ctx.complexity_estimate %} | **Estimated complexity:** {{ ctx.complexity_estimate }}{% endif %}
+{%- if ctx.signature %}
 
-{% if ctx.signature %}
 ```
 {{ ctx.signature }}
 ```
-{% endif %}
+{%- endif %}
 
 ## Overview
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}
-{% else %}`{{ ctx.symbol_name }}` is {{ "an" if ctx.kind and ctx.kind[0] in "aeiou" else "a" }} {{ ctx.kind or "symbol" }} defined in `{{ ctx.file_path }}`. It carries no docstring.{% endif %}
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.symbol_name }}` is {{ "an" if ctx.kind and ctx.kind[0] in "aeiou" else "a" }} {{ ctx.kind or "symbol" }} defined in `{{ ctx.file_path }}`. It carries no docstring.{% endif %}
+{%- if ctx.decorators %}
 
-{% if ctx.decorators %}
 ## Decorators
 {% for d in ctx.decorators %}
 - `{{ d }}`
-{% endfor %}
-{% endif %}
+{%- endfor %}
+{%- endif %}
+{%- if ctx.callers %}
 
-{% if ctx.callers %}
 ## Where it is used
 
-{{ ctx.callers | length }} file{{ "s" if ctx.callers | length != 1 else "" }} import the module that defines it. These are import-level references, not confirmed call sites.
+{{ ctx.callers | length }} file{{ "s" if ctx.callers | length != 1 else "" }} import{{ "" if ctx.callers | length != 1 else "s" }} the module that defines it. These are import-level references, not confirmed call sites.
 {% for c in ctx.callers %}
 - `{{ c }}`
-{% endfor %}
-{% else %}
-## Where it is used
+{%- endfor %}
+{%- endif %}
+{%- if ctx.source_body %}
 
-No importers of the defining module were resolved.
-{% endif %}
-
-{% if ctx.source_body %}
 ## Implementation
 
 ```
 {{ ctx.source_body }}
 ```
-{% endif %}
+{%- endif %}
+{#- Question-shaped text, built from structure rather than prose. The file
+    page carries the same block; the identifiers are what make it worth
+    anything, since otherwise it is one sentence repeated across the corpus.
+
+    This context is thinner than the file page's: no layer, no dependents, no
+    dependencies. And ``callers`` holds files importing the defining module,
+    not verified call sites, so "what calls this?" is a question this page
+    cannot honestly ask. Two it can always answer, plus one when there are
+    importers — fewer than the file page, and honest rather than padded.
+#}
+
+## Questions this page answers
+
+- Where is `{{ ctx.symbol_name }}` defined?
+- What is `{{ ctx.qualified_name }}`?
+{%- if ctx.callers %}
+- Which files import the module that defines `{{ ctx.symbol_name }}`?
+{%- endif %}
+
 {% include "_footer.j2" %}

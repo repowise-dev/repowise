@@ -13,6 +13,12 @@ from repowise.cli.helpers import (
     run_async,
 )
 
+# Rank-fusion damping for the workspace fan-out, matching the value the server's
+# retrieval fusion uses. Only reached when repos in one workspace answered on
+# different score scales (some semantic, some full-text), where the raw scores
+# are not comparable and the rank is the only shared quantity.
+_WORKSPACE_RRF_K = 60
+
 
 @click.command("search")
 @click.argument("query")
@@ -101,33 +107,58 @@ def search_command(
             _search_symbol(repo_path, query, limit)
         return
 
-    # Multi-repo fan-out — gather, sort by score, render once.
+    # Multi-repo fan-out — gather, rank, render once.
     all_results: list = []
+    mixed_scales = False
+    keyless_repos: list[str] = []
     for rp in repo_paths:
         try:
             if mode == "fulltext":
                 results = _collect_fulltext(rp, query, limit)
             elif mode == "semantic":
-                results = _collect_semantic(rp, query, limit)
+                results, served_fulltext = _collect_semantic(rp, query, limit)
+                if served_fulltext:
+                    keyless_repos.append(rp.name)
+                else:
+                    mixed_scales = mixed_scales or bool(results)
             else:  # symbol
                 results = _collect_symbol(rp, query, limit)
         except Exception as exc:
             console.print(f"[yellow]search failed for {rp.name}: {exc}[/yellow]")
             continue
-        for r in results:
-            all_results.append((rp.name, r))
+        for rank, r in enumerate(results):
+            all_results.append((rp.name, r, rank))
 
     if not all_results:
         console.print("[yellow]No results across the workspace.[/yellow]")
         return
 
+    if keyless_repos:
+        console.print(
+            f"[yellow]No embedder configured for: {', '.join(sorted(keyless_repos))}."
+            "[/yellow]\nThose repos contributed full-text results."
+        )
+
     if mode == "symbol":
-        _render_symbol_rows(all_results, query, limit, multi=True)
+        _render_symbol_rows([(n, r) for n, r, _ in all_results], query, limit, multi=True)
     else:
-        # Sort by score desc, slice to limit
-        all_results.sort(key=lambda pair: getattr(pair[1], "score", 0.0), reverse=True)
+        if mode == "semantic" and mixed_scales and keyless_repos:
+            # Full-text and vector scores are not the same quantity: FTS returns
+            # a negated FTS5 rank (typically >1) and LanceDB returns 1 - cosine
+            # distance (roughly 0..1). Sorting them together lets one keyless
+            # repo's full-text rows evict every semantic hit in the workspace.
+            # Fuse on RANK instead, which is what this codebase already does
+            # wherever it combines independently-scored retrievers.
+            all_results.sort(key=lambda t: 1.0 / (t[2] + _WORKSPACE_RRF_K), reverse=True)
+        else:
+            # One scale throughout: the raw score is meaningful, so keep the
+            # existing ordering rather than perturbing it with a rank fusion.
+            all_results.sort(key=lambda t: getattr(t[1], "score", 0.0), reverse=True)
         all_results = all_results[:limit]
-        _display_results_multi(all_results, f"{mode.capitalize()} search: '{query}' (workspace)")
+        _display_results_multi(
+            [(n, r) for n, r, _ in all_results],
+            f"{mode.capitalize()} search: '{query}' (workspace)",
+        )
 
 
 def _search_fulltext(repo_path, query: str, limit: int) -> None:
@@ -146,7 +177,10 @@ def _search_fulltext(repo_path, query: str, limit: int) -> None:
 
 
 def _search_semantic(repo_path, query: str, limit: int) -> None:
+    served_fulltext = False
+
     async def _run():
+        nonlocal served_fulltext
         from pathlib import Path
 
         # Try LanceDB first (populated during repowise init)
@@ -158,12 +192,22 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
                     resolve_embedder_for_repo,
                 )
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
+                from repowise.core.providers.embedding import store_has_semantic_vectors
 
                 embedder = build_embedder(resolve_embedder_for_repo(repo_path))
                 store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                results = await store.search(query, limit=limit)
-                await store.close()
-                return results
+                try:
+                    # A keyless index's own vectors are not discriminative, so
+                    # ranking on them serves noise as if it were meaning. Fall
+                    # through to full text instead: `--mode semantic` has to
+                    # answer with something, and full text is what a keyless
+                    # index actually offers. Same predicate every other vector
+                    # read uses; this site was simply never wired to it.
+                    if store_has_semantic_vectors(store):
+                        return await store.search(query, limit=limit)
+                    served_fulltext = True
+                finally:
+                    await store.close()
             except Exception:
                 pass
 
@@ -178,7 +222,35 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
         return results
 
     results = run_async(_run())
-    _display_results(results, f"Semantic search: '{query}'")
+    if served_fulltext:
+        # Say which mode actually answered. Labelling full-text results
+        # "Semantic search" is how someone concludes semantic retrieval is bad
+        # when what they have is no embedder. This is the common case, not the
+        # rare one: a genuinely keyless repo never reaches build_embedder's
+        # failure warning, because resolving to the keyless embedder is not a
+        # failure.
+        #
+        # Worded for both states. A repo pinned to a real embedder whose key has
+        # since gone away also lands here, having already printed build_embedder's
+        # warning; telling that user "no embedder configured" would contradict
+        # both their config and the line above it.
+        from repowise.cli.providers.embedders import resolve_embedder_for_repo
+
+        pinned = resolve_embedder_for_repo(repo_path)
+        why = (
+            "No embedder configured for this repo"
+            if pinned == "mock"
+            else f"The '{pinned}' embedder could not be used"
+        )
+        console.print(
+            f"[yellow]{why}, so there is no semantic index to search.[/yellow]\n"
+            "Showing full-text results instead. Set an embedder key and run "
+            "[cyan]repowise reindex[/cyan] for semantic search."
+        )
+    _display_results(
+        results,
+        f"Full-text search: '{query}'" if served_fulltext else f"Semantic search: '{query}'",
+    )
 
 
 def _search_symbol(repo_path, query: str, limit: int) -> None:
@@ -265,7 +337,15 @@ def _collect_fulltext(repo_path, query: str, limit: int):
 
 
 def _collect_semantic(repo_path, query: str, limit: int):
+    """Return ``(results, served_fulltext)`` for one repo in the fan-out.
+
+    The flag is what lets the caller avoid sorting full-text scores against
+    vector scores, and what lets it say which repos answered lexically.
+    """
+    served_fulltext = False
+
     async def _run():
+        nonlocal served_fulltext
         from pathlib import Path
 
         from repowise.core.persistence import FullTextSearch, create_engine
@@ -278,12 +358,19 @@ def _collect_semantic(repo_path, query: str, limit: int):
                     resolve_embedder_for_repo,
                 )
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
+                from repowise.core.providers.embedding import store_has_semantic_vectors
 
                 embedder = build_embedder(resolve_embedder_for_repo(repo_path))
                 store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                results = await store.search(query, limit=limit)
-                await store.close()
-                return results
+                try:
+                    # See _search_semantic: a keyless store ranks on noise, so
+                    # this repo falls through to its full-text results rather
+                    # than contributing a window of them to the workspace fan-out.
+                    if store_has_semantic_vectors(store):
+                        return await store.search(query, limit=limit)
+                    served_fulltext = True
+                finally:
+                    await store.close()
             except Exception:
                 pass
 
@@ -294,7 +381,7 @@ def _collect_semantic(repo_path, query: str, limit: int):
         await engine.dispose()
         return results
 
-    return run_async(_run())
+    return run_async(_run()), served_fulltext
 
 
 def _collect_symbol(repo_path, query: str, limit: int):

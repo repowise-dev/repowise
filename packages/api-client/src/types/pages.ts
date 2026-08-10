@@ -32,6 +32,12 @@ export interface PageSummary {
    *  hydrate a few rows of an otherwise summary listing. */
   content?: string;
   metadata?: Record<string, unknown>;
+  /** Which layer of the architecture spine claims this page, stamped at
+   *  generation time. Promoted out of `metadata` because a list needs it: the
+   *  docs tree groups modules under their layer from this stamp, and a listing
+   *  drops the blob. Absent or `null` means no layer claimed the page. */
+  layer_id?: string | null;
+  layer_name?: string | null;
   human_notes: string | null;
   created_at: string;
   updated_at: string;

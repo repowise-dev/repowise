@@ -85,11 +85,20 @@ def _tz_offset_minutes(iso: str) -> int | None:
     """Minutes east of UTC for a git ``%cI`` timestamp, or ``None``.
 
     Only the offset is kept — the instant itself already rides on ``%ct``. Git
-    always emits a numeric offset (never a name), so the tail is ``±HH:MM``.
+    never emits a zone *name*, so the tail is either ``±HH:MM`` or a bare ``Z``:
+    ``%cI`` is strict ISO 8601, which spells a zero offset ``Z`` rather than
+    ``+00:00``. Reading ``Z`` as unparseable is not a cosmetic miss — it makes
+    every commit authored at UTC (CI bots, the GitHub web editor) indistinguishable
+    from one indexed before the column existed, so the backfill in
+    ``pipeline.incremental.reconcile_commit_offsets`` re-selects and re-looks-up
+    the same commits on every update and never converges.
+
     Parsed by hand rather than via ``fromisoformat`` because this runs once per
     commit on every index and the string shape is fixed.
     """
     iso = iso.strip()
+    if iso.endswith("Z"):
+        return 0
     if len(iso) < 6:
         return None
     sign, hh, mm = iso[-6], iso[-5:-3], iso[-2:]
@@ -234,6 +243,13 @@ class RepoTotals:
     first_commit_subject: str | None = None
     total_lines_added: int | None = None
     total_lines_deleted: int | None = None
+    # The commit the churn totals above were computed at. Carried back out so the
+    # caller can store it, and passed back in on the next capture so the walk can
+    # start there instead of at the root. Set only when the churn walk actually
+    # produced numbers, so the anchor can never advance past the totals it
+    # anchors. Doubles as this capture's *prior* record — see
+    # :func:`capture_repo_totals`.
+    churn_anchor_sha: str | None = None
 
 
 # Lifetime churn walks every commit's shortstat, so unlike the other totals it
@@ -243,25 +259,36 @@ class RepoTotals:
 # to pay for the walk.
 _CHURN_COMMIT_CEILING = 50_000
 
+# How many commits a folded total may ride before the walk is redone from the
+# root. Folding assumes a past commit's churn is fixed, and it is not: ``git log
+# --shortstat`` resolves diff attributes from the *working tree*, so committing
+# ``*.min.js -diff`` retroactively changes what every historical commit touching
+# those paths contributed. Nothing in the commit graph moves, so no ancestry or
+# count check can see it — and without a re-walk the wrong total becomes the next
+# fold's base and the error grows forever. Re-anchoring on a fixed stride bounds
+# the drift instead of trying to enumerate its causes (``git replace`` and an
+# uncommitted ``.gitattributes`` edit do the same thing by different routes).
+#
+# Ceiling: the bound is in commits, not in time, so a repo that stops receiving
+# commits keeps a drifted total until it gets some or is re-indexed. Amortised
+# cost is one full walk per stride — on a 9.3k-commit repo, 13.3s spread over 100
+# updates rather than 13.3s on every one.
+_CHURN_REANCHOR_STRIDE = 100
+
 # ``git log --shortstat`` summary line, e.g.
 # " 3 files changed, 41 insertions(+), 9 deletions(-)". Either half can be absent.
 _SHORTSTAT_RE = re.compile(r"(\d+) insertions?\(\+\)|(\d+) deletions?\(-\)")
 
 
-def _lifetime_churn(repo: Any, commit_count: int | None) -> tuple[int | None, int | None]:
-    """Total lines ever added / deleted across the whole history.
+def _walk_churn(repo: Any, rev: str) -> tuple[int | None, int | None]:
+    """Sum ``git log --shortstat`` over *rev*, or ``(None, None)`` if git failed.
 
-    One ``git log --shortstat`` pass, summed here. The per-commit ``git_commits``
-    table cannot answer this: it is bounded to the newest N commits, so summing
-    it silently understates a repo with more history than the window.
-
-    Skipped above :data:`_CHURN_COMMIT_CEILING` commits — returns ``(None, None)``
-    so the caller stores nothing and the UI omits the figure.
+    *rev* is either a single commit (the whole history reachable from it) or a
+    ``a..b`` range. Merge commits contribute nothing either way — ``git log``
+    shows no diff for them without ``-m`` — so the two forms compose exactly.
     """
-    if commit_count is None or commit_count > _CHURN_COMMIT_CEILING:
-        return None, None
     try:
-        out = repo.git.log("--shortstat", "--pretty=tformat:", "HEAD")
+        out = repo.git.log("--shortstat", "--pretty=tformat:", rev)
     except Exception:
         return None, None
     added = deleted = 0
@@ -273,20 +300,139 @@ def _lifetime_churn(repo: Any, commit_count: int | None) -> tuple[int | None, in
     return added, deleted
 
 
-def capture_repo_totals(repo: Any) -> RepoTotals:
+def _folded_churn(
+    repo: Any, commit_count: int, head_sha: str | None, prior: RepoTotals | None
+) -> tuple[int, int] | None:
+    """Lifetime churn as *prior* plus only the commits it has not seen.
+
+    ``None`` means the fold is not safe here and the caller must walk the whole
+    history.
+
+    Three things have to hold, and the third is the one that keeps the other two
+    honest.
+
+    *The commit set may only have grown at the top.* That is
+    ``prior_count + count(anchor..head) == count(head)``. Writing *shared* for
+    the commits both reach and *dropped* for those only the anchor reaches,
+    ``count(anchor..head) == count(head) - shared`` and
+    ``prior_count == shared + dropped``, so the two sides differ by exactly
+    *dropped* — plus anything fetched *below* the anchor since, which inflates
+    the anchor's true reach past the stored ``prior_count``. The equality
+    therefore holds only when nothing was dropped and nothing appeared
+    underneath: a rebase, a force-push, a branch swap and an ``--unshallow``
+    all break it. That is why the check is on counts and not just on ancestry.
+
+    *The anchor is still an ancestor.* ``merge-base --is-ancestor`` runs first
+    because it is cheaper than the count, it rejects an anchor whose object git
+    can no longer resolve, and it keeps the fold from depending on a stored
+    count being right about a history it no longer describes.
+
+    *The stored total has not ridden too long.* Neither check above can see the
+    one way a fold goes wrong without the commit graph moving at all: churn is
+    not a function of the commit set. See :data:`_CHURN_REANCHOR_STRIDE`.
+
+    All three fail closed: any git error falls back to the full walk.
+    """
+    if prior is None or not prior.churn_anchor_sha:
+        return None
+    # No resolved HEAD means the caller is working from the bare name, which is
+    # not a range endpoint worth trusting and would leave totals moving while
+    # the anchor stayed put.
+    if not head_sha:
+        return None
+    if (
+        prior.total_lines_added is None
+        or prior.total_lines_deleted is None
+        or prior.total_commit_count is None
+    ):
+        return None
+
+    # An unmoved HEAD is deliberately *not* short-circuited here. It is the one
+    # shape where history can change underneath a still-valid anchor without the
+    # anchor moving — deepening a shallow clone — and the count check below is
+    # what catches that. The empty range costs one no-op ``git log``.
+    anchor = prior.churn_anchor_sha
+    try:
+        # Raises (non-zero exit) when the anchor is not an ancestor, which is
+        # the answer we want rather than an error.
+        repo.git.merge_base("--is-ancestor", anchor, head_sha)
+        since_count = int(repo.git.rev_list("--count", f"{anchor}..{head_sha}").strip())
+    except Exception:
+        return None
+
+    if prior.total_commit_count + since_count != commit_count:
+        return None
+    if (
+        prior.total_commit_count // _CHURN_REANCHOR_STRIDE
+        != commit_count // _CHURN_REANCHOR_STRIDE
+    ):
+        return None
+
+    added, deleted = _walk_churn(repo, f"{anchor}..{head_sha}")
+    if added is None or deleted is None:
+        return None
+    return prior.total_lines_added + added, prior.total_lines_deleted + deleted
+
+
+def _lifetime_churn(
+    repo: Any, commit_count: int | None, rev: str, head_sha: str | None, prior: RepoTotals | None
+) -> tuple[int | None, int | None]:
+    """Total lines ever added / deleted across the whole history.
+
+    ``git log --shortstat`` over the whole history, which is the one O(history)
+    call in the capture — 2.1s on a 2.2k-commit checkout, and it ran on every
+    update to recompute a total that had moved by one commit's worth. So when
+    *prior* carries a usable anchor the walk is folded instead: the stored total
+    plus the range since that anchor (see :func:`_folded_churn`). A full walk
+    stays the fallback for every case where the fold cannot be proven safe, for
+    the first capture on a repo that has no anchor yet, and on a fixed commit
+    stride so that a total which drifted for a reason no check can see is
+    corrected rather than compounded.
+
+    *rev* is what a full walk covers (a resolved sha, or the bare name ``HEAD``
+    when it would not resolve); *head_sha* is the resolved sha alone, and its
+    absence is what stops the fold from using a name as a range endpoint.
+
+    The per-commit ``git_commits`` table cannot answer this: it is bounded to the
+    newest N commits, so summing it silently understates a repo with more history
+    than the window.
+
+    Skipped above :data:`_CHURN_COMMIT_CEILING` commits — returns ``(None, None)``
+    so the caller stores nothing and the UI omits the figure.
+    """
+    if commit_count is None or commit_count > _CHURN_COMMIT_CEILING:
+        return None, None
+    folded = _folded_churn(repo, commit_count, head_sha, prior)
+    if folded is not None:
+        return folded
+    return _walk_churn(repo, rev)
+
+
+def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotals:
     """Whole-history stats for *repo* via a handful of cheap git calls.
+
+    *prior* is the last capture's own return value, read back from storage. It
+    is used for one thing: letting lifetime churn start from the commit it was
+    last computed at instead of from the root (see :func:`_folded_churn`). Pass
+    ``None`` — as a full index does — to force the whole-history walk.
+
+    Every call is pinned to a single resolved HEAD sha rather than to the name
+    ``HEAD``, so a commit landing mid-capture cannot leave the count describing
+    one history and the churn another. (It can still leave the *stored* pair
+    describing a HEAD that has since moved; that is what the next capture's
+    count reconciliation is for.)
 
     The first three git calls are O(1) in subprocess count and independent of
     the indexer's ``commit_limit``, so they stay cheap no matter how deep the
     history is:
 
-    - ``git rev-list --count HEAD`` — the true total commit count.
+    - ``git rev-list --count`` — the true total commit count.
     - the root commit(s) — earliest committed date (project age), the founding
       author's name, and that commit's subject. Multiple roots (merged
       histories) use the earliest root.
-    - ``git shortlog -sn HEAD`` — one line per mailmap-folded author, so its
-      line count is the true all-time contributor count. Passing ``HEAD``
-      keeps shortlog from blocking on stdin.
+    - ``git shortlog -sn`` — one line per mailmap-folded author, so its line
+      count is the true all-time contributor count. It is passed a revision
+      (rather than left to read stdin, which would block).
 
     Lifetime churn is the one exception: it walks the history, so it is capped
     (see :func:`_lifetime_churn`).
@@ -296,11 +442,18 @@ def capture_repo_totals(repo: Any) -> RepoTotals:
     """
     totals = RepoTotals()
 
+    head_sha: str | None = None
     with contextlib.suppress(Exception):
-        totals.total_commit_count = int(repo.git.rev_list("--count", "HEAD").strip())
+        head_sha = repo.head.commit.hexsha
+    # An unresolvable HEAD (unborn, no repo) leaves every call below on the name,
+    # exactly as before; the anchor is simply not stored for such a capture.
+    rev = head_sha or "HEAD"
+
+    with contextlib.suppress(Exception):
+        totals.total_commit_count = int(repo.git.rev_list("--count", rev).strip())
 
     try:
-        roots = repo.git.rev_list("--max-parents=0", "HEAD").split()
+        roots = repo.git.rev_list("--max-parents=0", rev).split()
         root_commits = [repo.commit(sha) for sha in roots if sha]
         if root_commits:
             oldest = min(root_commits, key=lambda c: c.committed_datetime)
@@ -319,14 +472,19 @@ def capture_repo_totals(repo: Any) -> RepoTotals:
         pass
 
     try:
-        out = repo.git.shortlog("-sn", "HEAD")
+        out = repo.git.shortlog("-sn", rev)
         totals.total_contributor_count = sum(1 for line in out.splitlines() if line.strip())
     except Exception:
         pass
 
     totals.total_lines_added, totals.total_lines_deleted = _lifetime_churn(
-        repo, totals.total_commit_count
+        repo, totals.total_commit_count, rev, head_sha, prior
     )
+    # Only a capture that produced churn gets to move the anchor. Storing one for
+    # a skipped or failed walk would leave the next fold adding a range onto
+    # totals that never covered its start.
+    if head_sha and totals.total_lines_added is not None:
+        totals.churn_anchor_sha = head_sha
 
     return totals
 

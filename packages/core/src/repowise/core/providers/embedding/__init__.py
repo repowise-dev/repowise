@@ -11,10 +11,16 @@ registry to instantiate an embedder by name.
 Built-in embedders:
     openai  — text-embedding-3-small (1536d), text-embedding-3-large (3072d)
     gemini  — gemini-embedding-001 (768d, up to 3072d)
-    mock    — deterministic 8d vectors (zero deps, testing only)
+    mock    — KeylessEmbedder: what a no-key index embeds with (zero deps)
 """
 
-from repowise.core.providers.embedding.base import Embedder, MockEmbedder
+from repowise.core.providers.embedding.base import (
+    Embedder,
+    KeylessEmbedder,
+    MockEmbedder,
+    is_semantic_embedder,
+    store_has_semantic_vectors,
+)
 from repowise.core.providers.embedding.registry import (
     get_embedder,
     list_embedders,
@@ -23,8 +29,11 @@ from repowise.core.providers.embedding.registry import (
 
 __all__ = [
     "Embedder",
+    "KeylessEmbedder",
     "MockEmbedder",
     "get_embedder",
+    "is_semantic_embedder",
     "list_embedders",
     "register_embedder",
+    "store_has_semantic_vectors",
 ]

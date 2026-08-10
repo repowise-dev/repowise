@@ -59,6 +59,71 @@ def test_detection(question, ids, expected):
     assert _is_data_shape_question(question, ids) is expected
 
 
+# --- Where the cue is allowed to sit --------------------------------------
+#
+# The cue is a cheap gate and the miner is the precision gate, which holds for a
+# question someone typed and fails for a body someone pasted. A bug report or a
+# stack trace mentions `field` or `key` in passing, the identifier extractor
+# always finds something to ground on, and the caller who wanted files gets a
+# field list back before retrieval has run at all. So the cue has to sit in the
+# question's own interrogative clause.
+
+_TICKET = (
+    "AuthenticationForm's username field doesn't set maxlength HTML attribute.\n"
+    "Description\n"
+    "AuthenticationForm's username field doesn't render with maxlength anymore.\n"
+    "Regression introduced in #27515 and 5ceaf14686ce626404afb6a5fbd3d8286410bf13.\n"
+    "The widget_attrs() call no longer passes the max_length through, so the\n"
+    "rendered input element is missing the attribute it used to carry, and every\n"
+    "template that relied on it now renders an unbounded text box instead.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "question,ids,expected",
+    [
+        # A long report whose shape noun is incidental. The old cue fired here.
+        (_TICKET, {"AuthenticationForm", "widget_attrs"}, False),
+        # Same report, with a real data-shape question appended. The question is
+        # the question, however much prose precedes it.
+        (
+            _TICKET + "\nWhat fields does each entry in widget_attrs contain?",
+            {"AuthenticationForm", "widget_attrs"},
+            True,
+        ),
+        # Same report, with a question that is not about shape. The shape nouns
+        # in the body must not be borrowed by an unrelated interrogative.
+        (
+            _TICKET + "\nWas this deliberate?",
+            {"AuthenticationForm", "widget_attrs"},
+            False,
+        ),
+        # A short unpunctuated body IS the question: people type this way, and
+        # demanding a `?` of them would break the case the fast path is for.
+        ("what keys does session_payload carry", {"session_payload"}, True),
+    ],
+)
+def test_cue_must_sit_in_an_interrogative_clause(question, ids, expected):
+    assert _is_data_shape_question(question, ids) is expected
+
+
+def test_long_pasted_body_with_no_question_never_fires():
+    """The product argument, independent of any benchmark.
+
+    An agent pasting a stack trace into `get_answer` wants the files. Gate 2
+    returns before the cache and before retrieval, so firing here is the
+    thinnest possible answer to the broadest possible ask.
+    """
+    trace = (
+        'Traceback (most recent call last):\n'
+        '  File "app/models.py", line 88, in save\n'
+        '    self.full_clean()\n'
+        'ValidationError: {"schema": ["This field is required."]}\n'
+    ) * 8
+    assert len(trace) > 400
+    assert _is_data_shape_question(trace, {"full_clean", "ValidationError"}) is False
+
+
 # --- Documented shape (authoritative -> high) -----------------------------
 
 
