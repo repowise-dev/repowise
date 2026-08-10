@@ -155,9 +155,15 @@ def build_embedder(embedder_name_resolved: str) -> Any:
         # Said here, once, rather than in each of the thirteen call sites, for
         # the same reason build_vector_store says its own refusal here: a
         # caller that forgets is exactly how this became invisible.
-        from repowise.cli.helpers import console
+        # stderr, not stdout: this is a diagnostic about a degraded run, and
+        # every caller's stdout may be a machine-readable document. `repowise
+        # search --mode semantic --format json` against a repo whose key has
+        # gone away otherwise prints this warning in front of the JSON and
+        # breaks every parser reading it — and that is the common case for a
+        # keyless repo, not an exotic one.
+        from repowise.cli.helpers import err_console
 
-        console.print(
+        err_console.print(
             f"[yellow]Embedder '{embedder_name_resolved}' could not be built:[/yellow] "
             f"{type(exc).__name__}: {exc}\n"
             "Falling back to keyless embeddings, which means [bold]no semantic search[/bold] "

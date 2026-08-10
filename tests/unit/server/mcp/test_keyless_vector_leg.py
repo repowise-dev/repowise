@@ -323,7 +323,9 @@ def _patch_cli_search(monkeypatch, tmp_path, embedder):
     monkeypatch.setattr(
         search_cmd,
         "_display_results",
-        lambda results, title: (
+        # `fmt` and the keyword-only query/mode arrived with `--format json`;
+        # this test only exercises the table path.
+        lambda results, title, fmt="table", **kw: (
             shown["rows"].extend(r.tag for r in results),
             shown.__setitem__("title", title),
         ),

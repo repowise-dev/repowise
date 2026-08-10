@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -13,6 +14,7 @@ from typing import Any, Literal, TypeVar
 import click
 from rich.console import Console
 
+from repowise.cli.output import resolve_console_width
 from repowise.core.reasoning import (
     ReasoningMode,
 )
@@ -43,8 +45,11 @@ from repowise.core.update_lock import (
 
 T = TypeVar("T")
 
-console = Console()
-err_console = Console(stderr=True)
+# Width is pinned only when the stream is not a terminal — see
+# `output.resolve_console_width`. Without it rich renders a pipe at 80 columns
+# and ellipsises the very paths an agent needs to act on.
+console = Console(width=resolve_console_width(sys.stdout))
+err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
 
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"

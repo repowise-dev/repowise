@@ -8,16 +8,82 @@ from rich.table import Table
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
+    err_console,
     get_db_url_for_repo,
     resolve_command_target,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option
 
 # Rank-fusion damping for the workspace fan-out, matching the value the server's
 # retrieval fusion uses. Only reached when repos in one workspace answered on
 # different score scales (some semantic, some full-text), where the raw scores
 # are not comparable and the rank is the only shared quantity.
 _WORKSPACE_RRF_K = 60
+
+
+def _notices(fmt: str):
+    """Console for human asides — stderr under ``--format json``.
+
+    Progress notices, keyless-embedder warnings and "no results" lines are all
+    written for a person. On stdout they would sit in front of the JSON
+    document and break every parser reading it, so json mode diverts them.
+    """
+    return err_console if fmt == "json" else console
+
+
+def _answered_mode(requested: str, keyless_repos: list[str], mixed_scales: bool) -> str:
+    """Which retrieval actually answered, which is not always what was asked.
+
+    ``--mode semantic`` against a repo with no usable embedder falls through to
+    full text. Reporting the request rather than the answer is how someone
+    concludes semantic retrieval is bad when what they have is no embedder, and
+    for a machine consumer it is worse: FTS returns a negated FTS5 rank and
+    LanceDB returns ``1 - cosine``, so ``score`` means two different things
+    under one label.
+
+    In a workspace fan-out both can be true at once — some repos answered
+    semantically, others fell back — and that is reported as ``mixed`` rather
+    than collapsed to either side. It is the same condition the ranking code
+    already detects, where it fuses on rank because the scores are not
+    comparable.
+    """
+    if requested != "semantic" or not keyless_repos:
+        return requested
+    return "mixed" if mixed_scales else "fulltext"
+
+
+def _page_payload(result, repo_name: str | None = None) -> dict:
+    """One wiki-page hit as plain data.
+
+    Snippets are not clipped to 50 chars the way the table clips them: the
+    table does it to fit a column, and a consumer that asked for JSON has no
+    column to fit.
+    """
+    payload = {
+        "score": round(float(getattr(result, "score", 0.0)), 6),
+        "title": result.title or "",
+        "page_type": result.page_type or "",
+        "path": result.target_path or "",
+        "snippet": result.snippet or "",
+    }
+    if repo_name is not None:
+        payload["repo"] = repo_name
+    return payload
+
+
+def _symbol_payload(row, repo_name: str | None = None) -> dict:
+    """One ``wiki_symbols`` row as plain data, in the SELECT's column order."""
+    payload = {
+        "name": str(row[0]),
+        "qualified_name": str(row[1]),
+        "kind": str(row[2]),
+        "path": str(row[3]),
+        "line": row[4],
+    }
+    if repo_name is not None:
+        payload["repo"] = repo_name
+    return payload
 
 
 @click.command("search")
@@ -49,6 +115,7 @@ _WORKSPACE_RRF_K = 60
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
+@format_option()
 def search_command(
     query: str,
     path: str | None,
@@ -57,6 +124,7 @@ def search_command(
     repo_alias: str | None,
     search_all: bool,
     no_workspace: bool,
+    fmt: str,
 ) -> None:
     """Search wiki pages by keyword, meaning, or symbol name.
 
@@ -70,7 +138,8 @@ def search_command(
         no_workspace_flag=no_workspace,
         repo_alias=repo_alias,
     )
-    target.notice(console, command=f"search ({mode})")
+    notices = _notices(fmt)
+    target.notice(notices, command=f"search ({mode})")
 
     repo_paths: list[Path] = []
     if target.is_workspace:
@@ -93,18 +162,21 @@ def search_command(
 
     repo_paths = [p for p in repo_paths if (p / ".repowise").is_dir()]
     if not repo_paths:
-        console.print("[yellow]No indexed repos to search. Run 'repowise init' first.[/yellow]")
+        notices.print("[yellow]No indexed repos to search. Run 'repowise init' first.[/yellow]")
+        # json mode still owes stdout a parseable document, not nothing.
+        if fmt == "json":
+            emit_json({"query": query, "mode": mode, "results": []})
         return
 
     if len(repo_paths) == 1:
         repo_path = repo_paths[0]
         ensure_repowise_dir(repo_path)
         if mode == "fulltext":
-            _search_fulltext(repo_path, query, limit)
+            _search_fulltext(repo_path, query, limit, fmt)
         elif mode == "semantic":
-            _search_semantic(repo_path, query, limit)
+            _search_semantic(repo_path, query, limit, fmt)
         elif mode == "symbol":
-            _search_symbol(repo_path, query, limit)
+            _search_symbol(repo_path, query, limit, fmt)
         return
 
     # Multi-repo fan-out — gather, rank, render once.
@@ -124,23 +196,25 @@ def search_command(
             else:  # symbol
                 results = _collect_symbol(rp, query, limit)
         except Exception as exc:
-            console.print(f"[yellow]search failed for {rp.name}: {exc}[/yellow]")
+            notices.print(f"[yellow]search failed for {rp.name}: {exc}[/yellow]")
             continue
         for rank, r in enumerate(results):
             all_results.append((rp.name, r, rank))
 
     if not all_results:
-        console.print("[yellow]No results across the workspace.[/yellow]")
+        notices.print("[yellow]No results across the workspace.[/yellow]")
+        if fmt == "json":
+            emit_json({"query": query, "mode": mode, "results": []})
         return
 
     if keyless_repos:
-        console.print(
+        notices.print(
             f"[yellow]No embedder configured for: {', '.join(sorted(keyless_repos))}."
             "[/yellow]\nThose repos contributed full-text results."
         )
 
     if mode == "symbol":
-        _render_symbol_rows([(n, r) for n, r, _ in all_results], query, limit, multi=True)
+        _render_symbol_rows([(n, r) for n, r, _ in all_results], query, limit, fmt, multi=True)
     else:
         if mode == "semantic" and mixed_scales and keyless_repos:
             # Full-text and vector scores are not the same quantity: FTS returns
@@ -158,10 +232,13 @@ def search_command(
         _display_results_multi(
             [(n, r) for n, r, _ in all_results],
             f"{mode.capitalize()} search: '{query}' (workspace)",
+            fmt,
+            query=query,
+            mode=_answered_mode(mode, keyless_repos, mixed_scales),
         )
 
 
-def _search_fulltext(repo_path, query: str, limit: int) -> None:
+def _search_fulltext(repo_path, query: str, limit: int, fmt: str = "table") -> None:
     async def _run():
         from repowise.core.persistence import FullTextSearch, create_engine
 
@@ -173,10 +250,10 @@ def _search_fulltext(repo_path, query: str, limit: int) -> None:
         return results
 
     results = run_async(_run())
-    _display_results(results, f"Full-text search: '{query}'")
+    _display_results(results, f"Full-text search: '{query}'", fmt, query=query, mode="fulltext")
 
 
-def _search_semantic(repo_path, query: str, limit: int) -> None:
+def _search_semantic(repo_path, query: str, limit: int, fmt: str = "table") -> None:
     served_fulltext = False
 
     async def _run():
@@ -242,7 +319,7 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
             if pinned == "mock"
             else f"The '{pinned}' embedder could not be used"
         )
-        console.print(
+        _notices(fmt).print(
             f"[yellow]{why}, so there is no semantic index to search.[/yellow]\n"
             "Showing full-text results instead. Set an embedder key and run "
             "[cyan]repowise reindex[/cyan] for semantic search."
@@ -250,10 +327,15 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
     _display_results(
         results,
         f"Full-text search: '{query}'" if served_fulltext else f"Semantic search: '{query}'",
+        fmt,
+        query=query,
+        # Say which retrieval actually answered, so a consumer is not told
+        # "semantic" when a keyless repo served full text.
+        mode="fulltext" if served_fulltext else "semantic",
     )
 
 
-def _search_symbol(repo_path, query: str, limit: int) -> None:
+def _search_symbol(repo_path, query: str, limit: int, fmt: str = "table") -> None:
     async def _run():
         from sqlalchemy import text as sa_text
 
@@ -277,24 +359,21 @@ def _search_symbol(repo_path, query: str, limit: int) -> None:
         return rows
 
     rows = run_async(_run())
-
-    table = Table(title=f"Symbol search: '{query}'")
-    table.add_column("Name", style="cyan")
-    table.add_column("Qualified Name")
-    table.add_column("Kind")
-    table.add_column("File")
-    table.add_column("Line", justify="right")
-
-    for row in rows:
-        table.add_row(str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]))
-
-    if not rows:
-        console.print(f"[yellow]No symbols matching '{query}'[/yellow]")
-    else:
-        console.print(table)
+    # Same renderer as the workspace fan-out — it built an identical table.
+    _render_symbol_rows([(None, row) for row in rows], query, limit, fmt, multi=False)
 
 
-def _display_results(results, title: str) -> None:
+def _display_results(results, title: str, fmt: str = "table", *, query: str, mode: str) -> None:
+    if fmt == "json":
+        emit_json(
+            {
+                "query": query,
+                "mode": mode,
+                "results": [_page_payload(r) for r in results],
+            }
+        )
+        return
+
     table = Table(title=title)
     table.add_column("Score", justify="right", style="green")
     table.add_column("Title", style="cyan")
@@ -408,8 +487,20 @@ def _collect_symbol(repo_path, query: str, limit: int):
     return run_async(_run())
 
 
-def _display_results_multi(pairs, title: str) -> None:
+def _display_results_multi(
+    pairs, title: str, fmt: str = "table", *, query: str, mode: str
+) -> None:
     """Render fulltext/semantic results when fanned out across multiple repos."""
+    if fmt == "json":
+        emit_json(
+            {
+                "query": query,
+                "mode": mode,
+                "results": [_page_payload(r, repo_name) for repo_name, r in pairs],
+            }
+        )
+        return
+
     table = Table(title=title)
     table.add_column("Score", justify="right", style="green")
     table.add_column("Repo", style="magenta")
@@ -430,8 +521,24 @@ def _display_results_multi(pairs, title: str) -> None:
     console.print(table)
 
 
-def _render_symbol_rows(pairs, query: str, limit: int, *, multi: bool) -> None:
-    """Render symbol rows; ``pairs`` is a list of ``(repo_name, row)`` tuples."""
+def _render_symbol_rows(pairs, query: str, limit: int, fmt: str = "table", *, multi: bool) -> None:
+    """Render symbol rows; ``pairs`` is a list of ``(repo_name, row)`` tuples.
+
+    ``repo_name`` is ``None`` in single-repo mode and omitted from the payload.
+    """
+    if fmt == "json":
+        emit_json(
+            {
+                "query": query,
+                "mode": "symbol",
+                "results": [
+                    _symbol_payload(row, repo_name if multi else None)
+                    for repo_name, row in pairs[:limit]
+                ],
+            }
+        )
+        return
+
     title = f"Symbol search: '{query}' (workspace)" if multi else f"Symbol search: '{query}'"
     table = Table(title=title)
     table.add_column("Name", style="cyan")

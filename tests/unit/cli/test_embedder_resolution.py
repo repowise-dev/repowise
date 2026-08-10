@@ -607,12 +607,17 @@ def test_duplicate_reembed_actions_run_once() -> None:
 
 
 def _capture_console(monkeypatch) -> list[str]:
-    """Collect what build_embedder prints, without a real terminal."""
+    """Collect what build_embedder prints, without a real terminal.
+
+    It warns on **stderr**: the caller's stdout may be a JSON document (see
+    ``test_output_agent_readiness.py``), and a warning printed in front of it
+    breaks every parser reading it.
+    """
     from repowise.cli import helpers
 
     printed: list[str] = []
     monkeypatch.setattr(
-        helpers.console, "print", lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+        helpers.err_console, "print", lambda *a, **k: printed.append(" ".join(str(x) for x in a))
     )
     return printed
 
