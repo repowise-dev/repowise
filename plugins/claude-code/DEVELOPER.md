@@ -64,7 +64,7 @@ The `repowise` binary must be on PATH (`/repowise:init` installs it).
 
 **`hooks/hooks.json`** — Registers `SessionStart`
 (`startup|resume|clear` → `repowise-augment`) and `PostToolUse`
-(`Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` →
+(`Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` →
 `repowise-augment`) so context enrichment works as soon as the plugin is
 installed. This mirrors the hooks `repowise init` writes to
 `~/.claude/settings.json`; both firing is safe — see "Hook de-duplication".

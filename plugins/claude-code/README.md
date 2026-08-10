@@ -110,7 +110,7 @@ The plugin registers two hooks that run `repowise-augment`:
 - **`SessionStart`** (`startup|resume|clear`) — emits live index-freshness /
   trust context at session start.
 - **`PostToolUse`** after
-  `Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` —
+  `Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` —
   stays silent unless it has something asymmetric to add (rescuing a
   zero-result grep with the closest indexed symbol, ranking a flood of
   matches by graph centrality, flagging a stale read, or recording

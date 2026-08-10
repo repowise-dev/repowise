@@ -10,6 +10,7 @@ import click
 import pytest
 
 from repowise.cli import mcp_config
+from repowise.cli.agent_adapters import codex as codex_adapter
 from repowise.cli.editor_integrations import claude_config
 
 
@@ -91,7 +92,12 @@ def test_generate_codex_hooks_config_uses_supported_events_only() -> None:
 
     assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse"}
     assert hooks["SessionStart"][0]["matcher"] == "startup|resume|clear"
-    assert hooks["PostToolUse"][0]["matcher"] == "Bash"
+    # Derived from the adapter, never spelled here: Codex calls its shell tool
+    # `shell_command` on current releases and `Bash` on older ones, and a
+    # matcher naming only `Bash` selects nothing on a current Codex while
+    # looking exactly like a working one.
+    assert hooks["PostToolUse"][0]["matcher"] == codex_adapter.SHELL_TOOL_MATCHER
+    assert "shell_command" in hooks["PostToolUse"][0]["matcher"]
     assert hooks["PostToolUse"][1]["matcher"] == "apply_patch|Edit|Write"
     assert [
         hook["timeout"]
@@ -803,6 +809,65 @@ def test_migrate_claude_code_hooks_backfills_session_start(
     ]
     # Idempotent on the second pass.
     assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bash and PowerShell are dropped from an install that already has them.
+
+    Every previous matcher change widened, so migration had only ever been
+    exercised in that direction. This one narrows: shell tools were 51% of hook
+    invocations and 0.7% of emissions, and the cost is interpreter start, which
+    no gate inside the hook can avoid. An existing machine has to get the fix
+    without a re-init, so the old wide matcher is in the legacy tuple.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": (
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
+                                "|mcp__.*[Rr]epowise.*__.*"
+                            ),
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
+                        },
+                        # Somebody else's hook on the same event, carrying the
+                        # same matcher. Rewriting it would silently change a
+                        # tool the user pointed it at on purpose.
+                        {
+                            "matcher": (
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
+                                "|mcp__.*[Rr]epowise.*__.*"
+                            ),
+                            "hooks": [{"type": "command", "command": "node theirs.js"}],
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    entries = saved["hooks"]["PostToolUse"]
+    assert entries[0]["matcher"] == claude_config._AUGMENT_MATCHER
+    assert "Bash" not in entries[0]["matcher"]
+    assert "PowerShell" not in entries[0]["matcher"]
+    assert entries[1]["matcher"] == (
+        "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
+    )
 
 
 def test_migrate_backfills_the_failure_hook_for_older_installs(

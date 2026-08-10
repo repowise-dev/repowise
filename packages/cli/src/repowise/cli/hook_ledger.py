@@ -202,8 +202,8 @@ def _record_hook_run(
     """Count one hook invocation and what it cost. Best-effort, never raises.
 
     Every invocation lands here, including the large majority that return
-    nothing: the matcher covers Read/Edit/Write/Grep/Glob/Bash/PowerShell and
-    the repowise MCP tools, and a silent run still pays the import cost. The
+    nothing: the matcher covers Read/Edit/Write/Grep/Glob and the repowise MCP
+    tools, and a silent run still pays the import cost. The
     harness only writes a transcript record for hooks that *emitted*, so
     without this counter the silent invocations — the bulk of the bill — are
     invisible. Aggregated per (session, event, tool) rather than one row per
