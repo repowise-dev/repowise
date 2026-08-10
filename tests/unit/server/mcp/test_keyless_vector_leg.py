@@ -236,3 +236,174 @@ def test_dedup_by_vector_ignores_the_pending_index_too():
         semantic_match.find_duplicate_decision_by_vector(store, vector, pending=_Pending())
     )
     assert got is None
+
+
+# --------------------------------------------------------------------------
+# `repowise search --mode semantic` (CLI)
+# --------------------------------------------------------------------------
+#
+# The two CLI search paths were never wired to the predicate at all. Everything
+# else that reads vectors was swept and guarded; these build their own store
+# inline, so the sweep did not reach them and a keyless user got a window of
+# nearest-neighbour noise rendered as semantic results, with the full-text
+# fallback sitting unused directly below.
+
+
+class _Row:
+    """The shape the CLI result renderer reads off a hit."""
+
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.score = 0.9
+        self.page_id = tag
+        self.title = tag
+        self.snippet = tag
+        self.page_type = "file_page"
+        self.target_path = tag
+
+
+class _FakeLanceStore:
+    """Stands in for LanceDBVectorStore: records whether it was ranked on."""
+
+    def __init__(self, _path, embedder):
+        self._embedder = embedder
+        self.searched = False
+        self.closed = False
+
+    async def search(self, query, limit=10):
+        self.searched = True
+        return [_Row("vector-noise")]
+
+    async def close(self):
+        self.closed = True
+
+
+def _patch_cli_search(monkeypatch, tmp_path, embedder):
+    """Point both CLI search paths at a fake store and a known FTS result."""
+    from repowise.cli.commands import search_cmd
+
+    built: dict[str, _FakeLanceStore] = {}
+
+    def _make(path, embedder=None):
+        store = _FakeLanceStore(path, embedder)
+        built["store"] = store
+        return store
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "repowise.core.persistence.vector_store.LanceDBVectorStore", _make, raising=False
+    )
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda _n: embedder
+    )
+    # "mock" is what a genuinely keyless repo resolves to; individual tests
+    # override this to cover the "pinned a real embedder that then failed" case.
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.resolve_embedder_for_repo", lambda _p: "mock"
+    )
+
+    class _FTS:
+        def __init__(self, _engine):
+            pass
+
+        async def search(self, query, limit=10):
+            return [_Row("fts-result")]
+
+    class _Engine:
+        async def dispose(self):
+            return None
+
+    monkeypatch.setattr("repowise.core.persistence.FullTextSearch", _FTS, raising=False)
+    monkeypatch.setattr("repowise.core.persistence.create_engine", lambda _u: _Engine(), raising=False)
+    monkeypatch.setattr(search_cmd, "get_db_url_for_repo", lambda _p: "sqlite+aiosqlite:///:memory:")
+    # _search_semantic renders rather than returns, so capture what it would
+    # show AND the title, which is itself part of the contract: full-text rows
+    # must not be labelled "Semantic search".
+    shown: dict = {"rows": [], "title": None, "notices": []}
+    monkeypatch.setattr(
+        search_cmd,
+        "_display_results",
+        lambda results, title: (
+            shown["rows"].extend(r.tag for r in results),
+            shown.__setitem__("title", title),
+        ),
+    )
+    monkeypatch.setattr(
+        search_cmd.console,
+        "print",
+        lambda *a, **k: shown["notices"].append(" ".join(str(x) for x in a)),
+    )
+    return search_cmd, built, shown
+
+
+def test_cli_semantic_search_does_not_rank_on_a_keyless_store(monkeypatch, tmp_path):
+    search_cmd, built, shown = _patch_cli_search(monkeypatch, tmp_path, KeylessEmbedder())
+
+    search_cmd._search_semantic(tmp_path, "how does auth work", 5)
+
+    assert shown["rows"] == ["fts-result"], "keyless must serve full text, not vector noise"
+    assert built["store"].searched is False
+    assert built["store"].closed is True, "the store is still closed on the guarded path"
+
+
+def test_cli_semantic_search_says_full_text_answered(monkeypatch, tmp_path):
+    """Rendering full-text rows under a "Semantic search" heading is how someone
+    concludes semantic retrieval is bad when what they have is no embedder."""
+    search_cmd, _built, shown = _patch_cli_search(monkeypatch, tmp_path, KeylessEmbedder())
+
+    search_cmd._search_semantic(tmp_path, "how does auth work", 5)
+
+    assert "Full-text" in shown["title"]
+    assert "Semantic" not in shown["title"]
+    said = " ".join(shown["notices"]).lower()
+    assert "no embedder configured" in said
+    assert "full-text" in said
+
+
+def test_cli_semantic_search_notice_names_a_configured_embedder(monkeypatch, tmp_path):
+    """A repo pinned to a real embedder whose key has gone away lands here too.
+    Telling that user "no embedder configured" contradicts their own config."""
+    search_cmd, _built, shown = _patch_cli_search(monkeypatch, tmp_path, KeylessEmbedder())
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.resolve_embedder_for_repo", lambda _p: "ollama"
+    )
+
+    search_cmd._search_semantic(tmp_path, "how does auth work", 5)
+
+    said = " ".join(shown["notices"])
+    assert "ollama" in said
+    assert "No embedder configured" not in said
+
+
+def test_cli_semantic_search_still_ranks_on_a_real_store(monkeypatch, tmp_path):
+    """The guard must not over-fire: a real embedder still gets semantic search."""
+    search_cmd, built, shown = _patch_cli_search(monkeypatch, tmp_path, _RealisticEmbedder())
+
+    search_cmd._search_semantic(tmp_path, "how does auth work", 5)
+
+    assert shown["rows"] == ["vector-noise"]
+    assert shown["title"] is not None and "Semantic" in shown["title"]
+    assert built["store"].searched is True
+    assert shown["notices"] == [], "a working embedder must not be warned about"
+
+
+def test_cli_workspace_semantic_collect_skips_a_keyless_repo(monkeypatch, tmp_path):
+    search_cmd, built, _shown = _patch_cli_search(monkeypatch, tmp_path, KeylessEmbedder())
+
+    results, served_fulltext = search_cmd._collect_semantic(tmp_path, "how does auth work", 5)
+
+    assert [r.tag for r in results] == ["fts-result"]
+    assert built["store"].searched is False
+    # The flag is what stops the fan-out sorting these full-text scores against
+    # another repo's cosine scores, which are not the same quantity.
+    assert served_fulltext is True
+
+
+def test_cli_workspace_semantic_collect_reports_a_real_store_as_semantic(monkeypatch, tmp_path):
+    search_cmd, built, _shown = _patch_cli_search(monkeypatch, tmp_path, _RealisticEmbedder())
+
+    results, served_fulltext = search_cmd._collect_semantic(tmp_path, "how does auth work", 5)
+
+    assert [r.tag for r in results] == ["vector-noise"]
+    assert built["store"].searched is True
+    assert served_fulltext is False

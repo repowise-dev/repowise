@@ -594,3 +594,57 @@ def test_duplicate_reembed_actions_run_once() -> None:
     )
     asyncio.run(apply_auto(verdict, _Ctx()))
     assert calls == 1
+
+
+# --- build_embedder must say when it degrades -----------------------------
+#
+# The fallback to keyless embeddings used to be a bare ``except`` that returned
+# a KeylessEmbedder with nothing printed anywhere. ``--embedder ollama`` against
+# a stopped Ollama therefore produced a repo that indexed and searched without
+# complaint and had no semantic retrieval at all, while ``doctor`` reported
+# healthy. The server path already recorded this as ``degraded: True``; the CLI
+# path recorded nothing at all.
+
+
+def _capture_console(monkeypatch) -> list[str]:
+    """Collect what build_embedder prints, without a real terminal."""
+    from repowise.cli import helpers
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        helpers.console, "print", lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+    )
+    return printed
+
+
+def test_build_embedder_reports_a_failed_real_backend(monkeypatch):
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    def _boom(name: str, **kwargs: object):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("repowise.core.providers.embedding.registry.get_embedder", _boom)
+    printed = _capture_console(monkeypatch)
+
+    embedder = providers.build_embedder("ollama")
+
+    # Still falls back rather than crashing the run: full-text search is
+    # unaffected and a hard failure here would break indexing outright.
+    assert isinstance(embedder, KeylessEmbedder)
+    said = " ".join(printed)
+    # The three things a user needs: which backend, why, and what it costs them.
+    assert "ollama" in said
+    assert "connection refused" in said
+    assert "semantic search" in said.lower()
+
+
+def test_build_embedder_is_silent_for_the_keyless_default(monkeypatch):
+    """``mock`` is what a no-key run resolves to. Reaching it is not a failure
+    and must not print a warning, or every keyless run cries wolf."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    printed = _capture_console(monkeypatch)
+    embedder = providers.build_embedder("mock")
+
+    assert isinstance(embedder, KeylessEmbedder)
+    assert printed == []

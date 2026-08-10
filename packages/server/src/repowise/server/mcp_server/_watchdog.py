@@ -24,8 +24,10 @@ entirely.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import sys
 import threading
 
 from repowise.core.procutils import ProcInfo, ancestor_chain, pid_alive, process_create_token
@@ -127,6 +129,23 @@ def start_parent_watchdog() -> threading.Thread | None:
                             info.name or "?",
                             info.pid,
                         )
+                        # os._exit skips interpreter shutdown, which includes
+                        # flushing, so the line above can sit in a buffer and
+                        # never reach the log. That makes a watchdog kill
+                        # indistinguishable from the server simply answering
+                        # nothing: an in-flight batch of tool calls returns
+                        # instantly and empty from then on with no recorded
+                        # cause. Flush so the reason survives.
+                        #
+                        # Deliberately NOT logging.shutdown(): it acquires every
+                        # handler's lock, and the trigger condition here is a
+                        # dead client, which is exactly when nobody is draining
+                        # our stderr pipe. A main thread blocked inside emit()
+                        # holds that lock, so acquiring it would hang the
+                        # watchdog forever and leak the process this exists to
+                        # kill. Flushing the stream takes no logging lock.
+                        with contextlib.suppress(Exception):
+                            sys.stderr.flush()
                         os._exit(0)
             except Exception:
                 # Probe hiccup — never let the watchdog kill or crash the

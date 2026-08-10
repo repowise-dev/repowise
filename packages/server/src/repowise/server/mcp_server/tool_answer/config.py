@@ -163,6 +163,18 @@ _COVERAGE_THRESHOLD = 0.66
 # The top hit must rank no lower than this in EACH retriever (0-indexed, so
 # 1 == "#1 or #2 in both").
 _AGREEMENT_TOP_RANK_MAX = 1
+# The same ceiling for the FTS+symbol pair a keyless index has to use instead:
+# no vector leg runs there, so it can never produce a rank, and a fixed
+# FTS+vector pair would make agreement permanently unreachable for those users.
+# Stricter than the vector pair on purpose — an exact rank-0 tie in both, not
+# "#1 or #2". FTS and the symbol leg read overlapping text (the indexed wiki
+# page carries the public symbol table the symbol leg matches on), so the two
+# agreeing is nearer to one lexical match counted twice than to two independent
+# retrievers concurring. `_SYMBOL_LEG_RRF_K` (180 vs `_RRF_K` 60) already prices
+# that leg at a third of the others' in ranking, after a same-named React
+# component displaced the right file on the 99-question eval; this stops the
+# confidence gate from handing the same signal a full vote.
+_SYMBOL_AGREEMENT_TOP_RANK_MAX = 0
 # The runner-up must trail the top by at least this many ranks in at least one
 # source (when it was found by both). 1 == "top is strictly ahead somewhere".
 _AGREEMENT_RANK_GAP = 1
