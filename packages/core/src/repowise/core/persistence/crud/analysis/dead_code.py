@@ -77,40 +77,63 @@ async def save_dead_code_findings(
         await session.flush()
 
 
-async def upsert_dead_code_findings(
+def _finding_identity(finding: Any) -> tuple:
+    """The (file, kind, symbol) triple that makes two findings the same finding.
+
+    Compared against ``DeadCodeFinding`` rows, whose ``kind`` column holds the
+    enum's *value*. Both shapes reach here: the dataclass (workspace path) and
+    ``dataclasses.asdict`` output (CLI path), and ``asdict`` leaves the
+    ``DeadCodeKind`` member intact rather than converting it — so unwrap
+    ``.value`` in both rather than relying on ``StrEnum.__str__``.
+    """
+    kind = finding.kind if hasattr(finding, "kind") else finding.get("kind", "")
+    symbol = finding.symbol_name if hasattr(finding, "kind") else finding.get("symbol_name")
+    return (_finding_file_path(finding), str(getattr(kind, "value", kind)), symbol)
+
+
+async def replace_dead_code_findings(
     session: AsyncSession,
     repository_id: str,
     findings: list[Any],
-    *,
-    file_paths: list[str],
 ) -> None:
-    """Replace open dead-code findings **only for the given file paths**.
+    """Replace **all** open dead-code findings for the repository.
 
-    Used by the incremental ``repowise update`` path so unchanged files keep
-    their findings instead of being wiped on every partial re-index. Callers
-    must pass the full set of *changed* file paths (not just paths that
-    produced findings) so a changed-but-now-clean file has its stale findings
-    removed.
+    The incremental update path used to replace findings only for the files
+    that changed, which meant an unchanged file kept whatever verdict the last
+    full index gave it. Dead code is a cross-file property — removing the last
+    import of a module makes *that module* dead, and it is not in the change
+    set — so a file-scoped write can never express the result of the analysis
+    that produced it. The analyzer computes the repo-wide truth either way;
+    this persists it instead of discarding the part that is inconvenient.
+
+    Findings the user has acted on are not resurrected. The delete is scoped
+    to ``status == "open"``, so a dismissed or resolved row survives it, and
+    any incoming finding matching such a row by (file, kind, symbol) is
+    dropped rather than re-inserted as a fresh ``open`` duplicate. Without
+    that second half a repo-wide write would re-open every dismissal on every
+    update, which the old file-scoped write only did for changed files.
+
+    There is no unique constraint on that triple (and ``symbol_name`` is
+    nullable, so one would not bite without a functional index), hence
+    delete-then-insert with the surviving keys filtered out in Python rather
+    than an ``ON CONFLICT`` upsert.
     """
-    if not file_paths:
-        return
-    allowed = set(file_paths)
     existing = await session.execute(
-        select(DeadCodeFinding).where(
-            DeadCodeFinding.repository_id == repository_id,
-            DeadCodeFinding.status == "open",
-            DeadCodeFinding.file_path.in_(file_paths),
-        )
+        select(DeadCodeFinding).where(DeadCodeFinding.repository_id == repository_id)
     )
+    acted_on: set[tuple] = set()
     for row in existing.scalars().all():
-        await session.delete(row)
+        if row.status == "open":
+            await session.delete(row)
+        else:
+            acted_on.add((row.file_path, row.kind, row.symbol_name))
     await session.flush()
 
-    # Insert only within the replaced scope (delete is scoped to file_paths).
-    scoped = [f for f in findings if _finding_file_path(f) in allowed]
-    for i in range(0, len(scoped), _BATCH_SIZE):
-        batch = scoped[i : i + _BATCH_SIZE]
+    for i in range(0, len(findings), _BATCH_SIZE):
+        batch = findings[i : i + _BATCH_SIZE]
         for finding in batch:
+            if _finding_identity(finding) in acted_on:
+                continue
             session.add(DeadCodeFinding(**_dead_code_row_kwargs(finding, repository_id)))
         await session.flush()
 

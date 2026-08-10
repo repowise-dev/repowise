@@ -24,9 +24,9 @@ from .coverage_map import (
 from .dead_code import (
     get_dead_code_findings,
     get_dead_code_summary,
+    replace_dead_code_findings,
     save_dead_code_findings,
     update_dead_code_status,
-    upsert_dead_code_findings,
 )
 from .health import (
     HEALTH_SNAPSHOT_RETENTION,
@@ -83,6 +83,7 @@ __all__ = [
     "get_test_coverage_summary",
     "list_health_snapshots",
     "load_coverage_for_repo",
+    "replace_dead_code_findings",
     "replace_governance_findings",
     "save_coverage_files",
     "save_dead_code_findings",
@@ -95,7 +96,6 @@ __all__ = [
     "tests_covering",
     "update_dead_code_status",
     "update_health_finding_status",
-    "upsert_dead_code_findings",
     "upsert_health_findings",
     "upsert_health_metrics",
     "upsert_refactoring_suggestions",

@@ -1,4 +1,12 @@
-"""Tests for DeadCodeAnalyzer.analyze_partial (incremental update path)."""
+"""Tests for the dead-code analysis the incremental update path runs.
+
+The update path used to call ``analyze_partial``, which ran the full detector
+suite and then threw away every finding outside the change set. That method is
+gone: the update now keeps the repo-wide report, because dead code is a
+cross-file property and the findings the filter discarded were exactly the ones
+a change had just moved. See ``test_dead_code_crud.py`` for the persistence
+half.
+"""
 
 from __future__ import annotations
 
@@ -40,23 +48,104 @@ def _graph_with_unused_export():
     )
 
 
-def test_analyze_partial_reports_unused_export_for_changed_file():
-    """analyze_partial must run all detectors (not just unreachable files),
-    so a changed file's unused export is reported."""
+def test_update_path_analysis_reports_unused_exports():
+    """All detectors run, not just unreachable files."""
     analyzer = DeadCodeAnalyzer(_graph_with_unused_export(), git_meta_map={})
 
-    partial = analyzer.analyze_partial(["pkg/utils.py"])
+    report = analyzer.analyze()
 
-    by_symbol = {(f.file_path, f.symbol_name): f.kind for f in partial.findings}
+    by_symbol = {(f.file_path, f.symbol_name): f.kind for f in report.findings}
     assert ("pkg/utils.py", "orphan") in by_symbol
     assert by_symbol[("pkg/utils.py", "orphan")] == DeadCodeKind.UNUSED_EXPORT
 
 
-def test_analyze_partial_scopes_findings_to_affected_files():
-    """Findings for files outside the affected set are not returned."""
-    analyzer = DeadCodeAnalyzer(_graph_with_unused_export(), git_meta_map={})
+def test_analyze_partial_is_gone():
+    """The filtering entry point must not come back.
 
-    partial = analyzer.analyze_partial(["pkg/utils.py"])
+    It is the whole bug: it computed the repo-wide truth and then narrowed the
+    result to the changed files before anything could persist it, so a file the
+    change had just made dead kept its old verdict until a full re-index.
+    """
+    assert not hasattr(DeadCodeAnalyzer, "analyze_partial")
 
-    assert partial.findings
-    assert all(f.file_path == "pkg/utils.py" for f in partial.findings)
+
+class TestRefusesToScoreWithoutStoredGitMetadata:
+    """``load_stored_git_meta`` is best-effort and yields ``{}`` on any
+    failure. ``{}`` plus a repo-wide write is the one combination that
+    actively corrupts the index: every unchanged file falls to the
+    ``commit_count_90d == 0`` rung and is stored at 0.7 with
+    ``safe_to_delete=True`` no matter how actively it is committed to. So the
+    analysis degrades to ``None``, which both persist sites already treat as
+    "leave the existing rows alone".
+    """
+
+    def _builder(self):
+        class _Builder:
+            def __init__(self, graph):
+                self._graph = graph
+                self._parsed_files = {}
+
+            def graph(self):
+                return self._graph
+
+        return _Builder(_graph_with_unused_export())
+
+    def _run(self, *, git_meta_map, stored_git_meta):
+        from repowise.core.pipeline.incremental import run_partial_analysis
+
+        _health, dead_code = run_partial_analysis(
+            "/tmp/repo",
+            self._builder(),
+            git_meta_map,
+            [],
+            [],
+            stored_git_meta=stored_git_meta,
+        )
+        return dead_code
+
+    def test_refuses_when_the_stored_read_came_back_empty(self):
+        # git indexing clearly works (it produced a row for the changed file),
+        # so an empty stored map means the read failed.
+        assert self._run(git_meta_map={"pkg/main.py": {}}, stored_git_meta={}) is None
+
+    def test_proceeds_when_stored_metadata_is_present(self):
+        report = self._run(
+            git_meta_map={"pkg/main.py": {}},
+            stored_git_meta={"pkg/utils.py": {"commit_count_90d": 3}},
+        )
+        assert report is not None
+
+    def test_a_repo_without_git_is_left_alone(self):
+        """Both maps empty means "this repo has no history", not "the read
+        broke", and that case behaved this way long before the guard."""
+        assert self._run(git_meta_map={}, stored_git_meta={}) is not None
+
+
+def test_findings_outside_the_change_set_are_kept():
+    """A file nobody touched still gets a verdict, which is what the update
+    now writes."""
+    graph = _build_graph(
+        nodes={
+            "pkg/orphaned.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [],
+            },
+            "pkg/main.py": {
+                "is_entry_point": True,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 4,
+                "symbols": [],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
+
+    paths = {f.file_path for f in analyzer.analyze().findings}
+
+    # Nothing imports orphaned.py and it is not an entry point.
+    assert "pkg/orphaned.py" in paths

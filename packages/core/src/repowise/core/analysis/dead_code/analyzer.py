@@ -491,17 +491,78 @@ def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
     return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
 
 
+@lru_cache(maxsize=8)
+def _never_flag_suffix_index(
+    patterns: tuple[str, ...],
+) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]], tuple[int, ...]]:
+    """Split *patterns* into suffix-keyed buckets that can be skipped wholesale.
+
+    ``_never_flag_regex`` puts all 579 patterns in one alternation, and
+    ``.match()`` tries every branch at position 0 — most of them beginning
+    ``.*``, so each branch scans the path. Measured cold on a 63k-node repo
+    that is 206 microseconds per unique path and 12.8s of an 18.1s dead-code
+    analysis, the single largest cost in the pass.
+
+    The filter is sound because ``fnmatch.translate`` ends *each* alternative
+    with ``\\Z`` and the join keeps that per-branch (``(?s:A)\\Z|(?s:B)\\Z``),
+    so every branch has to match the whole string. A pattern whose text after
+    its last ``*`` is the literal ``S`` can therefore only match a path ending
+    in ``S``: testing it against a path that does not end in ``S`` is wasted
+    work, never a dropped match. Patterns ending in ``*`` constrain nothing at
+    the tail and stay in one always-tried group.
+
+    Within a bucket the branches keep their original translated form, so the
+    atomic groups ``fnmatch`` emits for interior ``*literal`` runs — which
+    commit to the first occurrence and never retry a later one — behave
+    exactly as they did in the single alternation. Alternation order does not
+    matter to a boolean "did anything match".
+
+    Returns ``(always_tried_regex_or_None, {suffix: regex}, suffix_lengths)``.
+    """
+    always: list[str] = []
+    by_suffix: dict[str, list[str]] = {}
+    for pattern in patterns:
+        norm = os.path.normcase(pattern)
+        # No pattern in the set uses ``?`` or a character class (checked by
+        # test_never_flag_suffix_index_covers_pattern_shapes), so the text
+        # after the last ``*`` is a plain literal tail.
+        suffix = norm.rsplit("*", 1)[-1]
+        translated = fnmatch.translate(norm)
+        if suffix:
+            by_suffix.setdefault(suffix, []).append(translated)
+        else:
+            always.append(translated)
+    compiled = {s: re.compile("|".join(v)) for s, v in by_suffix.items()}
+    return (
+        re.compile("|".join(always)) if always else None,
+        compiled,
+        tuple(sorted({len(s) for s in compiled})),
+    )
+
+
 @lru_cache(maxsize=131072)
 def _never_flag_regex_match(path: str) -> bool:
-    """Memoized ``_never_flag_regex`` match for the default pattern set.
+    """Memoized never-flag match for the default pattern set.
 
-    The alternation has ~540 branches, so one match costs tens of
-    microseconds, and the detector passes ask about the same node ids
-    repeatedly (every graph node is checked by both the unreachable-files
-    and unused-exports passes). Pure function of *path*: the pattern set is
-    a module constant, so process-wide memoization is sound.
+    Equivalent to ``_never_flag_regex(_NEVER_FLAG_PATTERNS).match(...)``, and
+    pinned to it path-for-path by ``test_never_flag_regex.py``. Pure function
+    of *path*: the pattern set is a module constant, so process-wide
+    memoization is sound. The detector passes ask about the same node ids
+    repeatedly (every graph node is checked by the unreachable-files and the
+    unused-exports passes), which is what the cache is for; this function is
+    what the *first* ask of each id costs.
     """
-    return _never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)) is not None
+    norm = os.path.normcase(path)
+    always, by_suffix, suffix_lengths = _never_flag_suffix_index(_NEVER_FLAG_PATTERNS)
+    if always is not None and always.match(norm):
+        return True
+    for length in suffix_lengths:
+        if length > len(norm):
+            break
+        bucket = by_suffix.get(norm[-length:])
+        if bucket is not None and bucket.match(norm):
+            return True
+    return False
 
 
 class DeadCodeAnalyzer:
@@ -636,33 +697,6 @@ class DeadCodeAnalyzer:
         return DeadCodeReport(
             repo_id="",
             analyzed_at=now,
-            total_findings=len(findings),
-            findings=findings,
-            deletable_lines=deletable,
-            confidence_summary={"high": high, "medium": medium, "low": low},
-        )
-
-    def analyze_partial(
-        self, affected_files: list[str], config: dict | None = None
-    ) -> DeadCodeReport:
-        """Run the full detector suite, then narrow findings to ``affected_files``.
-
-        Persisted via the file-scoped ``upsert_dead_code_findings`` so unchanged
-        files keep their findings. Cross-file effects on unchanged files are not
-        recomputed here; the full ``analyze()`` remains authoritative.
-        """
-        affected_set = set(affected_files)
-        full = self.analyze(config)
-        findings = [f for f in full.findings if f.file_path in affected_set]
-
-        deletable = sum(f.lines for f in findings if f.safe_to_delete)
-        high = sum(1 for f in findings if f.confidence >= 0.7)
-        medium = sum(1 for f in findings if 0.4 <= f.confidence < 0.7)
-        low = sum(1 for f in findings if f.confidence < 0.4)
-
-        return DeadCodeReport(
-            repo_id="",
-            analyzed_at=full.analyzed_at,
             total_findings=len(findings),
             findings=findings,
             deletable_lines=deletable,

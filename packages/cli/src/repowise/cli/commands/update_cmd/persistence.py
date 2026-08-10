@@ -469,6 +469,7 @@ def _persist_index_only_update(
         degraded=degraded,
         pages_rendered=pages_rendered,
         template_wiki=template_wiki,
+        changed_paths=changed_paths,
     )
 
 
@@ -880,18 +881,21 @@ async def _persist_full_update_async(
                 except Exception as exc:
                     _skip("Health persist", exc)
 
-            # Scoped to changed files so unchanged files keep their findings (#295).
+            # Repo-wide. The old file-scoped write kept unchanged files' rows
+            # (#295) at the price of never correcting them: the analysis is
+            # repo-wide and dead code is a cross-file property, so dropping an
+            # import could make a module dead and that module, being unchanged,
+            # kept its stale verdict until the next full re-index.
             if dead_code_report is not None:
                 try:
                     import dataclasses as _dc_dead
 
-                    from repowise.core.persistence.crud import upsert_dead_code_findings
+                    from repowise.core.persistence.crud import replace_dead_code_findings
 
-                    await upsert_dead_code_findings(
+                    await replace_dead_code_findings(
                         session,
                         repo_id,
                         [_dc_dead.asdict(f) for f in dead_code_report.findings],
-                        file_paths=[fd.path for fd in file_diffs],
                     )
                 except Exception as exc:
                     _skip("Dead-code persist", exc)

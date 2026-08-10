@@ -311,6 +311,38 @@ async def rebuild_graph_and_git(
     return parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map
 
 
+async def load_stored_git_meta(repo_path: Any, *, log: LogFn | None = None) -> dict[str, dict]:
+    """Read the persisted per-file git fields the dead-code analyzer scores on.
+
+    Best-effort by design: an unreadable store returns ``{}``, which is exactly
+    the input this path had before, so a failure here degrades to the old
+    behavior instead of failing the update.
+    """
+    log = log or _noop_log
+    try:
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_dead_code_git_fields,
+            get_session,
+        )
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.database import resolve_db_url
+
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return {}
+                return await get_dead_code_git_fields(session, repo.id)
+        finally:
+            await engine.dispose()
+    except Exception as exc:
+        log(f"[yellow]Stored git metadata unavailable for dead-code scoring: {exc}[/yellow]")
+        return {}
+
+
 def run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -319,15 +351,26 @@ def run_partial_analysis(
     file_diffs: list,
     *,
     source_map: dict[str, bytes] | None = None,
+    stored_git_meta: dict[str, dict] | None = None,
     log: LogFn | None = None,
 ) -> tuple[Any, Any]:
-    """Run partial code-health + dead-code analysis for the changed files.
+    """Run partial code-health + repo-wide dead-code analysis.
 
     Returns ``(partial_health_report, dead_code_report)`` — either may be
     ``None`` if its analysis failed (both are best-effort).
 
     *source_map* is ingestion's ``{path: raw bytes}`` for this rebuild; the
     dead-code prepasses read it instead of re-reading the repo from disk.
+
+    *stored_git_meta* is the persisted per-file git metadata, supplied to the
+    dead-code analyzer *only*. ``git_meta_map`` holds this run's freshly
+    indexed rows, which on an incremental update means the changed files and
+    nothing else; every other file would otherwise be scored against an empty
+    dict and land on the ``commit_count_90d == 0`` rung of the confidence
+    ladder at 0.7 / ``safe_to_delete=True``. It is deliberately NOT merged into
+    ``git_meta_map`` itself: the partial health analysis reads that map's
+    entries as a repo-wide aggregate, so widening it there would silently move
+    health scores (the same reason the idle-decay rows are kept out of it).
     """
     log = log or _noop_log
 
@@ -365,8 +408,8 @@ def run_partial_analysis(
     except Exception as exc:
         log(f"[yellow]Health analysis skipped: {exc}[/yellow]")
 
-    # Run partial dead-code analysis up front so both branches can
-    # persist its results. Previously this sat below the ``if index_only``
+    # Run dead-code analysis up front so both branches can persist its
+    # results. Previously this sat below the ``if index_only``
     # short-circuit, which left the closure's reference to
     # ``dead_code_report`` unbound and crashed every ``--index-only`` run.
     dead_code_report = None
@@ -375,16 +418,42 @@ def run_partial_analysis(
 
         # parsed_files enables the source-scan rescues (dynamic markers,
         # bundler aliases, export aliases) on the update path, matching init.
-        _analyzer_partial = DeadCodeAnalyzer(
+        #
+        # This run's freshly indexed rows win over the stored ones for the
+        # files they cover; the stored rows carry every other file, which is
+        # what init's analyzer had and this path did not.
+        _dead_code_git_meta = {**(stored_git_meta or {}), **git_meta_map}
+
+        # Refuse rather than write a repo-wide report scored on nothing.
+        # ``load_stored_git_meta`` is best-effort and returns {} on any
+        # failure, and {} plus a repo-wide write is the one combination that
+        # actively corrupts: every unchanged file falls to the
+        # ``commit_count_90d == 0`` rung and is stored at 0.7 with
+        # ``safe_to_delete=True``, however actively it is committed to.
+        # ``git_meta_map`` being non-empty is the tell that git indexing does
+        # work here, so an empty stored map means the read failed rather than
+        # that the repo has no history — a repo with no git at all reaches
+        # this with both maps empty and is left alone.
+        if not stored_git_meta and git_meta_map:
+            raise RuntimeError(
+                "stored git metadata unavailable, refusing to persist a "
+                "repo-wide dead-code report scored without it"
+            )
+
+        _dead_code_analyzer = DeadCodeAnalyzer(
             graph_builder.graph(),
-            git_meta_map,
+            _dead_code_git_meta,
             parsed_files=graph_builder._parsed_files,
             source_map=source_map,
         )
-        _changed_paths_partial = [fd.path for fd in file_diffs]
-        dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
+        # Repo-wide, and persisted repo-wide. The detectors were always
+        # repo-wide — the update path just discarded everything outside the
+        # change set before writing, which is why an unchanged file that the
+        # change had made dead (or brought back to life) kept its old verdict
+        # until someone re-indexed from scratch.
+        dead_code_report = _dead_code_analyzer.analyze()
         if dead_code_report.total_findings:
-            log(f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]")
+            log(f"Dead code findings: [yellow]{dead_code_report.total_findings}[/yellow]")
     except Exception as exc:
         log(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
 
@@ -1091,11 +1160,14 @@ async def persist_incremental_index(
             if dead_code_report is not None:
                 try:
                     from repowise.core.persistence.crud import (
-                        upsert_dead_code_findings,
+                        replace_dead_code_findings,
                     )
 
-                    await upsert_dead_code_findings(
-                        session, repo_id, dead_code_report.findings, file_paths=changed_paths
+                    # Repo-wide: the report is repo-wide, and dead code is a
+                    # cross-file property, so a file-scoped write would drop
+                    # every verdict the change flipped outside the change set.
+                    await replace_dead_code_findings(
+                        session, repo_id, dead_code_report.findings
                     )
                 except Exception as exc:
                     _skip("Dead-code persist", exc, range_scoped=True)

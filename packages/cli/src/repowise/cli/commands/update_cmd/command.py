@@ -43,6 +43,7 @@ from repowise.core.reasoning import REASONING_MODES
 
 from .incremental import (
     _build_update_vector_store,
+    _load_stored_git_meta,
     _rebuild_graph_and_git,
     _refresh_knowledge_graph,
     _run_partial_analysis,
@@ -1201,8 +1202,17 @@ def run_update(
             )
         return UpdateOutcome.DRY_RUN
 
+    # ``git_meta_map`` holds this run's changed files only; the dead-code
+    # analyzer scores confidence per file and would read every unchanged file
+    # as "no commits" without the stored rows.
     partial_health_report, dead_code_report = _run_partial_analysis(
-        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs, source_map
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        parsed_files,
+        file_diffs,
+        source_map,
+        stored_git_meta=_load_stored_git_meta(repo_path),
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before

@@ -421,6 +421,14 @@ async def _incremental_repo_update(
         log=_log.info,
     )
 
+    # Stored per-file git fields for the dead-code analyzer. ``git_meta_map``
+    # covers the changed files only, so every other file would be scored
+    # against an empty dict — which reads as "no commits in 90 days" and puts
+    # the whole repo on the 0.7 / safe-to-delete rung of the confidence ladder.
+    from ..pipeline.incremental import load_stored_git_meta
+
+    stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
+
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
         graph_builder,
@@ -428,6 +436,7 @@ async def _incremental_repo_update(
         parsed_files,
         file_diffs,
         source_map=source_map,
+        stored_git_meta=stored_git_meta,
         log=_log.info,
     )
 
