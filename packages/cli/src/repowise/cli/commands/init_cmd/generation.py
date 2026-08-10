@@ -38,7 +38,11 @@ from repowise.cli.providers import (
     flush_cost_tracker,
 )
 from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER, MaybeCountColumn, RichProgressCallback
-from repowise.core.generation.models import count_stub_fallbacks
+from repowise.core.generation.models import (
+    STUB_FALLBACK_ERROR,
+    count_stub_fallbacks,
+    is_stub_fallback,
+)
 
 __all__ = [
     "COST_GATE_USD",
@@ -396,9 +400,24 @@ def run_repo_generation(
             if stub_count
             else ""
         )
+        # Not necessarily the provider's fault: the commonest cause is this
+        # run's own artifact check rejecting the text the model returned. The
+        # old wording named the provider unconditionally, which sent people to
+        # check their key and their status page over a quality gate firing.
+        # The per-page reason is on the stub, so quote it instead of guessing.
+        reasons = sorted(
+            {
+                str(p.metadata.get(STUB_FALLBACK_ERROR, "")).strip()
+                for p in generated_pages
+                if is_stub_fallback(p)
+            }
+            - {""}
+        )
+        reason_note = "".join(f"  [dim]· {r[:160]}[/dim]\n" for r in reasons[:3])
         console.print(
-            "\n  [yellow]The wiki is incomplete due to provider failures.[/yellow]\n"
+            "\n  [yellow]The wiki is incomplete: some pages were not written.[/yellow]\n"
             f"{placeholder_note}"
+            f"{reason_note}"
             "  [dim]Run [bold]repowise init --resume[/bold] to generate the pages that "
             "failed, without re-spending on the ones that succeeded.[/dim]\n"
         )

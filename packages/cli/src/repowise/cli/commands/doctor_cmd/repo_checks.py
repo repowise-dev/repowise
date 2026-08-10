@@ -40,6 +40,24 @@ async def _decision_vector_ids(session, repository_id: str) -> set[str]:
     return {f"{DECISION_VECTOR_PREFIX}{r[0]}" for r in rows}
 
 
+def _is_stub_fallback_row(page) -> bool:
+    """True when a ``Page`` row is a stub standing in for a failed model page.
+
+    The generation-side predicate reads ``page.metadata``; the ORM row carries
+    the same dict as the ``metadata_json`` text column, so the marker key is
+    shared but the accessor is not.
+    """
+    import json
+
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
+
+    try:
+        meta = json.loads(page.metadata_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(meta, dict) and STUB_FALLBACK_ERROR in meta
+
+
 def _run_repo_checks(
     repo_path: _DoctorPath, repair: bool, *, fmt: str = "table"
 ) -> tuple[bool, list[DoctorCheck]]:
@@ -277,6 +295,19 @@ def _run_repo_checks(
                     indexable_ids = {
                         p.id for p in pages if meets_information_floor(p.content or "")
                     }
+                    # A stub standing in for a failed model page is held out of
+                    # the vector store on purpose: ``_seed_resume`` reads the
+                    # store back as the ledger of pages already written, so a
+                    # vector here is what would tell the next ``init --resume``
+                    # there is nothing left to write. Reporting it as drift sent
+                    # people to ``--repair``, which embedded the stub and quietly
+                    # burned the retry. Same permanent-noise argument as the two
+                    # exclusions above, plus a real cost to "fixing" it. FTS
+                    # still indexes the stub, so this applies to the vector side
+                    # only, and only to MISSING — a leftover vector for a page
+                    # that has since become a stub is real drift worth deleting.
+                    stub_ids = {p.id for p in pages if _is_stub_fallback_row(p)}
+                    vector_indexable_ids = indexable_ids - stub_ids
 
                 # Check vector store
                 vs_ids: set[str] = set()
@@ -290,7 +321,7 @@ def _run_repo_checks(
                     except Exception:
                         pass  # LanceDB not available
 
-                m_vec = indexable_ids - vs_ids if vs_ids else set()
+                m_vec = vector_indexable_ids - vs_ids if vs_ids else set()
                 o_vec = vs_ids - vector_sql_ids if vs_ids else set()
 
                 # Check FTS
@@ -303,11 +334,15 @@ def _run_repo_checks(
                 o_fts = fts_ids - sql_ids if fts_ids else set()
 
                 await engine.dispose()
-                return m_vec, o_vec, m_fts, o_fts
+                return m_vec, o_vec, m_fts, o_fts, len(stub_ids)
 
-            missing_from_vector, orphaned_vector, missing_from_fts, orphaned_fts = run_async(
-                _check_stores()
-            )
+            (
+                missing_from_vector,
+                orphaned_vector,
+                missing_from_fts,
+                orphaned_fts,
+                stub_count,
+            ) = run_async(_check_stores())
 
             vec_ok = not missing_from_vector and not orphaned_vector
             vec_detail = (
@@ -315,6 +350,11 @@ def _run_repo_checks(
                 if vec_ok
                 else (f"{len(missing_from_vector)} missing, {len(orphaned_vector)} orphaned")
             )
+            # Held-back stubs are not drift, but they are also not nothing: the
+            # wiki has a page there that no model wrote. Say so on the same row
+            # rather than letting "in sync" imply the wiki is complete.
+            if stub_count:
+                vec_detail += f" · {stub_count} stub(s) awaiting --resume"
             checks.append(_check("SQL ↔ Vector Store", vec_ok, vec_detail))
 
             fts_ok = not missing_from_fts and not orphaned_fts

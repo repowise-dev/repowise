@@ -111,7 +111,11 @@ def test_run_repo_generation_reports_failures(tmp_path, monkeypatch):
     assert "module_page: 1" in output
     assert "layer_page: 1" in output
     assert "onboarding: 1" in output
-    assert "The wiki is incomplete due to provider failures." in output
+    # Deliberately not "due to provider failures": the commonest cause is this
+    # run's own artifact check rejecting the model's text, and naming the
+    # provider sent people to check a key that was working.
+    assert "The wiki is incomplete: some pages were not written." in output
+    assert "provider failures" not in output
     assert "repowise init --resume" in output
 
 
@@ -231,7 +235,7 @@ def test_run_repo_generation_zero_failures(tmp_path, monkeypatch, verbose_flag):
     assert len(pages) == 1
     output = "\n".join(printed_lines)
     assert "failed" not in output
-    assert "The wiki is incomplete due to provider failures." not in output
+    assert "The wiki is incomplete" not in output
     if verbose_flag:
         assert "Generated [bold]1[/bold] pages" in output
     else:
