@@ -573,6 +573,7 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     from repowise.core.ingestion.git_indexer import GitIndexer
     from repowise.core.persistence.crud import (
         get_latest_commit_committed_at,
+        get_repository,
         update_repo_git_totals,
         upsert_git_commits_bulk,
     )
@@ -610,8 +611,12 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
 
     # Refresh the repo-level whole-history totals so age / commit / contributor
     # counts keep growing between full re-indexes (#730). Cheap git calls, and
-    # cheap to run every update since they don't touch the bounded sample.
-    totals = await asyncio.to_thread(indexer.capture_repo_totals)
+    # cheap to run every update since they don't touch the bounded sample —
+    # except lifetime churn, which walks the history. Handing the capture what
+    # was stored last time lets it add only the range since, and it re-proves
+    # that range is safe to add before doing so.
+    prior = _churn_prior(await get_repository(session, repo_id))
+    totals = await asyncio.to_thread(indexer.capture_repo_totals, prior)
     await update_repo_git_totals(
         session,
         repo_id,
@@ -622,9 +627,33 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         first_commit_subject=totals.first_commit_subject,
         total_lines_added=totals.total_lines_added,
         total_lines_deleted=totals.total_lines_deleted,
+        churn_anchor_sha=totals.churn_anchor_sha,
     )
 
     await persist_incremental_fix_events(session, repo_id, indexer)
+
+
+def _churn_prior(repo_row: Any) -> Any:
+    """The stored totals lifetime churn can resume from, or ``None``.
+
+    Only the four fields the fold reads are carried across, so this never
+    becomes a second way to read repo-level git facts. ``None`` for a repo row
+    that is missing or has no anchor yet, which makes the capture walk the whole
+    history exactly as it always did.
+    """
+    from repowise.core.ingestion.git_indexer.records import RepoTotals
+
+    if repo_row is None:
+        return None
+    anchor = getattr(repo_row, "churn_anchor_sha", None)
+    if not anchor:
+        return None
+    return RepoTotals(
+        total_commit_count=repo_row.total_commit_count,
+        total_lines_added=repo_row.total_lines_added,
+        total_lines_deleted=repo_row.total_lines_deleted,
+        churn_anchor_sha=anchor,
+    )
 
 
 async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) -> None:

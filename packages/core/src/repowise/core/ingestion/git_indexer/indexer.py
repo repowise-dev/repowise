@@ -790,13 +790,17 @@ class GitIndexer:
 
             record_git_episodes(self.repo_path, walk)
 
-    def capture_repo_totals(self) -> Any:
+    def capture_repo_totals(self, prior: Any = None) -> Any:
         """Whole-history :class:`RepoTotals` for this repo (opens its own repo).
 
         The incremental counterpart to the capture ``index_repo`` runs inline:
         ``repowise update`` calls this so true project age / commit / contributor
         counts stay fresh between full re-indexes. Returns an all-``None``
         ``RepoTotals`` when git is unavailable rather than raising.
+
+        *prior* is the previously stored ``RepoTotals``; it only lets lifetime
+        churn resume from its anchor rather than re-walk the history. ``None``
+        (the default, and what a full index passes) forces the whole walk.
         """
         from .records import RepoTotals
 
@@ -804,7 +808,7 @@ class GitIndexer:
         if repo is None:
             return RepoTotals()
         try:
-            return capture_repo_totals(repo)
+            return capture_repo_totals(repo, prior)
         finally:
             with contextlib.suppress(Exception):
                 repo.close()

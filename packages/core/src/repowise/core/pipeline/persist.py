@@ -1431,6 +1431,7 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
             first_commit_subject=totals.first_commit_subject,
             total_lines_added=totals.total_lines_added,
             total_lines_deleted=totals.total_lines_deleted,
+            churn_anchor_sha=getattr(totals, "churn_anchor_sha", None),
         )
 
 

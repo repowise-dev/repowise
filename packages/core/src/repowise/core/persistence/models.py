@@ -70,6 +70,14 @@ class Repository(Base):
     first_commit_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_lines_added: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_lines_deleted: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The commit the two churn totals above were computed at, so the next capture
+    # can add the range since it instead of re-walking the whole history (the
+    # walk was the single most expensive git call on the update path). Written
+    # only together with a churn figure, and only trusted after the next capture
+    # re-proves it is still an ancestor of HEAD and that the commit counts
+    # reconcile. NULL on indexes written before this, which just means the next
+    # capture walks once and anchors itself.
+    churn_anchor_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
