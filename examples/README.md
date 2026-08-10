@@ -10,6 +10,7 @@ self-contained README under `examples/<name>/`.
 | [codex/](codex/) | Codex CLI setup: `repowise init --codex`, smoke checks, local plugin install |
 | [distill/](distill/) | `distill` / `expand` / `saved` — compress command output (no LLM key) |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
+| [hooks-sync/](hooks-sync/) | `hook install` + `watch` — keep the index fresh (no LLM key) |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
 | [risk/](risk/) | `repowise risk` change / PR defect scoring (no LLM key) |
 | [security-scan/](security-scan/) | Working-tree security signals + OSS `security scan --history` (no LLM key) |
@@ -32,5 +33,6 @@ self-contained README under `examples/<name>/`.
 - [Change risk](../docs/layers/CHANGE_RISK.md)
 - [Test intelligence](../docs/layers/TEST_INTELLIGENCE.md)
 - [Distill](../docs/agent/DISTILL.md)
+- [Auto-sync](../docs/scale/AUTO_SYNC.md)
 - [Structurizr export](../docs/architecture/structurizr-export.md)
 - [CLI: security](../docs/reference/CLI_REFERENCE.md)
