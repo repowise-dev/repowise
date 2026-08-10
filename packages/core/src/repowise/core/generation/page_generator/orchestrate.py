@@ -705,6 +705,7 @@ class _GenerationRun:
         # would rewrite a whole-repo page from a one-commit view. They stay as
         # the last full run left them.
         if getattr(self.config, "file_pages_only", False):
+            self.file_page_contexts.clear()
             return self._finalize(all_pages)
 
         # Level 3 (scc_page).
@@ -712,6 +713,14 @@ class _GenerationRun:
 
         # Level 4 (module_page).
         all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
+
+        # Level 4 is the last reader of the per-file contexts, and there is one
+        # per code file. Dropping them here rather than at the end of the run
+        # keeps them out of levels 6-8 and out of _finalize, whose interlinking
+        # and related-pages passes are themselves the memory-heaviest part of a
+        # large run (issue #1394). Every later level works off pages, the graph
+        # and the selection groups, none of which live in this map.
+        self.file_page_contexts.clear()
 
         # Level 5 was one page per KG layer. Those pages retired: the layer a
         # page belongs to is stamped on the page itself, so the docs tree can

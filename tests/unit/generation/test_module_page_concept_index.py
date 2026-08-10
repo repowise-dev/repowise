@@ -75,7 +75,6 @@ def _file_context(path: str, symbols: list[dict], *, pagerank: float = 0.1) -> F
         symbols=symbols,
         imports=[],
         exports=[],
-        file_source_snippet="",
         pagerank_score=pagerank,
         betweenness_score=0.0,
         community_id=0,

@@ -317,7 +317,6 @@ def _module_ctx(assembler, files):
             pagerank_score=0.1,
             betweenness_score=0.0,
             is_entry_point=False,
-            file_source_snippet="",
             community_id=None,
             is_api_contract=False,
             is_test=False,

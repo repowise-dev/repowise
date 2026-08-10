@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import networkx as nx
 
 from repowise.core.generation.context_assembler import (
@@ -83,6 +85,38 @@ def test_assemble_file_page_returns_context(
     assert isinstance(ctx, FilePageContext)
     assert ctx.file_path == sample_parsed_file.file_info.path
     assert ctx.language == "python"
+
+
+def test_assemble_file_page_does_not_retain_source(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics
+):
+    """No field carries the file's source text (issue #1394).
+
+    A run keeps one context per code file alive from level 2 until it ends, so
+    anything on the context is multiplied by the size of the repository. The
+    context used to carry a budget-trimmed copy of the whole file that nothing
+    read, which is what exhausted memory on large repositories. Asserted on the
+    values rather than on a field name so re-introducing the source under any
+    other name fails here too.
+    """
+    # A multi-line slice, because the per-file vocabulary legitimately keeps
+    # single words off the source and would make a one-word sentinel ambiguous.
+    body = "def sentinel_body():\n    return 41 + 1\n"
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        f"# header\n{body}".encode(),
+    )
+
+    retained = [
+        f.name
+        for f in dataclasses.fields(ctx)
+        if body in str(getattr(ctx, f.name))
+    ]
+    assert retained == []
 
 
 def test_assemble_file_page_dependents_from_graph(

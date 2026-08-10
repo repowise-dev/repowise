@@ -157,7 +157,6 @@ def test_generation_config_defaults():
     assert config.staleness_threshold_days == 7
     assert config.expiry_threshold_days == 30
     assert config.top_symbol_percentile == 0.10
-    assert config.large_file_source_pct == 0.4
     assert config.reasoning == "auto"
 
 

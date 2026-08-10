@@ -21,7 +21,6 @@ class FilePageContext:
     symbols: list[dict[str, Any]]
     imports: list[str]
     exports: list[str]
-    file_source_snippet: str
     pagerank_score: float
     betweenness_score: float
     community_id: int

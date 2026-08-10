@@ -296,7 +296,6 @@ class GenerationConfig:
     # Pages reused from a prior run are never retried (validated back then).
     repair_warning_threshold: int = 2
     jobs_dir: str = ".repowise/jobs"
-    large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"
     # Wiki documentation style (voice/density). Resolved to a StyleSpec by
     # ``generation.styles.resolve_style``. "comprehensive" (default) is inert and

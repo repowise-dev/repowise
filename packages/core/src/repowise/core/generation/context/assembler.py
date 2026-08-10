@@ -328,16 +328,16 @@ class ContextAssembler:
         in_edges = _file_dependency_neighbors(graph, path, incoming=True)
         out_edges = _file_dependency_neighbors(graph, path, incoming=False)
 
-        # Source snippet — use structural summary for large files
+        # Decoded to derive the vocabulary below, and deliberately not carried on
+        # the returned context. The context used to hold a ``file_source_snippet``
+        # trimmed to ``token_budget`` (48k tokens ≈ 190KB), which for most files
+        # is the entire file — and no template, prompt or caller ever read it.
+        # A generation run keeps one context per code file alive from level 2
+        # until it ends, so that field amounted to a second copy of the whole
+        # repository's source resident for the length of the run, which is what
+        # exhausted memory on large repositories (issue #1394). ``source_text``
+        # is local, so it is freed as soon as this function returns.
         source_text = source_bytes.decode("utf-8", errors="replace")
-        remaining = budget - used
-        source_tokens = self._estimate_tokens(source_text)
-        threshold = self._config.token_budget * self._config.large_file_source_pct
-        if source_tokens > remaining and source_tokens > threshold:
-            snippet = self._build_structural_summary(parsed, source_text, remaining)
-        else:
-            snippet = self._trim_to_budget(source_text, remaining)
-        used += self._estimate_tokens(snippet)
 
         # Dependency summaries from already-completed pages
         dep_summaries: dict[str, str] = {}
@@ -361,7 +361,6 @@ class ContextAssembler:
             symbols=sym_dicts,
             imports=import_list,
             exports=parsed.exports,
-            file_source_snippet=snippet,
             pagerank_score=pagerank.get(path, 0.0),
             betweenness_score=betweenness.get(path, 0.0),
             community_id=community.get(path, 0),
@@ -394,12 +393,11 @@ class ContextAssembler:
             kg_tour_step=kg_context.tour_step if kg_context else None,
             kg_tags=kg_context.tags if kg_context else [],
             kg_node_summary=kg_context.node_summary if kg_context else "",
-            # Computed from the whole decoded source, not from ``snippet``.
-            # The snippet is budget-trimmed and on a large file is replaced by
-            # a structural summary, so reading it would make the vocabulary of
-            # the biggest files the thinnest, which is backwards. This section
-            # carries its own cap and is not charged against the prompt budget
-            # because it is page content rather than model input.
+            # Computed from the whole decoded source rather than any trimmed
+            # excerpt, so the biggest files do not end up with the thinnest
+            # vocabulary. This section carries its own cap and is not charged
+            # against the prompt budget because it is page content rather than
+            # model input.
             file_vocabulary=file_vocabulary(source_text),
         )
 
@@ -934,36 +932,6 @@ class ContextAssembler:
             raw_content=raw_content,
             targets=targets,
         )
-
-    # ------------------------------------------------------------------
-    # Structural summary for large files (Phase 9 C1)
-    # ------------------------------------------------------------------
-
-    def _build_structural_summary(self, parsed: ParsedFile, source_text: str, budget: int) -> str:
-        """Build a structural outline for large files instead of raw truncation.
-
-        Includes full body for the 3 most complex symbols; signature-only for rest.
-        """
-        lines = source_text.splitlines()
-        parts = ["[Large file — structural summary mode]"]
-        top3_complex = {
-            s.name
-            for s in sorted(parsed.symbols, key=lambda s: s.complexity_estimate, reverse=True)[:3]
-        }
-
-        for sym in parsed.symbols:
-            if sym.start_line and sym.end_line and sym.name in top3_complex:
-                body = "\n".join(lines[sym.start_line - 1 : sym.end_line])
-                parts.append(
-                    f"\n# {sym.name} (full body, complexity={sym.complexity_estimate})\n{body}"
-                )
-            else:
-                parts.append(f"# {sym.signature or sym.name}")
-            if self._estimate_tokens("\n".join(parts)) >= budget:
-                parts.append("...[remaining symbols omitted]")
-                break
-
-        return self._trim_to_budget("\n".join(parts), budget)
 
     # ------------------------------------------------------------------
     # Generation depth selection (Phase 5.5)
