@@ -196,6 +196,13 @@ def _render(projected: dict) -> None:
             f"[dim]Not shown: {', '.join(projected['dropped_blocks'])}. "
             "Pass --full for them.[/dim]"
         )
+    if projected.get("omission_marker"):
+        # Printed as-is and escaped: the marker carries its own "restore:
+        # repowise expand <ref>" instruction, and it opens with a bracket,
+        # which rich would parse as a style tag and delete outright.
+        from rich.markup import escape
+
+        console.print(escape(str(projected["omission_marker"])), style="cyan")
 
     guesses = projected.get("best_guesses") or []
     if guesses:

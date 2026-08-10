@@ -161,8 +161,22 @@ def test_the_factory_runs_inside_the_loop_after_the_state_is_published(wired):
     assert seen and seen[0]["repo_path"] == str(repo)
 
 
+@pytest.fixture
+def restore_embedder_status(monkeypatch):
+    """``_open_vector_store`` writes a module global that outlives the test.
+
+    ``_state._embedder_status`` feeds ``build_meta``, so leaking a "mock"
+    status here would make any later test that builds a ``_meta`` envelope see
+    a degraded embedder that no test set.
+    """
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_embedder_status", None, raising=False)
+    return _state
+
+
 def test_it_falls_back_to_an_in_memory_store_when_the_repo_has_no_lancedb(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, restore_embedder_status
 ):
     from repowise.core.persistence.vector_store import InMemoryVectorStore
 
@@ -175,3 +189,49 @@ def test_it_falls_back_to_an_in_memory_store_when_the_repo_has_no_lancedb(
 
     store = asyncio.run(tool_bridge._open_vector_store(tmp_path))
     assert isinstance(store, InMemoryVectorStore)
+
+
+def test_a_repo_whose_embedder_key_went_away_is_recorded_as_degraded(
+    monkeypatch, tmp_path, restore_embedder_status
+):
+    """``build_meta`` reads this global to set ``embedder_degraded``.
+
+    Only the MCP server's own ``_resolve_embedder`` ever wrote it, so a CLI
+    answer produced with no semantic retrieval looked identical to a healthy
+    one — the exact condition the field was added for.
+    """
+    import asyncio
+
+    from repowise.core.providers.embedding import KeylessEmbedder
+
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.resolve_embedder_for_repo", lambda p: "openai"
+    )
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda name: KeylessEmbedder()
+    )
+    asyncio.run(tool_bridge._open_vector_store(tmp_path))
+
+    status = restore_embedder_status._embedder_status
+    assert status["degraded"] is True
+    assert status["requested"] == "openai" and status["active"] == "mock"
+    assert "openai" in status["reason"]
+
+
+def test_a_repo_that_asked_for_keyless_is_not_reported_as_degraded(
+    monkeypatch, tmp_path, restore_embedder_status
+):
+    """Resolving to the keyless embedder is a configuration, not a failure."""
+    import asyncio
+
+    from repowise.core.providers.embedding import KeylessEmbedder
+
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.resolve_embedder_for_repo", lambda p: "mock"
+    )
+    monkeypatch.setattr(
+        "repowise.cli.providers.embedders.build_embedder", lambda name: KeylessEmbedder()
+    )
+    asyncio.run(tool_bridge._open_vector_store(tmp_path))
+
+    assert restore_embedder_status._embedder_status["degraded"] is False

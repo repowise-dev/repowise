@@ -31,10 +31,14 @@ _INCLUDE_BLOCKS = (
 #: discarded answer, and that is the whole risk this trim carries.
 _REPLACED_KEYS = frozenset(
     {
+        # Placed by hand above the sweep.
         "target",
         "type",
-        # Folded into flatter keys below.
         "docs",
+        "hotspot",
+        "fix_history",
+        "episodes",
+        # Folded into flatter keys.
         "architectural_layer",
         "freshness",
         # Replaced by its shape, without its ~10K-char text.
@@ -43,6 +47,15 @@ _REPLACED_KEYS = frozenset(
         "parent_page",
     }
 )
+
+#: The two ``docs`` keys the card lifts to the top level. Everything else under
+#: ``docs`` stays: for a **symbol** target the whole card lives there
+#: (``signature``, ``docstring``, ``used_by``, ``candidates``), and for a file
+#: target it holds ``symbols`` — the list a caller pipes into ``repowise
+#: symbol`` — plus ``content_md``/``documentation`` when ``--include full_doc``
+#: asked for them. Denylisting ``docs`` wholesale projected a symbol target to
+#: an empty card and made ``--include full_doc`` an inert flag.
+_LIFTED_DOC_KEYS = ("title", "summary")
 
 
 def _project_one(card: dict) -> dict:
@@ -62,10 +75,12 @@ def _project_one(card: dict) -> dict:
                 out[key] = card[key]
         return out
     docs = card.get("docs") or {}
-    if docs.get("title"):
-        out["title"] = docs["title"]
-    if docs.get("summary"):
-        out["summary"] = docs["summary"]
+    for key in _LIFTED_DOC_KEYS:
+        if docs.get(key):
+            out[key] = docs[key]
+    rest = {k: v for k, v in docs.items() if k not in _LIFTED_DOC_KEYS and v not in (None, [], {}, "")}
+    if rest:
+        out["docs"] = rest
     layer = card.get("architectural_layer") or {}
     if layer.get("name"):
         out["layer"] = layer["name"]
@@ -218,6 +233,7 @@ def context_command(
 
 
 def _render(projected: dict) -> None:
+    from rich.markup import escape
     from rich.table import Table
 
     from repowise.cli.helpers import console
@@ -229,11 +245,11 @@ def _render(projected: dict) -> None:
     for card in cards.values():
         if card.get("error"):
             console.print(
-                f"[yellow]{card.get('target', '')}: "
-                f"{_ta.as_cli_prose(str(card['error']))}[/yellow]"
+                f"[yellow]{escape(str(card.get('target', '')))}: "
+                f"{escape(_ta.as_cli_prose(str(card['error'])))}[/yellow]"
             )
             if card.get("hint"):
-                console.print(f"  [dim]{_ta.as_cli_prose(str(card['hint']))}[/dim]")
+                console.print(f"  [dim]{escape(_ta.as_cli_prose(str(card['hint'])))}[/dim]")
             for successor in card.get("successor_paths") or []:
                 console.print(f"  [cyan]{successor}[/cyan]")
             continue
@@ -247,7 +263,10 @@ def _render(projected: dict) -> None:
             ("Layer", "layer"),
         ):
             if card.get(key):
-                table.add_row(label, str(card[key]))
+                # Every cell here is tool text. Rich markup-parses a cell, so a
+                # summary containing `list[str]` renders as `list` and a stray
+                # `[/x]` raises MarkupError and takes the command down.
+                table.add_row(label, escape(str(card[key])))
         signals = []
         if card.get("hotspot"):
             signals.append("hotspot")
@@ -271,16 +290,18 @@ def _render(projected: dict) -> None:
                 f"{skeleton.get('full_tokens', '?')} tokens "
                 f"({skeleton.get('pct_of_full', '?')}% of full) — pass --full for the text",
             )
-        for label, key in (("Symbols", "symbol_ids"), ("Decisions", "decision_records")):
-            if card.get(key):
-                table.add_row(label, ", ".join(str(v) for v in card[key]))
+        if card.get("decision_records"):
+            table.add_row(
+                "Decision records",
+                escape(", ".join(str(v) for v in card["decision_records"])),
+            )
         # Every remaining block, including each --include the caller asked
         # for by name. Rendering only the ones this function happens to know
         # about is how `--include ownership` ends up printing nothing at all.
         for key, value in card.items():
             if key in _RENDERED_KEYS:
                 continue
-            table.add_row(key.replace("_", " ").title(), _flatten(value))
+            table.add_row(key.replace("_", " ").title(), escape(_flatten(value)))
         console.print(table)
 
     for label, key in (
@@ -288,13 +309,16 @@ def _render(projected: dict) -> None:
         ("Dropped", "dropped_targets"),
     ):
         if projected.get(key):
-            console.print(f"[yellow]{label}: {', '.join(projected[key])}[/yellow]")
+            console.print(f"[yellow]{label}: {escape(', '.join(projected[key]))}[/yellow]")
     if projected.get("truncated"):
+        console.print("[yellow]Response was truncated to fit the tool's budget.[/yellow]")
         marker = projected.get("omission_marker")
-        console.print(
-            "[yellow]Response was truncated to fit the tool's budget.[/yellow]"
-            + (f" Recover it with: [cyan]repowise expand {marker}[/cyan]" if marker else "")
-        )
+        if marker:
+            # Printed as-is: the marker already reads
+            # "[repowise#<ref>: N lines omitted; restore: repowise expand <ref>]",
+            # so it carries its own instruction — and it opens with a bracket,
+            # which rich would parse as a style tag and delete outright.
+            console.print(escape(str(marker)), style="cyan")
 
 
 #: Card keys ``_render`` has already placed by hand, by the time it sweeps the
@@ -311,7 +335,6 @@ _RENDERED_KEYS = frozenset(
         "stale",
         "episodes",
         "skeleton",
-        "symbol_ids",
         "decision_records",
     }
 )

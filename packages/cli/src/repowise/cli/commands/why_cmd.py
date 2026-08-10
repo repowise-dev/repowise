@@ -47,28 +47,33 @@ def _project_episode(episode: dict) -> dict:
     }
 
 
-def _project_archaeology(arch: dict) -> dict:
-    """The git-history fallback, capped per layer.
+_ARCH_LAYERS = (
+    ("file_commits", ("sha", "date", "author", "message")),
+    ("git_log", ("sha", "date", "author", "message")),
+    ("cross_references", ("source_file", "sha", "date", "message")),
+)
 
-    Three layers, each already capped at 10 by the tool: the file's own
-    significant commits, other files' commits that mention it, and a live
-    ``git log``. The summary line survives whole — it is the one sentence that
-    says a file is ungoverned and what was recovered instead.
+
+def _project_archaeology(arch: dict) -> dict:
+    """The git-history fallback, capped per layer, each with its total.
+
+    Three layers: the file's own significant commits and the cross-references
+    (10 each from the tool), and a live ``git log`` (20). The summary line
+    survives whole — it is the one sentence that says a file is ungoverned and
+    what was recovered instead. Every cap reports what it cut, the way every
+    other capped list in this module does; a head with no total is how "5 of
+    18" reads as "18".
     """
     out: dict = {}
     if arch.get("summary"):
         out["summary"] = arch["summary"]
-    for key in ("file_commits", "git_log"):
-        if arch.get(key):
-            out[key] = [
-                {k: c.get(k, "") for k in ("sha", "date", "author", "message")}
-                for c in _capped(arch[key])
-            ]
-    if arch.get("cross_references"):
-        out["cross_references"] = [
-            {k: c.get(k, "") for k in ("source_file", "sha", "date", "message")}
-            for c in _capped(arch["cross_references"])
-        ]
+    for key, fields in _ARCH_LAYERS:
+        rows = arch.get(key) or []
+        if not rows:
+            continue
+        out[key] = [{f: c.get(f, "") for f in fields} for c in _capped(rows)]
+        if len(rows) > len(out[key]):
+            out[f"{key}_total"] = len(rows)
     return out
 
 
@@ -330,20 +335,9 @@ def _render(projected: dict) -> None:
                 f"{c.get('message', '')}"
             )
 
-    arch = projected.get("git_archaeology") or {}
-    if arch:
-        console.print(f"\n[bold]Git archaeology[/bold] {arch.get('summary', '')}")
-        for label, key in (
-            ("this file", "file_commits"),
-            ("git log", "git_log"),
-            ("mentioned by", "cross_references"),
-        ):
-            for c in arch.get(key) or []:
-                where = f" [dim]({c['source_file']})[/dim]" if c.get("source_file") else ""
-                console.print(
-                    f"  [dim]{label}: {c.get('sha', '')[:8]} "
-                    f"{str(c.get('date', ''))[:10]}[/dim] {c.get('message', '')}{where}"
-                )
+    if projected.get("git_archaeology"):
+        console.print("")
+        _render_archaeology(console, projected["git_archaeology"], indent="")
 
     rationale = projected.get("code_rationale") or []
     if rationale:
@@ -362,10 +356,17 @@ def _render(projected: dict) -> None:
             )
         origin = entry.get("origin") or {}
         if origin.get("summary"):
+            # Only set when there is no git history — the short "No git history
+            # for X." line, not the long prose the projection drops.
             console.print(f"  [dim]{origin['summary']}[/dim]")
-        arch_for_target = entry.get("git_archaeology") or {}
-        if arch_for_target.get("summary"):
-            console.print(f"  [dim]{arch_for_target['summary']}[/dim]")
+        elif origin.get("available"):
+            console.print(
+                f"  [dim]{origin.get('total_commits', '?')} commits over "
+                f"{origin.get('age_days', '?')} days, mostly "
+                f"{origin.get('primary_author', '?')}[/dim]"
+            )
+        if entry.get("git_archaeology"):
+            _render_archaeology(console, entry["git_archaeology"], indent="  ")
 
     for label, key in (
         ("Stale decisions", "stale_decisions"),
@@ -400,11 +401,32 @@ def _render(projected: dict) -> None:
             if e.get("still_true"):
                 console.print(f"    [dim]{e['still_true']}[/dim]")
 
-    if not any(
-        projected.get(key)
-        for key in ("decisions", "origin_story", "counts", "episodes", "related_documentation")
-    ):
+    # Every block this function can render. Search mode with --target sets
+    # target_context and code_rationale and none of the others, so a guard
+    # listing only the path-mode blocks printed "Nothing recorded" underneath
+    # the things it had just recorded.
+    if not any(projected.get(key) for key in _RENDERABLE_BLOCKS):
         console.print("[yellow]Nothing recorded for that query.[/yellow]")
+
+
+#: Every key ``_render`` can put on the screen. Keeping the emptiness guard
+#: derived from one list is what stops it drifting behind a new block.
+_RENDERABLE_BLOCKS = (
+    "summary",
+    "counts",
+    "alignment",
+    "decisions",
+    "origin_story",
+    "git_archaeology",
+    "code_rationale",
+    "target_context",
+    "stale_decisions",
+    "proposed_awaiting_review",
+    "conflicts",
+    "ungoverned_hotspots",
+    "related_documentation",
+    "episodes",
+)
 
 
 def _owner_share(value: object) -> str:
@@ -419,6 +441,29 @@ def _owner_share(value: object) -> str:
     except (TypeError, ValueError):
         return "?"
     return f"{pct * 100 if pct <= 1.0 else pct:.0f}%"
+
+
+def _render_archaeology(console, arch: dict, *, indent: str) -> None:
+    """The archaeology block, at the top level or nested under one ``--target``."""
+    console.print(f"{indent}[bold]Git archaeology[/bold] {arch.get('summary', '')}")
+    for label, key in (
+        ("this file", "file_commits"),
+        ("git log", "git_log"),
+        ("mentioned by", "cross_references"),
+    ):
+        rows = arch.get(key) or []
+        for c in rows:
+            where = f" [dim]({c['source_file']})[/dim]" if c.get("source_file") else ""
+            console.print(
+                f"{indent}  [dim]{label}: {str(c.get('sha', ''))[:8]} "
+                f"{str(c.get('date', ''))[:10]}[/dim] {c.get('message', '')}{where}"
+            )
+        total = arch.get(f"{key}_total")
+        if total:
+            console.print(
+                f"{indent}  [dim]{len(rows)} of {total} {label} shown; "
+                f"pass --full for the rest.[/dim]"
+            )
 
 
 def _print_more(console, projected: dict, key: str, shown: int) -> None:

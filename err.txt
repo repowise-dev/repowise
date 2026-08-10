@@ -1,7 +1,0 @@
-[workspace] symbol across 1 repos in repowise
-  (path argument is a workspace root)
-Embedder 'openai' could not be built: ValueError: OpenAI API key required. Pass api_key= or set OPENAI_API_KEY env var.
-Falling back to keyless embeddings, which means no semantic search for this run.
-Full-text and symbol search are unaffected. Fix the key or endpoint and run repowise reindex
-to restore semantic search.
-get_symbol read failed for C:\Users\ragha\Desktop\repowise\packages\cli\src\repowise\cli\output.py: [Errno 2] No such file or directory: 'C:\\Users\\ragha\\Desktop\\repowise\\packages\\cli\\src\\repowise\\cli\\output.py'

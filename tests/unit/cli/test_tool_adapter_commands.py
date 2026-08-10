@@ -701,6 +701,163 @@ def test_ask_echoes_the_answer_verbatim_rather_than_rendering_markdown(monkeypat
     assert "[bracketed]" in result.stdout
 
 
+# --------------------------------------------------------------------------
+# The renderers. A projection test cannot see a block that survives the trim
+# and is then never printed, and "kept but never rendered" is a defect this
+# file has already had to fix once.
+# --------------------------------------------------------------------------
+
+
+def test_context_renders_every_include_block_it_kept(monkeypatch, repo):
+    result = _invoke(monkeypatch, context_command, ["a.py"], repo, CONTEXT_PAYLOAD)
+    for expected in ("Ownership", "Last Change", "Community", "Metrics", "Raghav"):
+        assert expected in result.stdout, f"{expected} survived the trim but was not rendered"
+
+
+def test_context_renders_a_symbol_target(monkeypatch, repo):
+    """A symbol target's whole card lives under ``docs``.
+
+    Dropping ``docs`` wholesale projected it to ``{target, type}`` and printed
+    a one-row table, on the id spelling ``repowise symbol``'s help points at.
+    """
+    payload = {
+        "targets": {
+            "a.py::Login": {
+                "target": "a.py::Login",
+                "type": "symbol",
+                "docs": {
+                    "name": "Login",
+                    "signature": "class Login(Base)",
+                    "docstring": "Session start.",
+                    "file_path": "a.py",
+                    "used_by": ["b.py"],
+                },
+            }
+        },
+        "_meta": {},
+    }
+    result = _invoke(monkeypatch, context_command, ["a.py::Login"], repo, payload)
+    assert "class Login(Base)" in result.stdout
+    assert "Session start." in result.stdout
+
+
+def test_context_does_not_let_rich_eat_a_bracket_in_tool_text(monkeypatch, repo):
+    """Rich markup-parses a table cell, so `list[str]` renders as `list`."""
+    payload = {
+        "targets": {
+            "a.py": {
+                "target": "a.py",
+                "type": "file",
+                "docs": {"summary": "Returns list[str], not dict[str, int]."},
+            }
+        },
+        "_meta": {},
+    }
+    result = _invoke(monkeypatch, context_command, ["a.py"], repo, payload)
+    assert "list[str]" in result.stdout
+    assert "dict[str, int]" in result.stdout
+
+
+def test_context_prints_the_marker_that_recovers_truncated_content(monkeypatch, repo):
+    """The marker opens with a bracket, which rich deletes as a style tag."""
+    marker = "[repowise#abc123: 120 lines omitted; restore: repowise expand abc123]"
+    payload = {"targets": {}, "truncated": True, "omission_marker": marker, "_meta": {}}
+    result = _invoke(monkeypatch, context_command, ["a.py"], repo, payload)
+    assert "repowise#abc123" in result.stdout
+    assert "repowise expand abc123" in result.stdout
+
+
+def test_why_renders_the_archaeology_it_falls_back_to(monkeypatch, repo):
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, WHY_UNGOVERNED_PAYLOAD)
+    assert "Git archaeology" in result.stdout
+    assert "mentions a.py" in result.stdout
+    assert "5 of 7" in result.stdout, "the cap was applied but never disclosed"
+
+
+def test_why_renders_a_targets_own_history(monkeypatch, repo):
+    """``origin.summary`` exists only when there is *no* history.
+
+    Rendering only that line left a target with real history showing its name
+    and nothing else.
+    """
+    payload = {
+        **WHY_UNGOVERNED_PAYLOAD,
+        "target_context": {
+            "b.py": {
+                "governing_decisions": [],
+                "origin": {"available": True, "primary_author": "Raghav",
+                           "total_commits": 9, "age_days": 40, "summary": "s" * 2000},
+            }
+        },
+    }
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, payload)
+    assert "9 commits over 40 days" in result.stdout
+    assert "s" * 100 not in result.stdout, "the 2K-char prose reached the screen"
+
+
+def test_why_does_not_say_nothing_recorded_under_what_it_just_recorded(monkeypatch, repo):
+    """Search mode with --target sets none of the path-mode blocks."""
+    payload = {
+        "mode": "search",
+        "query": "q",
+        "code_rationale": [{"path": "b.py", "lines": [1, 2], "comment": "because"}],
+        "target_context": {"b.py": {"governing_decisions": [], "origin": {"available": False}}},
+        "_meta": {},
+    }
+    result = _invoke(monkeypatch, why_command, ["q", "--target", "b.py"], repo, payload)
+    assert "because" in result.stdout
+    assert "Nothing recorded" not in result.stdout
+
+
+def test_symbol_renders_an_omission_refs_banked_content(monkeypatch, repo):
+    result = _invoke(
+        monkeypatch, symbol_command, ["repowise#a1b2c3d4e5f6"], repo, OMISSION_PAYLOAD
+    )
+    assert "THE ACTUAL OMITTED TEXT" in result.stdout
+    assert "git log --stat" in result.stdout
+
+
+def test_symbol_does_not_wrap_a_long_source_line(monkeypatch, repo):
+    """``console.print`` wraps at the console width even with markup off.
+
+    A wrapped body strands the ``   1  `` prefix on its own row, which is not
+    the file.
+    """
+    long_line = "   1  " + "x" * 600
+    payload = {**SYMBOL_PAYLOAD, "source": long_line, "truncated": False}
+    result = _invoke(monkeypatch, symbol_command, ["a.py::f"], repo, payload)
+    assert long_line in result.stdout
+
+
+def test_a_did_you_mean_error_prints_its_suggestions(monkeypatch, repo):
+    """The error's last words are 'retry with one of these exact symbol_ids'."""
+    result = _invoke(
+        monkeypatch, symbol_command, ["x.py::login"], repo, SUGGESTION_PAYLOAD, expect_exit=1
+    )
+    printed = result.stdout + (result.stderr or "")
+    assert "a/b.py::login" in printed and "c/d.py::login" in printed
+
+
+def test_an_unindexed_repos_shaped_error_prints_its_remedy(monkeypatch, repo):
+    """The shield's ``remedy`` is the only part that says what to do."""
+    payload = {
+        "error": "This repository has no repowise index yet.",
+        "remedy": "The user can build one by running 'repowise init --yes'.",
+        "guidance": "Until an index exists, every repowise tool returns this.",
+    }
+    result = _invoke(monkeypatch, ask_command, ["q?"], repo, payload, expect_exit=1)
+    printed = result.stdout + (result.stderr or "")
+    assert "repowise init --yes" in printed
+    assert "Until an index exists" in printed
+
+
+def test_ask_renders_the_note_and_names_what_it_left_out(monkeypatch, repo):
+    result = _invoke(monkeypatch, ask_command, ["q?"], repo, ANSWER_PAYLOAD)
+    assert "symbol_bodies carries the full live body" in result.stdout
+    assert "Not shown:" in result.stdout and "retrieval" in result.stdout
+    assert "repowise#ask1" in result.stdout
+
+
 def test_why_renders_a_dominant_author_as_a_percentage_not_a_fraction():
     """``author_commit_pct`` is a 0-1 fraction or a 0-100 percentage.
 
