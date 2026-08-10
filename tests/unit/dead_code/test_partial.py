@@ -69,56 +69,124 @@ def test_analyze_partial_is_gone():
     assert not hasattr(DeadCodeAnalyzer, "analyze_partial")
 
 
-class TestRefusesToScoreWithoutStoredGitMetadata:
-    """``load_stored_git_meta`` is best-effort and yields ``{}`` on any
-    failure. ``{}`` plus a repo-wide write is the one combination that
-    actively corrupts the index: every unchanged file falls to the
-    ``commit_count_90d == 0`` rung and is stored at 0.7 with
-    ``safe_to_delete=True`` no matter how actively it is committed to. So the
-    analysis degrades to ``None``, which both persist sites already treat as
-    "leave the existing rows alone".
+class _Builder:
+    def __init__(self, graph):
+        self._graph = graph
+        self._parsed_files = {}
+
+    def graph(self):
+        return self._graph
+
+
+def _run_update_analysis(graph, git_meta_map, stored_git_meta):
+    from repowise.core.pipeline.incremental import run_partial_analysis
+
+    _health, dead_code = run_partial_analysis(
+        "/tmp/repo",
+        _Builder(graph),
+        git_meta_map,
+        [],
+        [],
+        stored_git_meta=stored_git_meta,
+    )
+    return dead_code
+
+
+_ORPHAN_NODES = {
+    "pkg/main.py": {
+        "is_entry_point": True,
+        "is_test": False,
+        "is_api_contract": False,
+        "symbol_count": 4,
+        "symbols": [],
+    },
+    "pkg/orphan.py": {
+        "is_entry_point": False,
+        "is_test": False,
+        "is_api_contract": False,
+        "symbol_count": 1,
+        "symbols": [],
+    },
+}
+
+
+def _orphan_graph():
+    return _build_graph(nodes=_ORPHAN_NODES, edges=[])
+
+
+class TestStoredGitMetadataReachesTheAnalyzer:
+    """The update path re-indexes git metadata for changed files only, and a
+    file with no metadata is indistinguishable from one with no commits: it
+    scores 0.7 with ``safe_to_delete=True`` however actively it is committed
+    to. So the stored rows have to arrive, and this run's fresh rows have to
+    win over them.
     """
 
-    def _builder(self):
-        class _Builder:
-            def __init__(self, graph):
-                self._graph = graph
-                self._parsed_files = {}
-
-            def graph(self):
-                return self._graph
-
-        return _Builder(_graph_with_unused_export())
-
-    def _run(self, *, git_meta_map, stored_git_meta):
-        from repowise.core.pipeline.incremental import run_partial_analysis
-
-        _health, dead_code = run_partial_analysis(
-            "/tmp/repo",
-            self._builder(),
-            git_meta_map,
-            [],
-            [],
-            stored_git_meta=stored_git_meta,
+    def test_a_stored_row_scores_an_unchanged_file(self):
+        stored = {
+            "pkg/orphan.py": {
+                "commit_count_90d": 12,
+                "last_commit_at": None,
+                "age_days": 30,
+                "primary_owner_name": "a",
+            }
+        }
+        report = _run_update_analysis(
+            _orphan_graph(), {"pkg/main.py": {"commit_count_90d": 1}}, stored
         )
-        return dead_code
+        finding = {f.file_path: f for f in report.findings}["pkg/orphan.py"]
+        assert not finding.safe_to_delete
+        assert finding.confidence < 0.7
 
-    def test_refuses_when_the_stored_read_came_back_empty(self):
-        # git indexing clearly works (it produced a row for the changed file),
-        # so an empty stored map means the read failed.
-        assert self._run(git_meta_map={"pkg/main.py": {}}, stored_git_meta={}) is None
+    def test_this_runs_fresh_rows_beat_the_stored_ones(self):
+        """The stored row is by construction one update-interval stale.
+        Flipping the merge order lets it overwrite a freshly indexed value and
+        marks an actively-committed file safe to delete."""
+        fresh = {"pkg/orphan.py": {"commit_count_90d": 40, "age_days": 2}}
+        stale = {"pkg/orphan.py": {"commit_count_90d": 0, "age_days": 900}}
+        report = _run_update_analysis(_orphan_graph(), fresh, stale)
+        finding = {f.file_path: f for f in report.findings}["pkg/orphan.py"]
+        assert not finding.safe_to_delete
+        assert finding.confidence < 0.7
 
-    def test_proceeds_when_stored_metadata_is_present(self):
-        report = self._run(
-            git_meta_map={"pkg/main.py": {}},
-            stored_git_meta={"pkg/utils.py": {"commit_count_90d": 3}},
+
+class TestAuthoritativeScope:
+    """What the report may overwrite turns on whether the stored read
+    SUCCEEDED, not on how many files it covered.
+
+    A successful read gives this run the same git knowledge the last full
+    index had, so it may speak for the whole repository. A failed read leaves
+    it knowing strictly less, so it speaks only for what it re-indexed.
+    """
+
+    def test_a_successful_read_speaks_for_the_whole_repository(self):
+        report = _run_update_analysis(
+            _orphan_graph(),
+            {"pkg/main.py": {}},
+            {"pkg/orphan.py": {"commit_count_90d": 1}},
         )
-        assert report is not None
+        assert report.authoritative_paths is None
 
-    def test_a_repo_without_git_is_left_alone(self):
-        """Both maps empty means "this repo has no history", not "the read
-        broke", and that case behaved this way long before the guard."""
-        assert self._run(git_meta_map={}, stored_git_meta={}) is not None
+    def test_partial_coverage_still_speaks_for_the_whole_repository(self):
+        """A file with no git row is not evidence of a failed read.
+
+        `git_metadata` legitimately covers only what `index_repo` produced, so
+        a real repository has indexed files with no row. A full index scored
+        those files the same way this run does, so holding them back would
+        protect nothing and would leave exactly the stale verdicts this is
+        meant to correct.
+        """
+        report = _run_update_analysis(_orphan_graph(), {"pkg/main.py": {}}, {})
+        assert report.authoritative_paths is None
+
+    def test_a_failed_read_narrows_the_scope_to_what_this_run_indexed(self):
+        """`None` is the read failing, and is not the same as an empty map."""
+        report = _run_update_analysis(_orphan_graph(), {"pkg/main.py": {}}, None)
+        assert report.authoritative_paths == frozenset({"pkg/main.py"})
+
+    def test_a_full_report_speaks_for_everything_by_default(self):
+        analyzer = DeadCodeAnalyzer(_orphan_graph(), git_meta_map={})
+        assert analyzer.analyze().authoritative_paths is None
 
 
 def test_findings_outside_the_change_set_are_kept():

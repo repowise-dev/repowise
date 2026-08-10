@@ -273,17 +273,11 @@ DeadCodeAnalyzer.analyze()
 
 ### Incremental dead code analysis
 
-When files change (via `repowise update`), full re-analysis is wasteful. `analyze_partial()` only checks affected files:
+`repowise update` runs the same repo-wide `analyze()` a full index runs, and persists the whole result.
 
-```python
-def analyze_partial(affected_files, config):
-    for node in affected_files:
-        if node not in graph: continue
-        if in_degree(node) == 0 and not entry_point and not test:
-            → Check if this file became unreachable due to the change
-```
+Scoping the detectors to the changed files is not available here, because dead code is a cross-file property: removing the last import of a module makes *that module* dead, and the module is not in the change set. An earlier `analyze_partial()` filtered the repo-wide report down to the changed files before persisting it, and the effect was that any file a change had made dead — or brought back to life — kept its previous verdict until someone re-indexed from scratch.
 
-This is O(affected_files) instead of O(all_files). Only detects newly-unreachable files — it doesn't re-check unused exports or zombie packages (those need the full graph).
+What the update path does have to be careful about is confidence, which is scored per file from git metadata. An update re-indexes git metadata for the changed files only, and a file with no metadata is indistinguishable from a file with no commits, so it would score 0.7 with `safe_to_delete=True` however actively it is committed to. The analyzer is therefore also handed the persisted per-file git fields, and the report carries `authoritative_paths`: the set of files it was actually able to score. Persistence replaces findings for those files and leaves every other file's stored verdict alone, so a partial or failed metadata read narrows what gets written rather than overwriting the index with guesses.
 
 ---
 

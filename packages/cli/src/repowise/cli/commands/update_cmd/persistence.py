@@ -896,6 +896,7 @@ async def _persist_full_update_async(
                         session,
                         repo_id,
                         [_dc_dead.asdict(f) for f in dead_code_report.findings],
+                        scope=dead_code_report.authoritative_paths,
                     )
                 except Exception as exc:
                     _skip("Dead-code persist", exc)

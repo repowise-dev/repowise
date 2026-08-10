@@ -128,6 +128,82 @@ async def test_dismissed_finding_is_not_resurrected(async_session):
     ]
 
 
+async def test_scope_holds_back_files_the_caller_cannot_speak_for(async_session):
+    """A caller with partial git metadata must not overwrite the rest of the
+    repo with guesses.
+
+    A file the analyzer has no git metadata for scores 0.7 /
+    ``safe_to_delete=True`` however actively it is committed to, so writing
+    that verdict is worse than writing nothing. Rows outside the scope are
+    neither deleted nor inserted, and the file keeps what it had.
+    """
+    repo = await insert_repo(async_session)
+    await save_dead_code_findings(
+        async_session, repo.id, [_finding("in.py", "keep"), _finding("out.py", "untouched")]
+    )
+    await async_session.commit()
+
+    await replace_dead_code_findings(
+        async_session,
+        repo.id,
+        # The analyzer reports on both files, but only in.py was scorable.
+        [_finding("in.py", "fresh"), _finding("out.py", "guess")],
+        scope=frozenset({"in.py"}),
+    )
+    await async_session.commit()
+
+    assert await _findings_by_file(async_session, repo.id) == [
+        ("in.py", "fresh"),
+        ("out.py", "untouched"),
+    ]
+
+
+async def test_an_empty_scope_writes_nothing_at_all(async_session):
+    """The floor: a run that could score no file leaves the index exactly as
+    it found it rather than clearing it."""
+    repo = await insert_repo(async_session)
+    await save_dead_code_findings(async_session, repo.id, [_finding("a.py", "fa")])
+    await async_session.commit()
+
+    await replace_dead_code_findings(
+        async_session, repo.id, [_finding("a.py", "different")], scope=frozenset()
+    )
+    await async_session.commit()
+
+    assert await _findings_by_file(async_session, repo.id) == [("a.py", "fa")]
+
+
+async def test_scope_none_still_means_the_whole_repository(async_session):
+    repo = await insert_repo(async_session)
+    await save_dead_code_findings(
+        async_session, repo.id, [_finding("a.py", "fa"), _finding("b.py", "stale")]
+    )
+    await async_session.commit()
+
+    await replace_dead_code_findings(async_session, repo.id, [_finding("a.py", "fa")], scope=None)
+    await async_session.commit()
+
+    assert await _findings_by_file(async_session, repo.id) == [("a.py", "fa")]
+
+
+async def test_a_dismissal_outside_the_scope_is_left_alone(async_session):
+    repo = await insert_repo(async_session)
+    await save_dead_code_findings(async_session, repo.id, [_finding("out.py", "fo")])
+    await async_session.commit()
+    row = (await _rows(async_session, repo.id))[0]
+    row.status = "ignored"
+    await async_session.commit()
+
+    await replace_dead_code_findings(
+        async_session, repo.id, [_finding("out.py", "fo")], scope=frozenset({"in.py"})
+    )
+    await async_session.commit()
+
+    assert [(r.file_path, r.status) for r in await _rows(async_session, repo.id)] == [
+        ("out.py", "ignored")
+    ]
+
+
 # --------------------------------------------------------------------------
 # Regression guards
 # --------------------------------------------------------------------------
@@ -238,3 +314,42 @@ async def test_replace_accepts_dataclass_findings(async_session):
     )
     await async_session.commit()
     assert [r.status for r in await _rows(async_session, repo.id)] == ["ignored"]
+
+
+async def test_get_dead_code_git_fields_returns_the_scoring_columns(async_session):
+    """The four columns dead-code confidence is scored from, per file.
+
+    If this ever comes back empty the analyzer scores every file as "no
+    commits" and marks it safe to delete, so the read itself needs a test and
+    not only its callers.
+    """
+    from repowise.core.persistence.crud import get_dead_code_git_fields
+    from repowise.core.persistence.models import GitMetadata
+
+    repo = await insert_repo(async_session)
+    other = await insert_repo(async_session, name="other", local_path="/tmp/other")
+    async_session.add(
+        GitMetadata(
+            repository_id=repo.id,
+            file_path="a.py",
+            commit_count_90d=7,
+            age_days=400,
+            primary_owner_name="ada",
+        )
+    )
+    async_session.add(GitMetadata(repository_id=other.id, file_path="elsewhere.py"))
+    await async_session.commit()
+
+    fields = await get_dead_code_git_fields(async_session, repo.id)
+
+    assert set(fields) == {"a.py"}, "must not leak another repository's rows"
+    assert fields["a.py"]["commit_count_90d"] == 7
+    assert fields["a.py"]["age_days"] == 400
+    assert fields["a.py"]["primary_owner_name"] == "ada"
+    assert "last_commit_at" in fields["a.py"]
+
+
+async def test_get_dead_code_git_fields_is_empty_for_an_unknown_repo(async_session):
+    from repowise.core.persistence.crud import get_dead_code_git_fields
+
+    assert await get_dead_code_git_fields(async_session, "nope") == {}

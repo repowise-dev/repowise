@@ -311,14 +311,31 @@ async def rebuild_graph_and_git(
     return parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map
 
 
-async def load_stored_git_meta(repo_path: Any, *, log: LogFn | None = None) -> dict[str, dict]:
+async def load_stored_git_meta(
+    repo_path: Any, *, log: LogFn | None = None
+) -> dict[str, dict] | None:
     """Read the persisted per-file git fields the dead-code analyzer scores on.
 
-    Best-effort by design: an unreadable store returns ``{}``, which is exactly
-    the input this path had before, so a failure here degrades to the old
-    behavior instead of failing the update.
+    Returns ``None`` when the store could not be read, and a mapping (possibly
+    an empty one) when it could. The caller has to tell those apart: an empty
+    mapping is a repository whose ``git_metadata`` genuinely holds nothing,
+    which scores exactly the way a full index would score it, whereas a failed
+    read means this run knows less than a full index does and must not
+    overwrite what a full index wrote.
+
+    Not every indexed file has a row even on a healthy repository — ``git
+    metadata`` covers what ``index_repo`` produced, which excludes skipped
+    paths — so a *missing file* is not evidence of a failure and a coverage
+    count cannot stand in for one.
     """
     log = log or _noop_log
+    # Never create the store as a side effect of reading it. A repo whose
+    # wiki.db was deleted to force a rebuild would otherwise be handed an
+    # empty one here, and an empty database reads as "indexed" downstream.
+    # Same guard, and the same reason, as the head-commit stamper.
+    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+        log("[yellow]No store to read git metadata from; dead-code scope narrowed[/yellow]")
+        return None
     try:
         from repowise.core.persistence import (
             create_engine,
@@ -334,13 +351,20 @@ async def load_stored_git_meta(repo_path: Any, *, log: LogFn | None = None) -> d
             async with get_session(create_session_factory(engine)) as session:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
-                    return {}
+                    # The persist path resolves the repository with an upsert,
+                    # so a miss here means this run would be writing against a
+                    # row that does not exist yet. Unknown, not empty.
+                    log(
+                        f"[yellow]No stored repository for {repo_path}; "
+                        "dead-code scope narrowed[/yellow]"
+                    )
+                    return None
                 return await get_dead_code_git_fields(session, repo.id)
         finally:
             await engine.dispose()
     except Exception as exc:
         log(f"[yellow]Stored git metadata unavailable for dead-code scoring: {exc}[/yellow]")
-        return {}
+        return None
 
 
 def run_partial_analysis(
@@ -371,6 +395,10 @@ def run_partial_analysis(
     ``git_meta_map`` itself: the partial health analysis reads that map's
     entries as a repo-wide aggregate, so widening it there would silently move
     health scores (the same reason the idle-decay rows are kept out of it).
+
+    ``None`` means the store could not be read, which is different from an
+    empty mapping and narrows what the resulting report is allowed to
+    overwrite. See ``load_stored_git_meta``.
     """
     log = log or _noop_log
 
@@ -423,23 +451,6 @@ def run_partial_analysis(
         # files they cover; the stored rows carry every other file, which is
         # what init's analyzer had and this path did not.
         _dead_code_git_meta = {**(stored_git_meta or {}), **git_meta_map}
-
-        # Refuse rather than write a repo-wide report scored on nothing.
-        # ``load_stored_git_meta`` is best-effort and returns {} on any
-        # failure, and {} plus a repo-wide write is the one combination that
-        # actively corrupts: every unchanged file falls to the
-        # ``commit_count_90d == 0`` rung and is stored at 0.7 with
-        # ``safe_to_delete=True``, however actively it is committed to.
-        # ``git_meta_map`` being non-empty is the tell that git indexing does
-        # work here, so an empty stored map means the read failed rather than
-        # that the repo has no history — a repo with no git at all reaches
-        # this with both maps empty and is left alone.
-        if not stored_git_meta and git_meta_map:
-            raise RuntimeError(
-                "stored git metadata unavailable, refusing to persist a "
-                "repo-wide dead-code report scored without it"
-            )
-
         _dead_code_analyzer = DeadCodeAnalyzer(
             graph_builder.graph(),
             _dead_code_git_meta,
@@ -452,6 +463,35 @@ def run_partial_analysis(
         # change had made dead (or brought back to life) kept its old verdict
         # until someone re-indexed from scratch.
         dead_code_report = _dead_code_analyzer.analyze()
+
+        # What this report is allowed to overwrite.
+        #
+        # When the stored read succeeded, this run's git knowledge is the same
+        # knowledge a full index had — the stored rows ARE what the last full
+        # index wrote, with this run's fresher ones on top — so every file is
+        # scored at least as well here as it was there and the report speaks
+        # for the whole repository. That includes files with no git row at
+        # all: a full index had no row for them either and scored them the
+        # same way, so holding them back would protect nothing while leaving
+        # exactly the stale verdicts this is meant to fix. Coverage is not the
+        # test, and cannot be: ``git_metadata`` legitimately covers only the
+        # files ``index_repo`` produced.
+        #
+        # When the read FAILED, this run knows strictly less than the index it
+        # would be overwriting: every file outside the change set would be
+        # scored against an empty dict, which reads as "no commits" and stores
+        # 0.7 with ``safe_to_delete=True`` however active the file is. So it
+        # speaks only for the files it re-indexed this run, which is the
+        # behavior this path had before it was widened.
+        dead_code_report.authoritative_paths = (
+            None if stored_git_meta is not None else frozenset(git_meta_map)
+        )
+        if dead_code_report.authoritative_paths is not None:
+            log(
+                "[yellow]Dead-code findings limited to "
+                f"{len(dead_code_report.authoritative_paths)} re-indexed files; "
+                "the rest keep their previous verdict[/yellow]"
+            )
         if dead_code_report.total_findings:
             log(f"Dead code findings: [yellow]{dead_code_report.total_findings}[/yellow]")
     except Exception as exc:
@@ -1163,11 +1203,16 @@ async def persist_incremental_index(
                         replace_dead_code_findings,
                     )
 
-                    # Repo-wide: the report is repo-wide, and dead code is a
-                    # cross-file property, so a file-scoped write would drop
-                    # every verdict the change flipped outside the change set.
+                    # The report is repo-wide, and dead code is a cross-file
+                    # property, so a change-scoped write would drop every
+                    # verdict the change flipped outside the change set. The
+                    # scope is the set of files whose confidence was scored on
+                    # real git metadata; the rest keep what they had.
                     await replace_dead_code_findings(
-                        session, repo_id, dead_code_report.findings
+                        session,
+                        repo_id,
+                        dead_code_report.findings,
+                        scope=dead_code_report.authoritative_paths,
                     )
                 except Exception as exc:
                     _skip("Dead-code persist", exc, range_scoped=True)
