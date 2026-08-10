@@ -461,7 +461,7 @@ opt-in tools, and the full reference: **[docs/agent/MCP_TOOLS.md →](docs/agent
 | Self-hostable, open source | ✅ AGPL-3.0 | ❌ cloud only | ❌ cloud only | ❌ Enterprise only | ✅ Docker |
 | Private repo, no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
 | Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
-| MCP server for AI agents | ✅ 10 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| MCP server for AI agents | ✅ 11 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Command-output distillation | ✅ reversible | ❌ | ❌ | ❌ | ❌ |
