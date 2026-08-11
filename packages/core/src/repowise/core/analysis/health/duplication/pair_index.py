@@ -38,6 +38,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.cache_seal import seal, unseal
+
 from .limits import DuplicationLimits
 
 log = structlog.get_logger(__name__)
@@ -95,8 +97,7 @@ def load_pair_index(
     """Load and validate the artifact; ``None`` on any mismatch/error."""
     path = Path(cache_dir) / _INDEX_FILENAME
     try:
-        with path.open("rb") as fh:
-            payload = pickle.load(fh)
+        payload = pickle.loads(unseal(path.read_bytes()))
         if (
             payload.get("version") != _INDEX_VERSION
             or payload.get("window_tokens") != window_tokens
@@ -116,7 +117,7 @@ def load_pair_index(
         )
     except FileNotFoundError:
         return None
-    except Exception as exc:  # corrupt / unreadable -> full re-detect
+    except Exception as exc:  # corrupt / unsigned / unreadable -> full re-detect
         log.debug("duplication_pair_index_load_failed", error=str(exc))
         return None
 
@@ -138,10 +139,11 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
             "window_budget_hit": index.window_budget_hit,
             "timed_out": index.timed_out,
         }
+        sealed = seal(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
         fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=_INDEX_FILENAME, suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as fh:
-                pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                fh.write(sealed)
             os.replace(tmp_name, path)
         except BaseException:
             with contextlib.suppress(OSError):

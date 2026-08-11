@@ -30,6 +30,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.cache_seal import seal, unseal
+
 log = structlog.get_logger(__name__)
 
 _CACHE_VERSION = 1
@@ -51,8 +53,7 @@ class DuplicationTokenCache:
 
     def load(self) -> None:
         try:
-            with self._path.open("rb") as fh:
-                payload = pickle.load(fh)
+            payload = pickle.loads(unseal(self._path.read_bytes()))
             if (
                 payload.get("version") != _CACHE_VERSION
                 or payload.get("window_tokens") != self._window_tokens
@@ -61,7 +62,7 @@ class DuplicationTokenCache:
             self._entries = payload.get("files", {})
         except FileNotFoundError:
             return
-        except Exception as exc:  # corrupt / unreadable cache -> full tokenize
+        except Exception as exc:  # corrupt / unsigned / unreadable -> full tokenize
             log.debug("duplication_cache_load_failed", error=str(exc))
 
     def save(self) -> None:
@@ -73,12 +74,13 @@ class DuplicationTokenCache:
                 "window_tokens": self._window_tokens,
                 "files": self._fresh,
             }
+            sealed = seal(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
             fd, tmp_name = tempfile.mkstemp(
                 dir=str(self._path.parent), prefix=_CACHE_FILENAME, suffix=".tmp"
             )
             try:
                 with os.fdopen(fd, "wb") as fh:
-                    pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                    fh.write(sealed)
                 os.replace(tmp_name, self._path)
             except BaseException:
                 with contextlib.suppress(OSError):

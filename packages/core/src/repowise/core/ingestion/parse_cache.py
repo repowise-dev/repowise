@@ -36,6 +36,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cache_seal import seal, unseal
+
 from . import models
 from .models import FileInfo, ParsedFile
 
@@ -127,8 +129,9 @@ class ParseCache:
 
     def load(self) -> None:
         try:
-            with self._path.open("rb") as fh:
-                payload = pickle.load(fh)
+            # HMAC-verify *before* unpickling — the cache lives inside the
+            # indexed repo and is attacker-writable (see cache_seal).
+            payload = pickle.loads(unseal(self._path.read_bytes()))
             if (
                 payload.get("version") != _CACHE_VERSION
                 or payload.get("fingerprint") != self._fingerprint
@@ -137,7 +140,7 @@ class ParseCache:
             self._entries = payload.get("files", {})
         except FileNotFoundError:
             return
-        except Exception as exc:  # corrupt / unreadable cache -> full parse
+        except Exception as exc:  # corrupt / unreadable / unsigned -> full parse
             log.debug("parse_cache_load_failed", error=str(exc))
 
     def save(self) -> None:
@@ -149,12 +152,13 @@ class ParseCache:
                 "fingerprint": self._fingerprint,
                 "files": self._fresh,
             }
+            sealed = seal(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
             fd, tmp_name = tempfile.mkstemp(
                 dir=str(self._path.parent), prefix=_CACHE_FILENAME, suffix=".tmp"
             )
             try:
                 with os.fdopen(fd, "wb") as fh:
-                    pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                    fh.write(sealed)
                 os.replace(tmp_name, self._path)
             except BaseException:
                 with contextlib.suppress(OSError):

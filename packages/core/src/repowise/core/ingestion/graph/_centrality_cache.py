@@ -31,6 +31,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.cache_seal import seal, unseal
+
 log = structlog.get_logger(__name__)
 
 # Bumped to 2 when betweenness was made order-independent: the signature keys
@@ -90,14 +92,13 @@ class CentralityCache:
             return
         self._loaded = True
         try:
-            with self._path.open("rb") as fh:
-                payload = pickle.load(fh)
+            payload = pickle.loads(unseal(self._path.read_bytes()))
             if payload.get("version") != _CACHE_VERSION:
                 return
             self._entries = payload.get("entries", {})
         except FileNotFoundError:
             return
-        except Exception as exc:  # corrupt / unreadable cache -> recompute
+        except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
             log.debug("centrality_cache_load_failed", error=str(exc))
 
     def get(self, kind: str, signature: str) -> dict[str, float] | None:
@@ -116,12 +117,13 @@ class CentralityCache:
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
                 payload = {"version": _CACHE_VERSION, "entries": self._entries}
+                sealed = seal(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
                 fd, tmp_name = tempfile.mkstemp(
                     dir=str(self._path.parent), prefix=_CACHE_FILENAME, suffix=".tmp"
                 )
                 try:
                     with os.fdopen(fd, "wb") as fh:
-                        pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                        fh.write(sealed)
                     os.replace(tmp_name, self._path)
                 except BaseException:
                     with contextlib.suppress(OSError):
