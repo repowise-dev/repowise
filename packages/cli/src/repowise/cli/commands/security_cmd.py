@@ -1,7 +1,7 @@
 """``repowise security scan`` — security signal scanning.
 
 Subcommands:
-  scan --history [--since <rev>] [--to <rev>] [--output json]
+  scan --history [--since <rev>] [--to <rev>] [--format json]
       Walk the entire git history of the repo (not just the working tree) with
       the same pattern registry the indexer uses, and persist any secrets or
       risky patterns into the shared ``security_findings`` table — tagged with
@@ -9,8 +9,6 @@ Subcommands:
 """
 
 from __future__ import annotations
-
-import json
 
 import click
 
@@ -22,6 +20,7 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output,
 )
+from repowise.cli.output import emit_json, format_option, notice_console
 
 
 @click.group("security")
@@ -60,12 +59,14 @@ def security_command() -> None:
     "weak hashes, ...). By default history mode reports only leaked-secret "
     "patterns (hardcoded_password / hardcoded_secret) to avoid noise.",
 )
+@format_option(help="Output format. ``json`` is the machine-readable summary.")
 @click.option(
     "--output",
-    "output_format",
-    default="table",
+    "legacy_output",
+    default=None,
     type=click.Choice(["table", "json"]),
-    help="Output format. ``json`` is the machine-readable summary.",
+    hidden=True,
+    help="Deprecated alias for --format.",
 )
 def security_scan(
     history: bool,
@@ -73,7 +74,8 @@ def security_scan(
     to: str | None,
     all_patterns: bool,
     repo: str | None,
-    output_format: str,
+    fmt: str,
+    legacy_output: str | None,
 ) -> None:
     """Scan for security signals and persist findings to the local store.
 
@@ -83,13 +85,23 @@ def security_scan(
     patterns that were later removed — something the working-tree scan cannot
     see.
     """
+    # ``--output`` shipped before ``--format`` was the convention. An explicit
+    # ``--output`` still wins so existing scripts keep their behaviour; with it
+    # unset (the default) ``--format`` decides.
+    output_format = legacy_output or fmt
+
     if not history:
-        console.print(
+        # Notice on stderr and a payload on stdout, rather than a rich notice
+        # and nothing: json mode has to leave stdout parseable even on the
+        # path where the command declines to do any work.
+        notice_console(output_format).print(
             "[yellow]Working-tree scanning runs automatically during "
             "`repowise init`/`repowise update`.[/yellow]\n"
             "Pass [cyan]--history[/cyan] to scan the full git history for secrets "
             "and risky patterns (including ones deleted in later commits)."
         )
+        if output_format == "json":
+            emit_json({"scanned": False, "reason": "history-mode-not-requested"})
         return
 
     if output_format == "json":
@@ -109,7 +121,7 @@ def security_scan(
     )
 
     target = resolve_command_target(path=repo)
-    target.notice(console, command="security scan --history")
+    target.notice(notice_console(output_format), command="security scan --history")
 
     if target.is_workspace:
         primary = target.primary_path()
@@ -156,7 +168,7 @@ def security_scan(
     result = run_async(_do())
 
     if output_format == "json":
-        click.echo(json.dumps(result, indent=2))
+        emit_json(result)
         return
 
     console.print(f"[bold]repowise security scan --history[/bold] — {repo_path}")

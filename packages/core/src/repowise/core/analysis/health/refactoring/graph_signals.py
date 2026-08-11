@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ....ingestion.cohesion import is_cohesion_edge
+
 # File->file edge types that constitute a structural dependency cycle.
 # ``imports`` is the actionable, invertible edge; the others are carried so a
 # cycle that closes through a framework/type edge is still reported. Today the
@@ -23,7 +25,19 @@ from typing import Any
 # drops only git ``co_changes``) and the persisted ``graph_node_membership``
 # rows; the two could drift only if a new file-level edge type is added to one
 # definition but not the other.
+#
+# Edge *type* is not sufficient on its own: the resolver passes synthesise
+# ``imports`` and ``type_use`` edges to express that two files are one
+# compilation unit (Go package siblings, C# partial fragments, a C++
+# header/impl pair). Those are not dependencies and must not close a cycle, so
+# both definitions additionally reject ``is_cohesion_edge``. See
+# repowise.core.ingestion.cohesion.
 _CYCLE_EDGE_TYPES = ("imports", "framework", "dynamic", "type_use", "extends", "implements")
+
+
+def _is_cycle_edge(data: Any) -> bool:
+    """True if *data* is a file-level edge that can legitimately close a cycle."""
+    return data.get("edge_type") in _CYCLE_EDGE_TYPES and not is_cohesion_edge(data)
 
 
 def build_file_scc_index(graph: Any) -> dict[str, tuple[str, ...]]:
@@ -48,7 +62,7 @@ def build_file_scc_index(graph: Any) -> dict[str, tuple[str, ...]]:
     for u, v, data in graph.edges(data=True):
         if u == v:
             continue
-        if data.get("edge_type") in _CYCLE_EDGE_TYPES and u in fg and v in fg:
+        if _is_cycle_edge(data) and u in fg and v in fg:
             fg.add_edge(u, v)
 
     out: dict[str, tuple[str, ...]] = {}
@@ -80,7 +94,7 @@ def cycle_edges(graph: Any, members: tuple[str, ...]) -> list[tuple[str, str]]:
         for _u, v, data in graph.out_edges(u, data=True):
             if u == v or v not in member_set:
                 continue
-            if data.get("edge_type") in _CYCLE_EDGE_TYPES:
+            if _is_cycle_edge(data):
                 edges.append((u, v))
     return sorted(set(edges))
 

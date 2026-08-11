@@ -107,6 +107,17 @@ def commits_since(
             capture_output=True,
             text=True,
             timeout=timeout,
+            # stdin=DEVNULL is load-bearing, not tidiness. Under the stdio MCP
+            # transport a child that inherits the JSON-RPC stdin pipe can hold
+            # it open forever, and the timeout above does not save us: on
+            # Windows subprocess.run kills the child on TimeoutExpired and then
+            # re-enters communicate() with no timeout, which blocks on reader
+            # threads the dead-but-unreaped child still holds. The call is
+            # reached from get_why on every request that resolves an episode,
+            # so without this the tool never returns and the agent's session
+            # wedges. Same failure mode already guarded at _meta.py and
+            # _code_rationale.py.
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None

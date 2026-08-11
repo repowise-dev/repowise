@@ -138,9 +138,42 @@ def load_commit_index(
     if provenance_classifier is None:
         provenance_classifier = AgentProvenanceClassifier()
 
+    # With *since_ts* the walk still asked git for the whole window's numstat
+    # and threw almost all of it away in the loop below — 1.5s per update on a
+    # 9.3k-commit repo to return nothing. A ``%ct``-only pass over the same
+    # walk costs 0.06s and says exactly how deep the surviving prefix goes:
+    # both logs traverse the same revisions in the same order under the same
+    # filters, so every commit past that depth is one the ``ts <= since_ts``
+    # check below would have dropped. The check stays — this only stops git
+    # from diffing commits whose fate is already known.
+    depth = commit_limit
+    if since_ts is not None:
+        try:
+            stamps = repo.git.log(  # type: ignore[attr-defined]
+                f"-{commit_limit}", "--no-merges", "--format=%ct"
+            ).split()
+        except Exception as exc:
+            logger.warning("repo_commit_index_failed", error=str(exc))
+            return {}
+        depth = 0
+        for position, stamp in enumerate(stamps):
+            try:
+                if int(stamp) > since_ts:
+                    depth = position + 1
+            except ValueError:  # unparseable stamp: keep it in the window
+                depth = position + 1
+        if depth == 0:
+            logger.debug(
+                "repo_commit_index_built",
+                commits_parsed=0,
+                files_with_history=0,
+                indexable_files=len(indexable_files),
+            )
+            return {}
+
     try:
         raw = repo.git.log(  # type: ignore[attr-defined]
-            f"-{commit_limit}",
+            f"-{depth}",
             "--numstat",
             "--no-merges",
             f"--format={_LOG_FORMAT}",
@@ -153,7 +186,9 @@ def load_commit_index(
         return {}
 
     # git-ai authorship notes for this window (``{}`` unless the repo uses them).
-    note_agents = load_git_ai_note_agents(repo, commit_limit)
+    # Bounded to the same depth as the walk above: the map is read by sha, only
+    # for commits that walk parsed, so a wider notes pass buys nothing.
+    note_agents = load_git_ai_note_agents(repo, depth)
     # Agent-trace records (empty after one stat call unless the repo has them).
     # The orchestrator may pass a shared instance so the trace file is read once
     # per index rather than once per walk.

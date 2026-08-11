@@ -6,7 +6,7 @@ that turn a session file into an Event stream. Not to be confused with the
 similarly named ``repowise.cli.agent_adapters`` family, which installs and
 checks editor hooks and shares nothing with this one but a word.
 
-One entry today (Claude Code). The point is not extensibility for its own
+Claude Code and Codex today. The point is not extensibility for its own
 sake: it is that a second harness becomes a registration in its own module
 rather than a search-and-replace across every module that reads transcripts.
 

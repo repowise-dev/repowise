@@ -178,9 +178,21 @@ def render_degraded(degraded: list[str] | None) -> None:
         console.print(f"  [yellow]-[/yellow] {entry}")
 
 
-def _dead_code_counts(dead_code_report: Any) -> tuple[int, int]:
-    """Return ``(unreachable_files, unused_exports)`` from a dead-code report."""
+def _dead_code_counts(
+    dead_code_report: Any, changed_paths: list[str] | None = None
+) -> tuple[int, int]:
+    """Return ``(unreachable_files, unused_exports)`` from a dead-code report.
+
+    The report is repo-wide, but this panel is a summary of the update that
+    just ran, so the counts stay scoped to the files it touched. Reporting the
+    repo-wide totals here would turn a one-file update on a large repo into
+    "Dead code  759 unreachable" where it previously said 0, which reads as
+    the update having caused it.
+    """
     findings = dead_code_report.findings if dead_code_report else []
+    if changed_paths is not None:
+        scope = set(changed_paths)
+        findings = [f for f in findings if f.file_path in scope]
     unreachable = sum(1 for f in findings if f.kind.value == "unreachable_file")
     unused = sum(1 for f in findings if f.kind.value == "unused_export")
     return unreachable, unused
@@ -235,6 +247,7 @@ def show_index_only_completion(
     degraded: list[str] | None = None,
     pages_rendered: int = 0,
     template_wiki: bool = False,
+    changed_paths: list[str] | None = None,
 ) -> None:
     """Render the completion panel for an index-only update (no LLM regen).
 
@@ -244,7 +257,7 @@ def show_index_only_completion(
     """
     render_degraded(degraded)
     graph = graph_builder.graph()
-    unreachable, unused = _dead_code_counts(dead_code_report)
+    unreachable, unused = _dead_code_counts(dead_code_report, changed_paths)
 
     metrics: list[tuple[str, str]] = [
         ("Files changed", str(changed_count)),

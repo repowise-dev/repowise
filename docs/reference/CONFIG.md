@@ -252,8 +252,26 @@ means every key below is off.
 ```yaml
 hooks:
   read_skeleton: false           # serve large indexed files as skeletons
+  read_reread: false             # serve unchanged re-reads as a pointer
+  search_digest: false           # serve multi-file grep floods as a digest
 ```
 
+- `read_reread` lets the PostToolUse Read hook answer a *repeat* Read with a
+  short notice instead of the content, when the same range was already served
+  this session, no `Edit`/`Write` came between, and the bytes hash the same.
+  The notice names the earlier read and the tool call it happened on.
+  Savings land in `repowise saved` under the `read_reread` filter.
+  - **Nothing is guessed.** The decision is a hash comparison over what the
+    agent was actually served. A file whose content differs is served in full,
+    with a line saying it changed on disk and not through an edit in this
+    session — which is worth more than the bytes, since nothing else in the
+    session can discover that.
+  - **Never twice in a row for the same file.** The premise is that the earlier
+    copy is still in the agent's context, and a context compaction removes it.
+    That is not detectable from a hook, so reading again always returns the
+    content, and the notice says so.
+  - Requires Claude Code 2.1.218+; older clients are left untouched.
+    `REPOWISE_HOOK_READ_REREAD=1` overrides the file for one session.
 - `read_skeleton` lets the PostToolUse Read hook return the *skeleton* of a
   file instead of the file, for an unbounded Read of a large indexed file, once
   per file per session. Signatures stay; bodies become `... N lines (a-b)`
@@ -629,7 +647,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `REPOWISE_PORT` | API server port (default: `7337`) |
 | `REPOWISE_MCP_PORT` | MCP SSE server port (default: `7338`) |
 | `REPOWISE_API_URL` | Frontend only; backend URL for the web UI (default: `http://localhost:7337`) |
-| `REPOWISE_API_KEY` | Bearer token required by clients calling the server API |
+| `REPOWISE_API_KEY` | Bearer token required by clients calling the server API. Without it the server answers local callers only, and refuses any request from another host with 403 |
 | `REPOWISE_CONFIG_DIR` | Override where repowise looks for its config directory |
 | `REPOWISE_GITHUB_WEBHOOK_SECRET` | Secret for verifying GitHub webhook signatures |
 | `REPOWISE_GITLAB_WEBHOOK_TOKEN` | Token for verifying GitLab webhook requests |
@@ -651,6 +669,7 @@ Anonymous usage telemetry is **enabled by default** (opt-out).
 | `REPOWISE_GIT_WINDOW_ANCHOR` | Set to `head` to anchor git "now" to the latest commit instead of wall-clock time |
 | `REPOWISE_SKIP_EDITOR_SETUP` | Truthy value stops `init` writing to your machine-wide editor config: the Claude Code / Claude Desktop MCP entry, the Claude Code hooks, and the distill rewrite-hook offer. Same switch as `init --no-editor-setup` ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)); the env var is the one to use for CI, sandboxes, and benchmark runs that index many repos. Project-local files (`.repowise/mcp.json`, `CLAUDE.md`, Codex config) are written either way |
 | `REPOWISE_CHANGELOG` | Override the changelog source used by the "what's new" check |
+| `REPOWISE_PARSE_WORKERS` | How many processes parse files during indexing. Defaults to your CPU count capped at 8, and never exceeds the number of files to parse. Each worker is a separate interpreter holding roughly 50 MB, so lower it on a memory-constrained machine; raising it above 8 is not measurably faster |
 
 ---
 

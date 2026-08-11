@@ -14,6 +14,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
+from repowise.cli import hook_ledger as _hook_ledger
+
 
 class HookResult(NamedTuple):
     """What one PostToolUse handler wants the hook to do.
@@ -58,12 +60,14 @@ def as_result(value: HookResult | str | None) -> HookResult:
 #: module loads, and the response is written after. Claude Code records the
 #: true end-to-end figure as ``attachment.durationMs``, which the transcript
 #: pass in :mod:`repowise.core.sessions.efficacy` writes over the top.
-_T0 = time.perf_counter()
-
-
-def _elapsed_ms() -> int:
-    """Milliseconds of in-process hook work so far (see :data:`_T0`)."""
-    return int((time.perf_counter() - _T0) * 1000)
+#: Re-exported, not defined: the clock and the build stamp are the rewrite
+#: hook's too, so both live in :mod:`repowise.cli.hook_ledger` and there is one
+#: of each. Bound at *this* module's scope on purpose — ``_shared`` is imported
+#: as augment starts, so ``hook_ledger._T0`` is captured then rather than at
+#: the first ledger write, which would stamp every firing with ~0 ms.
+#: ``hook_ledger`` is free to import: its module scope is ``os`` and ``time``.
+_elapsed_ms = _hook_ledger._elapsed_ms
+emitting_build = _hook_ledger.emitting_build
 
 
 def _ledger_key(surface: str, category: str, text: str) -> str:
@@ -176,8 +180,16 @@ def hook_flag_enabled(repo_path: Path, flag: str) -> bool:
 _FORGONE_TABLE_SQL = (
     "CREATE TABLE IF NOT EXISTS forgone_savings ("
     "created_at REAL NOT NULL, source TEXT NOT NULL, path TEXT NOT NULL, "
-    "raw_tokens INTEGER NOT NULL, distilled_tokens INTEGER NOT NULL)"
+    "raw_tokens INTEGER NOT NULL, distilled_tokens INTEGER NOT NULL, "
+    "filter TEXT NOT NULL DEFAULT '')"
 )
+
+#: ``filter`` arrived after the table did. Two replacing surfaces now share the
+#: ``hook-read`` source — the skeleton and the re-read collapse — so ``source``
+#: alone can no longer say which one forwent what, and summing by source would
+#: report each surface's counterfactual as both of them. Rows written before
+#: this column carry ``''`` and are attributed to neither.
+_FORGONE_MIGRATION_SQL = "ALTER TABLE forgone_savings ADD COLUMN filter TEXT NOT NULL DEFAULT ''"
 
 
 def _omission_db(repo_path: Path) -> Path | None:
@@ -239,6 +251,7 @@ def record_forgone(
     path: str,
     raw_tokens: int,
     distilled_tokens: int,
+    filter_name: str = "",
 ) -> None:
     """Record a saving this repo *would* have made, had the surface been on.
 
@@ -255,11 +268,13 @@ def record_forgone(
         con = sqlite3.connect(str(db_path), timeout=2)
         try:
             con.execute(_FORGONE_TABLE_SQL)
+            if "filter" not in {r[1] for r in con.execute("PRAGMA table_info(forgone_savings)")}:
+                con.execute(_FORGONE_MIGRATION_SQL)
             con.execute(
                 "INSERT INTO forgone_savings "
-                "(created_at, source, path, raw_tokens, distilled_tokens) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (time.time(), source, path, raw_tokens, distilled_tokens),
+                "(created_at, source, path, raw_tokens, distilled_tokens, filter) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (time.time(), source, path, raw_tokens, distilled_tokens, filter_name),
             )
             con.commit()
         finally:

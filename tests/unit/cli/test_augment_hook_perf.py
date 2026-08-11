@@ -204,7 +204,9 @@ def test_a_read_in_a_repo_that_did_not_opt_in_imports_nothing_heavy(tmp_path: Pa
 
     # Guard the guard, same as the opted-in case: if the counterfactual stopped
     # running, the import assertion above would pass by doing nothing at all.
-    state = json.loads((repo / ".repowise" / ".augment-session.json").read_text("utf-8"))
+    from repowise.cli.commands.augment_cmd.read_state import _session_state_path
+
+    state = json.loads(_session_state_path(repo, "perf").read_text("utf-8"))
     assert state["forgone"] == [rel], "the probe did not reach the counterfactual"
 
 
@@ -320,6 +322,124 @@ def test_a_wrong_path_rescue_imports_nothing_heavy(tmp_path: Path) -> None:
     )
     assert "is not in this tree" in out.stdout, "the probe did not reach a rescue"
     assert out.stderr.strip() == "", f"a wrong-path rescue pulled in:\n{out.stderr}"
+
+
+def _reread_repo(tmp_path: Path) -> tuple[Path, str, str]:
+    """A repo where the second Read of a file is collapsed to a notice."""
+    repo = tmp_path / "repo"
+    (repo / ".repowise").mkdir(parents=True)
+    (repo / ".repowise" / "config.yaml").write_text(
+        "hooks:\n  read_reread: true\n", encoding="utf-8"
+    )
+    rel = "big.py"
+    source = "\n".join(f"line {i} with enough text to be worth not repeating" for i in range(200))
+    (repo / rel).write_text(source, encoding="utf-8")
+    return repo, rel, source
+
+
+def test_a_collapsed_reread_imports_nothing_heavy(tmp_path: Path) -> None:
+    """The re-read collapse never needs the index, so it must never reach it.
+
+    It is a hash comparison over the payload the hook was already handed. If
+    this ever pulls the skeleton builder or the ORM in, something has started
+    doing work the surface does not need.
+    """
+    repo, rel, _ = _reread_repo(tmp_path)
+    env = _fake_home(tmp_path)
+    env["REPOWISE_HOOK_UPDATED_OUTPUT"] = "1"
+    probe = _read_payload_probe(repo, rel)
+    code = (
+        probe
+        + "sys.stdout.write('|SECOND|'); "
+        + probe
+        + f"heavy = sorted(m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r})); "
+        "print('\\n'.join(heavy), file=sys.stderr)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env
+    )
+    second = out.stdout.split("|SECOND|", 1)[1]
+    assert "Unchanged since you read it" in second, "the probe did not reach the collapse"
+    assert out.stderr.strip() == "", f"a collapsed re-read pulled in:\n{out.stderr}"
+
+
+def test_a_glob_timeout_rescue_imports_nothing_heavy(tmp_path: Path) -> None:
+    """The rescue answers a path query from stdlib sqlite3 and nothing else."""
+    repo = _indexed_search_repo(tmp_path)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "a.py").write_text("x", encoding="utf-8")
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Glob",
+        "tool_input": {"pattern": "src/*.py"},
+        "error": (
+            "Ripgrep search timed out after 20 seconds. The search may have matched "
+            "files but did not complete in time. Try searching a more specific path "
+            "or pattern."
+        ),
+        "cwd": str(repo),
+        "session_id": "perf",
+    }
+    code = (
+        "import sys, json, io; "
+        f"sys.stdin = io.StringIO({json.dumps(payload)!r}); "
+        "from repowise.cli.commands.augment_cmd import _run_augment; "
+        "_run_augment(client=None); "
+        f"heavy = sorted(m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r})); "
+        "print('\\n'.join(heavy), file=sys.stderr)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_fake_home(tmp_path),
+    )
+    assert "the index answered it instead" in out.stdout, "the probe did not reach the rescue"
+    assert out.stderr.strip() == "", f"a glob timeout rescue pulled in:\n{out.stderr}"
+
+
+def _modules_added_by(statement: str) -> set[str]:
+    """Modules an import statement adds, over what the interpreter starts with.
+
+    A delta rather than an absolute: this interpreter already has ``pathlib``
+    resident before any repowise code runs (site processing pulls it), so an
+    absolute check would either fail on something nobody imported or have to
+    hard-code an allowlist that rots.
+    """
+    code = (
+        "import sys; before = set(sys.modules); "
+        f"{statement} "
+        "print('\\n'.join(sorted(set(sys.modules) - before)))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    return set(out.stdout.split())
+
+
+def test_the_shared_ledger_is_free_to_import() -> None:
+    """``hook_ledger`` sits at the *module scope* of the PreToolUse rewrite hook.
+
+    That hook fires on every shell command an agent runs, so importing the
+    ledger has to cost nothing beyond what the hook already pays. ``sqlite3``
+    is deferred into the functions that open a database, so a command that
+    bails on shape never touches one.
+    """
+    added = _modules_added_by("import repowise.cli.hook_ledger;")
+    assert "sqlite3" not in added, "importing the hook ledger pulled in sqlite3"
+
+
+def test_the_rewrite_hook_still_opens_no_database_to_load() -> None:
+    """The PreToolUse hook gained a ledger; it must not have gained a cost.
+
+    It writes one counter row per shell command, and that write is deferred
+    until after the response is on stdout. Loading the module must stay as
+    cheap as it was before the ledger existed.
+    """
+    added = _modules_added_by("import repowise.cli.rewrite_hook;")
+    for module in ("sqlite3", "click", "yaml"):
+        assert module not in added, f"the rewrite hook pulled in {module} at import"
 
 
 def test_a_silent_invocation_imports_nothing_heavy(tmp_path: Path) -> None:

@@ -57,14 +57,41 @@ SHELL_TOOL_NAMES: frozenset[str] = frozenset({"Bash", "shell_command"})
 #: hook that runs and then declines every payload it is handed.
 SHELL_TOOL_MATCHER: str = "|".join(sorted(SHELL_TOOL_NAMES))
 
+#: Every name Codex has given a tool that edits a file. ``apply_patch`` is the
+#: current one; ``Edit``/``Write`` are carried for the same reason the shell set
+#: carries more than one name — a matcher that stops matching is silent in
+#: exactly the way a working hook is. A tuple, not a set, because the matcher
+#: below is derived from it and the shipped ``hooks.json`` has an order.
+#: Kept in step with that file by ``tests/unit/cli/test_codex_plugin.py``.
+_EDIT_TOOL_ORDER: tuple[str, ...] = ("apply_patch", "Edit", "Write")
+
+EDIT_TOOL_NAMES: frozenset[str] = frozenset(_EDIT_TOOL_ORDER)
+
+#: The same set as a hooks.json matcher, in the order the plugin ships it.
+EDIT_TOOL_MATCHER: str = "|".join(_EDIT_TOOL_ORDER)
+
 
 class CodexAdapter(AgentAdapter):
     name: ClassVar[str] = "codex"
 
+    #: Codex rewrites are tagged as their own surface in the savings ledger.
+    savings_source: ClassVar[str | None] = "hook-codex"
+
     shell_tool_names: ClassVar[frozenset[str]] = SHELL_TOOL_NAMES
+
+    #: Codex has no first-class read or search tool — both go through the
+    #: shell — so those sets stay empty and the PostToolUse dispatcher routes
+    #: nothing to the Read and Grep surfaces for this harness. That is the
+    #: honest answer, not an omission.
+    edit_tool_names: ClassVar[frozenset[str]] = EDIT_TOOL_NAMES
 
     #: No ask-with-mutation in the Codex hook protocol — see module docstring.
     rewrite_permissions: ClassVar[frozenset[str]] = frozenset({"allow"})
+
+    #: Codex's PostToolUse contract carries a context string and nothing that
+    #: can stand in for a tool result, so no replacing surface may hand it one
+    #: (inherited default, spelled out because it is load-bearing).
+    replaces_tool_output: ClassVar[bool] = False
 
     def detect(self) -> bool:
         return os.path.isdir(os.path.expanduser("~/.codex"))
@@ -88,9 +115,11 @@ class CodexAdapter(AgentAdapter):
         if not isinstance(command, str) or not command.strip():
             return None
         cwd = payload.get("cwd")
+        session_id = payload.get("session_id")
         return RewriteRequest(
             command=command,
             cwd=cwd if isinstance(cwd, str) else "",
+            session_id=session_id if isinstance(session_id, str) else "",
             # Codex names its shell tool the same on every platform, so the
             # dialect has to come from the platform. It is PowerShell on
             # Windows — the real rollouts are full of `get-content`,

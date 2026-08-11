@@ -201,7 +201,12 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         # decision: namespace, batched like the pages. Uses embed_batch
         # directly (which raises on failure) rather than the ingest-side
         # best-effort wrapper, so the indexed/failed counters stay honest.
-        progress.update(task, description="Indexing decisions...")
+        # Only when there are any. Set unconditionally, this relabelled a bar
+        # that had just finished the pages, so a repo with no decisions ended
+        # its reindex reading "Indexing decisions... 186/186" — 186 pages
+        # reported as decisions that were never indexed.
+        if decisions:
+            progress.update(task, description="Indexing decisions...")
         for i in range(0, len(decisions), batch_size):
             batch = decisions[i : i + batch_size]
             items = [

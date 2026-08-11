@@ -1,19 +1,14 @@
 """PostToolUse Read → serve the indexed skeleton instead of the whole file.
 
 The skeleton *nudge* — a one-line pointer at ``get_context(include=
-["skeleton"])`` — fired 516 times across 203 sessions and was acted on once.
-It did not fail on content. It failed by asking the agent to do something the
-hook could do itself. This module does it instead: when every gate below
-clears, the hook returns ``updatedToolOutput`` and the agent's Read of a large
-indexed file arrives as its skeleton.
+["skeleton"])`` — did not fail on content. It failed by asking the agent to do
+something the hook could do itself. This module does it instead: when every
+gate below clears, the hook returns ``updatedToolOutput`` and the agent's Read
+of a large indexed file arrives as its skeleton.
 
-The nudge has since been retired outright rather than kept as a fallback: a
-replay under three looser judges, including the compliance form used for a
-notice that asks for a *non*-action, found it at or below the unconditioned
-base rate on every one, and a session's second nudge did no better than its
-first. ``sessions/efficacy.py`` carries the numbers. So a client that cannot
-honour a replacement now gets silence, which is the honest fallback for a
-surface with nothing to say.
+The nudge has since been retired outright rather than kept as a fallback, so a
+client that cannot honour a replacement now gets silence, which is the honest
+fallback for a surface with nothing to say.
 
 **This is not a silent truncation.** ``build_skeleton`` marks every elided
 span with its 1-indexed line range, so the agent can see exactly what was
@@ -22,19 +17,23 @@ makes for shell output and the omission store makes for truncated MCP
 responses. Reads were the last unfiltered surface. Reading the file a second
 time returns it whole; the header says so.
 
-Gates, cheapest first (:func:`skeleton_replacement`):
+Gates this surface owns, cheapest first (its caller in :mod:`.read_state`
+holds the first five, :func:`skeleton_replacement` the rest):
 
 1. **Unbounded read only.** A ranged Read is already a targeted question.
 2. **Above the size floor** (100 output lines).
-3. **Opted in.** ``hooks.read_skeleton: true`` in ``.repowise/config.yaml``,
-   default off. Read with a lazy ``yaml`` import and fail-closed.
-4. **Not a verification re-read.** A Read that follows an Edit of the same
+3. **Not a verification re-read.** A Read that follows an Edit of the same
    file wants fidelity, not structure.
-5. **Once per file per session.** The second Read is the escape hatch.
-6. **Indexed**, with symbol bounds persisted.
-7. **Worth it** — skeleton well under full, and the saving clears the floor.
-8. **Under the output cap**, whole. A truncated skeleton would lose its
+4. **Once per file per session.** The second Read is the escape hatch.
+5. **Indexed**, with symbol bounds persisted.
+6. **Worth it** — skeleton well under full, and the saving clears the floor.
+7. **Under the output cap**, whole. A truncated skeleton would lose its
    trailing elision ranges, which is the part that makes this reversible.
+
+The harness capability probe, the ``hooks.read_skeleton`` opt-in, the
+Read-shaped wire payload, the no-payload-no-ledger-row rule and both ledger
+writes are :mod:`.replacement`'s, shared with the digest and the re-read
+collapse.
 
 Operational rules are the rest of augment's: stdlib on the way in, no network,
 any failure degrades to returning None and the agent sees its Read untouched.
@@ -42,24 +41,17 @@ any failure degrades to returning None and the agent sees its Read untouched.
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import sqlite3
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ._shared import MAX_OUTPUT_CHARS, hook_flag_enabled
-from ._shared import record_forgone as _record_forgone
-from ._shared import record_saving as _record_saving
+from ._shared import MAX_OUTPUT_CHARS
+from .replacement import Offer
 
 if TYPE_CHECKING:  # pragma: no cover - the hook path imports these lazily
-    from repowise.core.distill.skeleton import SkeletonResult, SkeletonSymbol
+    from pathlib import Path
 
-#: Claude Code release that introduced ``updatedToolOutput``. Older clients
-#: ignore the field, which would silently drop the enrichment, so on those the
-#: Read is left untouched (see :func:`supports_updated_output`).
-_MIN_CLIENT_VERSION = (2, 1, 218)
+    from repowise.core.distill.skeleton import SkeletonResult, SkeletonSymbol
 
 #: Hard ceiling on the replacement string; shared with every other replacing
 #: surface. A skeleton that does not fit is skipped rather than cut, because
@@ -67,88 +59,22 @@ _MIN_CLIENT_VERSION = (2, 1, 218)
 _MAX_OUTPUT_CHARS = MAX_OUTPUT_CHARS
 
 #: Savings-ledger identity, so ``repowise saved`` can name this surface.
-_SAVINGS_SOURCE = "hook-read"
+SAVINGS_SOURCE = "hook-read"
 _SAVINGS_FILTER = "read_skeleton"
 
-_CONFIG_FLAG = "read_skeleton"
-
-
-class Replacement:
-    """A skeleton ready to be served in place of a Read, and its ledger facts.
-
-    A tiny value object rather than a tuple: the caller records a saving, logs
-    a ledger row and emits the text, and three positional elements at that
-    call site would read as noise.
-    """
-
-    __slots__ = ("full_tokens", "payload", "rel", "skeleton_tokens", "text")
-
-    def __init__(self, *, rel: str, text: str, full_tokens: int, skeleton_tokens: int) -> None:
-        self.rel = rel
-        self.text = text
-        self.full_tokens = full_tokens
-        self.skeleton_tokens = skeleton_tokens
-        #: Read-shaped wire payload wrapping :attr:`text`, filled in by the
-        #: caller once it has the Read's own ``tool_response`` to build from.
-        self.payload: dict | None = None
-
-    @property
-    def saved_tokens(self) -> int:
-        return max(0, self.full_tokens - self.skeleton_tokens)
-
-
-# ---------------------------------------------------------------------------
-# Gates
-# ---------------------------------------------------------------------------
+CONFIG_FLAG = "read_skeleton"
 
 
 def enabled(repo_path: Path) -> bool:
     """True when this repo opted into read replacement. Fails closed.
 
-    Thin alias over the shared reader so the two replacing surfaces cannot
-    drift on how they read their flag. See :func:`_shared.hook_flag_enabled`
-    for the fail-closed rationale and the env override.
+    Thin alias over the shared reader so the replacing surfaces cannot drift
+    on how they read their flag. See :func:`_shared.hook_flag_enabled` for the
+    fail-closed rationale and the env override.
     """
-    return hook_flag_enabled(repo_path, _CONFIG_FLAG)
+    from ._shared import hook_flag_enabled
 
-
-def supports_updated_output() -> bool:
-    """True when the Claude Code client can honour ``updatedToolOutput``.
-
-    There is no version in the hook payload and no version env var, and
-    ``claude --version`` is a ~1s subprocess this path cannot afford. The one
-    cheap on-disk signal is the updater's own record, so we read that and
-    **fail open** — an unsupported client ignores the unknown field, which
-    costs a skipped enrichment, never a broken Read.
-    """
-    override = os.environ.get("REPOWISE_HOOK_UPDATED_OUTPUT")
-    if override is not None:
-        return override.strip().lower() in ("1", "true", "yes", "on")
-    version = _recorded_client_version()
-    return version is None or version >= _MIN_CLIENT_VERSION
-
-
-def _recorded_client_version() -> tuple[int, ...] | None:
-    """Installed Claude Code version per ``~/.claude/.last-update-result.json``.
-
-    Best effort by construction: the file only exists once the updater has run
-    at least once, and its ``version_to`` is null on a failed update — in which
-    case ``version_from`` is what is still installed.
-    """
-    try:
-        raw = (Path.home() / ".claude" / ".last-update-result.json").read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (OSError, ValueError, RuntimeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    for key in ("version_to", "version_from"):
-        value = data.get(key)
-        if isinstance(value, str) and value:
-            parts = value.split(".")
-            if all(p.isdigit() for p in parts) and parts:
-                return tuple(int(p) for p in parts)
-    return None
+    return hook_flag_enabled(repo_path, CONFIG_FLAG)
 
 
 def is_unbounded_read(tool_input: dict) -> bool:
@@ -169,7 +95,7 @@ def skeleton_replacement(
     *,
     min_ratio_gain: float,
     min_saved_tokens: int,
-) -> Replacement | None:
+) -> Offer | None:
     """Render *rel*'s skeleton, or None when any content gate fails.
 
     Callers own the cheap gates (see the module docstring); by the time this
@@ -210,40 +136,15 @@ def skeleton_replacement(
         text = _render(rel, result, total_lines)
         if len(text) > _MAX_OUTPUT_CHARS:
             return None
-    return Replacement(
-        rel=rel,
+    return Offer(
+        key=rel,
         text=text,
-        full_tokens=result.full_tokens,
+        raw_tokens=result.full_tokens,
         # The header is part of what the agent is billed for.
-        skeleton_tokens=max(1, len(text) // 4),
+        new_tokens=max(1, len(text) // 4),
+        category="skeleton_served",
+        filter_name=_SAVINGS_FILTER,
     )
-
-
-def as_read_output(tool_output: object, text: str) -> dict | None:
-    """Wrap *text* in the object shape Claude Code requires for a Read.
-
-    ``updatedToolOutput`` is validated against the schema of the tool being
-    replaced, not against a common one. Read's is
-    ``{"type": "text", "file": {"filePath", "content", "numLines",
-    "startLine", "totalLines"}}``, and handing it a bare string is rejected
-    with ``does not match Read's output shape`` — after which the *original*
-    output goes to the agent while the hook still records a served row. That
-    failure is invisible from inside the hook (exit 0, no stderr), which is
-    why this builds from the payload's own ``tool_response`` rather than
-    constructing the envelope from scratch: unknown or future keys are
-    carried through untouched and only ``content`` and the line counts move.
-
-    Returns None when the payload is not the shape we think it is, which
-    degrades to no replacement rather than to a rejected one.
-    """
-    if not isinstance(tool_output, dict):
-        return None
-    file_block = tool_output.get("file")
-    if not isinstance(file_block, dict) or "content" not in file_block:
-        return None
-    lines = text.count("\n") + (0 if text.endswith("\n") else 1)
-    updated_file = {**file_block, "content": text, "numLines": lines, "startLine": 1}
-    return {**tool_output, "file": updated_file}
 
 
 #: The elision marker ``_render`` in distill.skeleton emits: indent, then
@@ -343,31 +244,3 @@ def _indexed_symbols(db_path: Path, rel: str) -> list[SkeletonSymbol]:
         for name, kind, start, end, signature in rows
         if isinstance(start, int) and isinstance(end, int) and start > 0
     ]
-
-
-# ---------------------------------------------------------------------------
-# Savings ledger
-# ---------------------------------------------------------------------------
-
-
-def record_forgone(repo_path: Path, replacement: Replacement) -> None:
-    """Record a saving this repo *would* have made, had the feature been on."""
-    _record_forgone(
-        repo_path,
-        source=_SAVINGS_SOURCE,
-        path=replacement.rel,
-        raw_tokens=replacement.full_tokens,
-        distilled_tokens=replacement.skeleton_tokens,
-    )
-
-
-def record_saving(repo_path: Path, replacement: Replacement) -> None:
-    """Bill this replacement to the savings ledger so ``repowise saved`` sees it."""
-    _record_saving(
-        repo_path,
-        source=_SAVINGS_SOURCE,
-        filter_name=_SAVINGS_FILTER,
-        command=replacement.rel,
-        raw_tokens=replacement.full_tokens,
-        distilled_tokens=replacement.skeleton_tokens,
-    )

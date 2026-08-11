@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option, notice_console
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -74,6 +75,7 @@ def _parse_date(value: str | None) -> datetime | None:
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
+@format_option()
 def costs_command(
     path: str | None,
     since: str | None,
@@ -82,6 +84,7 @@ def costs_command(
     repo_alias: str | None,
     show_all: bool,
     no_workspace: bool,
+    fmt: str,
 ) -> None:
     """Show LLM cost history for a repository.
 
@@ -90,6 +93,8 @@ def costs_command(
     In workspace mode, defaults to the primary repo; pass --repo <alias>
     for a specific one or --all to sum across every repo.
     """
+    notices = notice_console(fmt)
+
     # Support both positional PATH and --repo-path flag
     raw_path = path or repo_path_flag
 
@@ -98,7 +103,12 @@ def costs_command(
         no_workspace_flag=no_workspace,
         repo_alias=repo_alias,
     )
-    target.notice(console, command="costs")
+    target.notice(notices, command="costs")
+
+    # Parsed before the early returns below so ``since`` has one type in every
+    # json payload: an ISO string normalised by the parser, never the raw
+    # argument on one path and the normalised form on another.
+    since_dt = _parse_date(since)
 
     # Resolve which repo paths to query
     repo_paths: list[Path] = []
@@ -126,15 +136,22 @@ def costs_command(
     # would just return an empty result and confuse the user.
     valid_paths = [p for p in repo_paths if (p / ".repowise").is_dir()]
     if not valid_paths:
-        console.print("[yellow]No indexed .repowise/ directory found. Run 'repowise init' first.[/yellow]")
+        notices.print(
+            "[yellow]No indexed .repowise/ directory found. Run 'repowise init' first.[/yellow]"
+        )
+        if fmt == "json":
+            emit_json(
+                {
+                    "group_by": group_by,
+                    "since": since_dt.isoformat() if since_dt else None,
+                    "repos": [],
+                    "rows": [],
+                }
+            )
         return
     if len(valid_paths) < len(repo_paths):
         missing = [p.name for p in repo_paths if p not in valid_paths]
-        console.print(
-            f"[yellow]Skipping unindexed repos: {', '.join(missing)}[/yellow]"
-        )
-
-    since_dt = _parse_date(since)
+        notices.print(f"[yellow]Skipping unindexed repos: {', '.join(missing)}[/yellow]")
 
     # Aggregate cost rows across every selected repo. For single-repo this
     # is the original behavior; for --all it sums per group across repos.
@@ -165,6 +182,23 @@ def costs_command(
                 m["output_tokens"] += row.get("output_tokens", 0)
                 m["cost_usd"] += row.get("cost_usd", 0.0)
         rows = sorted(merged.values(), key=lambda r: r["cost_usd"], reverse=True)
+
+    if fmt == "json":
+        emit_json(
+            {
+                "group_by": group_by,
+                "since": since_dt.isoformat() if since_dt else None,
+                "repos": [str(p) for p in valid_paths],
+                "rows": rows,
+                "totals": {
+                    "calls": sum(r["calls"] for r in rows),
+                    "input_tokens": sum(r["input_tokens"] for r in rows),
+                    "output_tokens": sum(r["output_tokens"] for r in rows),
+                    "cost_usd": sum(r["cost_usd"] for r in rows),
+                },
+            }
+        )
+        return
 
     if not rows:
         msg = "No cost records found"

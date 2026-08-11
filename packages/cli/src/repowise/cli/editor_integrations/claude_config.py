@@ -209,17 +209,31 @@ def enable_tool_search_in_claude_code() -> Path | None:
 
 # Current augment PostToolUse matcher. Read/Edit/Write power the distill
 # read-intelligence layer (skeleton replacement + per-file stale-read notices);
-# PowerShell is the Windows Claude Code shell tool (same payload shape as
-# Bash); the mcp__ pattern feeds the read-after-served ledger (read_enrich)
-# and matches the repowise MCP server under any registration name (local,
-# plugin, hosted "Repowise"); legacy installs with the narrower matchers
-# below are widened in place.
-_AUGMENT_MATCHER = "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
+# the mcp__ pattern feeds the read-after-served ledger (read_enrich) and
+# matches the repowise MCP server under any registration name (local, plugin,
+# hosted "Repowise"). Installs carrying any matcher below are rewritten to this
+# one in place, which is how both a widening and a narrowing reach an existing
+# machine without a re-init.
+#
+# Bash and PowerShell are deliberately absent, on measurement: across one 287
+# session corpus they were 51% of hook invocations and 0.7% of emissions, the
+# emissions being a post-commit staleness reminder. The cost is process start,
+# paid before repowise reads the payload, so no gate inside the handler can
+# avoid it — the only lever is the matcher. Shell commands were also paying it
+# twice, here and again for the ``repowise-rewrite`` PreToolUse hook.
+# SessionStart already carries the freshness line, so what is given up is a
+# mid-session commit going unflagged until the next session.
+#
+# Claude Code only. ``_handle_bash_post`` stays in the augment dispatcher:
+# Codex has no Read/Grep/Glob tools and no SessionStart block, so the shell is
+# the only surface a hook can reach it on.
+_AUGMENT_MATCHER = "Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
 _LEGACY_AUGMENT_MATCHERS = (
     "Bash",
     "Bash|Grep|Glob",
     "Bash|Grep|Glob|Read|Edit|Write",
     "Bash|PowerShell|Grep|Glob|Read|Edit|Write",
+    "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*",
 )
 
 # SessionStart emits the live index-freshness / trust context block. `compact`

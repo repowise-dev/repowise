@@ -21,7 +21,6 @@ def _make_config(**overrides: Any) -> GenerationConfig:
     defaults = {
         "token_budget": 4000,
         "max_concurrency": 2,
-        "large_file_source_pct": 0.5,
     }
     defaults.update(overrides)
     return GenerationConfig(**defaults)
@@ -340,7 +339,6 @@ class TestFilePageTemplate:
             symbols=[],
             imports=[],
             exports=[],
-            file_source_snippet="",
             pagerank_score=0.0,
             betweenness_score=0.0,
             community_id=0,
@@ -367,7 +365,6 @@ class TestFilePageTemplate:
             symbols=[],
             imports=[],
             exports=[],
-            file_source_snippet="",
             pagerank_score=0.0,
             betweenness_score=0.0,
             community_id=0,

@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS injections (
     duration_ms INTEGER NOT NULL DEFAULT 0,
     acted INTEGER NOT NULL DEFAULT 0,
     verdict TEXT NOT NULL DEFAULT '',
+    build TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_raw_pending ON raw_candidates(structured_key)
@@ -122,6 +123,11 @@ INJECTIONS_LEDGER_COLUMNS = (
     # for a row judged on some other surface, not yet judged, or evaluated
     # before this column existed. See :meth:`decision_feedback_totals`.
     ("verdict", "TEXT NOT NULL DEFAULT ''"),
+    # Which repowise build emitted the row ("<version>+<install digest>"); see
+    # ``repowise.cli.hook_ledger.emitting_build``. Empty on every row written
+    # before this column existed, and that emptiness is the point: those are
+    # exactly the rows whose attribution cannot be recovered.
+    ("build", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -511,6 +517,50 @@ class SessionStagingStore:
                 "duration_ms_total": r[7] or 0,
                 "duration_ms_count": r[8] or 0,
             }
+            for r in rows
+        ]
+
+    def rewrite_run_totals(self) -> list[dict[str, Any]]:
+        """What the PreToolUse rewrite hook did, per outcome and reason.
+
+        The rewrite hook's only instrument. An ``updatedInput`` rewrite never
+        appears in a transcript and neither does a passthrough, so before these
+        rows the busiest hook surface reported nothing at all and its bail
+        distribution was inference.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT outcome, reason, SUM(calls), COUNT(DISTINCT session_id), SUM(total_ms) "
+                "FROM rewrite_runs GROUP BY outcome, reason ORDER BY SUM(calls) DESC"
+            ).fetchall()
+        except sqlite3.Error:
+            return []  # sidecar predates the table: no rewrite rows, not an error
+        return [
+            {
+                "outcome": r[0],
+                "reason": r[1],
+                "calls": r[2] or 0,
+                "sessions": r[3] or 0,
+                "total_ms": r[4] or 0,
+            }
+            for r in rows
+        ]
+
+    def injection_builds(self) -> list[dict[str, Any]]:
+        """Which repowise builds emitted the rows in this ledger, busiest first.
+
+        More than one live build here means two installs are emitting into the
+        same repo, and the rows above them are not one population: a surface
+        deleted in one install can still be firing from the other. Rows written
+        before the ``build`` column are grouped under ``""`` and labelled as
+        unattributable rather than folded into whichever build is current.
+        """
+        rows = self._conn.execute(
+            "SELECT build, COUNT(*), COUNT(DISTINCT session_id), MAX(shown_at) "
+            "FROM injections GROUP BY build ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        return [
+            {"build": r[0] or "", "firings": r[1], "sessions": r[2], "last_seen": r[3] or 0.0}
             for r in rows
         ]
 

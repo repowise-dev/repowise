@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 
 async def authorize_job_stream(
+    request: Request,
     job_id: str,
     token: str | None = Query(None),
     auth: str | None = Security(_header_scheme),
@@ -41,7 +42,7 @@ async def authorize_job_stream(
     embeds and is signed over that id), so it can't be replayed against another
     job. A bearer key still works, so non-browser clients are unaffected.
     """
-    if auth_is_open():
+    if auth_is_open(request):
         return
     if bearer_is_valid(auth):
         return

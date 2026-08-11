@@ -245,7 +245,12 @@ The returned report rides on `PipelineResult.health_report`. Then
 `core/pipeline/persist.py` writes it in one session: `save_health_metrics`,
 `save_health_findings` (only when there are findings), and a
 `save_health_snapshot` carrying the three KPIs plus a `{path: score}` map for
-trend tracking (rolling 50-row window per repo).
+trend tracking (rolling 50-row window per repo), and a second
+`{path: total_deduction}` map covering only the files whose score is held at
+the floor. Both maps come from `trends.snapshot_file_maps`, which the other two
+snapshot writers (`repowise health` and `repowise upgrade`) also call — a repo
+whose writers disagreed would get a history whose depth changed depending on
+which command last wrote it.
 
 ---
 
@@ -563,6 +568,23 @@ so the same window yields a single file's score-over-time series:
 Both are state-free; the server serialises `FileTrend` via
 `_file_trend_to_dict` and embeds it in the file-detail health block, the
 health-breakdown response, and the standalone trend route (§13).
+
+#### Below the floor
+
+The stored score is clamped to `[SCORE_FLOOR, SCORE_MAX]`, so files 12.9 and
+9.1 points deep both persist as `1.0` and their series is flat however much of
+the work gets done. The second snapshot map (`per_file_deductions_json`) keeps
+the pre-clamp deduction for exactly those files — for every other file the
+deduction is `SCORE_MAX - score`, so there is nothing to store.
+
+Each point therefore carries `unclamped_score` alongside `score`:
+`SCORE_MAX - deduction` where the snapshot recorded one, and `score` otherwise.
+It is the series `_file_declining` runs on, so `declining` describes the line
+that can actually move, and a file getting worse *below* the floor now trips it.
+
+Snapshots written before this existed have no deduction map. Their floored
+files stay flat, which is correct — the depth was never measured, and inventing
+one would be worse than a flat line.
 
 ### Per-file signals (`signals.py`)
 

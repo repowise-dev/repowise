@@ -21,12 +21,12 @@ function extractMethodPlanFixture(overrides: Partial<RefactoringPlan> = {}): Ref
       span: { start: 30, end: 48 },
       params: ["records", "threshold"],
       returns: ["average"],
-      suggested_name: null,
+      suggested_name: "compute_average",
     },
     evidence: { slice_nloc: 19, ccn_removed: 4 },
     impact_delta: 1.5,
     effort_bucket: "M",
-    blast_radius: { callers_count: 0 },
+    blast_radius: { scope: "local" },
     confidence: "high",
     source_biomarker: "complex_method",
     rank_score: 2.1,
@@ -40,6 +40,18 @@ describe("extract_method plan accessors", () => {
     expect(em.span).toEqual({ start: 30, end: 48 });
     expect(em.params).toEqual(["records", "threshold"]);
     expect(em.returns).toEqual(["average"]);
+    expect(em.suggested_name).toBe("compute_average");
+  });
+
+  it("still degrades to null for a plan stored before names were computed", () => {
+    // Every extract_method plan written before the backend computed a name has
+    // `suggested_name: null`; the accessor must keep normalising it so the
+    // render fallbacks below stay reachable for those rows.
+    const em = extractMethodPlan(
+      extractMethodPlanFixture({
+        plan: { span: { start: 30, end: 48 }, params: [], returns: [], suggested_name: null },
+      }),
+    );
     expect(em.suggested_name).toBeNull();
   });
 

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -13,6 +14,7 @@ from typing import Any, Literal, TypeVar
 import click
 from rich.console import Console
 
+from repowise.cli.output import resolve_console_width
 from repowise.core.reasoning import (
     ReasoningMode,
 )
@@ -43,8 +45,11 @@ from repowise.core.update_lock import (
 
 T = TypeVar("T")
 
-console = Console()
-err_console = Console(stderr=True)
+# Width is pinned only when the stream is not a terminal — see
+# `output.resolve_console_width`. Without it rich renders a pipe at 80 columns
+# and ellipsises the very paths an agent needs to act on.
+console = Console(width=resolve_console_width(sys.stdout))
+err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
 
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
@@ -180,6 +185,17 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     from repowise.core.persistence.database import resolve_db_url
 
     return resolve_db_url(repo_path)
+
+
+def db_configured() -> bool:
+    """True when ``REPOWISE_DB_URL`` or ``REPOWISE_DATABASE_URL`` is set.
+
+    The DB may still be the repo-local ``wiki.db`` default — the file
+    existence check the callers pair this with decides that.
+    """
+    from repowise.core.persistence import get_configured_db_url
+
+    return get_configured_db_url() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +497,28 @@ def get_head_commit(repo_path: Path) -> str | None:
     from repowise.core.workspace.update import get_head_commit as _core_head
 
     return _core_head(Path(repo_path))
+
+
+def head_commit_ts(repo_path: Path) -> float | None:
+    """Committer timestamp of the repo's HEAD, or None when git is unavailable.
+
+    Anchors the periodic idle-file health re-score gate (#728) to repo time
+    rather than wall clock, so the cadence is deterministic under
+    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+
+    Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
+    the same units the gate reads it back in.
+    """
+    try:
+        import git
+
+        repo = git.Repo(repo_path, search_parent_directories=True)
+        try:
+            return float(repo.head.commit.committed_date)
+        finally:
+            repo.close()
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

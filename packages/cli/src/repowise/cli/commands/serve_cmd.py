@@ -490,17 +490,23 @@ def _start_frontend(
     backend_port: int,
     frontend_port: int,
     local_web: Path | None = None,
+    host: str = "127.0.0.1",
 ) -> subprocess.Popen | None:
     """Start the Next.js frontend server. Returns the process or None.
 
     If ``local_web`` is provided, the local monorepo build is used as Option 1.
     Pass ``None`` to skip the local build (e.g. when it's stale or refresh was
     forced) and use only the cached tarball at ``~/.repowise/web``.
+
+    ``host`` is the API's bind address, and the UI takes the same one. The UI
+    rewrites ``/api/*`` to the API on loopback (packages/web/src/middleware.ts),
+    so a UI on the wildcard while the API is loopback-only handed the whole API
+    to the network through the proxy, with every request looking local.
     """
     env = {
         **os.environ,
         "REPOWISE_API_URL": f"http://localhost:{backend_port}",
-        "HOSTNAME": "0.0.0.0",
+        "HOSTNAME": host,
         "PORT": str(frontend_port),
     }
 
@@ -596,6 +602,18 @@ def serve_command(
             os.environ["REPOWISE_DB_URL"] = f"sqlite+aiosqlite:///{local_db.as_posix()}"
             console.print(f"[dim]Using local database: {local_db}[/dim]")
 
+    # The server reads REPOWISE_HOST to describe its own bind. Nothing used to
+    # set it from --host, so `serve --host 0.0.0.0` left the auth layer
+    # believing it was loopback-only. Set before the app is imported (uvicorn
+    # imports the factory below, and workers inherit the environment).
+    os.environ["REPOWISE_HOST"] = host
+    if not os.environ.get("REPOWISE_API_KEY") and host not in ("127.0.0.1", "localhost", "::1"):
+        console.print(
+            f"[yellow]Binding to {host} without REPOWISE_API_KEY: non-local requests "
+            f"will be refused.[/yellow]\n"
+            "[dim]Set REPOWISE_API_KEY to allow them, or bind to 127.0.0.1.[/dim]"
+        )
+
     # Resolve a usable API port up front — uvicorn would otherwise crash later
     # with a bare OSError, and the chosen port needs to flow into the frontend
     # via REPOWISE_API_URL.
@@ -604,9 +622,9 @@ def serve_command(
     frontend_proc: subprocess.Popen | None = None
 
     if not no_ui:
-        # The Next.js server binds to 0.0.0.0 (see HOSTNAME below), so probe
-        # there — a port can be free on 127.0.0.1 but taken on the wildcard.
-        ui_port = _find_free_port("0.0.0.0", ui_port, "web UI")
+        # The Next.js server takes the same bind as the API (see HOSTNAME
+        # below), so probe there.
+        ui_port = _find_free_port(host, ui_port, "web UI")
 
         node = _node_available()
         npm = _npm_available()
@@ -669,7 +687,9 @@ def serve_command(
                 ready = _download_web(__version__)
 
             if ready:
-                frontend_proc = _start_frontend(node, port, ui_port, local_web=local_web)
+                frontend_proc = _start_frontend(
+                    node, port, ui_port, local_web=local_web, host=host
+                )
                 if frontend_proc:
                     console.print(f"[green]Web UI starting on http://localhost:{ui_port}[/green]")
                 else:

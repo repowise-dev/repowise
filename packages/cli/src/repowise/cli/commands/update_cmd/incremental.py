@@ -147,6 +147,17 @@ def _refresh_knowledge_graph(
     )
 
 
+def _load_stored_git_meta(repo_path: Any) -> dict[str, dict]:
+    """Persisted per-file git fields for the dead-code analyzer.
+
+    Delegates to :mod:`repowise.core.pipeline.incremental`. Best-effort: an
+    unreadable store yields ``{}``.
+    """
+    from repowise.core.pipeline.incremental import load_stored_git_meta
+
+    return run_async(load_stored_git_meta(repo_path, log=console.print))
+
+
 def _run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -154,8 +165,9 @@ def _run_partial_analysis(
     parsed_files: list,
     file_diffs: list,
     source_map: dict[str, bytes] | None = None,
+    stored_git_meta: dict[str, dict] | None = None,
 ) -> tuple[Any, Any]:
-    """Run partial code-health + dead-code analysis for the changed files.
+    """Run partial code-health + repo-wide dead-code analysis.
 
     Delegates to :mod:`repowise.core.pipeline.incremental` — the logic moved
     to core so workspace updates can reuse the incremental path.
@@ -172,5 +184,6 @@ def _run_partial_analysis(
         parsed_files,
         file_diffs,
         source_map=source_map,
+        stored_git_meta=stored_git_meta,
         log=console.print,
     )

@@ -921,6 +921,33 @@ class TestExactMatchSignal:
         result = await search_codebase("authentication flow for the service")
         assert "exact_match" not in result
 
+    @pytest.mark.asyncio
+    async def test_path_search_gets_no_exact_symbol_signal(self, setup_mcp):
+        """A path query names no identifier, so there is no symbol to be exact
+        about.
+
+        Regression: the response builder computed the query's identifiers into
+        ``candidates`` and then rebound the same name with the *file*
+        candidates, so this signal's gate became "there are results at all" and
+        a path search was told that no symbol matched it.
+        """
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("service.py", mode="path")
+        assert result["results"], "the path search should have found something"
+        assert "exact_match" not in result
+        assert "note" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_fuzzy_note_quotes_the_query_not_the_file_list(self, setup_mcp):
+        """Same regression from the other side: the note names what the caller
+        asked after, and the rebind made it name file paths instead."""
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("AuthServiceXyz", mode="symbol")
+        assert "'AuthServiceXyz'" in result["note"]
+        assert "'path'" not in result["note"]
+
 
 class TestFusion:
     """search_codebase fuses FTS + vector via RRF, tagging each hit's sources.

@@ -21,7 +21,7 @@ crashes or blocks your agent.
 |------|--------|--------------|----------|--------------|
 | **Post-commit auto-sync** | git | `repowise hook install` (or the `repowise init` prompt) | every `git commit` | Runs `repowise update` in the background so the wiki tracks your code |
 | **SessionStart context** | Claude Code | `repowise init` | session `startup` / `resume` / `clear` | Live index-freshness line, core-tool trust rule, and the standing decisions relevant to this session |
-| **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / `Bash` / `PowerShell` / repowise MCP calls | Graph context on searches, git/edit freshness, read-intelligence notices, and edit-time "governed by" decision notices |
+| **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read-intelligence notices, and edit-time "governed by" decision notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a `Read` / `Edit` / `Write` / `Grep` / `Glob` / `NotebookEdit` that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`; auto-allowed by default, set `permission: ask` to approve each one |
 | **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / UserPromptSubmit / edit / Bash | Reminds Codex to use the MCP tools and flags stale context after edits |
@@ -97,8 +97,7 @@ competes at a flat base relevance.
 ### PostToolUse, enrichment on every tool call
 
 One hook covers several jobs, matched on
-`Grep`, `Glob`, `Read`, `Edit`, `Write`, `Bash`, `PowerShell`, and repowise MCP
-calls:
+`Grep`, `Glob`, `Read`, `Edit`, `Write`, and repowise MCP calls:
 
 **Grep/Glob enrichment.** When Claude Code runs a broad or zero-result search,
 repowise appends focused context pulled straight from `wiki.db`:
@@ -142,11 +141,6 @@ and Claude Code renders those results without a path prefix, so they are not
 parsed as a multi-file flood in the first place. And `files_with_matches` results
 carry no match text to replace: the file list is already a digest.
 
-**Git/edit freshness.** After a successful `git commit`, `merge`, `rebase`,
-`cherry-pick`, or `pull`, repowise compares `HEAD` against the last indexed commit
-in `.repowise/state.json` and, if the wiki is behind, reminds the agent to run
-`repowise update` so it never silently works from outdated docs.
-
 **Read-intelligence.** On `Read` of an indexed file, repowise emits a per-file
 stale-read notice when the file changed after the session's previous read of it,
 and points at the cheaper `get_context(..., include=["skeleton"])` for
@@ -170,6 +164,36 @@ One consequence is worth knowing: a Read the agent saw only as a skeleton still
 satisfies Claude Code's read-before-edit precondition, so an `Edit` (especially
 with `replace_all`) or a `Write` could touch bodies it never saw. Editing such a
 file raises a one-line warning, once per file, until the file is read in full.
+
+**Re-reads of unchanged files.** With `hooks.read_reread: true` — same consent,
+toggled afterwards with `repowise hook read-reread install | uninstall |
+status` — a `Read` of a file the session already read comes back as a short
+notice naming that earlier read, instead of the content. The content is already
+in context a few tool calls up, so sending it twice buys nothing.
+
+The gate is arithmetic rather than a judgement: the same range must have been
+served, no `Edit` or `Write` may have come between, and the bytes must hash the
+same. When they do not, the agent gets the file *and* a line saying it changed
+on disk without an edit in this session — a `git checkout`, a formatter, another
+agent. That is worth more than the bytes were, because nothing else in the
+session can discover it.
+
+Two rules bound how wrong this can be. It is **never applied twice in a row for
+the same file**, so if a context compaction dropped the earlier copy, one more
+Read always returns the content; the notice says exactly that. And a Read that
+any surface replaced records no content observation at all, so the agent is
+never told it already has bytes that a skeleton stood in for. Savings appear
+under the `read_reread` filter, and a repo with it off still gets the
+counterfactual.
+
+**Searches that time out.** On Windows a `Glob` can exhaust ripgrep's 20-second
+budget and return nothing at all — not "no matches", nothing, after twenty
+seconds of waiting. A glob is a path query and the index already holds every
+path, so repowise answers it offline at the moment the failure happens, naming
+the matching paths and counting any it did not list. The win here is wall clock
+rather than tokens. Brace expansion (`{a,b}`) is declined rather than
+half-matched, and zero indexed matches stays silent: the index having nothing to
+say is not the tree having no such file.
 
 **Edit-time "governed by" decisions.** When the agent edits a file governed by an
 architectural decision (via `decision_node_links`), it gets a one-line notice
@@ -260,9 +284,16 @@ not touch your global `~/.codex/config.toml`):
 - **SessionStart / UserPromptSubmit** → a short developer note reminding Codex to
   use the repowise MCP tools for architecture, search, risk, decisions, and
   dead-code analysis.
-- **PostToolUse** (`Bash`, `apply_patch` / `Edit` / `Write`) → flags that indexed
-  context may be stale after edits or git operations, pointing at `repowise
-  update`.
+- **PostToolUse** (the shell tool, and `apply_patch` / `Edit` / `Write`) → after
+  a successful `git commit`, `merge`, `rebase`, `cherry-pick` or `pull`, compares
+  `HEAD` against the last indexed commit and flags that indexed context may be
+  stale, pointing at `repowise update`.
+
+Codex names its shell tool `shell_command` on current releases and `Bash` on
+older ones, so the matcher covers both. The Claude Code hook deliberately does
+*not* watch shell commands: it has `Read` / `Grep` / `Glob` tools and a
+SessionStart freshness line, so the shell adds cost without adding reach. Codex
+has neither, which is why it keeps the surface.
 
 Full Codex setup: [CODEX.md](CODEX.md).
 
@@ -302,7 +333,7 @@ and `.codex/hooks.json` (Codex when `--codex` is passed):
 | Client | Hook type | Matcher | Command |
 |--------|-----------|---------|---------|
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` [^guard] |
-| Claude Code | `PostToolUse` | `Bash\|PowerShell\|Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` [^guard] |
+| Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` [^guard] |
 | Claude Code | `PreToolUse` (opt-in) | `Bash\|PowerShell` | `repowise-rewrite` |
 | Codex | `SessionStart` / `UserPromptSubmit` | lifecycle | context reminder |
 | Codex | `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | staleness check |

@@ -18,13 +18,24 @@ from ..models import (
     GraphNodeMembership,
     _new_uuid,
 )
-from ._shared import _BATCH_SIZE, _batch_upsert_keyed
+from ._shared import _BATCH_SIZE, UpsertGate, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # Graph CRUD (batch)
 # ---------------------------------------------------------------------------
 
 _METRIC_FIELDS = ("pagerank", "betweenness", "community_id", "in_degree", "out_degree")
+
+# Absolute tolerance for the centrality columns' skip test. The observed
+# process-to-process spread on an unchanged repo is ~1e-17 (bench probe
+# `probe_graph_determinism.py --cmp`), so this sits five orders above the
+# noise it exists to absorb and six below the smallest difference any reader
+# of these columns can act on — the rankings they feed are read as an order,
+# and no two distinct files sit 1e-12 apart in it. A backend that stored these
+# at lower precision than the payload computes them would push every row past
+# the tolerance and write it, which is today's behaviour, not a wrong one.
+_CENTRALITY_ATOL = 1e-12
+_CENTRALITY_COLUMNS = frozenset({"pagerank", "betweenness"})
 
 
 def _update_graph_node(existing: GraphNode, node_data: dict) -> None:
@@ -33,10 +44,48 @@ def _update_graph_node(existing: GraphNode, node_data: dict) -> None:
             setattr(existing, key, val)
 
 
+# Every column ``_update_graph_node`` can write from a node payload. A payload
+# field missing here turns the gate off for that node rather than skipping it
+# (see UpsertGate), so adding a field to persist_graph_nodes without adding it
+# here costs a write, never a lost one. The direction that is NOT self-healing
+# is the reverse: an update_fn that writes something the payload does not carry
+# (a timestamp, a counter) would be skipped along with the row, so keep these
+# three update_fns strictly payload-driven.
+_NODE_FIELDS = (
+    "node_type",
+    "language",
+    "symbol_count",
+    "has_error",
+    "is_test",
+    "is_entry_point",
+    "pagerank",
+    "betweenness",
+    "community_id",
+    "community_meta_json",
+    "kind",
+    "name",
+    "qualified_name",
+    "file_path",
+    "start_line",
+    "end_line",
+    "visibility",
+    "signature",
+    "parent_symbol_id",
+)
+
+
+def _node_gate_values(node_data: dict) -> dict:
+    return {k: v for k, v in node_data.items() if k != "node_id"}
+
+
 def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     imported = edge_data.get("imported_names_json")
     if imported is not None:
         existing.imported_names_json = imported
+    # Assigned unconditionally, including None: an edge that stops being
+    # cohesion (a real import statement appears between two package siblings)
+    # must lose the stamp, or cycle detection keeps skipping it forever.
+    existing.hint_source = edge_data.get("hint_source")
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
@@ -53,6 +102,9 @@ def _update_graph_metric(existing: GraphMetric, m: dict) -> None:
 
 
 _MEMBERSHIP_FIELDS = ("node_type", "scc_id", "scc_size", "symbol_community_id")
+
+# Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
+_MEMBERSHIP_PRUNE_CHUNK = 500
 
 
 def _update_graph_node_membership(existing: GraphNodeMembership, m: dict) -> None:
@@ -72,6 +124,11 @@ async def batch_upsert_graph_nodes(
     (excluding id and repository_id which are set here).
 
     Uses SELECT-then-INSERT/UPDATE for dialect portability.
+
+    *nodes* is a full snapshot of the repo's graph on every call, including the
+    incremental update path, where a one-file change leaves the overwhelming
+    majority of it identical. The gate skips those rows before they are
+    hydrated as ORM objects.
     """
     await _batch_upsert_keyed(
         session,
@@ -81,6 +138,13 @@ async def batch_upsert_graph_nodes(
         item_key_fn=lambda n: n.get("node_id", ""),
         row_key_fn=lambda row: row.node_id,
         update_fn=_update_graph_node,
+        gate=UpsertGate(
+            key_column=GraphNode.node_id,
+            columns=_NODE_FIELDS,
+            item_values_fn=_node_gate_values,
+            float_columns=_CENTRALITY_COLUMNS,
+            float_atol=_CENTRALITY_ATOL,
+        ),
         insert_fn=lambda n: GraphNode(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -122,6 +186,7 @@ async def batch_upsert_graph_edges(
             imported_names_json=e.get("imported_names_json", "[]"),
             edge_type=e.get("edge_type", "imports"),
             confidence=e.get("confidence", 1.0),
+            hint_source=e.get("hint_source"),
         ),
     )
 
@@ -214,6 +279,7 @@ async def reconcile_edges_for_files(
                 imported_names_json=e.get("imported_names_json", "[]"),
                 edge_type=e.get("edge_type", "imports"),
                 confidence=e.get("confidence", 1.0),
+                hint_source=e.get("hint_source"),
             )
         )
     await session.flush()
@@ -241,6 +307,13 @@ async def batch_upsert_graph_metrics(
         item_key_fn=lambda kv: kv[0],
         row_key_fn=lambda row: row.node_id,
         update_fn=lambda existing, kv: _update_graph_metric(existing, kv[1]),
+        gate=UpsertGate(
+            key_column=GraphMetric.node_id,
+            columns=_METRIC_FIELDS,
+            item_values_fn=lambda kv: {k: v for k, v in kv[1].items() if k in _METRIC_FIELDS},
+            float_columns=_CENTRALITY_COLUMNS,
+            float_atol=_CENTRALITY_ATOL,
+        ),
         insert_fn=lambda kv: GraphMetric(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -265,7 +338,37 @@ async def batch_upsert_graph_node_membership(
     ``scc_id`` / ``scc_size`` (file nodes in a size>=2 cycle) /
     ``symbol_community_id`` (symbol nodes). Additive to ``graph_nodes``;
     SELECT-then-write for dialect portability (SQLite + Postgres).
+
+    The snapshot is a full recomputation, so absence is meaningful: a node the
+    caller did not send is a node that is no longer in any cycle or community.
+    Rows for absent nodes are therefore deleted rather than left behind. Without
+    that, a pure upsert let a file that dropped out of a cycle keep its old
+    ``scc_id`` / ``scc_size`` forever, and the Stats "largest cycle" record and
+    ``get_scc_members`` both read exactly those rows — so a fixed cycle stayed
+    on screen indefinitely.
     """
+    current = set(membership)
+    # The stale scan already has to walk every row this repo owns, so it reads
+    # the comparison columns at the same time and hands them to the gate. A
+    # second narrow scan measured slower than the writes it was saving on a
+    # snapshot where most rows genuinely moved.
+    existing_rows = (
+        await session.execute(
+            select(
+                GraphNodeMembership.node_id,
+                *[getattr(GraphNodeMembership, c) for c in _MEMBERSHIP_FIELDS],
+            ).where(GraphNodeMembership.repository_id == repository_id)
+        )
+    ).all()
+    stale = [row[0] for row in existing_rows if row[0] not in current]
+    for i in range(0, len(stale), _MEMBERSHIP_PRUNE_CHUNK):
+        await session.execute(
+            delete(GraphNodeMembership).where(
+                GraphNodeMembership.repository_id == repository_id,
+                GraphNodeMembership.node_id.in_(stale[i : i + _MEMBERSHIP_PRUNE_CHUNK]),
+            )
+        )
+
     await _batch_upsert_keyed(
         session,
         GraphNodeMembership,
@@ -274,6 +377,18 @@ async def batch_upsert_graph_node_membership(
         item_key_fn=lambda kv: kv[0],
         row_key_fn=lambda row: row.node_id,
         update_fn=lambda existing, kv: _update_graph_node_membership(existing, kv[1]),
+        gate=UpsertGate(
+            key_column=GraphNodeMembership.node_id,
+            columns=_MEMBERSHIP_FIELDS,
+            item_values_fn=lambda kv: {
+                k: v for k, v in kv[1].items() if k in _MEMBERSHIP_FIELDS
+            },
+            # Pruned keys are excluded: their rows are gone by the time the
+            # upsert runs, and a snapshot never sends a key it just pruned.
+            prefetched={
+                row[0]: row[1:] for row in existing_rows if row[0] in current
+            },
+        ),
         insert_fn=lambda kv: GraphNodeMembership(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -397,6 +512,7 @@ async def get_all_graph_edges(
                 "edge_type": row.edge_type,
                 "confidence": row.confidence,
                 "imported_names": imported_names,
+                "hint_source": row.hint_source,
             }
         )
     return edges
@@ -492,6 +608,42 @@ async def get_graph_nodes_by_ids(
         for node in result.scalars().all():
             out[node.node_id] = node
     return out
+
+
+async def get_test_file_paths(
+    session: AsyncSession,
+    repository_id: str,
+) -> set[str]:
+    """Relative paths of every file the ingester classified as test material.
+
+    Reads the flag ingestion already decided per file (#1103 made ``is_test``
+    the single canonical answer to "is this a test"). For a file node
+    ``node_id`` *is* the repo-relative path, so the result joins straight onto
+    ``HealthFileMetric.file_path`` / ``HealthFinding.file_path`` with no
+    denormalized column and no migration.
+
+    ``node_type == "file"`` is required, not incidental: symbol nodes carry
+    ``is_test`` too and their ``node_id`` is a ``"<path>::<name>"`` composite,
+    which would never match a file path but would inflate the read.
+
+    Narrow in columns, not in rows — no index covers ``node_type`` or
+    ``is_test``, so this scans the repo's nodes (~55 ms on a 35k-node index).
+    A caller serializing no file row and no finding should skip it.
+
+    Degrades to "nothing is test material" when the graph is missing or lags
+    the health pass. That is the safe direction: a caller sees the unsplit
+    world it saw before, never a production file mislabelled as a test.
+    Censused on this repo's index — 1,030 test file nodes, none of them absent
+    from ``health_file_metrics``.
+    """
+    result = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+            GraphNode.is_test.is_(True),
+        )
+    )
+    return {row[0] for row in result.all()}
 
 
 async def get_community_members(

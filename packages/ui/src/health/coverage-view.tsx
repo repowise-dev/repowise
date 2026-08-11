@@ -122,6 +122,9 @@ function CoverageBody({
   onGeneratePrompt: (row: CoverageFilePromptInput) => void;
 }) {
   const { summary, files, modules } = data;
+  // The true count, not the length of what came back. They differ only if the
+  // rollup was capped, but the lede claims to describe the repo.
+  const moduleCount = data.modules_total ?? modules.length;
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState<string>("line_coverage_pct");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
@@ -359,7 +362,7 @@ function CoverageBody({
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
-      <CoverageLede summary={summary} files={files} moduleCount={modules.length} />
+      <CoverageLede summary={summary} files={files} moduleCount={moduleCount} />
 
       <OverviewSection
         title="Health against coverage"

@@ -41,6 +41,9 @@ _FILE_MISSING = re.compile(r"(?:^|\n)File does not exist\.")
 #: has already been said and saying it again is worse than silence.
 _ALREADY_SUGGESTED = re.compile(r"Did you mean ", re.IGNORECASE)
 
+#: The tools whose failure can be a timed-out search rather than a bad path.
+_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+
 
 def _failed_path(tool_input: dict, error_text: str) -> str:
     """The path the tool tried and did not find, or "" if this is not that."""
@@ -160,18 +163,29 @@ def _handle_tool_failure(
     *,
     session_id: str = "",
 ) -> HookResult:
-    """Point a path-not-found failure at the file the index says it meant."""
+    """Answer a failed tool call from the index, where the index can.
+
+    Two rescues share this event and neither can be mistaken for the other: a
+    path that is not in this tree, and a search the tree was too slow to
+    finish. They are tried in that order only because the first is cheaper.
+    """
     if tool_name not in _PATH_TOOLS or not isinstance(tool_input, dict):
         return HookResult()
     error_text = _error_text(error)
     if not error_text or _ALREADY_SUGGESTED.search(error_text):
         return HookResult()
 
+    repo_root = _find_repo_root(Path(cwd)) if cwd else None
+    if repo_root is not None and tool_name in _SEARCH_TOOLS:
+        timeout = _timeout_rescue(repo_root, tool_input, error_text, session_id)
+        if timeout is not None:
+            return HookResult(context=timeout)
+
     attempted = _failed_path(tool_input, error_text)
     if not attempted or _is_several_paths(attempted):
         return HookResult()
 
-    repo_path = _find_repo_root(Path(cwd)) if cwd else None
+    repo_path = repo_root
     if repo_path is None:
         return HookResult()
 
@@ -194,8 +208,31 @@ def _handle_tool_failure(
     return HookResult(context=text)
 
 
+def _timeout_rescue(
+    repo_path: Path, tool_input: dict, error_text: str, session_id: str
+) -> str | None:
+    """A timed-out search answered from the index, or None. Never raises."""
+    try:
+        from .glob_rescue import rescue
+
+        text = rescue(repo_path, tool_input, error_text)
+    except Exception:
+        return None
+    if text is None:
+        return None
+    _log_firing(repo_path, session_id, "glob", "timeout_rescue", text)
+    return text
+
+
 def _log_wrong_path_firing(repo_path: Path, session_id: str, text: str) -> None:
-    """Record the firing in the shared ledger; measurement only, never fatal.
+    """Record a wrong-path rescue in the shared ledger."""
+    _log_firing(repo_path, session_id, "wrong_path", "rescue", text)
+
+
+def _log_firing(
+    repo_path: Path, session_id: str, surface: str, category: str, text: str
+) -> None:
+    """Record one failure-surface firing; measurement only, never fatal.
 
     Same contract as the search surfaces: keyed on a hash of the emitted text
     so the transcript classifier can recompute the id from what the agent saw,
@@ -204,16 +241,17 @@ def _log_wrong_path_firing(repo_path: Path, session_id: str, text: str) -> None:
     if not session_id:
         return
     try:
+        from repowise.cli.hook_ledger import _claim_ledger
+
         from ._shared import _ledger_key
-        from .ledger import _claim_ledger
 
         _claim_ledger(
             repo_path,
             session_id,
-            _ledger_key("wrong_path", "rescue", text),
+            _ledger_key(surface, category, text),
             node_id="",
-            surface="wrong_path",
-            category="rescue",
+            surface=surface,
+            category=category,
             chars=len(text),
         )
     except Exception:

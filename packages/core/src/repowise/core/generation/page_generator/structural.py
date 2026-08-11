@@ -32,7 +32,6 @@ import structlog
 
 from ..models import (
     GENERATION_LEVELS,
-    STUB_PAGE_CONFIDENCE,
     TEMPLATE_PAGE_CONFIDENCE,
     GeneratedPage,
     compute_page_id,
@@ -345,7 +344,6 @@ class StructuralRenderMixin:
         target_path: str,
         title: str,
         template: str,
-        confidence: float = TEMPLATE_PAGE_CONFIDENCE,
         **render_kwargs: Any,
     ) -> GeneratedPage:
         """Render one template page and wrap it as a GeneratedPage.
@@ -353,10 +351,14 @@ class StructuralRenderMixin:
         The mirror of ``_build_generated_page`` for the no-model path: same
         fields, zero tokens, ``provider_name="template"``.
 
-        ``confidence`` is a parameter rather than a constant because the two
-        callers make different claims. A sole renderer's page is everything the
-        page is meant to be; a stub is the same material with the prose
-        missing, and a reader has to be told which one they are looking at.
+        Confidence is a constant here, not a parameter. It used to be
+        overridable so a stub could claim less than a sole renderer's page,
+        on the reasoning that a reader had to be told which they were looking
+        at. Every page this renders makes the same claim, whichever caller
+        asked for it: the statements came from the index and no model saw
+        them. The only page that claims less is one whose provider call
+        failed, and ``_stub_fallback`` lowers that one after the fact, because
+        the failure is not knowable here.
         """
         content = self._render(template, style_prefix=False, **render_kwargs)
         now = _now_iso()
@@ -376,7 +378,7 @@ class StructuralRenderMixin:
             target_path=target_path,
             created_at=now,
             updated_at=now,
-            confidence=confidence,
+            confidence=TEMPLATE_PAGE_CONFIDENCE,
         )
 
     def _structural_page(
@@ -425,13 +427,26 @@ class StructuralRenderMixin:
         No render key: a stub is not what the page is meant to be, so there is
         nothing to keep fresh. The moment a key shows up the page is rewritten
         wholesale, and until then rebuilding it costs nothing.
+
+        Confidence stays at the template default. Every statement this renders
+        came from the index and no model saw it, which is exactly the claim
+        :data:`TEMPLATE_PAGE_CONFIDENCE` makes. It is the same argument
+        ``_model_free_onboarding_page`` already makes for the subkinds it
+        finishes without a model. That the page is *thin* is a different
+        question with its own carrier: ``provider_name='template'`` is what the
+        tree's "not written yet" marker and the reader's upgrade affordance
+        read, and neither consults confidence.
+
+        The provider-outage path stamps :data:`STUB_PAGE_CONFIDENCE` over this
+        afterwards (see ``_stub_fallback``), because there the page stands in
+        for prose the run tried and failed to write, which is the one thing a
+        reader cannot tell from the page itself.
         """
         return self._render_page(
             page_type=page_type,
             target_path=target_path,
             title=title,
             template=f"{_STUB_PREFIX}/{template}",
-            confidence=STUB_PAGE_CONFIDENCE,
             **render_kwargs,
         )
 

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
+
 
 def _looks_transient(path: Path) -> bool:
     """True when *path* lives somewhere that won't survive (temp, uvx cache).
@@ -138,7 +140,16 @@ def generate_codex_mcp_server_config(repo_path: Path) -> dict[str, object]:
 
 
 def generate_codex_hooks_config() -> dict[str, object]:
-    """Generate project-local Codex hooks for repowise context and freshness checks."""
+    """Generate project-local Codex hooks for repowise context and freshness checks.
+
+    The shell matcher is derived from the adapter rather than spelled here.
+    Codex names its shell tool ``shell_command`` on current releases and
+    ``Bash`` on older ones, and this function hardcoded ``"Bash"`` alone, so an
+    install written by ``repowise init --codex`` registered a matcher that
+    selects nothing on a current Codex. A hook whose matcher matches nothing is
+    silent in exactly the way a working one is, which is why this survived the
+    pass that fixed the same defect in the rewrite hook and the Codex plugin.
+    """
 
     context_hook = {
         "type": "command",
@@ -157,7 +168,7 @@ def generate_codex_hooks_config() -> dict[str, object]:
             "SessionStart": [{"matcher": "startup|resume|clear", "hooks": [context_hook]}],
             "UserPromptSubmit": [{"hooks": [context_hook]}],
             "PostToolUse": [
-                {"matcher": "Bash", "hooks": [freshness_hook]},
+                {"matcher": SHELL_TOOL_MATCHER, "hooks": [freshness_hook]},
                 {"matcher": "apply_patch|Edit|Write", "hooks": [freshness_hook]},
             ],
         }

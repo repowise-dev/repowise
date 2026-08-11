@@ -128,6 +128,20 @@ class TestDbUrl:
         assert url == f"sqlite+aiosqlite:///{expected_path}"
         assert (tmp_path / ".repowise").exists()
 
+    def test_configured_db_url_none_without_env(self, monkeypatch):
+        from repowise.core.persistence import get_configured_db_url
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        assert get_configured_db_url() is None
+
+    def test_configured_db_url_returns_normalized_env_url(self, monkeypatch):
+        from repowise.core.persistence import get_configured_db_url
+
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        monkeypatch.setenv("REPOWISE_DB_URL", "postgresql://user:pass@host:5432/db")
+        assert get_configured_db_url() == "postgresql+asyncpg://user:pass@host:5432/db"
+
 
 class TestResolveReasoning:
     def test_flag_wins_over_env(self, monkeypatch):

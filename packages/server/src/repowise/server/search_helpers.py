@@ -166,9 +166,9 @@ def _resolve_embedder_from_state(app_state):
     primary_vs = getattr(app_state, "vector_store", None)
     embedder = getattr(primary_vs, "_embedder", None) if primary_vs else None
     if embedder is None:
-        from repowise.core.providers.embedding.base import MockEmbedder
+        from repowise.core.providers.embedding.base import KeylessEmbedder
 
-        embedder = MockEmbedder()
+        embedder = KeylessEmbedder()
     return embedder
 
 

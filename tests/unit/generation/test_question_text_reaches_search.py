@@ -93,7 +93,6 @@ def _file_page(**overrides) -> FilePageContext:
         ],
         imports=[],
         exports=["FileTraverser"],
-        file_source_snippet="class FileTraverser: pass",
         pagerank_score=0.5,
         betweenness_score=0.1,
         community_id=0,

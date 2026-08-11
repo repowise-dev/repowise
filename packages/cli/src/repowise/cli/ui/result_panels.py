@@ -202,7 +202,7 @@ def build_contextual_next_steps(
         steps.append((f"repowise risk {top_hotspot}", "assess risk for top hotspot"))
 
     if decision_count > 0:
-        steps.append(("repowise decisions", f"browse {decision_count} architectural decisions"))
+        steps.append(("repowise decision list", f"browse {decision_count} architectural decisions"))
 
     return steps
 

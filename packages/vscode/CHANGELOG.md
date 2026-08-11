@@ -7,6 +7,31 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## 0.8.0
+
+A small release. The webviews compile the shared Repowise UI at build time, so
+these arrived with a rebuild rather than with edits to the extension itself.
+
+### Docs
+
+- The low-confidence banner is gone from pages that were never uncertain. One
+  confidence value meant two things: a page whose provider call failed, and the
+  page an index built without an API key renders deterministically on purpose.
+  On a keyless index the banner therefore landed on the repository overview and
+  every subsystem page, about content assembled entirely from the parse, the
+  import graph and git history. A page that really did lose its prose to a
+  provider error now says so in one line at the end of the content, beside the
+  affordance that fixes it, with no alarm colour. It reads correctly against a
+  wiki published before this change, with no reindex.
+
+### Refactoring
+
+- An extract-helper plan names a directory as its destination. It used to
+  prefer a graph community label, which named a directory the duplicated code
+  did not live in: censused over 963 stored plans, all 905 that carried a label
+  pointed somewhere none of the occurrences were. Plans stored before the fix
+  still render, falling back to the old field only when there is no directory.
+
 ## 0.7.0
 
 The webviews compile the shared Repowise UI components at build time, so most of

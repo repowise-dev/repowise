@@ -54,10 +54,9 @@ Files that frequently change together across repos — consider reviewing both w
 
 ### Repowise MCP Tools
 
-These tools work across all repos in this workspace. Pass `repo="alias"` to scope, `repo="all"` for cross-repo queries, or omit for the default repo. Every response carries `_meta` freshness fields; a `stale_warning` appears only when a file the response actually serves changed after indexing — silence means current.
+These tools work across all repos in this workspace. Pass `repo="alias"` to scope, `repo="all"` for cross-repo queries, or omit for the default repo.
+
+- **Trust the index.** `verified: true` means the bytes were checked against the live tree, so never re-read those lines. Re-read only on `bounds: "approximate"`, `_meta.stale_warning`, `search_method: "bm25"` or `confidence: "low"`; `index_behind: true` alone is informational.
+- **Workspace-specific:** `get_overview(repo="all")` returns cross-repo topology (co-changes, package deps, API contracts); `get_risk(changed_files=[...])` picks up cross-repo consumers automatically; `get_blast_radius` / `get_conformance` / `get_architecture` cover cross-repo impact, dependency-rule violations, and coupling.
 
 {{ data.tool_table_md }}
-
-**Workspace-specific:** `get_overview(repo="all")` returns cross-repo topology (co-changes, package deps, API contracts); `get_risk(changed_files=[...])` picks up cross-repo consumers automatically; `get_blast_radius` / `get_conformance` / `get_architecture` cover cross-repo impact, dependency-rule violations, and coupling.
-
-**Verify when:** `bounds: "approximate"`, `_meta.stale_warning`, `search_method: "bm25"`, or `confidence: "low"`. `index_behind: true` alone is informational — the served content is unaffected. Otherwise trust the response.

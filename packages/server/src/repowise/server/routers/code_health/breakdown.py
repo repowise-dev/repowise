@@ -8,6 +8,8 @@ from typing import Any
 from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.scoring import (
     CATEGORY_CAPS,
+    SCORE_FLOOR,
+    SCORE_MAX,
     biomarker_category,
     biomarker_weight,
     severity_deduction,
@@ -100,7 +102,7 @@ def _score_breakdown_from_findings(findings: list[Any]) -> dict:
             }
         )
         total_deduction += applied_sum
-    score = max(1.0, min(10.0, 10.0 - total_deduction))
+    score = max(SCORE_FLOOR, min(SCORE_MAX, SCORE_MAX - total_deduction))
     return {
         "score": round(score, 2),
         "total_deduction": round(total_deduction, 3),

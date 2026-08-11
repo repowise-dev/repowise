@@ -105,7 +105,7 @@ def test_default_adapter_is_claude_code_and_is_a_fresh_instance() -> None:
 
 
 def test_registration_adds_exactly_one_name(toy: ToyAdapter) -> None:
-    assert registered_adapters() == ["claude_code", "toy"]
+    assert registered_adapters() == ["claude_code", "codex", "toy"]
     assert get_adapter("toy").name == "toy"
 
 

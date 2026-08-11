@@ -820,14 +820,17 @@ async def run_pipeline(
         # zero" here has exactly one cause. Their ids keep resolving through
         # the redirect table, so retiring the rows breaks no inbound link.
         authoritative_page_types.add("layer_page")
-        # A deterministic run takes every candidate rather than a budgeted
-        # slice, so an SCC page missing from its output means the cycle is
-        # gone, not that it lost a budget fight. That makes the run
-        # authoritative for the type and lets the sweep clear cycle pages for
-        # cycles that no longer exist. A budgeted run cannot claim the same:
-        # zero SCC pages there may just mean the allocation was zero.
-        if getattr(resolved_generation_config, "deterministic", False):
-            authoritative_page_types.add("scc_page")
+        # An SCC page missing from a full run's output means the cycle is gone,
+        # so the run is authoritative for the type and the sweep may clear the
+        # pages of cycles that no longer exist. This used to be claimed only for
+        # a deterministic run, on the premise that a budgeted run's zero might
+        # mean "the allocation was zero" rather than "there are no cycles" —
+        # but selection applies no budget to scc_groups (selection/selector.py
+        # _build_scc_candidates, unlike the file-page path), so zero produced
+        # really does mean zero cycles on every full run. Holding the narrower
+        # rule left a keyed index of a repo whose cycles all disappeared unable
+        # to ever retire them.
+        authoritative_page_types.add("scc_page")
 
         # ---- Knowledge Graph enrichment: join + finalize ----------------------
         # The structural half (layer naming + tour) ran concurrently with

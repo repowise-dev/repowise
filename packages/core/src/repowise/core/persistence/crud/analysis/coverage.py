@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal, overload
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,25 +74,86 @@ async def save_coverage_files(
         await session.flush()
 
 
+#: Every column of ``CoverageFile`` except ``covered_lines_json``. That blob is
+#: the per-file set of covered line numbers, and it dominates the table: 467 KB
+#: of the 549 KB stored for this repo's 1,401 rows. Only the single-file detail
+#: view reads it, so every repo-wide caller was hydrating it to throw it away.
+_COVERAGE_SCALAR_COLUMNS = (
+    CoverageFile.file_path,
+    CoverageFile.source_format,
+    CoverageFile.line_coverage_pct,
+    CoverageFile.branch_coverage_pct,
+    CoverageFile.total_coverable_lines,
+    CoverageFile.ingested_at,
+    CoverageFile.ingested_commit_sha,
+)
+
+
+@overload
+async def load_coverage_for_repo(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: list[str] | None = ...,
+    include_covered_lines: Literal[True] = ...,
+) -> list[CoverageFile]: ...
+
+
+@overload
+async def load_coverage_for_repo(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: list[str] | None = ...,
+    include_covered_lines: Literal[False],
+) -> list[Any]: ...
+
+
 async def load_coverage_for_repo(
     session: AsyncSession,
     repository_id: str,
     *,
     file_paths: list[str] | None = None,
-) -> list[CoverageFile]:
-    q = select(CoverageFile).where(CoverageFile.repository_id == repository_id)
+    include_covered_lines: bool = True,
+) -> list[Any]:
+    """Coverage rows for a repo, optionally scoped to *file_paths*.
+
+    ``include_covered_lines=False`` returns ``Row`` objects carrying every
+    column except ``covered_lines_json``. They are attribute-accessed exactly
+    like the ORM entities, so a caller that reads named fields needs no change
+    — but a caller that touches ``covered_lines_json`` must ask for it.
+    """
+    q = (
+        select(CoverageFile)
+        if include_covered_lines
+        else select(*_COVERAGE_SCALAR_COLUMNS)
+    ).where(CoverageFile.repository_id == repository_id)
     if file_paths is not None:
         q = q.where(CoverageFile.file_path.in_(file_paths))
     result = await session.execute(q)
-    return list(result.scalars().all())
+    if include_covered_lines:
+        return list(result.scalars().all())
+    return list(result.all())
 
 
 async def get_coverage_summary(
     session: AsyncSession,
     repository_id: str,
+    *,
+    rows: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Repo-level coverage aggregate. Returns an empty shape when no rows."""
-    rows = await load_coverage_for_repo(session, repository_id)
+    """Repo-level coverage aggregate. Returns an empty shape when no rows.
+
+    *rows* lets a caller that has already loaded the coverage table hand it
+    over instead of paying for a second full read. It must be exactly what this
+    function would have read itself — ``load_coverage_for_repo(repository_id)``,
+    i.e. **every** row for the repo. Handing over a subset (a ``file_paths=``
+    read, say) would silently report that subset's coverage as the repo's.
+    """
+    if rows is None:
+        rows = await load_coverage_for_repo(
+            session, repository_id, include_covered_lines=False
+        )
     if not rows:
         return {
             "file_count": 0,

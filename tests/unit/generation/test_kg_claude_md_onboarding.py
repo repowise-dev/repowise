@@ -111,15 +111,22 @@ class TestClaudeMdKGSection:
         tmpl = jinja_env.get_template("claude_md.j2")
         rendered = tmpl.render(data=self._data())
         assert "### How to work in this repo" in rendered
-        assert "### Trust protocol" in rendered
+        # The trust rule survives as a bullet rather than its own section. The
+        # separate "### Trust protocol" heading was five bullets of protocol for
+        # a response shape the agent sees rarely, and it was cut for size; the
+        # load-bearing clause is what has to stay reachable.
+        assert "`verified: true`" in rendered
+        assert "never re-read those lines" in rendered
         # Pre-edit framing: the mandatory Read of edit targets is conceded.
         assert "raw Read of any file you will Edit" in rendered
         # The tool table renders from the single-source module.
         assert "| Tool | When and why |" in rendered
         assert "`get_answer(question)`" in rendered
-        # Protocol comes before the repo-facts data blocks.
+        # Protocol comes before the repo-facts data blocks. Anchored on the
+        # trust rule rather than on the first heading in the file, which would
+        # be ordered correctly by construction and could not fail.
         if "Entry points" in rendered:
-            assert rendered.index("Trust protocol") < rendered.index("Entry points")
+            assert rendered.index("`verified: true`") < rendered.index("Entry points")
 
 
 # ---------------------------------------------------------------------------

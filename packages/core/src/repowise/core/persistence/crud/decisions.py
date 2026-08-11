@@ -775,6 +775,7 @@ async def bulk_upsert_decisions(
             upsert_decision_vectors,
         )
         from repowise.core.persistence.vector_store import VectorStore
+        from repowise.core.providers.embedding import store_has_semantic_vectors
 
         # Static capability check: the base-class search_by_vector is the
         # "unsupported" sentinel. A runtime probe would conflate a transient
@@ -782,7 +783,12 @@ async def bulk_upsert_decisions(
         # O(N)-round-trip path this branch exists to avoid.
         store_cls_search = getattr(type(vector_store), "search_by_vector", None)
         supports_vector_search = (
-            callable(store_cls_search) and store_cls_search is not VectorStore.search_by_vector
+            callable(store_cls_search)
+            and store_cls_search is not VectorStore.search_by_vector
+            # A keyless store supports the call and cannot answer it: every
+            # matcher below refuses on it. Without this the batch pays for a
+            # full embed round whose vectors are then never read.
+            and store_has_semantic_vectors(vector_store)
         )
 
         ordered = [

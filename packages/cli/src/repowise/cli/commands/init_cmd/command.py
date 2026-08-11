@@ -34,6 +34,7 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_head_commit,
+    head_commit_ts,
     load_config,
     load_state,
     resolve_max_file_pages,
@@ -68,6 +69,7 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
@@ -525,9 +527,11 @@ def _run_generation_phase(
         "(tests, builds, git, searches) run through `repowise distill`; a "
         "whole-file Read comes back as a skeleton (`hooks.read_skeleton`); a "
         "grep matching many files comes back as a per-file digest "
-        "(`hooks.search_digest`). One consent, and this flag decides all three "
-        "without a prompt. Default: ask when interactive, skip otherwise. In "
-        "workspace mode the verdict applies to every selected repo."
+        "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
+        "back as a pointer to the earlier read (`hooks.read_reread`). One "
+        "consent, and this flag decides all four without a prompt. Default: "
+        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "applies to every selected repo."
     ),
 )
 @click.option(
@@ -1553,6 +1557,24 @@ def init_command(
         )
         # Fingerprint after config writes so the first update doesn't false-positive.
         base_state["config_fingerprint"] = config_fingerprint(repo_path)
+        # Index-only is the keyless default, so this is where most installs get
+        # their stamp. Without it `health_analyzer_changed` reads absent-as-
+        # unchanged and the version trigger never fires for them.
+        base_state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        # This run just scored every file, so the periodic re-score cadence
+        # starts now. Without the stamp the gate reads "never re-scored" and the
+        # very next update re-scores the whole repo init had only just scored.
+        #
+        # Only when there really is a report. The health phase swallows its own
+        # failures and returns None, and nothing is persisted for a None report,
+        # so stamping there would suppress the first update's re-score - the
+        # only thing that would have repopulated the missing rows. Same rule the
+        # two update-side writers follow: they stamp only on a re-score that
+        # returned True. None (no git) is left unstamped too: the gate cannot
+        # fire without a head_ts either, so there is nothing to suppress.
+        _head_ts = head_commit_ts(repo_path) if getattr(result, "health_report", None) else None
+        if _head_ts is not None:
+            base_state["last_full_rescore_at"] = _head_ts
         # Index-only still renders the full concept tree (deterministically, from
         # templates), so the store has the current capability — stamp the terminal
         # version rather than clamping it below the reindex gate and falsely

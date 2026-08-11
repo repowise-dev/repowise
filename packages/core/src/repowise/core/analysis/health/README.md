@@ -71,6 +71,16 @@ Per-file trajectory (same snapshots, the `{path: score}` map):
   history). Reused verbatim by the PR bot's in-comment sparkline.
 - `file_trend(history, path)` — wraps the series with `current` / `previous`
   / `delta` and a `declining` flag (per-file mirror of the alerts above).
+- `snapshot_file_maps(metrics, findings)` — the writer's other half: builds
+  both `{path: score}` and `{path: total_deduction}` from one health report.
+  All three snapshot writers call it so a repo's history cannot change shape
+  depending on which command wrote it.
+
+The score clamps at `SCORE_FLOOR`, so a file deep enough to sit on it has a
+flat series no matter how much of the work gets done. The deduction map covers
+those files only, and each point carries `unclamped_score` — `SCORE_MAX -
+deduction` where recorded, `score` otherwise — which is the series
+`_file_declining` reads.
 
 ## Per-file signals
 

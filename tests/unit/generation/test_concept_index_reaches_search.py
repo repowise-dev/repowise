@@ -77,7 +77,6 @@ def _file_context(path: str, names: list[str]) -> FilePageContext:
         ],
         imports=[],
         exports=names,
-        file_source_snippet="",
         pagerank_score=0.5,
         betweenness_score=0.0,
         community_id=0,

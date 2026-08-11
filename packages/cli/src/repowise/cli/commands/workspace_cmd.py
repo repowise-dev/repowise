@@ -18,6 +18,7 @@ from repowise.cli.helpers import (
     resolve_repo_path,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option, json_option, resolve_format
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 
 if TYPE_CHECKING:
@@ -910,8 +911,11 @@ def workspace_set_default(alias: str) -> None:
 @workspace_group.command("diagnostics")
 @click.argument("path", required=False, default=None)
 @click.option("--repo", "repo_alias", default=None, help="Limit the report to one repo alias.")
-@click.option("--json", "as_json", is_flag=True, help="Emit raw diagnostics JSON.")
-def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: bool) -> None:
+@format_option(help="Output format. ``json`` emits the raw diagnostics.")
+@json_option()
+def workspace_diagnostics(
+    path: str | None, repo_alias: str | None, fmt: str, as_json: bool
+) -> None:
     """Explain the cross-repo contract link count.
 
     Reports, per repo, how many providers and consumers were found, which
@@ -919,10 +923,9 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
     the answer to "why are there so few links?". Reads the system graph built
     during 'repowise update --workspace'.
     """
-    import json as _json
-
     from repowise.core.workspace.system_graph import load_system_graph
 
+    fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
     ws_root, _ws_config = _require_workspace(start)
 
@@ -942,18 +945,19 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
         unmatched = [u for u in unmatched if u.repo == repo_alias]
         orphans = [o for o in orphans if o.repo == repo_alias]
 
-    if as_json:
-        payload = {
-            "total_providers": diag.total_providers,
-            "total_consumers": diag.total_consumers,
-            "total_links": diag.total_links,
-            "weak_link_count": diag.weak_link_count,
-            "repo_breakdown": [r.to_dict() for r in breakdown],
-            "unmatched_consumers": [u.to_dict() for u in unmatched],
-            "unmatched_by_reason": diag.unmatched_by_reason,
-            "orphan_providers": [o.to_dict() for o in orphans],
-        }
-        console.print_json(_json.dumps(payload))
+    if fmt == "json":
+        emit_json(
+            {
+                "total_providers": diag.total_providers,
+                "total_consumers": diag.total_consumers,
+                "total_links": diag.total_links,
+                "weak_link_count": diag.weak_link_count,
+                "repo_breakdown": [r.to_dict() for r in breakdown],
+                "unmatched_consumers": [u.to_dict() for u in unmatched],
+                "unmatched_by_reason": diag.unmatched_by_reason,
+                "orphan_providers": [o.to_dict() for o in orphans],
+            }
+        )
         return
 
     # Per-repo provider/consumer breakdown
@@ -1012,8 +1016,9 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
 
 @workspace_group.command("check")
 @click.argument("path", required=False, default=None)
-@click.option("--json", "as_json", is_flag=True, help="Emit the raw conformance report as JSON.")
-def workspace_check(path: str | None, as_json: bool) -> None:
+@format_option(help="Output format. ``json`` emits the raw conformance report.")
+@json_option()
+def workspace_check(path: str | None, fmt: str, as_json: bool) -> None:
     """Architecture lint — fail on dependency-rule violations or cycles.
 
     Checks the declared ``conformance`` rules in ``.repowise-workspace.yaml``
@@ -1022,7 +1027,6 @@ def workspace_check(path: str | None, as_json: bool) -> None:
     recomputes from) the system graph built by 'repowise update --workspace', so
     editing rules and re-running picks them up without a full re-index.
     """
-    import json as _json
     import sys
 
     from repowise.core.workspace.conformance import (
@@ -1031,6 +1035,7 @@ def workspace_check(path: str | None, as_json: bool) -> None:
     )
     from repowise.core.workspace.system_graph import load_system_graph
 
+    fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
     ws_root, ws_config = _require_workspace(start)
 
@@ -1047,8 +1052,8 @@ def workspace_check(path: str | None, as_json: bool) -> None:
         tags_by_repo_from_config(ws_config),
     )
 
-    if as_json:
-        console.print_json(_json.dumps(report.to_dict()))
+    if fmt == "json":
+        emit_json(report.to_dict())
         if report.has_findings:
             sys.exit(1)
         return
@@ -1102,8 +1107,9 @@ def workspace_check(path: str | None, as_json: bool) -> None:
 
 @workspace_group.command("metrics")
 @click.argument("path", required=False, default=None)
-@click.option("--json", "as_json", is_flag=True, help="Emit the raw metrics as JSON.")
-def workspace_metrics(path: str | None, as_json: bool) -> None:
+@format_option(help="Output format. ``json`` emits the raw metrics.")
+@json_option()
+def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
     """Architecture metrics — propagation cost, core, and a 1-10 score.
 
     Computes the standard architecture-complexity metrics over the system graph
@@ -1113,8 +1119,6 @@ def workspace_metrics(path: str | None, as_json: bool) -> None:
     Declared-rule violations, if any, are folded into the score. CI-friendly
     plain output.
     """
-    import json as _json
-
     from repowise.core.workspace.architecture_metrics import compute_architecture_metrics
     from repowise.core.workspace.conformance import (
         check_conformance,
@@ -1122,6 +1126,7 @@ def workspace_metrics(path: str | None, as_json: bool) -> None:
     )
     from repowise.core.workspace.system_graph import load_system_graph
 
+    fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
     ws_root, ws_config = _require_workspace(start)
 
@@ -1141,8 +1146,8 @@ def workspace_metrics(path: str | None, as_json: bool) -> None:
         generated_at=graph.generated_at,
     )
 
-    if as_json:
-        console.print_json(_json.dumps(metrics.to_dict()))
+    if fmt == "json":
+        emit_json(metrics.to_dict())
         return
 
     if metrics.node_count == 0:

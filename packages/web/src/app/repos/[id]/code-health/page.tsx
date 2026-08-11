@@ -196,11 +196,14 @@ export default function CodeHealthPage() {
     () => getDeadCodeSummary(repoId),
     { revalidateOnFocus: false },
   );
-  // Coverage's own tab pulls 5,000 file rows; this asks for the summary alone,
-  // on its own key, so a badge never drags the heavy payload onto page load.
+  // Coverage's own tab pulls 5,000 file rows and the module rollup; this badge
+  // reads one number off `summary`, so it declines both. `limit` and
+  // `module_limit` cap different blocks — one file row and no modules is 0.7 KB
+  // against the tab's 442 KB, and `modules_total` still reports the real count
+  // to anyone who asks for it.
   const { data: coverage } = useSWR<HealthCoverageResponse>(
     `code-health-coverage-summary:${repoId}`,
-    () => getHealthCoverage(repoId, { limit: 1 }),
+    () => getHealthCoverage(repoId, { limit: 1, module_limit: 0 }),
     { revalidateOnFocus: false },
   );
   const coveragePct = coverage?.summary.line_coverage_pct;

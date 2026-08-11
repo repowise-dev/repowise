@@ -311,6 +311,62 @@ async def rebuild_graph_and_git(
     return parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map
 
 
+async def load_stored_git_meta(
+    repo_path: Any, *, log: LogFn | None = None
+) -> dict[str, dict] | None:
+    """Read the persisted per-file git fields the dead-code analyzer scores on.
+
+    Returns ``None`` when the store could not be read, and a mapping (possibly
+    an empty one) when it could. The caller has to tell those apart: an empty
+    mapping is a repository whose ``git_metadata`` genuinely holds nothing,
+    which scores exactly the way a full index would score it, whereas a failed
+    read means this run knows less than a full index does and must not
+    overwrite what a full index wrote.
+
+    Not every indexed file has a row even on a healthy repository — ``git
+    metadata`` covers what ``index_repo`` produced, which excludes skipped
+    paths — so a *missing file* is not evidence of a failure and a coverage
+    count cannot stand in for one.
+    """
+    log = log or _noop_log
+    # Never create the store as a side effect of reading it. A repo whose
+    # wiki.db was deleted to force a rebuild would otherwise be handed an
+    # empty one here, and an empty database reads as "indexed" downstream.
+    # Same guard, and the same reason, as the head-commit stamper.
+    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+        log("[yellow]No store to read git metadata from; dead-code scope narrowed[/yellow]")
+        return None
+    try:
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_dead_code_git_fields,
+            get_session,
+        )
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.database import resolve_db_url
+
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    # The persist path resolves the repository with an upsert,
+                    # so a miss here means this run would be writing against a
+                    # row that does not exist yet. Unknown, not empty.
+                    log(
+                        f"[yellow]No stored repository for {repo_path}; "
+                        "dead-code scope narrowed[/yellow]"
+                    )
+                    return None
+                return await get_dead_code_git_fields(session, repo.id)
+        finally:
+            await engine.dispose()
+    except Exception as exc:
+        log(f"[yellow]Stored git metadata unavailable for dead-code scoring: {exc}[/yellow]")
+        return None
+
+
 def run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -319,15 +375,30 @@ def run_partial_analysis(
     file_diffs: list,
     *,
     source_map: dict[str, bytes] | None = None,
+    stored_git_meta: dict[str, dict] | None = None,
     log: LogFn | None = None,
 ) -> tuple[Any, Any]:
-    """Run partial code-health + dead-code analysis for the changed files.
+    """Run partial code-health + repo-wide dead-code analysis.
 
     Returns ``(partial_health_report, dead_code_report)`` — either may be
     ``None`` if its analysis failed (both are best-effort).
 
     *source_map* is ingestion's ``{path: raw bytes}`` for this rebuild; the
     dead-code prepasses read it instead of re-reading the repo from disk.
+
+    *stored_git_meta* is the persisted per-file git metadata, supplied to the
+    dead-code analyzer *only*. ``git_meta_map`` holds this run's freshly
+    indexed rows, which on an incremental update means the changed files and
+    nothing else; every other file would otherwise be scored against an empty
+    dict and land on the ``commit_count_90d == 0`` rung of the confidence
+    ladder at 0.7 / ``safe_to_delete=True``. It is deliberately NOT merged into
+    ``git_meta_map`` itself: the partial health analysis reads that map's
+    entries as a repo-wide aggregate, so widening it there would silently move
+    health scores (the same reason the idle-decay rows are kept out of it).
+
+    ``None`` means the store could not be read, which is different from an
+    empty mapping and narrows what the resulting report is allowed to
+    overwrite. See ``load_stored_git_meta``.
     """
     log = log or _noop_log
 
@@ -345,6 +416,7 @@ def run_partial_analysis(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
             duplication_cache_dir=Path(repo_path) / ".repowise",
+            repo_root=repo_path,
         )
         _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
         if _health_changed:
@@ -364,8 +436,8 @@ def run_partial_analysis(
     except Exception as exc:
         log(f"[yellow]Health analysis skipped: {exc}[/yellow]")
 
-    # Run partial dead-code analysis up front so both branches can
-    # persist its results. Previously this sat below the ``if index_only``
+    # Run dead-code analysis up front so both branches can persist its
+    # results. Previously this sat below the ``if index_only``
     # short-circuit, which left the closure's reference to
     # ``dead_code_report`` unbound and crashed every ``--index-only`` run.
     dead_code_report = None
@@ -374,16 +446,54 @@ def run_partial_analysis(
 
         # parsed_files enables the source-scan rescues (dynamic markers,
         # bundler aliases, export aliases) on the update path, matching init.
-        _analyzer_partial = DeadCodeAnalyzer(
+        #
+        # This run's freshly indexed rows win over the stored ones for the
+        # files they cover; the stored rows carry every other file, which is
+        # what init's analyzer had and this path did not.
+        _dead_code_git_meta = {**(stored_git_meta or {}), **git_meta_map}
+        _dead_code_analyzer = DeadCodeAnalyzer(
             graph_builder.graph(),
-            git_meta_map,
+            _dead_code_git_meta,
             parsed_files=graph_builder._parsed_files,
             source_map=source_map,
         )
-        _changed_paths_partial = [fd.path for fd in file_diffs]
-        dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
+        # Repo-wide, and persisted repo-wide. The detectors were always
+        # repo-wide — the update path just discarded everything outside the
+        # change set before writing, which is why an unchanged file that the
+        # change had made dead (or brought back to life) kept its old verdict
+        # until someone re-indexed from scratch.
+        dead_code_report = _dead_code_analyzer.analyze()
+
+        # What this report is allowed to overwrite.
+        #
+        # When the stored read succeeded, this run's git knowledge is the same
+        # knowledge a full index had — the stored rows ARE what the last full
+        # index wrote, with this run's fresher ones on top — so every file is
+        # scored at least as well here as it was there and the report speaks
+        # for the whole repository. That includes files with no git row at
+        # all: a full index had no row for them either and scored them the
+        # same way, so holding them back would protect nothing while leaving
+        # exactly the stale verdicts this is meant to fix. Coverage is not the
+        # test, and cannot be: ``git_metadata`` legitimately covers only the
+        # files ``index_repo`` produced.
+        #
+        # When the read FAILED, this run knows strictly less than the index it
+        # would be overwriting: every file outside the change set would be
+        # scored against an empty dict, which reads as "no commits" and stores
+        # 0.7 with ``safe_to_delete=True`` however active the file is. So it
+        # speaks only for the files it re-indexed this run, which is the
+        # behavior this path had before it was widened.
+        dead_code_report.authoritative_paths = (
+            None if stored_git_meta is not None else frozenset(git_meta_map)
+        )
+        if dead_code_report.authoritative_paths is not None:
+            log(
+                "[yellow]Dead-code findings limited to "
+                f"{len(dead_code_report.authoritative_paths)} re-indexed files; "
+                "the rest keep their previous verdict[/yellow]"
+            )
         if dead_code_report.total_findings:
-            log(f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]")
+            log(f"Dead code findings: [yellow]{dead_code_report.total_findings}[/yellow]")
     except Exception as exc:
         log(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
 
@@ -572,6 +682,7 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     from repowise.core.ingestion.git_indexer import GitIndexer
     from repowise.core.persistence.crud import (
         get_latest_commit_committed_at,
+        get_repository,
         update_repo_git_totals,
         upsert_git_commits_bulk,
     )
@@ -609,8 +720,12 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
 
     # Refresh the repo-level whole-history totals so age / commit / contributor
     # counts keep growing between full re-indexes (#730). Cheap git calls, and
-    # cheap to run every update since they don't touch the bounded sample.
-    totals = await asyncio.to_thread(indexer.capture_repo_totals)
+    # cheap to run every update since they don't touch the bounded sample —
+    # except lifetime churn, which walks the history. Handing the capture what
+    # was stored last time lets it add only the range since, and it re-proves
+    # that range is safe to add before doing so.
+    prior = _churn_prior(await get_repository(session, repo_id))
+    totals = await asyncio.to_thread(indexer.capture_repo_totals, prior)
     await update_repo_git_totals(
         session,
         repo_id,
@@ -621,9 +736,33 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         first_commit_subject=totals.first_commit_subject,
         total_lines_added=totals.total_lines_added,
         total_lines_deleted=totals.total_lines_deleted,
+        churn_anchor_sha=totals.churn_anchor_sha,
     )
 
     await persist_incremental_fix_events(session, repo_id, indexer)
+
+
+def _churn_prior(repo_row: Any) -> Any:
+    """The stored totals lifetime churn can resume from, or ``None``.
+
+    Only the four fields the fold reads are carried across, so this never
+    becomes a second way to read repo-level git facts. ``None`` for a repo row
+    that is missing or has no anchor yet, which makes the capture walk the whole
+    history exactly as it always did.
+    """
+    from repowise.core.ingestion.git_indexer.records import RepoTotals
+
+    if repo_row is None:
+        return None
+    anchor = getattr(repo_row, "churn_anchor_sha", None)
+    if not anchor:
+        return None
+    return RepoTotals(
+        total_commit_count=repo_row.total_commit_count,
+        total_lines_added=repo_row.total_lines_added,
+        total_lines_deleted=repo_row.total_lines_deleted,
+        churn_anchor_sha=anchor,
+    )
 
 
 async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) -> None:
@@ -925,6 +1064,7 @@ async def persist_incremental_index(
     git_decay_map: dict | None = None,
     log: LogFn | None = None,
     degraded: list[str] | None = None,
+    failed_steps: list[str] | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + symbols + git + dead-code + health).
 
@@ -935,6 +1075,22 @@ async def persist_incremental_index(
     ``degraded`` (when supplied) collects a one-line entry for every
     best-effort step that failed, so the caller can render an honest
     completion report instead of silently claiming success.
+
+    ``failed_steps`` (when supplied) collects the names of the failed steps
+    whose input was *this commit range* rather than the whole repo. Those are
+    the only failures a later run cannot heal on its own: their data is scoped
+    to a range the sync pointer is about to move past, so the caller records
+    them as a repair marker and re-covers the range next update.
+
+    The test for membership is "would widening the next run's diff base repair
+    this, and would nothing else". Steps that re-derive the whole repo every
+    run are deliberately absent (graph nodes, the sweeps, the page tree,
+    related pages, the knowledge graph, the deleted-file prune): they heal
+    themselves on the next update, and marking them would let a permanently
+    broken one pin the repair window open. So is the commit capture, which
+    looks range-scoped and is not: it bounds its walk by the newest
+    ``committed_at`` already in the table, so a run it skipped is re-walked by
+    the next one whatever the diff base says.
     """
     from repowise.core.persistence import (
         create_engine,
@@ -947,10 +1103,12 @@ async def persist_incremental_index(
 
     log = log or _noop_log
 
-    def _skip(step: str, exc: Exception) -> None:
+    def _skip(step: str, exc: Exception, *, range_scoped: bool = False) -> None:
         log(f"[yellow]{step} skipped: {exc}[/yellow]")
         if degraded is not None:
             degraded.append(f"{step}: {exc}")
+        if range_scoped and failed_steps is not None:
+            failed_steps.append(step)
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
@@ -967,13 +1125,6 @@ async def persist_incremental_index(
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             repo_id = repo.id
 
-            if current_graph_file_paths:
-                try:
-                    from repowise.core.pipeline.persist import _prune_stale_file_rows
-
-                    await _prune_stale_file_rows(session, repo_id, current_graph_file_paths, set())
-                except Exception as exc:
-                    _skip("Stale row prune", exc)
 
             # Delete rows of pages retired since this index was built. This
             # path never regenerates a repo-wide page, so nothing else here
@@ -981,9 +1132,19 @@ async def persist_incremental_index(
             # whose updates all come from the post-commit hook this is the only
             # place a retirement can land.
             try:
-                from repowise.core.pipeline.persist import sweep_retired_pages
+                from repowise.core.pipeline.persist import (
+                    sweep_absent_cycle_pages,
+                    sweep_retired_pages,
+                )
 
                 swept_page_ids = await sweep_retired_pages(session, repo_id)
+                # Same reasoning as the retirement sweep above: this path never
+                # regenerates a cycle page, so asking the rebuilt graph whether
+                # the cycle still exists is the only way a fixed cycle's page
+                # can ever be retired for a user who only runs `update`.
+                swept_page_ids += await sweep_absent_cycle_pages(
+                    session, repo_id, graph_builder
+                )
             except Exception as exc:
                 _skip("Retired page sweep", exc)
 
@@ -1001,7 +1162,7 @@ async def persist_incremental_index(
                         session, repo_id, tombstone_candidates(file_diffs)
                     )
                 except Exception as exc:
-                    _skip("Tombstone marking", exc)
+                    _skip("Tombstone marking", exc, range_scoped=True)
 
             # Placement depends on the whole page set, which on an incremental
             # run lives in the store rather than in the pages just generated.
@@ -1029,7 +1190,7 @@ async def persist_incremental_index(
                     )
                     await recompute_git_percentiles(session, repo_id)
                 except Exception as exc:
-                    _skip("Git persist", exc)
+                    _skip("Git persist", exc, range_scoped=True)
 
                 try:
                     await persist_incremental_commits(session, repo_id, repo_path)
@@ -1039,20 +1200,28 @@ async def persist_incremental_index(
             if dead_code_report is not None:
                 try:
                     from repowise.core.persistence.crud import (
-                        upsert_dead_code_findings,
+                        replace_dead_code_findings,
                     )
 
-                    await upsert_dead_code_findings(
-                        session, repo_id, dead_code_report.findings, file_paths=changed_paths
+                    # The report is repo-wide, and dead code is a cross-file
+                    # property, so a change-scoped write would drop every
+                    # verdict the change flipped outside the change set. The
+                    # scope is the set of files whose confidence was scored on
+                    # real git metadata; the rest keep what they had.
+                    await replace_dead_code_findings(
+                        session,
+                        repo_id,
+                        dead_code_report.findings,
+                        scope=dead_code_report.authoritative_paths,
                     )
                 except Exception as exc:
-                    _skip("Dead-code persist", exc)
+                    _skip("Dead-code persist", exc, range_scoped=True)
 
             if partial_health_report is not None:
                 try:
                     await persist_partial_health(session, repo_id, partial_health_report)
                 except Exception as exc:
-                    _skip("Health persist", exc)
+                    _skip("Health persist", exc, range_scoped=True)
 
             # Re-persist graph_nodes so symbol-level PageRank /
             # betweenness / community ids stay in sync with the
@@ -1077,7 +1246,7 @@ async def persist_incremental_index(
 
                 await persist_incremental_symbols(session, repo_id, parsed_files, changed_paths)
             except Exception as exc:
-                _skip("Symbol persist", exc)
+                _skip("Symbol persist", exc, range_scoped=True)
 
             # Refresh graph_edges for the changed files. The full-init path was
             # historically the only writer of edges, so adjacency froze at the
@@ -1091,7 +1260,7 @@ async def persist_incremental_index(
                     session, repo_id, graph_builder, parsed_files, changed_paths
                 )
             except Exception as exc:
-                _skip("Graph edges persist", exc)
+                _skip("Graph edges persist", exc, range_scoped=True)
 
             # Refresh related-pages metadata across the whole wiki. LLM-free,
             # so even index-only updates heal pages generated before the
@@ -1127,7 +1296,7 @@ async def persist_incremental_index(
                 try:
                     await refresh_external_systems(session, repo_id, repo_path, file_diffs, log=log)
                 except Exception as exc:
-                    _skip("External systems refresh", exc)
+                    _skip("External systems refresh", exc, range_scoped=True)
 
             # One-shot drain of proposals from the removed code_comment
             # harvest (#751). Runs on the index-only path too, because the
@@ -1141,6 +1310,61 @@ async def persist_incremental_index(
                 await purge_proposed_decisions_by_source(session, repo_id, "code_comment")
             except Exception as exc:
                 _skip("Decision purge", exc)
+
+            # Drop file-scoped rows for files that have actually been deleted.
+            # Without this an incremental update tombstones the deleted file's
+            # page and leaves everything else: graph nodes, edges, metrics,
+            # symbols, health rows and git metadata all keep serving a file
+            # that is gone. The liveness question is asked of the filesystem
+            # and git, never of this run's parse, so a transient read failure
+            # cannot masquerade as a deletion (see prune_deleted_file_rows).
+            #
+            # Last in the session on purpose. Everything above upserts rather
+            # than deleting, and the git step in particular indexes the changed
+            # *paths*, which includes the deleted ones: pruning first left a
+            # fresh git_metadata row for every file this run watched disappear.
+            # Running last means the prune has the final say on what the store
+            # claims exists.
+            try:
+                from repowise.core.pipeline.persist import prune_deleted_file_rows
+
+                live_hint = set(
+                    current_graph_file_paths
+                    if current_graph_file_paths is not None
+                    else {pf.file_info.path for pf in parsed_files or []}
+                )
+                # Plus every file node the rebuilt graph still holds, which is
+                # the only reliable way to know a node names no file at all.
+                # Framework and resolver passes mint file-shaped nodes for
+                # things that were never on disk: `external:` imports,
+                # `framework:` anchors, and Spring's `META-INF/services/<iface>`
+                # SPI source, which carries no prefix to recognise it by. All
+                # of them fail every liveness test there is, so a prune that
+                # asked only about disk and git would delete them and take
+                # their edges with them, and only *changed* files' edges are
+                # rebuilt afterwards. A node this run's graph build still
+                # contains is live by construction, whatever it names.
+                #
+                # Deliberately not guarded: a graph this run cannot read is a
+                # run that has no business deciding what was deleted, and the
+                # outer handler skips the prune entirely.
+                graph = graph_builder.graph()
+                live_hint |= {
+                    node
+                    for node, data in graph.nodes(data=True)
+                    if data.get("node_type", "file") == "file"
+                }
+                pruned, refusals = await prune_deleted_file_rows(
+                    session, repo_id, repo_path, live_hint=live_hint
+                )
+                if pruned:
+                    log(f"Pruned rows for [cyan]{pruned}[/cyan] deleted file(s)")
+                for refusal in refusals:
+                    log(f"[yellow]{refusal}[/yellow]")
+                    if degraded is not None:
+                        degraded.append(refusal)
+            except Exception as exc:
+                _skip("Deleted-file prune", exc)
 
         # After the session closes: on SQLite the full-text index shares the
         # database file, so writing to it while the session holds a write lock
@@ -1164,7 +1388,13 @@ async def persist_incremental_index(
                 if swept_page_ids:
                     await fts.delete_many(swept_page_ids)
             except Exception as exc:
-                _skip("Tombstone full-text removal", exc)
+                # Range-scoped for the tombstone half: mark_tombstone_pages
+                # re-marks and re-returns pages that are already tombstones, so
+                # a widened re-run regenerates these ids and retries the delete.
+                # The swept half is not repairable this way, because the sweeps
+                # deleted those rows and a later run finds nothing to sweep.
+                # Tagging still recovers strictly more than not tagging.
+                _skip("Tombstone full-text removal", exc, range_scoped=True)
 
         # Ceiling: the swept pages' *vector* embeddings survive this path.
         # There is no store here to delete them from, and building one would

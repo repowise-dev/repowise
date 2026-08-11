@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from repowise.core.generation.editor_files import tech_stack as tech_stack_mod
 from repowise.core.generation.editor_files.tech_stack import (
     detect_build_commands,
     detect_tech_stack,
@@ -264,6 +267,96 @@ def test_malformed_composer_does_not_crash(tmp_path):
     (tmp_path / "composer.json").write_text("{ not valid json", encoding="utf-8")
     names = [i.name for i in detect_tech_stack(tmp_path)]
     assert "PHP" in names  # PHP language still added (file existed)
+
+
+# ---------------------------------------------------------------------------
+# detect_tech_stack memoisation
+# ---------------------------------------------------------------------------
+
+
+def test_a_repeat_scan_of_an_unchanged_tree_does_not_rewalk(tmp_path, monkeypatch):
+    """One ``repowise update`` asks twice; the second must be free.
+
+    The bounded .csproj walk is the whole cost of a scan (0.18s on hugo, 0.47s
+    on PowerToys, measured), and the graph's framework edges and the
+    knowledge-graph refresh both ask for the same repo in the same run.
+    """
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+
+    walks = []
+    real = tech_stack_mod._find_dotnet_projects
+    monkeypatch.setattr(
+        tech_stack_mod,
+        "_find_dotnet_projects",
+        lambda p: (walks.append(p), real(p))[1],
+    )
+
+    first = detect_tech_stack(tmp_path)
+    second = detect_tech_stack(tmp_path)
+
+    assert [i.name for i in first] == [i.name for i in second]
+    assert "Go" in [i.name for i in first]
+    assert len(walks) == 1
+
+
+def test_editing_a_manifest_re_detects(tmp_path):
+    """The memo must not outlive the answer it cached."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    assert "Django" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["django>=5.0"]\n', encoding="utf-8"
+    )
+    assert "Django" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_adding_a_manifest_re_detects(tmp_path):
+    """A root add moves the directory mtime, which is part of the key."""
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+    assert "Docker" not in [i.name for i in detect_tech_stack(tmp_path)]
+
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    assert "Docker" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+@pytest.mark.parametrize("filename", ["App.sln", "Directory.Build.props"])
+def test_a_root_signal_moves_the_key_without_help_from_the_directory_mtime(tmp_path, filename):
+    """Every root path the scan reads must be in the key on its own.
+
+    These two are the ones a fixed name list misses: ``.sln`` is globbed rather
+    than read by name, and ``Directory.Build.props`` was absent from the first
+    version of the key. Either alone makes the scan report C#.
+
+    The directory mtime is restored before re-reading, which is the whole point:
+    that leg is quantized to Windows' ~15.6ms timer tick, so a test that let it
+    change would pass whether or not the signal itself is keyed.
+    """
+    import os
+
+    from repowise.core.generation.editor_files.tech_stack import _manifest_fingerprint
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    before = _manifest_fingerprint(tmp_path)
+    dir_stat = tmp_path.stat()
+
+    (tmp_path / filename).write_text("", encoding="utf-8")
+    os.utime(tmp_path, ns=(dir_stat.st_atime_ns, dir_stat.st_mtime_ns))
+
+    assert _manifest_fingerprint(tmp_path) != before, (
+        f"{filename} is not in the memo key, so a repo that grows one is served "
+        "a stale tech stack"
+    )
+    assert "C#" in [i.name for i in detect_tech_stack(tmp_path)]
+
+
+def test_the_caller_cannot_corrupt_the_memo(tmp_path):
+    """Callers get their own list, so a mutation cannot poison the next reader."""
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n", encoding="utf-8")
+
+    first = detect_tech_stack(tmp_path)
+    first.clear()
+
+    assert [i.name for i in detect_tech_stack(tmp_path)] == ["Go"]
 
 
 def test_detects_ruff_from_pyproject(tmp_path):

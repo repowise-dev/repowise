@@ -43,6 +43,7 @@ from repowise.core.reasoning import REASONING_MODES
 
 from .incremental import (
     _build_update_vector_store,
+    _load_stored_git_meta,
     _rebuild_graph_and_git,
     _refresh_knowledge_graph,
     _run_partial_analysis,
@@ -50,6 +51,7 @@ from .incremental import (
 from .mode import _resolve_index_only_mode
 from .persistence import (
     _persist_index_only_update,
+    _repair_module_attribution,
     _run_full_health_rescore,
     heal_commit_offsets,
     stamp_head_commit,
@@ -425,20 +427,14 @@ def _renderer_inputs(repo_path):
 def _head_commit_ts(repo_path) -> float | None:
     """Committer timestamp of the repo's HEAD, or None when git is unavailable.
 
-    Anchors the periodic idle-file health re-score gate (#728) to repo time
-    rather than wall clock, so the cadence is deterministic under
-    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+    Lives in ``cli.helpers`` so ``init`` stamps the re-score gate in the units
+    this path reads back. Kept as a thin module-level name because this module
+    is where the gate is evaluated, and a caller reading ``_head_commit_ts``
+    here should not have to know it resolves elsewhere.
     """
-    try:
-        import git
+    from repowise.cli.helpers import head_commit_ts
 
-        repo = git.Repo(repo_path, search_parent_directories=True)
-        try:
-            return float(repo.head.commit.committed_date)
-        finally:
-            repo.close()
-    except Exception:
-        return None
+    return head_commit_ts(repo_path)
 
 
 def _current_renderer_fingerprint(repo_path) -> str:
@@ -538,6 +534,7 @@ def run_update(
     verbose: bool = False,
     progress: str = "rich",
     skip_cross_repo_hooks: bool = False,
+    include_working_tree: bool = False,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -546,6 +543,14 @@ def run_update(
     ``skip_cross_repo_hooks`` is set only by the workspace docs flow, which
     calls this per repo and then runs the cross-repo hooks once over every
     updated repo instead of once per repo.
+
+    ``include_working_tree`` folds uncommitted work (staged, unstaged and
+    untracked) into the change set on top of the commit range. Off by default,
+    because every other caller is anchored to a commit — the post-commit hook,
+    a webhook, a manual sync — and indexing a half-finished edit under those is
+    not what the user asked for. ``repowise watch`` sets it: watching for file
+    saves and then only ever diffing commit-to-commit is what made the watcher
+    a no-op until you committed.
     """
     start = time.monotonic()
 
@@ -726,6 +731,39 @@ def run_update(
             emitter.error(message)
         raise click.ClickException(message)
 
+    # Re-cover a range a previous update failed to fully persist. The pointer
+    # advanced past it anyway (so every other reader stays current), and the
+    # marker is what stops that from stranding the range's data forever. An
+    # explicit --since is the user naming their own base and wins outright.
+    #
+    # Index-only only, because that is the pointer the marker is written
+    # against. In docs mode ``base_ref`` is ``last_docs_commit``, which
+    # normally trails ``last_sync_commit``, so the marker would read as a
+    # *descendant* of the base and be given up on as "no longer part of this
+    # branch's history" — dropping a valid repair and saying something untrue
+    # about why. Left alone here, it is repaired by the next index-only run.
+    if since is None and resolved_index_only:
+        from .persistence import resolve_repair_base
+
+        repaired_ref, give_up = resolve_repair_base(repo_path, state, base_ref, head)
+        if give_up is not None:
+            console.print(
+                f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
+                "Run [bold]repowise init --force[/bold] to rebuild the index.[/yellow]"
+            )
+            # Dropped in memory only. Writing it here would persist state on a
+            # --dry-run, and would do it before the single-flight lock below,
+            # where a concurrent update is exactly what the lock exists to
+            # stop. Every save_state past the lock carries the cleared marker
+            # because they all build on this dict.
+            state.pop("pending_repair", None)
+        elif repaired_ref != base_ref:
+            console.print(
+                f"[dim]Re-covering commits an earlier update did not finish "
+                f"persisting (from {repaired_ref[:8]}).[/dim]"
+            )
+            base_ref = repaired_ref
+
     # A config.yaml / health-rules.json change warrants a full health re-score
     # even when git is unchanged. A missing prior fingerprint is backfilled, not
     # treated as a change. ``config_changed`` gates every "nothing to do" path.
@@ -747,7 +785,45 @@ def run_update(
     curr_renderer_fp = _current_renderer_fingerprint(repo_path)
     renderer_changed = prev_renderer_fp is not None and prev_renderer_fp != curr_renderer_fp
 
-    if head and head == base_ref and not config_changed and not renderer_changed:
+    # Uncommitted work, when the caller asked for it. Computed before the
+    # "already up to date" gate below, because on a watched repo that gate is
+    # exactly what the change set has to get past: with no new commits,
+    # ``head == base_ref`` is the normal state, not an idle one.
+    from repowise.core.ingestion import ChangeDetector
+
+    detector = ChangeDetector(repo_path)
+    working_tree_diffs: list = []
+    if include_working_tree:
+        working_tree_diffs = detector.get_working_tree_changes()
+        dirty_paths = {fd.path for fd in working_tree_diffs}
+        # Work the last working-tree run indexed that is no longer diverging
+        # from HEAD: a reverted edit, or a deleted file that was only ever
+        # untracked. Nothing else would ever mention those paths again, so
+        # without this the index keeps serving content that is gone.
+        working_tree_diffs += detector.stale_working_tree_diffs(
+            state.get("working_tree_paths") or [], dirty_paths
+        )
+        # Carried on ``state`` from here so every save_state below persists it,
+        # including the early-return paths.
+        state["working_tree_paths"] = sorted(dirty_paths)
+        if working_tree_diffs:
+            console.print(
+                f"[dim]Uncommitted changes: [bold]{len(working_tree_diffs)}[/bold] file(s)[/dim]"
+            )
+
+    # Before the early return, so a repo with no new commits still picks this
+    # up. A module label is a pure function of the repo layout, so correcting
+    # it must not wait on a re-score (7-day decay) or cost an indexing run.
+    if not dry_run:
+        _repair_module_attribution(repo_path)
+
+    if (
+        head
+        and head == base_ref
+        and not config_changed
+        and not renderer_changed
+        and not working_tree_diffs
+    ):
         console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
         # but the pages are still unwritten. Point at the command that writes
@@ -941,10 +1017,12 @@ def run_update(
     if emitter is not None:
         emitter.stage("detect_changes")
 
-    from repowise.core.ingestion import ChangeDetector
+    from repowise.core.ingestion.change_detector import merge_file_diffs
 
-    detector = ChangeDetector(repo_path)
-    file_diffs = detector.get_changed_files(base_ref, head or "HEAD")
+    file_diffs = merge_file_diffs(
+        detector.get_changed_files(base_ref, head or "HEAD"),
+        working_tree_diffs,
+    )
 
     if not file_diffs and not config_changed and not renderer_changed:
         console.print("[green]No changed files detected.[/green]")
@@ -958,6 +1036,15 @@ def run_update(
             "config_fingerprint": curr_config_fp,
             "renderer_fingerprint": curr_renderer_fp,
         }
+        # base_ref has already been widened to any unrepaired range by this
+        # point, so no changed files means the range holds nothing left to
+        # re-cover. Clearing here is also what stops a marker whose range is
+        # permanently empty from being carried, and re-announced, forever.
+        # Gated exactly as the widening above is: with --since or in docs mode
+        # this base is a different range that says nothing about the marker's,
+        # and clearing on it would drop a repair that never happened.
+        if since is None and resolved_index_only:
+            persisted.pop("pending_repair", None)
         if not resolved_index_only and head:
             persisted["last_docs_commit"] = head
         save_state(repo_path, persisted)
@@ -985,6 +1072,17 @@ def run_update(
         # Full re-score (not the partial update) so unchanged files pick up the
         # new rules/excludes instead of being left stale.
         console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
+
+    # A config change with commits still to index must NOT stop here. The
+    # standalone re-score below advances ``last_sync_commit`` to head, and in
+    # index-only mode ``base_ref`` *is* ``last_sync_commit`` — so returning
+    # early would move the pointer past commits this run never indexed, losing
+    # their churn / ownership / co-change / page state until a manual --full.
+    # (Docs mode limped on because ``last_docs_commit`` stayed put.) With
+    # changed files present we fall through to the normal incremental path and
+    # force the full re-score at its existing hook, which reuses the graph that
+    # path already builds — same re-score, no second traverse.
+    if config_changed and not file_diffs:
         if dry_run:
             console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
             if emitter is not None:
@@ -1006,6 +1104,11 @@ def run_update(
             if emitter is not None:
                 emitter.error(str(exc))
             raise
+        # No stamp_head_commit here, which is the behaviour this branch has
+        # always had: the re-score's `upsert_repository` re-reads HEAD from
+        # disk and advances the row itself. It re-reads rather than being told,
+        # so it is a no-op in a linked worktree or a non-git checkout — both
+        # pre-existing, and neither is what this change is about.
         _refresh_editor_stamp(repo_path, agents_md)
         consume_update_pending(repo_path, head)
         if emitter is not None:
@@ -1099,8 +1202,17 @@ def run_update(
             )
         return UpdateOutcome.DRY_RUN
 
+    # ``git_meta_map`` holds this run's changed files only; the dead-code
+    # analyzer scores confidence per file and would read every unchanged file
+    # as "no commits" without the stored rows.
     partial_health_report, dead_code_report = _run_partial_analysis(
-        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs, source_map
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        parsed_files,
+        file_diffs,
+        source_map,
+        stored_git_meta=_load_stored_git_meta(repo_path),
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
@@ -1204,6 +1316,7 @@ def run_update(
                 git_decay_map=git_decay_map,
                 exclude_patterns=exclude_patterns,
                 head_ts=head_ts,
+                force_full_rescore=config_changed,
             )
         except Exception as exc:
             if emitter is not None:
@@ -1693,12 +1806,25 @@ def run_update(
     # DB, so re-score every file's findings against the decayed inputs. Reuses
     # the already-built graph (no second rebuild); gated to ~weekly. Stamped into
     # ``state`` below via the final save_state.
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     from .persistence import full_rescore_due, run_decay_health_rescore
 
-    if full_rescore_due(state, head_ts) and run_decay_health_rescore(
+    # ``config_changed`` forces the same re-score off this path's graph rather
+    # than letting the config branch above run a standalone one and return: a
+    # config edit invalidates every persisted score, and the partial health
+    # update only reaches the changed files. Reusing this hook is what makes
+    # falling through cost nothing extra — the graph is already built.
+    if (config_changed or full_rescore_due(state, head_ts)) and run_decay_health_rescore(
         repo_path, graph_builder, parsed_files, exclude_patterns
     ):
-        state["last_full_rescore_at"] = head_ts
+        # Only the time gate reads this stamp, and it treats a non-numeric
+        # value as "never re-scored". A forced re-score with git unavailable
+        # has no timestamp to record, so leave a real stamp alone rather than
+        # writing None over it.
+        if head_ts is not None:
+            state["last_full_rescore_at"] = head_ts
+        state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
 
     # ---- Editor project files (best-effort) ----
     _refresh_editor_stamp(repo_path, agents_md, degraded)

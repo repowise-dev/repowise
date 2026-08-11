@@ -162,13 +162,44 @@ SPEC = LanguageSpec(
     scm_file="mylang.scm",                       # query file name
     heritage_node_types=frozenset({"class_declaration"}),
     entry_point_patterns=("main.ml",),
-    manifest_files=("mylang.toml",),
+    manifest_files=("mylang.toml", "mylang.build.json"),
+    build_config_manifests=("mylang.build.json",),  # usually empty — see below
     shebang_tokens=("mylang",),
     builtin_calls=frozenset({"print", "len"}),  # filter from call graph
     builtin_parents=frozenset({"Object"}),       # filter from heritage
     color_hex="#AB47BC",
 )
 ```
+
+#### `manifest_files` also decides package boundaries
+
+Every name in `manifest_files` that is *not* in `build_config_manifests` marks
+its directory as a **package root**. That drives two things beyond ingestion:
+monorepo detection (`RepoStructure.packages`), and code health's `module`
+attribution — the label the dashboard, the module rollups and `module:` target
+expansion all group on. Declaring your manifests is therefore all it takes to
+give a monorepo in your language proper per-package health; there is no second
+list to edit. `REGISTRY.package_manifest_filenames()` is the single source of
+truth, and both consumers read it.
+
+`build_config_manifests` defaults to empty, which is nearly always right. Add
+to it only when a name in `manifest_files` configures a build rather than
+declaring a distributable unit, because such files appear in directories that
+are not packages and each one becomes a false root that fragments the rollup.
+The shipped cases are the .NET `Directory.Build.props` / `global.json` family
+(measured in 135 non-package directories), `vite.config.js` / `nuxt.config.ts`,
+`svelte.config.js`, Cabal's `Setup.hs`, and `lean-toolchain`.
+
+`manifest_files` holds exact filenames only, so a language whose package file is
+a *pattern* cannot be expressed. .NET is the live example: `*.csproj` is the
+real package declaration, everything C# declares is build configuration, and a
+.NET monorepo therefore still falls back to the top-level directory.
+
+One caveat worth knowing: package roots are read from a **directory scan**, not
+from the indexed file list, because the traverser only emits files whose
+language it can detect and drops 18 manifest names on that rule (`go.mod`,
+`pom.xml`, `build.gradle`, `Gemfile`, `build.sbt` among them). So a manifest
+counts as a package root whether or not your language's files parse.
 
 Then register it in `languages/specs/__init__.py` by importing the module and
 slotting it into the `ALL_SPECS` tuple. **Order matters**: `LanguageRegistry`

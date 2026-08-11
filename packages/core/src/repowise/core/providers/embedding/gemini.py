@@ -121,6 +121,15 @@ class GeminiEmbedder:
             )
 
             raw_vectors = [list(e.values) for e in result.embeddings]
+            widths = {len(v) for v in raw_vectors}
+            if widths and widths != {output_dimensionality}:
+                actual = min(widths - {output_dimensionality})
+                raise ValueError(
+                    f"GeminiEmbedder declared {output_dimensionality}-dimensional vectors but"
+                    f" the API returned {actual} (model={model!r}). The API ignored"
+                    f" 'output_dimensionality'. Verify the model supports {output_dimensionality}"
+                    f" dimensions, or construct GeminiEmbedder with output_dimensionality={actual}."
+                )
             return [_l2_normalize(v) for v in raw_vectors]
 
         return await asyncio.to_thread(_embed_sync)

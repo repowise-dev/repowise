@@ -68,9 +68,13 @@ def _handle_search_post(
     tool_output: object,
     cwd: str,
     session_id: str = "",
-    client: str | None = None,
+    adapter=None,
 ) -> HookResult:
     """Decide whether to enrich a Grep/Glob result and how."""
+    if adapter is None:
+        from repowise.cli.agent_adapters import adapter_for
+
+        adapter = adapter_for(None)
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return HookResult()
@@ -90,12 +94,13 @@ def _handle_search_post(
         if digest:
             return _digest_result(
                 repo_path,
+                tool_name,
                 tool_input,
                 tool_output,
                 output_text,
                 digest,
                 session_id,
-                client=client,
+                adapter=adapter,
             )
         # Unparseable output (e.g. Glob path lists, or a single-file context
         # grep, see search_digest): fall through to triage.
@@ -161,13 +166,14 @@ def _handle_search_post(
 
 def _digest_result(
     repo_path: Path,
+    tool_name: str,
     tool_input: dict,
     tool_output: object,
     output_text: str,
     digest: str,
     session_id: str,
     *,
-    client: str | None,
+    adapter,
 ) -> HookResult:
     """Serve the digest in place of the flood, or append it as before.
 
@@ -178,75 +184,33 @@ def _digest_result(
     scored as no-action-expected for the same structural reason
     ``skeleton_served`` is: its text leaves as ``updatedToolOutput`` and never
     appears in the transcript the classifier reads.
+
+    Every gate between "there is a digest" and "the agent got it" belongs to
+    :func:`replacement.offer`, which the Read surfaces use too.
     """
-    replacement, forgone = _digest_replacement(
-        repo_path, tool_input, tool_output, output_text, digest, client=client
-    )
-    if replacement is not None:
-        _log_search_firing(repo_path, session_id, "digest_served", replacement.text)
-        from .search_digest import record_saving
+    from .replacement import offer
+    from .search_digest import CONFIG_FLAG, SAVINGS_SOURCE, digest_replacement
 
-        return HookResult(
-            replacement=replacement.payload,
-            on_emitted=lambda: record_saving(repo_path, replacement),
-        )
-
-    _log_search_firing(repo_path, session_id, "digest", digest)
-    if forgone is not None:
-        from .search_digest import record_forgone
-
-        return HookResult(
-            context=digest,
-            on_emitted=lambda: record_forgone(repo_path, forgone),
-        )
-    return HookResult(context=digest)
-
-
-def _digest_replacement(
-    repo_path: Path,
-    tool_input: dict,
-    tool_output: object,
-    output_text: str,
-    digest: str,
-    *,
-    client: str | None,
-):
-    """``(replacement, forgone)`` for this flood; at most one set. Never raises.
-
-    The two legs share every gate but the flag, on purpose: a counterfactual
-    computed under looser conditions than the thing it stands in for would be
-    measuring a different feature. So a repo with the surface off still learns
-    what it would have saved, and one whose client cannot honour a replacement
-    is told nothing, because for that client there was nothing to forgo.
-    """
-    try:
-        from .read_skeleton import supports_updated_output
-        from .search_digest import (
-            as_grep_output,
-            digest_replacement,
-            enabled,
-            replaces_tool_output,
-        )
-
-        if not supports_updated_output() or not replaces_tool_output(client):
-            return None, None
-        pattern = tool_input.get("pattern") if isinstance(tool_input, dict) else None
-        candidate = digest_replacement(
+    pattern = tool_input.get("pattern") if isinstance(tool_input, dict) else None
+    served, on_emitted = offer(
+        repo_path,
+        adapter,
+        flag=CONFIG_FLAG,
+        source=SAVINGS_SOURCE,
+        tool_name=tool_name,
+        tool_response=tool_output,
+        build=lambda: digest_replacement(
             pattern if isinstance(pattern, str) else "", output_text, digest
-        )
-        if candidate is None:
-            return None, None
-        if not enabled(repo_path):
-            return None, candidate
-        candidate.payload = as_grep_output(tool_output, candidate.text)
-        if candidate.payload is None:
-            # Not a shape we can legally replace (files_with_matches, Glob).
-            # The digest still appends, and nothing was forgone: with the flag
-            # on we would have reached exactly here.
-            return None, None
-        return candidate, None
-    except Exception:
-        return None, None
+        ),
+    )
+    if served is not None:
+        _log_search_firing(repo_path, session_id, served.category, served.text)
+        return HookResult(replacement=served.payload, on_emitted=on_emitted)
+
+    # Nothing was replaced, so the digest rides alongside as it always did.
+    # ``on_emitted`` here is the forgone-saving write, when there was one.
+    _log_search_firing(repo_path, session_id, "digest", digest)
+    return HookResult(context=digest, on_emitted=on_emitted)
 
 
 def _log_search_firing(
@@ -262,8 +226,9 @@ def _log_search_firing(
     """
     if not session_id:
         return
+    from repowise.cli.hook_ledger import _claim_ledger
+
     from ._shared import _ledger_key
-    from .ledger import _claim_ledger
 
     _claim_ledger(
         repo_path,

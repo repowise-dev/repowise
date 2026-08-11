@@ -91,7 +91,7 @@ from pathlib import Path
 
 import click
 
-from repowise.cli.agent_adapters.codex import SHELL_TOOL_NAMES
+from repowise.cli.agent_adapters import adapter_for
 
 from ._shared import HookResult, as_result
 from .bash_staleness import _handle_bash_post
@@ -102,14 +102,28 @@ from .served_reads import _handle_mcp_read_post, _log_read_after_served
 from .session_start import _handle_claude_session_start
 from .wrong_path import _handle_tool_failure
 
-_EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
+#: One adapter per hook process, resolved from the ``--client`` marker. Every
+#: "which tools does this agent call?" question below reads off it, so the
+#: dispatcher carries no tool-name literals and a third harness needs no branch
+#: here — see ``agent_adapters._REGISTRY``, which is the whole registration.
+#:
+#: This replaced a union of both harnesses' tool names, which routed a Codex
+#: tool name for a Claude payload and vice versa. Harmless while the names
+#: happened not to collide, and exactly the shape that stops being harmless
+#: when a third agent names its editor something the second one already uses.
+#:
+#: Free at module scope: ``agent_adapters`` is stdlib-only by its own hot-path
+#: contract, and ``tests/unit/cli/test_augment_hook_perf.py`` holds that.
+_ADAPTERS: dict[str, object] = {}
 
-#: Shell tools, across both harnesses. ``PowerShell`` is Windows Claude Code;
-#: the rest are what Codex has called its shell tool, owned by the adapter so
-#: the dispatch here and the installed matcher cannot disagree. Free at module
-#: scope: ``agent_adapters`` is stdlib-only by its own hot-path contract, and
-#: `tests/unit/cli/test_augment_hook_perf.py` holds that.
-_SHELL_TOOL_NAMES = SHELL_TOOL_NAMES | {"PowerShell"}
+
+def _adapter(client: str | None):
+    """The adapter for this invocation, memoized for the process."""
+    key = client or ""
+    adapter = _ADAPTERS.get(key)
+    if adapter is None:
+        adapter = _ADAPTERS[key] = adapter_for(client)
+    return adapter
 
 
 @click.command("augment")
@@ -151,7 +165,7 @@ def _run_augment(*, client: str | None = None) -> None:
         session_id = session_id if isinstance(session_id, str) else ""
         result = _handle_codex_context_event(event, cwd, session_id)
         if result:
-            _emit_response(event, result)
+            _emit_response(event, result, session_id)
         _count_run(cwd, session_id, event, "", emitted=bool(result))
         return
 
@@ -162,7 +176,7 @@ def _run_augment(*, client: str | None = None) -> None:
         session_id = session_id if isinstance(session_id, str) else ""
         result = _handle_claude_session_start(cwd, session_id)
         if result:
-            _emit_response(event, result)
+            _emit_response(event, result, session_id)
         _count_run(cwd, session_id, event, "", emitted=bool(result))
         return
 
@@ -183,7 +197,7 @@ def _run_augment(*, client: str | None = None) -> None:
             tool_name, tool_input, payload.get("error"), cwd, session_id=session_id
         )
         if result:
-            _emit_response(event, result)
+            _emit_response(event, result, session_id)
         _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
         return
 
@@ -202,7 +216,7 @@ def _run_augment(*, client: str | None = None) -> None:
         session_id=session_id,
     )
     if result:
-        _emit_response(event, result)
+        _emit_response(event, result, session_id)
     if result.on_emitted is not None:
         # Post-response bookkeeping, for the same reason _count_run is below:
         # the agent must not wait on accounting.
@@ -221,8 +235,9 @@ def _count_run(cwd: str, session_id: str, event: str, tool: str, *, emitted: boo
     if not session_id:
         return
     try:
+        from repowise.cli.hook_ledger import _record_hook_run
+
         from ._shared import _find_repo_root
-        from .ledger import _record_hook_run
 
         repo_path = _find_repo_root(Path(cwd))
         if repo_path is not None:
@@ -231,7 +246,7 @@ def _count_run(cwd: str, session_id: str, event: str, tool: str, *, emitted: boo
         return
 
 
-def _emit_response(event: str, result: HookResult | str) -> None:
+def _emit_response(event: str, result: HookResult | str, session_id: str = "") -> None:
     """Write the hook JSON response to stdout.
 
     Two fields, and they are not alternatives: ``additionalContext`` is
@@ -258,7 +273,7 @@ def _emit_response(event: str, result: HookResult | str) -> None:
         dedup_mark = replacement or ""
     else:
         dedup_mark = json.dumps(replacement, sort_keys=True)
-    if not _claim_emission(event, f"{result.context or ''}\x00{dedup_mark}"):
+    if not _claim_emission(event, f"{session_id}\x00{result.context or ''}\x00{dedup_mark}"):
         return
     payload: dict[str, object] = {"hookEventName": event}
     if result.context:
@@ -283,6 +298,13 @@ def _claim_emission(event: str, context: str) -> bool:
     exactly one win: the first caller creates it atomically and emits; a second
     caller within the TTL sees a fresh marker and stays silent. Fail-open — any
     error returns True so a dedup glitch can never swallow a real emission.
+
+    The session id is part of the key (the caller folds it into *context*).
+    Without it, two genuinely separate sessions — a parent and a subagent,
+    which never share an id — that read the same file at the same point in
+    their own tool sequence produce byte-identical notices, and the second one
+    is silently swallowed. The duplicates this exists to catch are two
+    processes on *one* tool event, which by definition share a session.
     """
     import hashlib
     import os
@@ -332,33 +354,36 @@ def _handle_post_tool_use(
     :class:`HookResult` themselves; every other branch yields plain additional
     context and keeps returning ``str | None``, which :func:`as_result` lifts
     here, so the two-field shape exists in one place rather than in eight.
+
+    Every tool-name test below is the adapter's answer for *this* harness.
     """
+    adapter = _adapter(client)
     # The edit-tool freshness notice is a Codex-only lifecycle hook, gated on
     # the Codex client so the widened Claude matcher (Read|Edit|Write) can't
     # emit Codex-flavored banners to Claude Code users. Both clients record
     # the edit for the per-session stale-read state machine; Claude clients
     # additionally get the once-per-decision governing-decision notice.
-    if tool_name in _EDIT_TOOL_NAMES:
+    if tool_name in adapter.edit_tool_names:
         if client == "codex":
             _record_edit(tool_input, cwd, session_id)
             return as_result(
                 _handle_post_edit_use(cwd, session_id=session_id, tool_input=tool_input)
             )
         return as_result(_handle_edit_post(tool_input, cwd, session_id))
-    if tool_name == "Read":
+    if tool_name in adapter.read_tool_names:
         # Read-after-served KPI: logged to the ledger, never spoken about.
         _log_read_after_served(tool_input, tool_output, cwd, session_id)
-        return _handle_read_post(tool_input, tool_output, cwd, session_id)
-    if tool_name in _SHELL_TOOL_NAMES:
+        return _handle_read_post(tool_input, tool_output, cwd, session_id, adapter=adapter)
+    if tool_name in adapter.shell_tool_names:
         # The PowerShell tool (Windows Claude Code) and Codex's several names
         # for its shell all surface the same stdout/stderr response shape as
         # Bash — one handler covers them.
         return as_result(_handle_bash_post(tool_input, tool_output, cwd))
-    if tool_name in ("Grep", "Glob"):
-        # ``client`` reaches this one because the flood digest can *replace*
-        # the tool output, and only Claude Code's protocol can honour that.
+    if tool_name in adapter.search_tool_names:
+        # The adapter reaches this one because the flood digest can *replace*
+        # the tool output, and not every harness's protocol can honour that.
         return _handle_search_post(
-            tool_name, tool_input, tool_output, cwd, session_id, client=client
+            tool_name, tool_input, tool_output, cwd, session_id, adapter=adapter
         )
     if tool_name.startswith("mcp__") and "repowise" in tool_name.lower():
         # Served-content bookkeeping for the read-after-served KPI. Never

@@ -11,7 +11,7 @@ import {
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import { cn } from "../lib/cn";
 import { formatRelativeTime, formatTokens } from "../lib/format";
-import { getPageLabel } from "../lib/page-types";
+import { getPageLabel, isStubFallbackPage } from "../lib/page-types";
 import { computeDocNav } from "./doc-nav";
 import { filterMarkdownByPersona, type ReaderPersona } from "./reader-persona";
 import { WikiMarkdown } from "../wiki/wiki-markdown";
@@ -234,6 +234,12 @@ function DocsReaderBody({
   // and always will be; a model-written page that is still a template has
   // prose outstanding, which is what the upgrade affordance is for.
   const isTemplatePage = page.provider_name === "template";
+
+  // Of those, the ones where prose was attempted and lost rather than never
+  // asked for. This is the only per-page trust caveat the reader still draws,
+  // and it rides along with the affordance that fixes it instead of getting a
+  // callout of its own. See the end-of-content block below.
+  const proseLost = isStubFallbackPage(page);
 
   // The reader renders the page title as the H1 above the body, but generated
   // content often opens with its own "# <title>" line (the deterministic
@@ -491,15 +497,6 @@ function DocsReaderBody({
               </details>
             )}
 
-            {/* Low-confidence flag */}
-            {page.confidence > 0 && page.confidence < 0.5 && (
-              <div className="mb-4 flex items-start gap-1.5 rounded-md border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2">
-                <span className="text-xs text-[var(--color-text-primary)]">
-                  This page was generated with low confidence — verify against the source before relying on it.
-                </span>
-              </div>
-            )}
-
             {/* Human notes (read-only callout; editing lives in the rail) */}
             {page.human_notes && (
               <div className="mb-4 rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-blue)]/5 px-4 py-3">
@@ -528,12 +525,30 @@ function DocsReaderBody({
             {/* The upgrade affordance, at the end of the content rather than
                 beside the title. Someone who has read to here knows the page is
                 thin; someone at the title does not yet, and an accent pill up
-                there competed with the h1 for a decision they could not make. */}
-            {isTemplatePage && upgradeSlot && (
+                there competed with the h1 for a decision they could not make.
+
+                The prose-lost caveat rides in the same block rather than in a
+                banner of its own. It used to be a bordered warning callout
+                above the content keyed on `confidence < 0.5`, which generation
+                stamped on every deterministic page, so an index built without
+                a key opened every page it had under "verify against the source
+                before relying on it", about pages that are pure index output
+                and have nothing to verify. Same sentence, same place as the
+                action that resolves it, no alarm colour: the reader is told
+                once, at the point it is actionable.
+
+                `proseLost` is checked on its own rather than under
+                `isTemplatePage`. A failed page is always a template here,
+                because the fallback substitutes a template render, so the two
+                are equivalent today. Coupling them would mean any other writer
+                of the marker could stamp a real provider name and silently
+                lose the caveat. */}
+            {(proseLost || (isTemplatePage && upgradeSlot)) && (
               <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-[var(--color-border-default)] pt-4">
                 <p className="text-xs text-[var(--color-text-tertiary)]">
-                  This page is built from the index. A model can write the how and
-                  why on top of it.
+                  {proseLost
+                    ? "This page is built from the index. A model was meant to write over it on the last run and the call did not complete."
+                    : "This page is built from the index. A model can write the how and why on top of it."}
                 </p>
                 {upgradeSlot}
               </div>

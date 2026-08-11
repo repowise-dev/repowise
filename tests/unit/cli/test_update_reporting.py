@@ -183,3 +183,37 @@ class TestGenerationReport:
         assert "overlap exploded" in text
         assert "RuntimeError" in text
         assert "checks did not run" in text
+
+
+class TestDeadCodeCountsAreScopedToTheUpdate:
+    """The dead-code report is repo-wide, but this panel summarises the update
+    that just ran. Reporting the repo-wide totals would turn a one-file change
+    on a large repository into "Dead code  759 unreachable" where it had said
+    0, which reads as the update having caused it.
+    """
+
+    def _report(self):
+        from types import SimpleNamespace
+
+        from repowise.core.analysis.dead_code.models import DeadCodeKind
+
+        def _f(path, kind):
+            return SimpleNamespace(file_path=path, kind=kind)
+
+        return SimpleNamespace(
+            findings=[
+                _f("changed.py", DeadCodeKind.UNREACHABLE_FILE),
+                _f("changed.py", DeadCodeKind.UNUSED_EXPORT),
+                _f("elsewhere.py", DeadCodeKind.UNREACHABLE_FILE),
+                _f("elsewhere2.py", DeadCodeKind.UNUSED_EXPORT),
+            ]
+        )
+
+    def test_only_the_changed_files_are_counted(self):
+        assert reporting._dead_code_counts(self._report(), ["changed.py"]) == (1, 1)
+
+    def test_no_scope_still_counts_everything(self):
+        assert reporting._dead_code_counts(self._report(), None) == (2, 2)
+
+    def test_a_missing_report_counts_as_nothing(self):
+        assert reporting._dead_code_counts(None, ["changed.py"]) == (0, 0)

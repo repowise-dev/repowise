@@ -57,6 +57,7 @@ export interface CodeHealthAdapter {
   getCoverage(opts?: {
     file_path?: string;
     limit?: number;
+    module_limit?: number;
   }): Promise<HealthCoverageResponse>;
 
   /** Build an href to a file detail page. */

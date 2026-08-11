@@ -521,7 +521,10 @@ class TestWorkspaceDiagnostics:
     def test_diagnostics_help(self, runner):
         result = runner.invoke(cli, ["workspace", "diagnostics", "--help"])
         assert result.exit_code == 0
-        assert "--json" in result.output
+        # ``--json`` still works but is hidden; ``--format`` is the one
+        # documented spelling. See tests/unit/cli/test_format_json_rollout.py.
+        assert "--format" in result.output
+        assert "--json" not in result.output
 
 
 # ---------------------------------------------------------------------------

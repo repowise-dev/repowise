@@ -12,6 +12,7 @@ from repowise.core.sessions.adapters.base import (
     RawPrefilter,
 )
 from repowise.core.sessions.adapters.claude_code import ClaudeCodeAdapter
+from repowise.core.sessions.adapters.codex import CodexAdapter
 from repowise.core.sessions.adapters.registry import (
     get_adapter,
     register_adapter,
@@ -23,6 +24,7 @@ __all__ = [
     "INTENT_TOOL_CALLS",
     "INTENT_TURNS",
     "ClaudeCodeAdapter",
+    "CodexAdapter",
     "HarnessAdapter",
     "RawPrefilter",
     "get_adapter",

@@ -179,7 +179,6 @@ workspace overlays, MCP responses, and CLI output.
 | Dependency summaries | Summaries of already-generated dependency pages. | `assemble_file_page()` with `page_summaries` | `{ "src/db.py": "Database access layer..." }` |
 | RAG context | Snippets from vector search for related generated pages. | `_generate_file_page_from_ctx()` | `["[file_page:src/schema.py]\nDefines API schema..."]` |
 | Token estimate | `len(text) // 4` heuristic. | `ContextAssembler._estimate_tokens()` | `3200` |
-| Structural summary mode | Large-file outline instead of raw source snippet. | `_build_structural_summary()` | `[Large file - structural summary mode]` |
 | Significant file | File selected for its own `file_page`. | `_is_significant_file()` | Entry point, top PageRank, bridge file, package `__init__.py`, or test with symbols |
 | Top symbol selection | Public symbols selected by their file PageRank and percentile budget. | `PageGenerator.generate_all()` | Top 10 percent of public symbols, capped by page budget |
 | Page budget | Hard cap `max(50, int(num_files * max_pages_pct))`. | `PageGenerator.generate_all()` | 800 files with 10 percent cap -> 80-page budget |

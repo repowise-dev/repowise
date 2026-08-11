@@ -229,13 +229,15 @@ class TestSessionState:
     def test_state_file_lives_under_repowise(self, repo: Path) -> None:
         _write_big_file(repo, "a.py", lines=10)
         _read_event(repo, "a.py", num_lines=10)
-        assert _session_state_path(repo).exists()
-        state = json.loads(_session_state_path(repo).read_text(encoding="utf-8"))
+        assert _session_state_path(repo, SESSION).exists()
+        state = json.loads(_session_state_path(repo, SESSION).read_text(encoding="utf-8"))
         assert state["session_id"] == SESSION
         assert "a.py" in state["reads"]
 
     def test_corrupt_state_file_is_replaced_not_fatal(self, repo: Path) -> None:
-        _session_state_path(repo).write_text("{not json", encoding="utf-8")
+        corrupt = _session_state_path(repo, SESSION)
+        corrupt.parent.mkdir(parents=True, exist_ok=True)
+        corrupt.write_text("{not json", encoding="utf-8")
         _write_big_file(repo, "a.py", lines=10)
         assert _read_event(repo, "a.py", num_lines=10) is None
         state = _load_session_state(repo, SESSION)
@@ -251,7 +253,7 @@ class TestSessionState:
             "stale_notified": [],
         }
         _save_session_state(repo, state)
-        saved = json.loads(_session_state_path(repo).read_text(encoding="utf-8"))
+        saved = json.loads(_session_state_path(repo, SESSION).read_text(encoding="utf-8"))
         assert len(saved["reads"]) == 400
         # Most recent timestamps survive the trim.
         assert "f599.py" in saved["reads"]

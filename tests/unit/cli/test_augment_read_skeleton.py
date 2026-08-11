@@ -19,14 +19,21 @@ from pathlib import Path
 
 import pytest
 
+from repowise.cli.agent_adapters.claude_code import (
+    ClaudeCodeAdapter,
+    _recorded_client_version,
+)
 from repowise.cli.commands.augment_cmd import _handle_post_tool_use
 from repowise.cli.commands.augment_cmd.read_skeleton import (
     _MAX_OUTPUT_CHARS,
-    _recorded_client_version,
     enabled,
     is_unbounded_read,
-    supports_updated_output,
 )
+
+
+def supports_updated_output() -> bool:
+    """The probe under test, now owned by the harness adapter that answers it."""
+    return ClaudeCodeAdapter().supports_updated_output()
 
 _SESSION = "sess-1"
 
@@ -344,11 +351,12 @@ def test_a_verification_read_after_an_edit_is_left_alone(repo: Path) -> None:
         {"file_path": str(repo / "pkg/big.py")},
         _read_output(repo, "pkg/big.py"),
     )
+    adapter = ClaudeCodeAdapter()
 
-    served, _ = _skeleton_replacement(*args, state, edited_since_read=False)
+    served, _ = _skeleton_replacement(*args, state, adapter, edited_since_read=False)
     assert served is not None
     state["skeletonized"].clear()
-    served, _ = _skeleton_replacement(*args, state, edited_since_read=True)
+    served, _ = _skeleton_replacement(*args, state, adapter, edited_since_read=True)
     assert served is None
 
 

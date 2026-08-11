@@ -70,6 +70,14 @@ class Repository(Base):
     first_commit_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_lines_added: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_lines_deleted: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The commit the two churn totals above were computed at, so the next capture
+    # can add the range since it instead of re-walking the whole history (the
+    # walk was the single most expensive git call on the update path). Written
+    # only together with a churn figure, and only trusted after the next capture
+    # re-proves it is still an ancestor of HEAD and that the commit counts
+    # reconcile. NULL on indexes written before this, which just means the next
+    # capture walks once and anchors itself.
+    churn_anchor_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -282,6 +290,12 @@ class GraphEdge(Base):
     imported_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     edge_type: Mapped[str] = mapped_column(String(64), nullable=False, default="imports")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    # Provenance of a synthesised edge (e.g. "same_package", "header_source_pair").
+    # NULL for edges that come from a real import/using directive. Cycle detection
+    # reads it to drop intra-compilation-unit edges; see
+    # repowise.core.ingestion.cohesion. Persisted because the health engine and
+    # incremental updates run against a graph rehydrated from these rows.
+    hint_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1243,6 +1257,13 @@ class HealthSnapshot(Base):
     worst_performer_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     worst_performer_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     per_file_scores_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # ``{path: total_deduction}`` for the files whose score is held at the
+    # floor, and only those — everywhere else the deduction is exactly
+    # ``10 - score``, so this carries what the clamp destroys and nothing more.
+    # A sibling column rather than a richer value inside ``per_file_scores_json``
+    # because that blob's ``{path: score}`` shape is parsed by three readers,
+    # two of which would fail quietly if a value became a dict.
+    per_file_deductions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
 
 class CoverageFile(Base):

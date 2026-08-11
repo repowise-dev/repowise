@@ -13,6 +13,7 @@ from repowise.core.persistence.models import (
     GitMetadata,
     Page,
 )
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
@@ -273,11 +274,13 @@ async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict
     """
     results = []
     src = "vector"
-    with contextlib.suppress(TimeoutError, Exception):
-        results = await asyncio.wait_for(
-            ctx.vector_store.search(query, limit=fetch_limit * 4),
-            timeout=8.0,
-        )
+    # Skipped on a keyless index, which then falls through to the FTS branch.
+    if store_has_semantic_vectors(ctx.vector_store):
+        with contextlib.suppress(TimeoutError, Exception):
+            results = await asyncio.wait_for(
+                ctx.vector_store.search(query, limit=fetch_limit * 4),
+                timeout=8.0,
+            )
     if not results:
         src = "fts"
         with contextlib.suppress(Exception):
@@ -565,8 +568,13 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
 
     Readiness is awaited by the caller (``_wait_for_vector_store``) before the
     fused retrieve runs, so this path does not re-wait.
+
+    Returns nothing on a keyless index. ``store_has_semantic_vectors`` explains
+    why the mock's vectors cannot be ranked on; the reason this is enforced here
+    rather than in ``_fused_retrieve`` is that this function is the only place
+    the vector leg is entered, so a later caller inherits the guard.
     """
-    if ctx.vector_store is None:
+    if ctx.vector_store is None or not store_has_semantic_vectors(ctx.vector_store):
         return []
     with contextlib.suppress(Exception):
         return await asyncio.wait_for(ctx.vector_store.search(query, limit=limit), timeout=8.0)
@@ -882,8 +890,14 @@ async def _structured_search(
     # hybrid modes the ranked pool leads with symbol hits, and those are the
     # entries most likely to collapse onto one another (several symbols of one
     # file). Deduping them is the point.
-    if candidates := file_candidates(results, limit=limit):
-        response["candidates"] = candidates
+    #
+    # Bound to its own name, NOT to ``candidates``: that one holds the query's
+    # identifiers, which the exact-match note below quotes. Rebinding it here
+    # made the note quote file paths as if they were the identifiers asked for,
+    # and — worse — made its gate true for any query with results at all, so a
+    # prose query that names no identifier was told no symbol matched it.
+    if file_cands := file_candidates(results, limit=limit):
+        response["candidates"] = file_cands
     # Exact-match honesty: an identifier-shaped query whose target names no
     # indexed symbol still returns fuzzy neighbours. Say so, or the agent
     # anchors on a wrong hit that looks authoritative (their Alamofire

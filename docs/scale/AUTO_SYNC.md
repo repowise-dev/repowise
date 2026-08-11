@@ -64,14 +64,25 @@ Watches your working directory for file saves and auto-updates. Useful during
 active development when you want the wiki to stay current without committing.
 
 ```bash
-repowise watch              # watch current directory
+repowise watch                  # watch current directory
 repowise watch /path/to/repo
 repowise watch --debounce 5000  # wait 5s after last change (default: 2s)
+repowise watch --index-only     # no model calls per save
 ```
 
 Press `Ctrl+C` to stop.
 
-Changes to files inside `.repowise/` are ignored to prevent update loops.
+Unlike the post-commit hook, the watcher indexes the working tree: staged,
+unstaged and untracked files all reach the index without a commit.
+
+Ignored, so a build or an update of repowise's own files never triggers a run:
+`.repowise/`, `.git/`, `node_modules/`, build output and other blocklisted
+directories, lockfiles and non-source files, and the files repowise manages
+itself (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, `.claude/`).
+
+On a repo indexed with docs, each trigger regenerates the changed files' pages
+with a model. Use `--index-only` to keep the index current for free and leave
+the prose for a later `repowise update`.
 
 ---
 

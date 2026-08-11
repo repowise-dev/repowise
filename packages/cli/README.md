@@ -119,7 +119,7 @@ repowise update --since a1b2c3d
 
 ### `repowise watch`
 
-Watch a repository for file changes and automatically run `repowise update` after a debounce period. Useful during active development.
+Watch a repository for file changes and automatically run `repowise update` after a debounce period. Useful during active development: it indexes the working tree, so staged, unstaged and untracked files reach the index without a commit.
 
 ```
 repowise watch [PATH] [OPTIONS]
@@ -130,6 +130,7 @@ repowise watch [PATH] [OPTIONS]
 | `--provider` | last used | LLM provider |
 | `--model` | provider default | Model override |
 | `--debounce` | `2000` | Milliseconds to wait after the last change before updating |
+| `--index-only` | off | Skip LLM page regeneration on every trigger |
 
 ```bash
 # Watch current directory
@@ -137,9 +138,12 @@ repowise watch
 
 # Custom debounce (wait 5 seconds after last change)
 repowise watch --debounce 5000
+
+# Keep the index current without a model call per save
+repowise watch --index-only
 ```
 
-Press `Ctrl+C` to stop. Changes to `.repowise/` are automatically ignored.
+Press `Ctrl+C` to stop. Writes to `.repowise/`, `.git/`, build output, and the files repowise manages itself (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`) never trigger an update.
 
 ---
 

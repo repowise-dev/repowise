@@ -2,6 +2,26 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.40.0
+
+### Added
+- `/repowise:security` runs the full-history secret scan. Working-tree scanning
+  already happens during `init` and `update`; this command is for walking git
+  history to find secrets that were later removed. No model call, and re-runs
+  are idempotent (#1107).
+
+### Changed
+- The `PostToolUse` matcher no longer selects `Bash` or `PowerShell`. Across one
+  287-session corpus those were 51% of all hook invocations and 0.7% of the
+  emissions, and the cost is process start, paid before repowise reads the
+  payload. An installed machine narrows itself on the next CLI invocation
+  without a re-init (#1382).
+- A `PostToolUseFailure` entry is registered, matching
+  `Read|Edit|Write|Grep|Glob|NotebookEdit`. When a failed path's basename
+  resolves to exactly one indexed file still on disk, repowise names it (#1336).
+- Version bump to track the repowise 0.40.0 release. The MCP tool surface is
+  unchanged; the CLI flags the commands document still match the shipped CLI.
+
 ## 0.39.0
 
 ### Changed

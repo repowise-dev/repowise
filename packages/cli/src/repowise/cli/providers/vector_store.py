@@ -72,9 +72,15 @@ def build_vector_store(repo_path: Path, embedder: Any) -> Any | None:
         # "not updating" rather than "skipped" because the generation phase
         # substitutes a throwaway in-memory store for a None one, so this run
         # does still embed — it just does not persist anywhere.
-        from repowise.cli.helpers import console
+        #
+        # stderr, not stdout: this fires two modules below whichever command
+        # asked for a store, so a command-level "divert notices in --format
+        # json" cannot reach it, and on stdout it would land inside the JSON
+        # document. Same defect that corrupted ``search --format json`` from
+        # ``build_embedder``; fixed at the source for the same reason.
+        from repowise.cli.helpers import err_console
 
-        console.print(
+        err_console.print(
             "[yellow]Search index left unchanged:[/yellow] this run has no real embedder, "
             "and the\nexisting index was built with one. Kept it rather than overwrite it. "
             "Set an\nembedder key and run [cyan]repowise reindex[/cyan] to refresh it."

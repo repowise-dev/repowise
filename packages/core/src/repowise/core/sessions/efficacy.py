@@ -121,7 +121,7 @@ AMBIGUOUS = "ranged_read"
 #: Surfaces this module judges. ``decision`` rows key on decision-record ids
 #: and are judged by the decision miner; ``read_enrich`` is a silent KPI with
 #: no emission to act on.
-CLASSIFIED_SURFACES = ("read", "search", "fix_history", "wrong_path")
+CLASSIFIED_SURFACES = ("read", "search", "fix_history", "wrong_path", "glob")
 
 #: (surface, category) pairs that carry no recommended action, so an unacted
 #: firing is not a failure. Reported as a count, excluded from rates. The
@@ -137,6 +137,18 @@ NO_ACTION_EXPECTED = frozenset(
         ("read", "skeleton_served"),
         ("read", "skeleton_recovered_full"),
         ("read", "skeleton_ranged"),
+        # A collapsed re-read leaves as ``updatedToolOutput``, so the pattern
+        # pass below can never see it, and nothing is asked of the agent
+        # either way. Deliberately *not* the retired ``("read", "reread")``
+        # name: that was the advisory version of this idea, scored against a
+        # closed population, and pooling the two would average an advisory's
+        # adoption rate with a replacement's firing count.
+        ("read", "reread_collapsed"),
+        # Its sibling: the file *did* change under the agent, so the bytes
+        # were served and the notice only says why they moved. Like the
+        # stale-read flag, the behaviour it asks for — stop reasoning from the
+        # earlier copy — leaves no trace in a transcript.
+        ("read", "changed_since_read"),
         # A *served* flood digest, for the same structural reason: it leaves as
         # updatedToolOutput, so the pattern pass below can never see it. The
         # appended ``search``/``digest`` rows are still scored normally, and the
@@ -159,6 +171,49 @@ RETIRED_CATEGORIES = frozenset(
         ("read", "skeleton_nudge"),
     }
 )
+
+#: Rows whose text the agent never saw. They exist to count something — a
+#: recovery, a served read — and their ``chars`` is a label, not a bill. Any
+#: cost model that sums ``chars`` across the ledger has to exclude these or it
+#: charges the agent for strings that never left this process.
+MEASUREMENT_ONLY = frozenset(
+    {
+        ("read", "skeleton_recovered_full"),
+        ("read", "skeleton_ranged"),
+        ("read_enrich", "read_after_served"),
+    }
+)
+
+#: Rows whose text *replaced* a tool result rather than being added beside it.
+#: Their chars are not a debit either: the agent was going to be billed for
+#: that tool result regardless, and these are smaller than what they stood in
+#: for. Their saving is already recorded in the savings ledger.
+REPLACEMENT_CATEGORIES = frozenset(
+    {
+        ("read", "skeleton_served"),
+        ("read", "reread_collapsed"),
+        ("search", "digest_served"),
+    }
+)
+
+
+def advisory_cost(rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """``(chars, firings)`` the agent was actually billed for, over ledger rows.
+
+    Everything that added text next to a tool result: notices, rescues, the
+    appended digest, the session block. Measurement rows and replacements are
+    excluded for the reasons given above, so this is the debit side and only
+    that.
+    """
+    chars = firings = 0
+    for row in rows:
+        pair = (row.get("surface", ""), row.get("category", ""))
+        if pair in MEASUREMENT_ONLY or pair in REPLACEMENT_CATEGORIES:
+            continue
+        chars += row.get("chars") or 0
+        firings += row.get("firings") or 0
+    return chars, firings
+
 
 #: Firings whose recommended outcome is a *non*-action, scored as compliance
 #: (did the agent avoid re-offending?) rather than adoption. Same ``acted``
@@ -207,6 +262,11 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "read",
         "stale_read",
         re.compile(r"^\[repowise\] (?P<target>\S+) changed \(Edit/Write\) after your previous"),
+    ),
+    (
+        "read",
+        "changed_since_read",
+        re.compile(r"^\[repowise\] (?P<target>\S+) changed on disk since you read it"),
     ),
     (
         "fix_history",
@@ -269,6 +329,16 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         re.compile(
             r"^\[repowise\] \S+ is not in this tree\. "
             r"The only indexed \S+ is (?P<target>.+)$"
+        ),
+    ),
+    # The paths ride on the continuation lines, which ``parse_emission``
+    # already harvests, so this header captures the pattern and nothing else.
+    (
+        "glob",
+        "timeout_rescue",
+        re.compile(
+            r"^\[repowise\] That search timed out, so the index answered it instead\. "
+            r"\d+ indexed path\(s\) match `(?P<pattern>[^`]+)`"
         ),
     ),
 )

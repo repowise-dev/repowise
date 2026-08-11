@@ -7,7 +7,7 @@ tests).
 
 from __future__ import annotations
 
-from .engine import HealthAnalyzer
+from .engine import HEALTH_ANALYZER_VERSION, HealthAnalyzer
 from .models import (
     HealthFileMetricData,
     HealthFindingData,
@@ -16,6 +16,7 @@ from .models import (
 )
 
 __all__ = [
+    "HEALTH_ANALYZER_VERSION",
     "HealthAnalyzer",
     "HealthFileMetricData",
     "HealthFindingData",

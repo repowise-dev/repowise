@@ -276,7 +276,15 @@ def dead_code_command(
         )
 
     console.print(table)
+    # confidence_summary is a {"high": N, ...} dict; interpolating it printed a
+    # raw Python repr, braces and quotes included, at the end of an otherwise
+    # formatted report.
+    tiers = ", ".join(
+        f"{tier} {count}"
+        for tier in ("high", "medium", "low")
+        if (count := report.confidence_summary.get(tier, 0))
+    )
     console.print(
-        f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold] "
-        f"(confidence: {report.confidence_summary})"
+        f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold]"
+        + (f" ({tiers} confidence)" if tiers else "")
     )

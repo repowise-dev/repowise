@@ -38,6 +38,7 @@ from .crud import (
     get_conversation,
     get_cross_community_edges,
     get_dead_code_findings,
+    get_dead_code_git_fields,
     get_dead_code_summary,
     get_decision,
     get_decision_health_summary,
@@ -226,6 +227,7 @@ __all__ = [
     "get_db_url",
     # dead code crud
     "get_dead_code_findings",
+    "get_dead_code_git_fields",
     "get_dead_code_summary",
     "get_decision",
     "get_decision_edges",

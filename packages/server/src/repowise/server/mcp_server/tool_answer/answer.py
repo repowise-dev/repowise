@@ -133,6 +133,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _INLINE_BODY_MAX_LINES,
     _INLINE_BODY_MAX_SYMBOLS,
     _PAGE_EXCERPT_HITS,
+    _SYMBOL_AGREEMENT_TOP_RANK_MAX,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
 )
@@ -194,6 +195,12 @@ if _MAX_CHARS_PER_HIT_EXCERPT < _GATED_EXCERPT_CHARS:
 # value (0/off/false/no) to restore the legacy abstain-on-ambiguous behaviour.
 _ALWAYS_SYNTHESIZE_ENV = "REPOWISE_ANSWER_ALWAYS_SYNTHESIZE"
 _AGREEMENT_CONFIDENCE_ENV = "REPOWISE_ANSWER_AGREEMENT_CONFIDENCE"
+# The keyless-only half of that signal (FTS + symbol in place of FTS + vector,
+# which a keyless index can never produce). Its own flag on purpose: the pair
+# above was tuned against the 99-question eval, whereas this substitutes a leg
+# the fusion already prices at a third weight, so it must be reversible and
+# A/B-able WITHOUT also switching off the measured half.
+_SYMBOL_AGREEMENT_ENV = "REPOWISE_ANSWER_SYMBOL_AGREEMENT"
 # Keep the exact_symbol union fast path from hijacking a "how does X work"
 # mechanism question, whose real answer often lives in a different file than the
 # named symbol's body.
@@ -287,15 +294,30 @@ def _agreement_confidence_enabled() -> bool:
     }
 
 
-def _agreement_dominant(hits: list[dict]) -> bool:
+def _symbol_agreement_enabled() -> bool:
+    """Whether a keyless index may read agreement from FTS + the symbol leg.
+
+    Independently reversible from :func:`_agreement_confidence_enabled`, which
+    governs the measured FTS + vector pair. Turning this off restores the state
+    where a keyless index simply cannot earn the agreement lift.
+    """
+    return os.environ.get(_SYMBOL_AGREEMENT_ENV, "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _agreement_dominant(hits: list[dict], *, vector_leg_keyless: bool = False) -> bool:
     """True when the top hit is the confident pick by retriever AGREEMENT.
 
     RRF fusion compresses scores: a page both retrievers rank #1 barely
     outscores one they rank #2 (ratio ~1.017), so the numeric dominance ratio
     calls the *most* confident retrieval "non-dominant" and demotes it. This
-    reads the per-source ranks (``_fts_rank`` / ``_vec_rank``) instead: when FTS
-    and vector independently put the SAME page at (or within a rank of) the top,
-    that consensus is a stronger ground-truth signal than any RRF score margin.
+    reads the per-source ranks instead: when two retrievers put the SAME page at
+    (or within a rank of) the top, that consensus is a stronger ground-truth
+    signal than any RRF score margin.
 
     Conservative. Requires the top hit to be found by BOTH retrievers near the
     top of each, to rank no lower than the runner-up in either source, and the
@@ -303,30 +325,66 @@ def _agreement_dominant(hits: list[dict]) -> bool:
     lower-ranked in a source). Otherwise returns False and the caller falls back
     to the pure ratio/gap gate. Agreement can only LIFT — the demotion gates
     still apply.
+
+    ``vector_leg_keyless`` swaps the vector leg for the symbol leg. On an index
+    with no semantic vectors the vector leg is skipped outright, so ``_vec_rank``
+    is never written for any question and a fixed FTS+vector pair makes this
+    signal permanently unreachable — every keyless answer is then graded by the
+    pure ratio gate, which is exactly the gate this function exists because it
+    mis-reads. The symbol leg runs on every index and records ``_sym_rank``.
+
+    **The caller must pass the retrieval leg's own status, not infer it from
+    the hits.** By the time this runs, ``hits`` is capped to the top 5 out of a
+    much larger fused pool, so "no hit carries a ``_vec_rank``" is *not*
+    evidence the leg was skipped: a keyed index whose vector leg timed out,
+    errored, was scope-filtered, or was simply outranked by five FTS-and-symbol
+    hits presents identically. Substituting on that inference would fire exactly
+    when evidence is weakest and manufacture "high" confidence from it.
+
+    The symbol pair is held to a stricter rank than the vector pair. FTS and the
+    symbol leg are not independent — the wiki page FTS indexes contains the
+    public symbol table the symbol leg matches on — so their agreeing is closer
+    to one lexical match observed twice than to two retrievers concurring. The
+    fusion beside this already prices that leg at a third of the others'
+    (``_SYMBOL_LEG_RRF_K`` 180 vs ``_RRF_K`` 60, after a same-named React
+    component displaced the right file on the 99-question eval). Requiring an
+    exact rank-0 tie keeps the weaker signal from carrying the stronger claim.
+
+    Note the consequence: at ``top_rank_max = 0`` the runner-up comparison below
+    can no longer reject anything, because two hits cannot share rank 0 within
+    one leg. The symbol pair therefore reduces exactly to "the top hit is #1 in
+    FTS and #1 in the symbol leg", which is the intended rule; the shared gap
+    check is retained for the vector pair, where it does constrain.
     """
     if len(hits) < 2:
         return False
+    if vector_leg_keyless:
+        second_field = "_sym_rank"
+        top_rank_max = _SYMBOL_AGREEMENT_TOP_RANK_MAX
+    else:
+        second_field = "_vec_rank"
+        top_rank_max = _AGREEMENT_TOP_RANK_MAX
     top = hits[0]
-    top_fts = top.get("_fts_rank")
-    top_vec = top.get("_vec_rank")
+    top_a = top.get("_fts_rank")
+    top_b = top.get(second_field)
     # Top must be a consensus pick: found by both retrievers, near the top of
     # each. A one-retriever top hit is exactly the ambiguous case we must NOT
     # lift.
-    if top_fts is None or top_vec is None:
+    if top_a is None or top_b is None:
         return False
-    if top_fts > _AGREEMENT_TOP_RANK_MAX or top_vec > _AGREEMENT_TOP_RANK_MAX:
+    if top_a > top_rank_max or top_b > top_rank_max:
         return False
     second = hits[1]
-    sec_fts = second.get("_fts_rank")
-    sec_vec = second.get("_vec_rank")
+    sec_a = second.get("_fts_rank")
+    sec_b = second.get(second_field)
     # Runner-up found by only one retriever → the consensus top clearly wins.
-    if sec_fts is None or sec_vec is None:
+    if sec_a is None or sec_b is None:
         return True
     # Runner-up found by both: the top must rank at least as high in BOTH
     # sources (no source disagrees) and strictly ahead in at least one.
-    if top_fts <= sec_fts and top_vec <= sec_vec:
-        return (sec_fts - top_fts) >= _AGREEMENT_RANK_GAP or (
-            sec_vec - top_vec
+    if top_a <= sec_a and top_b <= sec_b:
+        return (sec_a - top_a) >= _AGREEMENT_RANK_GAP or (
+            sec_b - top_b
         ) >= _AGREEMENT_RANK_GAP
     return False
 
@@ -1160,7 +1218,20 @@ async def get_answer(
     # that RRF fusion compresses out of the numeric score. Computed once and
     # OR'd into every place the ratio/gap gate decides dominance, so it can
     # only LIFT a retrieval — never demote one the ratio already trusts.
-    agreement_dominant = _agreement_dominant(hits) if _agreement_confidence_enabled() else False
+    # Read the vector leg's own recorded status rather than inferring it from
+    # `hits`, which is capped to 5 by here: "no _vec_rank in the top 5" is also
+    # what a timed-out, errored, scope-filtered or simply outranked vector leg
+    # looks like, and those must NOT fall back to the symbol leg.
+    agreement_dominant = (
+        _agreement_dominant(
+            hits,
+            vector_leg_keyless=(
+                _symbol_agreement_enabled() and _retrieval_legs().get("vector") == "keyless"
+            ),
+        )
+        if _agreement_confidence_enabled()
+        else False
+    )
     dominant = True
     if len(hits) >= 2:
         top_score = hits[0].get("score", 0.0)

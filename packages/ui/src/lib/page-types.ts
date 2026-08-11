@@ -109,6 +109,33 @@ export function isStubPage(
   return page.provider_name === "template";
 }
 
+/** Metadata key core stamps with the provider error a page fell back over.
+ *  Mirrors `STUB_FALLBACK_ERROR` in core's generation/models.py. */
+export const STUB_FALLBACK_ERROR = "stub_fallback_error";
+
+/** True when this page is a stub standing in for prose a run TRIED to write
+ *  and lost to a provider error, as opposed to one a keyless or `--no-prose`
+ *  run rendered deterministically on purpose.
+ *
+ *  Both look identical on the page: same template, same `provider_name`. The
+ *  difference is only that one of them was supposed to be something else, and
+ *  that is the half a reader cannot infer, so it is the half worth saying.
+ *  `isStubPage` covers the other half ("no prose yet") and is what the tree
+ *  marker and the upgrade affordance read.
+ *
+ *  Keyed on the marker rather than on `confidence < 0.5`, deliberately. Until
+ *  this was split, generation stamped 0.3 on both kinds, so a threshold read
+ *  of an already-published wiki cannot tell them apart and would flag every
+ *  page of every keyless index, which is the bug. The marker is only ever
+ *  written on the failure path, in every version that has written it, so it
+ *  reads correctly against old and new artifacts alike and needs no reindex. */
+export function isStubFallbackPage(
+  page: { metadata?: Record<string, unknown> | null } | null | undefined,
+): boolean {
+  const value = page?.metadata?.[STUB_FALLBACK_ERROR];
+  return typeof value === "string" && value.length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Onboarding collection
 // ---------------------------------------------------------------------------

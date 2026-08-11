@@ -53,6 +53,7 @@ from sqlalchemy import func, select
 from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 
@@ -173,8 +174,15 @@ def retrieval_legs() -> dict[str, str]:
 
 
 def degraded_legs(legs: dict[str, str]) -> list[str]:
-    """The legs that did not run, named. Empty when retrieval was whole."""
-    return sorted(leg for leg, outcome in legs.items() if outcome != "ok")
+    """The legs that *broke*, named. Empty when retrieval was whole.
+
+    ``keyless`` is not degradation and is deliberately excluded. A keyless index
+    has no semantic vectors by construction, so its vector leg is permanently
+    absent rather than transiently broken, and naming it here would put a
+    failure marker on every answer the mode ever produces. The configuration
+    itself is reported once per response by ``_meta`` instead.
+    """
+    return sorted(leg for leg, outcome in legs.items() if outcome not in ("ok", "keyless"))
 
 # Third retrieval leg: the structural symbol index. FTS and the vector store
 # both read the generated wiki page, which by construction carries an overview
@@ -232,6 +240,9 @@ async def question_vector(ctx: Any, question: str) -> list[float] | None:
     store = getattr(ctx, "vector_store", None)
     if store is None or not question:
         return None
+    if not store_has_semantic_vectors(store):
+        # Nothing will consume it, so do not pay to compute it.
+        return None
 
     key = (id(store), question)
     cached = _QUESTION_VECTORS.get(key)
@@ -282,7 +293,14 @@ async def vector_search(
     Every backend that can search by raw vector is spared a second embedding of
     text it has already embedded; one that cannot returns None from
     ``search_by_vector`` and is asked to search the text as before.
+
+    Returns nothing on a keyless store. Guarded here rather than only at the
+    callers because this is the shared floor under every vector read in the
+    answer pipeline, and the text fallback on the last line would otherwise
+    route a keyless store straight back into the embedder this is avoiding.
     """
+    if not store_has_semantic_vectors(store):
+        return []
     if vector is not None:
         by_vector = await store.search_by_vector(vector, limit=limit)
         if by_vector is not None:
@@ -413,9 +431,18 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
 
     Also waits for vector-store readiness when the lifespan event is set —
     skipping the wait would race a background-loading store on cold start.
+
+    Returns nothing on a keyless index, before the readiness wait and before the
+    question is embedded: there is no vector worth computing when there is
+    nothing discriminative to compare it against. See
+    ``store_has_semantic_vectors``. This leg is the only entry to vector
+    retrieval here, so guarding it covers every caller.
     """
     if ctx.vector_store is None:
         _record_leg("vector", "absent")
+        return []
+    if not store_has_semantic_vectors(ctx.vector_store):
+        _record_leg("vector", "keyless")
         return []
     ready = getattr(ctx, "vector_store_ready", None)
     if ready is not None:

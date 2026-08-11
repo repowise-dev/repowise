@@ -17,6 +17,7 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import console
+from repowise.cli.output import emit_json, format_option, notice_console
 
 _KIND_LABELS = {
     "wrong_tool": "wrong tool",
@@ -52,7 +53,10 @@ _KIND_LABELS = {
     show_default=True,
     help="Occurrences a rule needs before --write includes it.",
 )
-def corrections_command(path: str | None, days: float, write_block: bool, min_count: int) -> None:
+@format_option()
+def corrections_command(
+    path: str | None, days: float, write_block: bool, min_count: int, fmt: str
+) -> None:
     """Show recurring command fumbles mined from local agent transcripts.
 
     PATH defaults to the current directory's enclosing repowise repo. The
@@ -62,9 +66,31 @@ def corrections_command(path: str | None, days: float, write_block: bool, min_co
     from repowise.cli.helpers import find_repowise_repo_root
     from repowise.core.distill.corrections import scan_corrections
 
+    notices = notice_console(fmt)
     start = Path(path).resolve() if path else Path.cwd()
     repo_root = find_repowise_repo_root(start) or start
     report = scan_corrections(repo_root, days=days)
+
+    if fmt == "json":
+        emit_json(
+            {
+                "repo": str(repo_root),
+                "days": days,
+                "min_count": min_count,
+                "rules": report["rules"],
+            }
+        )
+        # --write is a filesystem effect, not a rendering one, so json mode
+        # still performs it; only its confirmations move to stderr.
+        #
+        # Gated on there being rules, matching the table path, which returns
+        # before it can write. Without the guard, a scan that found nothing
+        # would *prune* the managed block in json mode and leave it alone in
+        # table mode — a destructive difference between two spellings of the
+        # same command, on a file the user maintains.
+        if write_block and report["rules"]:
+            _write_managed_blocks(repo_root, report["rules"], min_count, out=notices)
+        return
 
     if not report["rules"]:
         console.print(
@@ -115,13 +141,20 @@ def corrections_command(path: str | None, days: float, write_block: bool, min_co
     console.print()
 
 
-def _write_managed_blocks(repo_root: Path, rules: list[dict], min_count: int) -> None:
-    """Upsert the managed block into CLAUDE.md/AGENTS.md (or prune it)."""
+def _write_managed_blocks(
+    repo_root: Path, rules: list[dict], min_count: int, out=None
+) -> None:
+    """Upsert the managed block into CLAUDE.md/AGENTS.md (or prune it).
+
+    *out* is where the confirmations go; it is stderr under ``--format json``
+    so the write still reports itself without landing in the payload.
+    """
     from repowise.core.distill.corrections import (
         render_corrections_block,
         update_corrections_block,
     )
 
+    out = out or console
     block = render_corrections_block(rules, min_count=min_count)
     claude_md = repo_root / ".claude" / "CLAUDE.md"
     agents_md = repo_root / "AGENTS.md"
@@ -130,7 +163,7 @@ def _write_managed_blocks(repo_root: Path, rules: list[dict], min_count: int) ->
     # is only updated when the user already maintains one.
     targets = [claude_md] + ([agents_md] if agents_md.exists() else [])
     if block is None:
-        console.print(
+        out.print(
             f"  [yellow]No rule seen {min_count}+ times - managed block "
             "removed where present.[/yellow]"
         )
@@ -138,8 +171,8 @@ def _write_managed_blocks(repo_root: Path, rules: list[dict], min_count: int) ->
         try:
             changed = update_corrections_block(target, block)
         except OSError:
-            console.print(f"  [yellow]Could not update {target}[/yellow]")
+            out.print(f"  [yellow]Could not update {target}[/yellow]")
             continue
         if changed:
             verb = "updated" if block is not None else "removed"
-            console.print(f"  [green]✓[/green] Known-corrections block {verb} ({target})")
+            out.print(f"  [green]✓[/green] Known-corrections block {verb} ({target})")

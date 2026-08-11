@@ -179,6 +179,27 @@ class LanguageRegistry:
         """Return the union of all manifest filenames."""
         return frozenset(f for s in self._specs.values() for f in s.manifest_files)
 
+    def package_manifest_filenames(self) -> frozenset[str]:
+        """Filenames that mark their directory as the root of a package.
+
+        The single source of truth for "is this directory a package". Both
+        monorepo detection (:mod:`..traverser`) and health's ``module``
+        attribution read this, so registering a language grants a repo in that
+        language monorepo bucketing with no second edit.
+
+        This is :meth:`manifest_filenames` minus each spec's
+        ``build_config_manifests`` — the whole union is not usable directly
+        because it also carries build configuration (``vite.config.js``, the
+        .NET ``Directory.Build.*`` family) that appears in directories which
+        are not packages, and a false root fragments the module rollup.
+        """
+        return frozenset(
+            f
+            for s in self._specs.values()
+            for f in s.manifest_files
+            if f not in s.build_config_manifests
+        )
+
     def blocked_dirs(self) -> frozenset[str]:
         """Return the union of all per-language blocked directories."""
         return frozenset(d for s in self._specs.values() for d in s.blocked_dirs)

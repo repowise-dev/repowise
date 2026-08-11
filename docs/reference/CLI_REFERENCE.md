@@ -373,6 +373,14 @@ Pass `--refresh-ui` to skip (1) and (2) and force (3).
 
 Watch for file changes and auto-update wiki pages. Press `Ctrl+C` to stop.
 
+Unlike the post-commit hook, this indexes **uncommitted** work: staged,
+unstaged and untracked files all reach the index, so what you see in the wiki
+matches what is on disk rather than what you last committed.
+
+Writes inside `.repowise/`, `.git/`, `node_modules/`, build output and the
+files repowise manages itself (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`) never
+trigger an update.
+
 **Options:**
 
 | Flag | Description |
@@ -382,16 +390,20 @@ Watch for file changes and auto-update wiki pages. Press `Ctrl+C` to stop.
 | `--debounce` | Delay in ms after last change (default: 2000) |
 | `--workspace` / `-w` | Watch all workspace repos |
 | `--no-workspace` | Force single-repo mode |
-| `--repo` | Watch a single workspace repo by alias |
+| `--index-only` | Skip LLM page regeneration on every trigger (workspace mode is index-only either way) |
 | `--verbose` / `-v` | Show debug logs from the pipeline and triggered updates |
 
 ```bash
 repowise watch                           # single repo (auto-detects)
 repowise watch --debounce 5000           # 5s debounce
 repowise watch --workspace               # all workspace repos
-repowise watch --repo backend            # just one
+repowise watch --index-only              # no model calls per save
 repowise watch --verbose                 # show pipeline debug logs
 ```
+
+On a repo indexed with docs, every trigger is a page regeneration with a model
+behind it. `--index-only` keeps the index, graph and health current for free
+and leaves the prose to a later `repowise update`.
 
 ---
 
@@ -399,29 +411,190 @@ repowise watch --verbose                 # show pipeline debug logs
 
 ### `repowise search QUERY [PATH]`
 
-Search wiki pages by keyword, meaning, or symbol name.
+Search wiki pages by keyword, meaning, or symbol name. Runs the same retrieval
+as the `search_codebase` MCP tool: the full-text and vector legs are fused
+rather than chosen between, per-repo excludes and tombstones are honoured, and
+decision / test pages are demoted on queries that did not ask for them.
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--mode` | `fulltext` (default), `semantic`, `symbol` |
+| `--mode` | `fulltext` (default), `semantic`, `symbol`, plus the tool's own `auto`, `concept`, `path`, `hybrid` |
 | `--limit` | Max results (default: 10) |
 | `--repo` | Scope to a specific workspace repo by alias |
 | `--all` | Fan out across every workspace repo and merge results |
 | `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
+| `--format` | `table` (default) or `json` |
+| `--full` | Emit the complete tool payload as JSON (implies `--format json`) |
+
+`fulltext` and `semantic` both run the tool's fused `concept` search, which is
+the successor to picking one leg or the other; on an index built without an
+embedder the vector leg drops out by itself and `--mode semantic` says so.
+`auto` routes on the query's shape — an identifier goes to the symbol index, a
+path resolves files, prose stays conceptual, and a mixed query runs `hybrid`.
 
 ```bash
 repowise search "rate limiting"
 repowise search "how are errors handled" --mode semantic
 repowise search "AuthService" --mode symbol
+repowise search "cli/output.py" --mode path
+repowise search "where is resolve_console_width called" --mode auto
 repowise search "rate limit" --repo backend     # workspace, one repo
 repowise search "rate limit" --all              # workspace, fan-out
 ```
 
-For question answering and synthesized explanations (not keyword lookup), use
-the MCP `get_answer` tool from your editor, or the **Chat** tab in the web UI
-(`repowise serve`), there is no dedicated CLI command for this.
+The default payload is a trimmed projection carrying `score`, `title`,
+`page_type`, `path` and `snippet` per hit (symbol hits carry `name`,
+`qualified_name`, `kind`, `path`, `line` and the `symbol_id` you pass to
+`repowise symbol`), plus `candidates` — the distinct openable files the hits
+resolve to. `--full` returns the tool's own dict instead.
+
+For a synthesized answer rather than a keyword lookup, use `repowise ask`.
+
+---
+
+### `repowise ask QUESTION`
+
+Answer a question about the codebase, with citations. The same synthesis the
+`get_answer` MCP tool performs: hybrid retrieval followed by an LLM answer over
+what it found, so this command costs an LLM call where the other query commands
+do not.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope` | Restrict retrieval to a path prefix (e.g. `packages/cli/`) |
+
+```bash
+repowise ask "how does the retry backoff work?"
+repowise ask "where is the session cookie set?" --format json
+repowise ask "how is width resolved?" --scope packages/cli/
+repowise ask "why is auth split across two modules?" --full
+```
+
+`confidence: high` is content-grounded, so it can be cited directly. A
+low-confidence answer returns `best_guesses` (a file plus why it is in the
+running) instead of an empty one.
+
+---
+
+### `repowise context TARGETS...`
+
+Triage card for files, modules or symbols: title, summary, architectural layer,
+hotspot and bug-fix history, doc freshness, and the shape of the verified
+skeleton. Relationships and risk signals, not source bytes. Batch targets in one
+call.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--include` | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton` |
+| `--no-compact` | Add structure, imports and docstrings to each card |
+
+```bash
+repowise context src/api/routes.py src/api/auth.py
+repowise context src/api/routes.py::login --include callers --include metrics
+repowise context src/api/routes.py --full        # includes the skeleton source
+```
+
+The skeleton's *text* is the bulk of the underlying payload, so the default
+reports its size and coverage and `--full` carries the source.
+
+---
+
+### `repowise symbol SYMBOL_ID`
+
+Read one function, class or constant with live-verified line bounds. `source`
+arrives in the same line-numbered format a file read produces; `verified: true`
+means the bounds were checked against the live file.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--context-lines` | Extra lines before and after the body (0-50) |
+| `--query` | Omission refs only: regex or substring filter on the restored lines |
+
+```bash
+repowise symbol "src/api/routes.py::login"
+repowise symbol "src/api/routes.py:140-180"     # live range read
+repowise symbol "repowise#a1b2c3d4e5f6"          # a distill omission ref
+```
+
+An ambiguous id (overloads, re-exports) returns every matching body rather than
+silently picking one. A truncated body carries a `continuation` you can pass
+straight back to `repowise symbol`.
+
+---
+
+### `repowise why [QUERY]`
+
+Why the code is shaped this way: decision records, rationale and git
+archaeology. Worth running before a refactor or a deliberate divergence from a
+pattern.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--target` | File path to anchor the search to. Repeatable |
+
+```bash
+repowise why "why is auth using JWT?"           # question
+repowise why src/api/auth.py                     # governing decisions + origin story
+repowise why "why the retry cap?" --target src/api/client.py
+repowise why                                     # decision health dashboard
+```
+
+Falls back to git archaeology when a path has no decisions, so it is never
+empty.
+
+---
+
+### Shared options: `ask`, `context`, `symbol`, `why`
+
+These four are thin adapters over the MCP tools of the same name, so they share
+one option block.
+
+| Flag | Description |
+|------|-------------|
+| `--path` | Repo (or workspace) root. Defaults to the current directory |
+| `--repo` | Workspace repo alias to query |
+| `--no-workspace` | Force single-repo mode even inside a workspace |
+| `--format` | `table` (default) or `json` |
+| `--full` | Emit the complete tool payload as JSON (implies `--format json`) |
+
+The repo is `--path` here rather than the trailing positional `[PATH]` the older
+commands take: `context` accepts a variadic list of targets, which would swallow
+a trailing path.
+
+`--format json` emits a **trimmed CLI projection**, not the tool's whole
+response. What each one keeps and drops is documented on the `project()`
+function in its command module. `--full` returns the raw dict, which is what an
+editor's MCP client receives. Measured on this repository:
+
+| Command | trimmed | `--full` |
+|---------|--------:|---------:|
+| `ask` | 3.4 KB | 19.5 KB |
+| `context` (one file) | 0.9 KB | 12.4 KB |
+| `why` (question) | 10.4 KB | 20.9 KB |
+| `why` (path) | 10.4 KB | 28.5 KB |
+| `symbol` | 0.7 KB | 1.0 KB |
+| `search` (8 hits) | 4.9 KB | 6.8 KB |
+| `search --mode symbol` | 4.2 KB | 5.7 KB |
+| `risk --target` (one file) | 4.5 KB | 5.3 KB |
+
+`symbol` barely moves because its payload *is* its answer — only the call
+envelope is dropped. `search` and `risk --target` are close for the same
+reason: a ranked hit and a risk card are already mostly the answer, so the trim
+takes ranking internals rather than content. The point of `--full` there is
+exactness, not size. Nothing that changes the *answer* is ever trimmed: an
+error, a not-found, a did-you-mean list, a truncation marker, a continuation
+token, and the ambiguity signals all survive at every format. `ask` reports the
+names of the heavy blocks it left out in `dropped_blocks`.
 
 ---
 
@@ -433,6 +606,7 @@ Show wiki sync state, page statistics, and coverage.
 repowise status                          # auto-detects mode
 repowise status --workspace              # all workspace repos
 repowise status --no-workspace           # force single-repo even in a workspace
+repowise status --format json            # machine-readable
 ```
 
 In workspace mode, the table includes a **Docs** column with each repo's page count and a per-repo **Docs status** block listing skip reasons (e.g. `cost gate declined`) and the exact remediation command.
@@ -492,7 +666,10 @@ to the model's baseline commit, not this repo.
 | `--ext` | Comma-separated file suffixes to count (e.g. `.py` or `.ts,.tsx`) |
 | `--exclude` / `-x` | Gitignore-style path pattern to omit. Repeatable; filters both the change and baseline. Root `.riskignore` patterns also apply. |
 | `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute calibrated band) |
+| `--target` / `-t` | Score what history says about these **files** instead of a change. Repeatable; switches the command to the `get_risk` tool |
+| `--changed-file` | With `--target`: PR mode. Leads with a directive naming what will break, which co-changes and tests are missing, and what to run |
 | `--format` | Output format: `table` (default) or `json` |
+| `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 
 ```bash
 repowise risk                 # score HEAD
@@ -500,6 +677,22 @@ repowise risk main..HEAD      # score a branch / PR range as one change
 repowise risk --ext .ts,.tsx  # restrict to specific suffixes
 repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit tests from scoring
 ```
+
+**`--target`: what history says about touching some files.** Two questions, one
+command, because they are the same question asked of different subjects. A
+`REVSPEC` scores a *change* from its diff shape; `--target` reports bug-fix
+pressure, churn trend, dependents, co-change partners and ownership for the
+named *files*. That half reads the index, so unlike the REVSPEC path it needs
+`repowise init` to have run. It is the `get_risk` MCP tool.
+
+```bash
+repowise risk --target src/auth.py                       # one file's history
+repowise risk -t src/auth.py -t src/session.py           # several
+repowise risk -t src/auth.py --changed-file src/auth.py  # PR mode + directive
+```
+
+Note `--path` on this command already means "the git repository", which is why
+the files are named with `--target`.
 
 See [`docs/layers/CHANGE_RISK.md`](../layers/CHANGE_RISK.md) for the scoring model.
 
@@ -530,12 +723,12 @@ not re-run the working-tree scan.
 | `--to <rev>` | Upper git revision bound (inclusive). Defaults to HEAD / all history |
 | `--path <dir>` | Repo path (defaults to cwd / workspace primary) |
 | `--all-patterns` | History mode: also report code-smell patterns (`eval`, `os.system`, weak hashes, …). Default history mode reports only leaked-secret patterns (`hardcoded_password` / `hardcoded_secret`) to avoid noise |
-| `--output` | `table` (default) or `json` |
+| `--format` | `table` (default) or `json`. `--output` is a deprecated alias, still accepted; when both are given `--output` wins |
 
 ```bash
 repowise security scan --history
 repowise security scan --history --since v1.0.0 --to HEAD
-repowise security scan --history --all-patterns --output json
+repowise security scan --history --all-patterns --format json
 ```
 
 Findings are written to the `security_findings` table (idempotent on re-run)
@@ -644,6 +837,9 @@ repowise decision health [PATH]         # health dashboard
 | `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |
+| `--format` | `table` (default) or `json` |
+
+`--format json` is also available on `decision show` and `decision health`. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
 
 ---
 
@@ -687,6 +883,7 @@ repowise coverage add --verbose             # show ingestion debug logs
 coverage run --contexts=test -m pytest      # produce .coverage with contexts
 repowise coverage add .coverage             # per-file coverage + per-test map
 repowise coverage status                    # coverage summary + "Test-to-code map" counts
+repowise coverage status --format json      # machine-readable (note: the --format on `coverage add` names the input parser instead)
 ```
 
 > The per-test map is a separate dimension from the per-file aggregate that
@@ -747,6 +944,9 @@ distill filters.
 | `--model` | Pricing model for the dollar estimate (input-token rate). Defaults to the model detected from this repo's most recent agent session, falling back to `claude-sonnet-4-6` |
 | `--missed` | Report commands that looked distillable but weren't rewritten |
 | `--missed-days` | Window in days for `--missed` (default 7.0) |
+| `--format` | `table` (default) or `json` |
+
+JSON folds the table, the net, and every trailing advisory line into one document.
 
 ```bash
 repowise saved                       # per-filter rollup + totals
@@ -769,6 +969,7 @@ default; entirely local. See [DISTILL.md](../agent/DISTILL.md#repowise-correctio
 | `--days` | Transcript window for the scan (default 30) |
 | `--write` | Maintain the "Known command corrections" managed block in `.claude/CLAUDE.md` / `AGENTS.md` (opt-in) |
 | `--min-count` | Occurrences a rule needs before `--write` includes it (default 2) |
+| `--format` | `table` (default) or `json` |
 
 ```bash
 repowise corrections                 # report recurring fumbles
@@ -788,6 +989,7 @@ Show LLM spend tracking.
 | `--repo` | Scope to a specific workspace repo |
 | `--all` | Aggregate across every workspace repo |
 | `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
+| `--format` | `table` (default) or `json` |
 
 ```bash
 repowise costs                           # auto-detects mode
@@ -886,11 +1088,11 @@ Explain the cross-repo contract link count: per-repo provider/consumer counts, u
 | Flag | Description |
 |------|-------------|
 | `--repo` | Limit the report to one repo alias |
-| `--json` | Emit raw diagnostics JSON |
+| `--format` | `table` (default) or `json`. `--json` is a deprecated alias, still accepted |
 
 ```bash
 repowise workspace diagnostics            # human-readable report
-repowise workspace diagnostics --json     # raw JSON
+repowise workspace diagnostics --format json  # raw JSON
 repowise workspace diagnostics --repo api # limit to one repo alias
 ```
 
@@ -900,11 +1102,11 @@ Architecture lint: check the declared `conformance:` rules against the system gr
 
 | Flag | Description |
 |------|-------------|
-| `--json` | Emit the raw conformance report as JSON |
+| `--format` | `table` (default) or `json`. `--json` is a deprecated alias, still accepted |
 
 ```bash
 repowise workspace check                  # human-readable report; exit 1 on findings
-repowise workspace check --json           # raw report JSON
+repowise workspace check --format json    # raw report JSON
 ```
 
 ### `repowise workspace metrics [PATH]`
@@ -913,11 +1115,11 @@ Architecture-complexity metrics over the system graph built by `repowise update 
 
 | Flag | Description |
 |------|-------------|
-| `--json` | Emit the raw metrics as JSON |
+| `--format` | `table` (default) or `json`. `--json` is a deprecated alias, still accepted |
 
 ```bash
 repowise workspace metrics
-repowise workspace metrics --json
+repowise workspace metrics --format json
 ```
 
 See [Workspaces](../scale/WORKSPACES.md) for the full multi-repo guide.
@@ -963,7 +1165,7 @@ in `.repowise/sessions/sessions.db`.
 
 ```bash
 repowise hook stats
-repowise hook stats --json      # raw per-surface rows
+repowise hook stats --format json   # raw per-surface rows
 ```
 
 Notices that ask for nothing (stale-read, the silent read-after-served
@@ -1151,6 +1353,9 @@ version as seen. Works offline from the changelog bundled with the install.
 |------|-------------|
 | `--version X.Y.Z` | Show notes for a single release |
 | `--all` | Show the full changelog history |
+| `--format` | `table` (default) or `json` |
+
+JSON carries every selected release; the panel caps at 5 releases and 8 bullets each.
 
 ```bash
 repowise whats-new                       # what changed since you last looked

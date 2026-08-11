@@ -59,7 +59,17 @@ class GoPackageIndex:
     """Maps a fully-qualified import path → its package directory."""
 
     def files_for_import(self, import_path: str) -> tuple[str, ...]:
-        """Return every ``.go`` file in the package the import resolves to.
+        """Return the *importable* ``.go`` files of the package the import names.
+
+        ``_test.go`` files are excluded: they are compiled only into their own
+        package's test binary and are never part of the surface an importer
+        sees, so fanning an import out onto them asserts a dependency that
+        cannot exist. Left in, they let unrelated packages' test files reach
+        each other and close large false import cycles (issue #1294).
+
+        ``GoPackage.files`` keeps the full list — sibling cohesion, dead-code
+        rescue, and type-reference resolution all need test files to be part of
+        their own package. Only the *import* surface is narrowed here.
 
         Empty tuple when the import path is not a local package (e.g. an
         external ``github.com/...`` dependency) — callers fall back to the
@@ -69,7 +79,9 @@ class GoPackageIndex:
         if pkg_dir is None:
             return ()
         pkg = self.packages.get(pkg_dir)
-        return pkg.files if pkg else ()
+        if not pkg:
+            return ()
+        return tuple(f for f in pkg.files if not f.endswith("_test.go"))
 
     def package_for_file(self, file_path: str) -> GoPackage | None:
         """Return the package owning *file_path*, or None."""

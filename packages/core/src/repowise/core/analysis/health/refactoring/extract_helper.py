@@ -38,10 +38,12 @@ still worth extracting but ranks ``medium``.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ....test_paths import is_test_related_path
 from .models import RefactoringContext, RefactoringSuggestion
+from .naming import identifier_slug
 from .registry import RefactoringDetector, effort_bucket, register
 
 # The biomarker this detector answers — the recovered impact is read off it.
@@ -66,6 +68,131 @@ _REGION_SLACK = 1
 # snippet is for a glance ("this is the duplicated code"), not the whole thing,
 # so it is clipped and the plan flags that it was.
 _MAX_SNIPPET_LINES = 40
+
+
+# Line shapes that declare something rather than do something. A clone made
+# entirely of these is not extractable: you cannot lift an import block, a
+# parameter list or a run of dataclass fields into a shared helper, because
+# there is no behaviour there to share — only a shape that happens to repeat.
+_IMPORT_PREFIXES = (
+    "import ",
+    "from ",
+    "using ",
+    "#include",
+    "export ",
+    "require(",
+    "const {",
+    "@import",
+)
+# A constant RHS. ``name = compute(x)`` is real code and must stay a candidate;
+# ``name = []`` / ``name = "x"`` / ``FOO = 3`` is a declaration.
+_CONST_RHS = re.compile(
+    r"""^\s*(
+        None|True|False|null|true|false      # literals
+        | -?\d[\d_.eE+-]*                     # numbers
+        | ["'].*["']                          # strings
+        | \[\s*\] | \{\s*\} | \(\s*\)          # empty collections
+        | (list|dict|set|tuple|str|int|float|bool)\s*\(\s*\)
+    )\s*,?\s*$""",
+    re.VERBOSE,
+)
+# The field-declaration constructs a dataclass-style default is allowed to use.
+# Deliberately a closed vocabulary rather than "any call": ``items: list[str] =
+# field(default_factory=list)`` declares a field, but ``result: int =
+# calculate_total(items, rate)`` is behaviour that merely carries an annotation,
+# and accepting arbitrary right-hand sides here silently dropped the second —
+# a false negative on one of the most common shapes in typed Python and TS.
+_FIELD_CTOR = re.compile(
+    r"^\s*(dataclasses\.|attr\.|attrs\.|pydantic\.|msgspec\.)?"
+    r"(field|Field|ib|attrib|mapped_column|Column|relationship)\s*\(",
+)
+_DECL_LINE = re.compile(
+    r"""^\s*(
+        [\w.\[\]"']+ \s* : \s* [^=]+            # annotated, no default: name: type
+        | [\w]+ \s* ,?                          # bare parameter / enum member
+        | [)\]}]\s* [:,]? \s* (->.*)? :? \s*    # a closer, with or without a return type
+        | (async\s+)?(def|function|fn|func|class|interface|type|struct)\s+[\w<>]+\s*[(<{:]?\s*
+        | @[\w.]+ \s* \(?                       # decorator / annotation
+    )$""",
+    re.VERBOSE,
+)
+_CONTROL_FLOW = re.compile(
+    r"\b(if|else|elif|for|while|try|except|catch|finally|return|yield|raise|throw|"
+    r"with|switch|case|await|match|break|continue|next|fallthrough|defer|goto|redo|retry)\b"
+)
+
+
+def _code_lines(block: list[str]) -> list[str]:
+    """*block* minus blanks and whole-line comments.
+
+    A leading ``*`` is a JSDoc/javadoc comment continuation (``* @param x``) —
+    but it is also a C/Go pointer dereference (``*out = compute(a, b);``), and
+    stripping those left an empty line list, which the caller reads as "nothing
+    but declarations". So a ``*`` line only counts as a comment when it carries
+    no assignment and no statement terminator.
+    """
+    out = []
+    for raw in block:
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith(("#", "//", "/*", "*/", '"""', "'''", "<!--")):
+            continue
+        if s.startswith("*") and "=" not in s and ";" not in s:
+            continue
+        out.append(s)
+    return out
+
+
+def _is_declaration_only(block: list[str]) -> bool:
+    """True when every line of *block* declares rather than executes.
+
+    Three real false positives from this repo's own index motivated this, all
+    of them plans proposing to extract something no editor could extract:
+
+    - a 21-line ``from repowise.cli.helpers import (...)`` block, shared with
+      ``routers/workspace.py`` because both import the same names;
+    - two 20-line ``def update_command(...)`` / ``def run_update(...)``
+      *signatures*, paired because their parameter lists agree;
+    - runs of ``field(default_factory=list)`` dataclass members across four
+      unrelated modules (the case filed as C6, which arrived at the top of the
+      payload carrying the highest occurrence count and blast radius, i.e. the
+      most-trusted slot).
+
+    A single line with control flow, or an unannotated assignment whose RHS is
+    not a constant, is enough to keep the block a candidate — the gate has to
+    stay conservative, because a false *negative* here silently drops real
+    duplication, which is the more expensive mistake.
+
+    Deliberately *not* applied in the duplication detector or the
+    ``dry_violation`` biomarker: those feed calibrated scores that are frozen,
+    and the defect here is the advice, not the measurement. The block still
+    counts as duplication; it just no longer produces a plan to extract it.
+    """
+    lines = _code_lines(block)
+    if not lines:
+        return True
+    for line in lines:
+        if _CONTROL_FLOW.search(line):
+            return False
+        if line.startswith(_IMPORT_PREFIXES) or line in ("(", ")", "):", "}", "];", "{"):
+            continue
+        if _DECL_LINE.match(line):
+            continue
+        # An assignment is a declaration only by what it assigns. A constant
+        # RHS is inert either way; an annotated line may additionally use a
+        # field-declaration constructor (``field(default_factory=list)``).
+        # Anything else computed is behaviour and stays extractable, annotated
+        # or not — ``result: int = calculate_total(items, rate)`` is code that
+        # happens to carry a type, not a declaration.
+        head, sep, rhs = line.partition("=")
+        if sep:
+            if _CONST_RHS.match(rhs):
+                continue
+            if ":" in head and _FIELD_CTOR.match(rhs):
+                continue
+        return False
+    return True
 
 
 def _is_generated_path(path: str) -> bool:
@@ -227,10 +354,21 @@ class ExtractHelperDetector(RefactoringDetector):
             ((s, e) for f, s, e in occurrences if f == ctx.file_path),
             (block.anchor_start, block.anchor_end),
         )
+
+        # Reject blocks with nothing to extract (imports, parameter lists, field
+        # runs). Read off the anchor region, the one occurrence whose source this
+        # pass holds; the block is identical across sites by definition, so one
+        # read decides it for all of them. No source threaded (non-clone file, an
+        # unreadable one) means no evidence to reject on, and the gate abstains
+        # rather than guessing.
+        region_lines = self._region_lines(ctx, anchor_region)
+        if region_lines and _is_declaration_only(region_lines):
+            return None
+
         impact = self._impact_for_block(anchor_region, impact_lookup)
         is_intra = len(occ_files) == 1
 
-        suggested_site = self._suggested_site(ctx, occ_files)
+        suggested_site = self._suggested_site(occ_files)
         snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
         plan = {
             "occurrences": [{"file": f, "line_start": s, "line_end": e} for f, s, e in occurrences],
@@ -270,24 +408,56 @@ class ExtractHelperDetector(RefactoringDetector):
             source_biomarker=_SOURCE_BIOMARKER,
         )
 
-    def _suggested_site(
-        self, ctx: RefactoringContext, occ_files: list[str]
-    ) -> dict[str, str | None]:
-        """Where the shared helper should live: the community centroid of the
-        occurrences (the module most of them belong to), with the shared
-        directory as a fallback when no community labels exist."""
-        module = None
-        if ctx.module_map:
-            counts: dict[str, int] = {}
-            for f in occ_files:
-                mod = ctx.module_map.get(f)
-                if mod:
-                    counts[mod] = counts.get(mod, 0) + 1
-            if counts:
-                # Centroid = most-shared module; ties broken lexicographically
-                # so the site is deterministic.
-                module = min(counts, key=lambda m: (-counts[m], m))
-        return {"module": module, "directory": _common_directory(occ_files)}
+    @staticmethod
+    def _suggested_site(occ_files: list[str]) -> dict[str, str | None]:
+        """Where the shared helper should live: the deepest directory every
+        occurrence shares.
+
+        One namespace, and it is the filesystem — because the field's job is to
+        name a place a file can go. This used to lead with a graph *community*
+        label under the key ``module``, alongside the directory, and that was
+        wrong twice over:
+
+        - **A label is not a location.** Censused over the 963 stored
+          ``extract_helper`` plans on this repo's own index, 905 carried a
+          label and **905 of 905 named a directory that no occurrence lives
+          in** — ``module: "ui"`` for a block shared by ``packages/api-client``,
+          ``packages/types`` and ``packages/ui``. Acting on it files shared code
+          into a package two thirds of its callers are not in.
+        - **The namespace depended on the writer.** ``module_map`` is populated
+          only by the full-index path; the incremental, re-score and
+          ``repowise health`` paths leave it empty, so the same clone got
+          ``"ui"`` or ``None`` depending on which pass last wrote the row. That
+          is exactly the defect the ``module`` column was fixed for; the
+          refactoring payload had kept it.
+
+        The honest answer is sometimes a shallow one — a block shared across
+        three packages has no home better than ``packages`` — and saying so is
+        the point. A nicer-reading label that names the wrong package is worse
+        advice, not better.
+
+        Deliberately *not* ``package_roots.module_for``, the shipped definition
+        of the ``module`` column: that answers "which bucket does this file
+        report under", and for placement the shared directory is strictly more
+        specific (for a block confined to ``.../providers/llm`` it is that
+        directory, where ``module_for`` would say ``packages/core``). Package
+        attribution is a rollup axis; this is a destination.
+        """
+        return {"directory": _common_directory(occ_files)}
+
+    @staticmethod
+    def _region_lines(ctx: RefactoringContext, region: tuple[int, int]) -> list[str]:
+        """The anchor file's source for *region*, or ``[]`` when none is
+        threaded. Clone ranges are 1-indexed and inclusive; the range is clamped
+        to the file because a region can outlive the read that produced it."""
+        lines = ctx.source_lines
+        if not lines:
+            return []
+        lo = max(region[0], 1)
+        hi = min(region[1], len(lines))
+        if hi < lo:
+            return []
+        return list(lines[lo - 1 : hi])
 
     @staticmethod
     def _snippet_for(
@@ -302,16 +472,10 @@ class ExtractHelperDetector(RefactoringDetector):
         ``(None, None, False)`` when no source was threaded (non-clone file, or
         an unreadable one), leaving the plan on its line ranges alone.
         """
-        lines = ctx.source_lines
-        if not lines:
+        block = ExtractHelperDetector._region_lines(ctx, anchor_region)
+        if not block:
             return None, None, False
-        start, end = anchor_region
-        # Clamp to the file; clone ranges are 1-indexed and inclusive.
-        lo = max(start, 1)
-        hi = min(end, len(lines))
-        if hi < lo:
-            return None, None, False
-        block = lines[lo - 1 : hi]
+        lo = max(anchor_region[0], 1)
         truncated = len(block) > _MAX_SNIPPET_LINES
         if truncated:
             block = block[:_MAX_SNIPPET_LINES]
@@ -384,28 +548,20 @@ def _suggested_name(suggested_site: dict[str, str | None]) -> str:
 
     Precision-first: without semantics we cannot name the block for what it
     *does*, so we anchor the name to where the helper will live (the shared
-    module or directory leaf) and suffix ``_helper``. It is an editable
-    starting point (the UI frames it that way), not a claim about behaviour, so
-    it stays deterministic and never guesses intent. Falls back to
-    ``shared_helper`` when the site has no usable label.
+    directory leaf) and suffix ``_helper``. It is an editable starting point
+    (the UI frames it that way), not a claim about behaviour, so it stays
+    deterministic and never guesses intent. Falls back to ``shared_helper``
+    when the site has no usable label.
+
+    Reads ``directory`` only. Plans stored before that key became the sole
+    namespace still carry a ``module`` community label, and it is precisely the
+    one that produced names like ``repowise_helper`` -- the repo naming its own
+    helper -- so it is not consulted as a fallback. ``directory`` was correct on
+    those rows too, which is why dropping the label needs no migration.
     """
-    label = suggested_site.get("module") or suggested_site.get("directory") or ""
+    label = suggested_site.get("directory") or ""
     leaf = label.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    # Keep identifier-safe characters only; collapse the rest to single
-    # underscores so a path leaf like ``api-client`` becomes ``api_client``.
-    cleaned: list[str] = []
-    prev_us = False
-    for ch in leaf.lower():
-        if ch.isalnum():
-            cleaned.append(ch)
-            prev_us = False
-        elif not prev_us:
-            cleaned.append("_")
-            prev_us = True
-    slug = "".join(cleaned).strip("_")
-    # A leading digit is not a valid identifier start in most languages.
-    if slug and slug[0].isdigit():
-        slug = f"_{slug}"
+    slug = identifier_slug(leaf)
     if not slug:
         return "shared_helper"
     return slug if slug.endswith("helper") else f"{slug}_helper"

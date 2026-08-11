@@ -29,6 +29,7 @@ def _create_test_app():
 
     from repowise.server.routers import (
         c4,
+        code_health,
         costs,
         dead_code,
         decisions,
@@ -86,6 +87,8 @@ def _create_test_app():
     app.include_router(git.router)
     app.include_router(files.router)
     app.include_router(dead_code.router)
+    # Same position as app.py, so route precedence in tests matches production.
+    app.include_router(code_health.router)
     app.include_router(owners.router)
     app.include_router(modules.router)
     app.include_router(decisions.router)
