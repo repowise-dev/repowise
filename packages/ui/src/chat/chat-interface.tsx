@@ -38,7 +38,7 @@ import type { SourceReference } from "./source-citations";
 const DEFAULT_SUGGESTIONS = [
   "Give me an overview of this codebase",
   "What are the highest-risk files to modify?",
-  "Show me the architecture diagram",
+  "Score the change risk of HEAD",
   "What dead code can be safely removed?",
   "What architectural decisions have been made?",
   "Search for authentication-related code",
