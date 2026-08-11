@@ -75,6 +75,7 @@ from .parser_helpers import (
     _qualified_pascal_parent,
     _run_query,
     _sanitize_pascal_project_source,
+    _sanitize_pascal_source,
 )
 from .python_local_refs import extract_python_local_refs
 from .sfc_source import component_call_sites, prepare_source
@@ -299,6 +300,13 @@ class ASTParser:
         # unfixed. Byte-preserving, like prepare_source above.
         if lang == "pascal" and file_info.path.lower().endswith((".dpr", ".dpk", ".lpr")):
             source = _sanitize_pascal_project_source(source)
+
+        # Constructs the grammar has no rule for at all and that corrupt
+        # parent resolution for everything declared after them in the same
+        # class body -- see _sanitize_pascal_source. Applies to every
+        # .pas/.pp file, not just project files.
+        if lang == "pascal":
+            source = _sanitize_pascal_source(source)
 
         parser = Parser(language)
         tree = parser.parse(source)

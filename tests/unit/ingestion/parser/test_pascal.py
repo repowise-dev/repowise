@@ -216,6 +216,43 @@ end.
         assert len(matches) == 1
         assert matches[0].end_line > matches[0].start_line
 
+    def test_anon_record_array_field_does_not_corrupt_the_rest_of_the_class(
+        self, parser: ASTParser
+    ) -> None:
+        # `array[...] of record ... end` -- an anonymous record type used
+        # inline as an array element type -- has no grammar rule at all
+        # (unlike a *named* `TFoo = record ... end` declaration, which
+        # parses fine). Found on this repo's own uDualPanelWindow.pas: the
+        # class's declType closed early at the error, and every member
+        # declared after the field (Run included) got reparented to the
+        # unit's interface section instead of the class -- surfacing as a
+        # duplicate Run (one correctly parented, one an orphaned
+        # `kind="function", parent_name=None`).
+        # _sanitize_pascal_source blanks the anonymous record before
+        # parsing so the class body stays intact.
+        src = b"""\
+unit Foo;
+interface
+type
+  TFoo = class
+    FTotals: array[TSide] of record
+      Valid: Boolean;
+      Bytes: Int64;
+    end;
+    procedure Run;
+  end;
+implementation
+procedure TFoo.Run;
+begin
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        matches = [s for s in result.symbols if s.name == "Run"]
+        assert len(matches) == 1
+        assert matches[0].kind == "method"
+        assert matches[0].parent_name == "TFoo"
+
 
 class TestPascalImports:
     def test_multi_unit_uses_clause_extracts_every_unit(self, parser: ASTParser) -> None:

@@ -206,6 +206,51 @@ def _sanitize_pascal_project_source(source: bytes) -> bytes:
     return bytes(out)
 
 
+_PASCAL_ANON_RECORD_ARRAY_ELEMENT_RE = re.compile(rb"\bof\s+record\b.*?\bend\b", re.DOTALL)
+
+
+def _sanitize_pascal_source(source: bytes) -> bytes:
+    """Blank Pascal constructs tree-sitter-pascal's grammar can't parse at
+    all, where hitting one corrupts everything downstream in the same
+    ``declType``/``declClass`` body. Runs on every ``.pas``/``.pp`` file
+    (unlike ``_sanitize_pascal_project_source``, which is ``.dpr``/``.dpk``/
+    ``.lpr``-only), byte-preserving so line numbers stay correct.
+
+    Currently handles one construct: ``array[...] of record ... end`` --
+    an anonymous record type used inline as an array element type (e.g.
+    ``FTotals: array[TSide] of record Valid: Boolean; Bytes: Int64; end;``).
+    The grammar has no rule for a bare ``record`` following ``of``, and
+    unlike a *named* ``TFoo = record ... end`` type declaration (which
+    parses fine — ``declClass`` covers ``class``/``record``/``object``
+    alike), hitting this one doesn't stay contained: on the one real file
+    this was found in, the class's ``declType`` closed early at the error
+    and every member declared afterward (methods included) got reparented
+    to the *unit's* interface section instead of the class -- silently
+    breaking parent resolution, not just losing the anonymous record's own
+    field types (which were never extracted as symbols anyway; record
+    fields aren't a captured node type).
+
+    Scanned against this repo's own ~150-file test codebase: exactly one
+    occurrence, in one file, so this is deliberately narrow rather than a
+    general "handle every record shape" pass -- extend the pattern if a
+    second real-world shape shows up rather than guessing at variants now.
+    """
+    if not _PASCAL_ANON_RECORD_ARRAY_ELEMENT_RE.search(source):
+        return source
+
+    def _blank_anon_record(m: re.Match[bytes]) -> bytes:
+        span = m.group(0)
+        placeholder = b"of Byte"
+        out = bytearray(len(span))
+        out[: len(placeholder)] = placeholder
+        for i in range(len(placeholder), len(span)):
+            b = span[i]
+            out[i] = b if b in (0x0A, 0x0D) else 0x20
+        return bytes(out)
+
+    return _PASCAL_ANON_RECORD_ARRAY_ELEMENT_RE.sub(_blank_anon_record, source)
+
+
 def _dedupe_pascal_interface_symbols(
     symbols: list[Symbol], node_types: list[str]
 ) -> list[Symbol]:
