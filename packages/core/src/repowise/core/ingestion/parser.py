@@ -74,6 +74,7 @@ from .parser_helpers import (
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _run_query,
+    _sanitize_pascal_project_source,
 )
 from .python_local_refs import extract_python_local_refs
 from .sfc_source import component_call_sites, prepare_source
@@ -289,6 +290,15 @@ class ASTParser:
         # incremental update still tracks the real file.
         original_source = source
         source = prepare_source(lang, source)
+
+        # Delphi/FPC project files (.dpr/.dpk/.lpr) map units to source
+        # paths right in `uses` (`MyUnit in 'src\MyUnit.pas'`) -- syntax
+        # tree-sitter-pascal's grammar doesn't have a rule for at all, so
+        # error recovery corrupts everything after the first `in` clause.
+        # See _sanitize_pascal_project_source for what that looks like
+        # unfixed. Byte-preserving, like prepare_source above.
+        if lang == "pascal" and file_info.path.lower().endswith((".dpr", ".dpk", ".lpr")):
+            source = _sanitize_pascal_project_source(source)
 
         parser = Parser(language)
         tree = parser.parse(source)

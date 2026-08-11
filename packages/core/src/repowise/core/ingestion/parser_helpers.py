@@ -9,6 +9,7 @@ this one holds the free functions it calls. No state, no imports from
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,6 +26,8 @@ log = structlog.get_logger(__name__)
 
 # Private alias for internal use (mirrors the one in parser.py)
 _node_text = node_text
+
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
@@ -156,6 +159,53 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     return f"{module}.{name}"
 
 
+_PASCAL_USES_IN_CLAUSE_RE = re.compile(rb"\bin\b[ \t]*'(?:[^'\r\n]|'')*'")
+
+
+def _sanitize_pascal_project_source(source: bytes) -> bytes:
+    """Blank Delphi/FPC project-file ``unit in 'path.pas'`` clauses.
+
+    ``.dpr``/``.dpk``/``.lpr`` project files map each unit to its source
+    path right in the ``uses`` clause -- ``uses SysUtils, MyUnit in
+    'src\\MyUnit.pas';`` -- and Delphi's IDE writes this automatically for
+    every unit added to a project, making it the norm rather than the
+    exception in real ``.dpr``/``.dpk`` files (confirmed against this
+    repo's own ``MTN2.dpr``: every non-RTL unit uses it).
+
+    tree-sitter-pascal's grammar has no rule for the trailing ``in
+    '...'`` at all. Hitting it mid-``declUses`` doesn't just fail that
+    one unit -- the parser's error recovery folds the ``in``, the path
+    string, and every subsequent comma-separated unit into one corrupted
+    ``moduleName`` node spanning to wherever it happens to resync, so a
+    single ``in`` clause was silently swallowing the rest of the ``uses``
+    list (observed on ``MTN2.dpr``: 4 imports extracted instead of ~80,
+    the 4th holding several KB of raw multi-line garbage as its
+    ``module_path``). This is an upstream grammar gap, not something a
+    ``.scm`` query can route around -- the AST itself is malformed before
+    any query runs.
+
+    Blanks the matched span with spaces (never a raw newline -- a Pascal
+    string literal can't contain one, so no line is fully consumed) to
+    preserve every other byte offset in the file, so line numbers for
+    symbols/imports/calls elsewhere are unaffected. `'ABC'` doesn't need
+    the doubled-quote (`''`) escape handled specially for *finding* the
+    end of the string here (the regex already treats `''` as staying
+    inside the literal), only for correctness of the match's own extent.
+
+    Scoped to project files specifically: this syntax is invalid outside
+    a ``uses`` clause and ``.pas``/``.pp`` unit files can't legally carry
+    it, so there's nothing to blank there and no reason to run the regex
+    over every unit file in a codebase.
+    """
+    if not _PASCAL_USES_IN_CLAUSE_RE.search(source):
+        return source
+    out = bytearray(source)
+    for m in _PASCAL_USES_IN_CLAUSE_RE.finditer(source):
+        start, end = m.span()
+        out[start:end] = b" " * (end - start)
+    return bytes(out)
+
+
 def _dedupe_pascal_interface_symbols(
     symbols: list[Symbol], node_types: list[str]
 ) -> list[Symbol]:
@@ -173,37 +223,59 @@ def _dedupe_pascal_interface_symbols(
     ``declProc`` duplicate would otherwise leave two ``Add`` nodes in the
     graph for one logical method.
 
-    Keyed on ``(parent_name, signature)`` rather than just
-    ``(parent_name, name)`` so that Pascal ``overload;`` siblings (same
-    name, different parameter lists) are told apart: an interface-only
-    overload must survive even when a *different* overload of the same
-    name has a same-file implementation (verified against a reproduction
-    where a 2-overload class with only one variant implemented was
-    silently losing the other variant's interface declaration). Pascal's
-    generic ``f"{name}{params_text}"`` signature fallback (no per-node-type
-    branch in ``build_signature`` for ``declProc``/``defProc``) makes the
-    interface declaration's signature text match its implementation's
-    exactly, so this doesn't need a separate params-text pass.
+    Keyed on ``(parent_name, signature)`` — normalized, see
+    ``_pascal_dedupe_key`` — rather than just ``(parent_name, name)`` so
+    that Pascal ``overload;`` siblings (same name, different parameter
+    lists) are told apart: an interface-only overload must survive even
+    when a *different* overload of the same name has a same-file
+    implementation (verified against a reproduction where a 2-overload
+    class with only one variant implemented was silently losing the
+    other variant's interface declaration).
 
-    Still imperfect: Pascal's compiler doesn't require parameter *names* to
-    match between an interface declaration and its implementation (only
-    the types, for overload resolution), so a same-file rename between the
-    two would produce different signature strings and defeat this dedup,
-    leaving both symbols. Rare in practice (renaming between declaration
-    and implementation is confusing even where legal) and left as a known
-    gap rather than parsing parameter types out of ``declArgs`` for an
-    exact match.
+    Normalization matters in practice, not just in theory: scanned
+    against a real ~150-file Delphi codebase, 168 method pairs shared a
+    class+name but escaped a raw-signature-text match — almost all of
+    them a long parameter list wrapped across lines differently between
+    the compact interface declaration and the implementation (extremely
+    common Delphi formatting), a handful differing only by identifier
+    case (Pascal is case-insensitive, so ``TFoo.Add`` and
+    ``TFOO.ADD`` name the same method). ``_pascal_dedupe_key`` strips all
+    whitespace and lowercases before comparing so both collapse
+    correctly.
+
+    Still imperfect: Pascal's compiler doesn't require parameter *names*
+    to match between an interface declaration and its implementation
+    (only the types, for overload resolution), so a same-file rename
+    between the two still produces different normalized keys and defeats
+    this dedup, leaving both symbols. Unlike the whitespace/case cases
+    above, no evidence of this actually happening was found in the real
+    codebase this was checked against — left as a documented gap rather
+    than parsing parameter types out of ``declArgs`` for an exact match.
     """
     impl_keys = {
-        (s.parent_name, s.signature)
+        _pascal_dedupe_key(s.parent_name, s.signature)
         for s, nt in zip(symbols, node_types, strict=True)
         if nt == "defProc"
     }
     return [
         s
         for s, nt in zip(symbols, node_types, strict=True)
-        if not (nt == "declProc" and (s.parent_name, s.signature) in impl_keys)
+        if not (nt == "declProc" and _pascal_dedupe_key(s.parent_name, s.signature) in impl_keys)
     ]
+
+
+def _pascal_dedupe_key(parent_name: str | None, signature: str) -> tuple[str | None, str]:
+    """Normalize a (parent, signature) pair for Pascal's interface/impl dedup.
+
+    Whitespace-insensitive (multi-line parameter lists get reformatted
+    between the interface declaration and the implementation constantly
+    in real Delphi code) and case-insensitive (identifiers are
+    case-insensitive in Pascal, so this needs to hold for the *class*
+    name half of the key too, not just the signature).
+    """
+    parent_key = parent_name.lower() if parent_name else None
+    sig_key = _WHITESPACE_RE.sub("", signature).lower()
+    return (parent_key, sig_key)
 
 
 # ---------------------------------------------------------------------------

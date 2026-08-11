@@ -167,6 +167,55 @@ end.
         assert len(matches) == 1
         assert matches[0].end_line > matches[0].start_line
 
+    def test_dedup_ignores_multiline_parameter_reformatting(self, parser: ASTParser) -> None:
+        # Regression: scanned against a real ~150-file Delphi codebase, 168
+        # method pairs shared a class+name but escaped a raw-signature-text
+        # dedup because the implementation wraps a long parameter list
+        # across lines differently than the compact interface declaration
+        # -- extremely common real-world Delphi formatting, not a
+        # contrived edge case.
+        src = b"""\
+unit Foo;
+interface
+type
+  TFoo = class
+    procedure MoveSelCursor(ARowDelta, AColDelta: Integer; AExtendSel: Boolean);
+  end;
+implementation
+procedure TFoo.MoveSelCursor(ARowDelta, AColDelta: Integer;
+  AExtendSel: Boolean);
+begin
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        matches = [s for s in result.symbols if s.name == "MoveSelCursor"]
+        assert len(matches) == 1
+        assert matches[0].end_line > matches[0].start_line
+
+    def test_dedup_ignores_identifier_case(self, parser: ASTParser) -> None:
+        # Pascal is case-insensitive: TFoo.Add and TFOO.ADD name the same
+        # method. The dedup key must fold case on both the class name and
+        # the signature, or this reappears as two symbols.
+        src = b"""\
+unit Foo;
+interface
+type
+  TCalculator = class
+    function Add(X, Y: Integer): Integer;
+  end;
+implementation
+function TCALCULATOR.ADD(X, Y: Integer): Integer;
+begin
+  Result := X + Y;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        matches = [s for s in result.symbols if s.name.lower() == "add"]
+        assert len(matches) == 1
+        assert matches[0].end_line > matches[0].start_line
+
 
 class TestPascalImports:
     def test_multi_unit_uses_clause_extracts_every_unit(self, parser: ASTParser) -> None:
@@ -205,6 +254,65 @@ end.
         result = parser.parse_file(_pas(), src)
         modules = {i.module_path for i in result.imports}
         assert modules == {"SysUtils", "Classes", "Windows", "Messages"}
+
+    def test_dpr_unit_in_path_clause(self, parser: ASTParser) -> None:
+        # Delphi/FPC project files map units to source paths right in
+        # `uses` -- `MyUnit in 'src\MyUnit.pas'` -- syntax the IDE
+        # generates automatically and tree-sitter-pascal's grammar has no
+        # rule for at all. Hitting it used to corrupt parsing of
+        # EVERYTHING after the first `in` clause (verified against this
+        # repo's own MTN2.dpr: 4 imports extracted instead of ~80, the
+        # 4th holding several KB of raw garbage as its module_path).
+        # _sanitize_pascal_project_source blanks these before parsing.
+        src = b"""\
+program Foo;
+uses
+  SysUtils,
+  MyUnit in 'src\\MyUnit.pas',
+  OtherUnit in 'src\\OtherUnit.pas';
+begin
+end.
+"""
+        result = parser.parse_file(_pas("Foo.dpr"), src)
+        modules = [i.module_path for i in result.imports]
+        assert modules == ["SysUtils", "MyUnit", "OtherUnit"]
+        assert all(len(m) < 20 for m in modules)
+
+    def test_dpr_ifdef_block_inside_uses(self, parser: ASTParser) -> None:
+        # `{$IFDEF}`/`{$ENDIF}` compiler directives are legal inside a
+        # `uses` clause (also present in MTN2.dpr) -- confirm they don't
+        # need special handling; Pascal treats `{$...}` as a directive
+        # comment the grammar already skips.
+        src = b"""\
+program Foo;
+uses
+  {$IFDEF SOMEFLAG}
+  FlagUnit,
+  {$ENDIF}
+  SysUtils;
+begin
+end.
+"""
+        result = parser.parse_file(_pas("Foo.dpr"), src)
+        modules = {i.module_path for i in result.imports}
+        assert modules == {"FlagUnit", "SysUtils"}
+
+    def test_in_clause_sanitization_does_not_touch_pas_files(
+        self, parser: ASTParser
+    ) -> None:
+        # Scoped to .dpr/.dpk/.lpr on purpose -- this syntax is invalid in
+        # a regular unit file, so the sanitizer must not run there. Uses a
+        # plain .pas path (not .dpr) with the same shape to prove it.
+        src = b"""\
+unit Foo;
+interface
+uses
+  SysUtils;
+implementation
+end.
+"""
+        result = parser.parse_file(_pas("Foo.pas"), src)
+        assert [i.module_path for i in result.imports] == ["SysUtils"]
 
 
 class TestPascalHeritage:
@@ -276,4 +384,150 @@ end.
         # The lexer stops at the first non-ASCII byte, so neither the class
         # nor the method name round-trips in full.
         assert "TКалькулятор" not in names
+
+
+class TestPascalCalls:
+    """Parenless-call coverage.
+
+    Found while stress-testing PR #1353: a parameterless procedure/method
+    call idiomatically drops the `()` in Pascal (`Free;`, `inherited;`,
+    `if X then DoThing;`), so the grammar never wraps it in `exprCall` --
+    the original queries (all `exprCall`-anchored) silently missed every
+    one of these. Checked against real MTN2 source: roughly a third of
+    all call-shaped statements are parenless. Fixed by anchoring new
+    patterns on the bare `statement` wrapper directly.
+    """
+
+    def test_parenless_free_function_call(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+begin
+  Run;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        calls = {(c.target_name, c.receiver_name) for c in result.calls}
+        assert ("Run", None) in calls
+
+    def test_parenless_method_call(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+var
+  Obj: TFoo;
+begin
+  Obj.Free;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        calls = {(c.target_name, c.receiver_name) for c in result.calls}
+        assert ("Free", "Obj") in calls
+
+    def test_parenless_call_inside_control_flow_bodies(self, parser: ASTParser) -> None:
+        # `if/for/while/repeat/case` one-line bodies are exactly where
+        # parenless calls are most idiomatic in Pascal.
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+var
+  I: Integer;
+begin
+  if I > 0 then
+    DoThing;
+  for I := 0 to 9 do
+    Process(I);
+  while I > 0 do
+    Step;
+  case I of
+    1: DoOne;
+  else
+    DoDefault;
+  end;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        names = {c.target_name for c in result.calls}
+        assert {"DoThing", "Process", "Step", "DoOne", "DoDefault"} <= names
+
+    def test_explicit_inherited_call(self, parser: ASTParser) -> None:
+        # `inherited Create;` / `inherited Create();` -- both forms.
+        # Bare `inherited;` (no explicit name) is a documented gap: the
+        # target name isn't in the node's own text, it needs the
+        # enclosing method's name.
+        src = b"""\
+unit Foo;
+interface
+implementation
+constructor TFoo.Create;
+begin
+  inherited Create;
+  inherited Create();
+  inherited;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        names = [c.target_name for c in result.calls]
+        assert names.count("Create") == 2
+
+    def test_assignment_and_goto_are_not_call_sites(self, parser: ASTParser) -> None:
+        # Regression guard for the new bare-identifier/bare-exprDot
+        # patterns: `assignment` is a sibling of `statement` in the
+        # grammar (not nested in it) and `goto`/`label` are their own
+        # node types, so neither should ever surface as a false-positive
+        # call.
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+label
+  Skip;
+var
+  Result: Integer;
+begin
+  Result := 1;
+  goto Skip;
+  Skip:
+  Real;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        names = {c.target_name for c in result.calls}
+        assert "Result" not in names
+        assert "Skip" not in names
+        assert "Real" in names
+
+    def test_raise_reraise_is_not_a_call_site(self, parser: ASTParser) -> None:
+        src = b"""\
+unit Foo;
+interface
+implementation
+procedure P;
+begin
+  try
+    DoWork;
+  except
+    raise;
+  end;
+end;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        names = {c.target_name for c in result.calls}
+        assert "DoWork" in names
+        # A bare re-raise has no name to capture -- nothing should be
+        # emitted for it (and nothing should crash trying).
+        assert None not in names
         assert "Сложить" not in names

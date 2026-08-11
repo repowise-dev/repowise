@@ -144,3 +144,47 @@
     lhs: (_) @call.receiver
     rhs: (exprTpl entity: (identifier) @call.target))
   args: (exprArgs)? @call.arguments) @call.site
+
+; ---------------------------------------------------------------
+; Parenless calls -- `Foo;`, `Obj.Foo;`. A parameterless procedure or
+; method call is idiomatic Pascal and drops the `()` entirely, so the
+; grammar never wraps it in `exprCall` at all: a statement consisting of
+; just a bare `identifier` or `exprDot` node (checked against real MTN2
+; source: ~2700 bare-identifier and ~360 bare-exprDot statements, vs.
+; ~6700 already-captured parenthesised calls -- this was silently
+; dropping a comparable-sized share of the call graph). Anchored to
+; `statement`'s bare form specifically (not just "any identifier/exprDot
+; anywhere") so this doesn't also fire on the LHS of an `assignment`
+; node (a sibling of `statement`, not nested in it -- see grammar note)
+; or inside a `goto`/`label`/`raise`/`with`/`for` header, none of which
+; wrap their identifier in `statement`.
+(statement
+  (identifier) @call.target) @call.site
+
+(statement
+  (exprDot
+    lhs: (_) @call.receiver
+    rhs: (identifier) @call.target)) @call.site
+
+(statement
+  (exprDot
+    lhs: (_) @call.receiver
+    rhs: (exprTpl entity: (identifier) @call.target))) @call.site
+
+; ---------------------------------------------------------------
+; `inherited Foo;` / `inherited Foo(...)` -- calls the base class's
+; same-named method. The bare `inherited;` form (no explicit name) is
+; NOT captured here: the target name isn't in the node's own text at
+; all -- resolving it needs the *enclosing* method's name, which is
+; extraction-time context this query layer doesn't have. Left as a
+; known gap rather than adding that lookup in a first cut.
+; ---------------------------------------------------------------
+
+(statement
+  (inherited
+    (identifier) @call.target)) @call.site
+
+(exprCall
+  entity: (inherited
+    (identifier) @call.target)
+  args: (exprArgs)? @call.arguments) @call.site
