@@ -633,6 +633,30 @@ The opt-in enrichments:
   `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
 - **dimension filter** narrows the returned findings to one pillar, e.g.
   `include=["biomarkers", "performance"]`.
+
+**Performance findings rank on `perf_rank`, not on `health_impact`.** Every
+performance finding carries `health_impact: 0` — the pillar is deliberately
+never blended into the score — so ranking them by impact ordered them by nothing
+and the cap kept whichever the tie broke to. Each performance row now carries an
+integer `perf_rank` (absent on defect and maintainability rows, which rank on
+`weighted_deficit`), and the returned list is ordered by it *within* each impact
+tier, so the defect ordering is untouched. It is an ordering key, not a score:
+nothing is blended into `score` / `performance_score`. It adds three signals the
+row already carries, so you can re-rank on your own weights from the same
+payload:
+
+| signal | reads | why |
+|---|---|---|
+| the marker | `biomarker_type` | superlinear (`nested_loop_quadratic` 5) > N×M or lock-serialized (4) > one crossing per iteration, or one crossing proven on a hot path (3) > in-loop CPU/allocation (2) > cheap in-loop idioms (1) |
+| the boundary | `details.boundary_kind` | `subprocess` 4 > `network` 3 > `db`/`lock` 2 > `filesystem` 1 — a process spawn in a loop is not a stat in a loop |
+| the call shape | `details.cross_function` | +1. An intra-function loop is usually visibly bounded at the call site; a cross-function N+1 is the one nobody sees by reading the loop |
+
+Request-reachability is read off the marker rather than a column:
+`hot_path_sync_io` and `nested_loop_quadratic` are only ever emitted for a
+function the perf ranker called hot (top-quintile call-graph in-degree, or a
+churny/hotspot file), so their presence is already the proof. Deliberately not
+`severity` — that column grades `hot_path_sync_io` below `io_in_loop` and takes
+only two values across a whole repo's perf findings.
 - **`refactoring`** also emits `suggestion_legend`: `biomarker_type` → the prose
   suggestion for that type, once per response rather than per finding. Join on
   `biomarker_type`. It is keyed off the ranked finding head and does not vary

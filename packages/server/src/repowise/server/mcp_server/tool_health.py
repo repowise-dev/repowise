@@ -48,12 +48,151 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
+# How much a single execution of each I/O boundary costs, as an order of
+# magnitude rather than a measurement: a process spawn is milliseconds, a wire
+# round-trip is hundreds of microseconds up, a pooled local query is tens, and a
+# filesystem call is usually a page-cache hit. "A subprocess spawn in a loop is
+# not a filesystem stat in a loop" is the whole point of ranking on this.
+_PERF_BOUNDARY_POINTS = {"subprocess": 4, "network": 3, "db": 2, "lock": 2, "filesystem": 1}
+
+# What the marker itself proves about *how often* the boundary cost is paid.
+# Two independent proofs, and neither dominates — which is why the three signals
+# are added rather than multiplied:
+#
+#   * a **multiplier** — the cost repeats per iteration (N), per nested pair
+#     (N x M), or quadratically. Every ``*_in_loop`` marker carries this.
+#   * **hotness** — the cost is paid on a request-reachable path.
+#     ``hot_path_sync_io`` and ``nested_loop_quadratic`` are the request-
+#     reachability signal, and it needs no new column: both are emitted **only**
+#     for a function ``perf.ranking.PerfRanker`` called hot (top-quintile
+#     call-graph in-degree, or a churny/hotspot file), so their presence is
+#     already a proof. ``blocking_io_under_lock`` proves something adjacent —
+#     every thread serializes behind the wait.
+#
+# ``hot_path_sync_io`` therefore sits level with a plain loop marker, not above
+# it: it proves hotness and no multiplier, and a loop proves a multiplier and no
+# hotness. Boundary kind is what separates them in practice.
+#
+# Deliberately not ``severity``: the column disagrees with this ordering and
+# cannot be fixed from here without a re-score. ``hot_path_sync_io`` is written
+# ``LOW`` and ``io_in_loop`` ``MEDIUM``, so the marker carrying a hotness proof
+# is graded *below* the ungated one — and on this repo severity takes exactly
+# two values across all 697 perf findings (522 medium, 175 low), which is not
+# an ordering.
+#
+# Exhaustive over the 20 detectors declaring ``category = "performance"``;
+# ``test_perf_rank.py`` fails if a new one is added without a weight, so the
+# default below is a guard rather than a resting place.
+_PERF_MARKER_POINTS = {
+    # Superlinear, and gated on hotness.
+    "nested_loop_quadratic": 5,
+    # N x M round-trips, or a wait every thread queues behind.
+    "nested_loop_with_io": 4,
+    "blocking_io_under_lock": 4,
+    "sql_cartesian_join": 4,
+    # One boundary crossing per iteration — the N+1 family.
+    "io_in_loop": 3,
+    "serial_await_in_loop": 3,
+    "lock_in_loop": 3,
+    "goroutine_in_unbounded_loop": 3,
+    "resource_construction_in_loop": 3,
+    # One crossing, but proven to sit on a hot path.
+    "hot_path_sync_io": 3,
+    # In-loop CPU/allocation costs: real, and orders below a round-trip.
+    "blocking_sync_in_async": 2,
+    "pandas_iterrows_in_loop": 2,
+    "pd_concat_in_loop": 2,
+    "json_parse_in_loop": 2,
+    "array_spread_in_reduce": 2,
+    "defer_in_loop": 2,
+    "regex_compile_in_loop": 1,
+    "string_concat_in_loop": 1,
+    "membership_test_against_list_in_loop": 1,
+    "list_insert_zero_in_loop": 1,
+}
+
+# Unknown marker. Deliberately the floor, not the middle: a detector added
+# without a weight should under-rank rather than jump the queue, the same
+# degrade-to-no-signal direction the perf gate itself takes.
+_PERF_UNKNOWN_MARKER_POINTS = 1
+
+# A hit whose loop and whose sink are in different functions. Worth a point on
+# its own: an intra-function loop is often visibly bounded at the call site,
+# while a cross-function N+1 is the one nobody sees by reading the loop.
+_PERF_CROSSFN_POINTS = 1
+
+
+def _perf_rank(biomarker_type: str | None, details: Any) -> int:
+    """Order-of-magnitude ranking key for one ``performance`` finding.
+
+    The performance dimension had none. Every finding carries
+    ``health_impact: 0`` by construction — the dimension is deliberately never
+    blended into the score — so the list came back in whatever order the impact
+    tie broke, which is file order. "Which of these 697 matters" was
+    unanswerable from the payload, and worse, the *cap* was arbitrary too: with
+    ``include=['performance']`` the head is 20 of 697 chosen by nothing.
+
+    Additive over three signals the payload already carries, in points rather
+    than a calibrated scale, because it is an **ordering key and not a score**.
+    Nothing here is blended into ``score`` / ``performance_score``, and nothing
+    here was fitted against the defect corpus — the frozen weights this file
+    documents stay frozen. A caller who disagrees can re-rank: every input is in
+    ``biomarker_type`` and ``details`` on the same row.
+    """
+    if not isinstance(details, dict):
+        details = {}
+    points = _PERF_MARKER_POINTS.get(biomarker_type or "", _PERF_UNKNOWN_MARKER_POINTS)
+    points += _PERF_BOUNDARY_POINTS.get(details.get("boundary_kind") or "", 0)
+    if details.get("cross_function"):
+        points += _PERF_CROSSFN_POINTS
+    return points
+
+
+def _rank_emitted(rows: list[Any]) -> list[Any]:
+    """Break the ``health_impact`` ties that the performance dimension is made of.
+
+    Rows arrive impact-ordered from SQL, which decides nothing among the
+    performance findings: they all carry ``0``, so the head was whatever the tie
+    broke to — file order. This re-sorts **within** each impact tier, so the
+    defect ordering every other block is built on is untouched (identical
+    impacts were already interchangeable) and the perf tier stops being
+    alphabetical.
+
+    ``file_path`` is the final key so the order is total and reproducible; two
+    findings that rank the same used to swap places between calls on nothing.
+    Rows with no ``details_json`` attribute — the narrow dashboard read, unless
+    the caller filtered to ``performance`` — rank on the marker alone, which is
+    exactly the tier where the rank cannot move a row anyway.
+    """
+    if not rows:
+        return rows
+
+    def key(r: Any) -> tuple[float, int, str]:
+        impact = float(getattr(r, "health_impact", 0.0) or 0.0)
+        dimension = getattr(r, "dimension", None) or "defect"
+        if dimension != "performance":
+            return (-impact, 0, getattr(r, "file_path", "") or "")
+        raw = getattr(r, "details_json", None)
+        try:
+            details = json.loads(raw) if raw else {}
+        except Exception:
+            details = {}
+        return (
+            -impact,
+            -_perf_rank(getattr(r, "biomarker_type", None), details),
+            getattr(r, "file_path", "") or "",
+        )
+
+    return sorted(rows, key=key)
+
 
 def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
         details = {}
+    dimension = getattr(f, "dimension", None) or "defect"
+    rank = {"perf_rank": _perf_rank(f.biomarker_type, details)} if dimension == "performance" else {}
     return {
         "biomarker_type": f.biomarker_type,
         "severity": f.severity,
@@ -67,7 +206,11 @@ def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
         "status": f.status,
         # Health pillar this finding homes under (defect / maintainability /
         # performance) for per-dimension filtering.
-        "dimension": getattr(f, "dimension", None) or "defect",
+        "dimension": dimension,
+        # Performance rows only — see ``_perf_rank``. Absent everywhere else
+        # rather than zero: a defect finding ranks on ``weighted_deficit`` and a
+        # 0 here would read as "measured, and it is nothing".
+        **rank,
     }
 
 
@@ -864,7 +1007,9 @@ async def get_health(
                 exclude_spec,
             )
             lead_rows: list[Any] = finding_rows
-            emitted = [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
+            emitted = _rank_emitted(
+                [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
+            )
             finding_rows = emitted[:limit]
             legend_rows: list[Any] = finding_rows
         else:
@@ -873,17 +1018,29 @@ async def get_health(
             # and ``id`` to fetch the head. SQLAlchemy ``Row`` exposes these as
             # attributes, so the reduction and the exclude filter both run
             # against it unchanged.
+            #
+            # ``details_json`` joins them only when the caller asked for the
+            # performance dimension, because that is the only case where a perf
+            # finding can reach the head at all: every one carries
+            # ``health_impact: 0``, so in a mixed list all ~10k defect findings
+            # sort above them and the rank could not move a row. Measured on
+            # this repo the column costs 6.6ms on the read (parsing the 697 perf
+            # rows out of 10,740 costs a further 1.2ms), which is worth paying
+            # for the one call it changes and not worth paying for the default.
+            lite_cols = [
+                HealthFinding.id,
+                HealthFinding.file_path,
+                HealthFinding.health_impact,
+                HealthFinding.biomarker_type,
+                HealthFinding.reason,
+                HealthFinding.dimension,
+            ]
+            if "performance" in dimension_filter:
+                lite_cols.append(HealthFinding.details_json)
             lite_rows = list(
                 (
                     await session.execute(
-                        select(
-                            HealthFinding.id,
-                            HealthFinding.file_path,
-                            HealthFinding.health_impact,
-                            HealthFinding.biomarker_type,
-                            HealthFinding.reason,
-                            HealthFinding.dimension,
-                        )
+                        select(*lite_cols)
                         .where(*open_findings)
                         .order_by(HealthFinding.health_impact.desc())
                     )
@@ -893,7 +1050,7 @@ async def get_health(
             # leads and the performance KPI, neither of which should change
             # because the caller asked to *see* one dimension.
             lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
-            emitted = [r for r in lead_rows if _in_dimensions(r, dimension_filter)]
+            emitted = _rank_emitted([r for r in lead_rows if _in_dimensions(r, dimension_filter)])
             # Test material goes in its own bucket rather than competing for
             # the repo's headline finding list. Measured on this repo, **2 of
             # the top 5** open findings by impact sit on test files, and 4-5 of
