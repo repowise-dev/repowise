@@ -110,21 +110,6 @@ export function extractSources(
         }
       }
     }
-
-    if (tc.name === "get_architecture_diagram") {
-      const pageId = "architecture_diagram:";
-      if (!seen.has(pageId)) {
-        seen.add(pageId);
-        sources.push({
-          id: `${tc.id}:arch-diagram`,
-          pageId,
-          title: "Knowledge Graph",
-          pageType: "architecture_diagram",
-          targetPath: "",
-          toolName: tc.name,
-        });
-      }
-    }
   }
 
   return sources;

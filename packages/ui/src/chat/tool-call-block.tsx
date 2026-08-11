@@ -21,11 +21,10 @@ const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
   get_context: "Looking up context",
   get_risk: "Assessing risk",
+  get_change_risk: "Scoring change risk",
   get_why: "Querying decisions",
   search_codebase: "Searching codebase",
-  get_dependency_path: "Tracing dependency path",
   get_dead_code: "Checking dead code",
-  get_architecture_diagram: "Generating architecture diagram",
 };
 
 const MICRO_LABEL =
