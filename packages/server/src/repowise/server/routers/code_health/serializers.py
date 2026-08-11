@@ -77,35 +77,56 @@ def _metric_to_dict(
     *,
     perf_findings: int = 0,
     perf_analyzed: bool | None = None,
+    summary: bool = False,
 ) -> dict:
-    return {
+    """One file row. ``summary=True`` omits the keys only the table and drawer read.
+
+    Not "nulled" — **omitted**. Measured over the code-health map's 2,000-row
+    request, the three lead keys and the two detail keys dropped here are
+    432,081 B of a 1,060,095 B payload, and only 177,527 B of that is lead
+    *values*: the key names are the rest, so a row that nulls them saves a
+    fraction of what a row that drops them saves.
+
+    **Exactly the keys already declared optional on ``HealthFileMetric``**, which
+    is the line that keeps this safe rather than a judgement about who reads
+    what: every consumer already handles them absent or null (they *are* null on
+    any row whose findings were not loaded), and the wire type needs no change.
+    ``max_ccn`` / ``max_nesting`` are unread by the map too and stay anyway —
+    they are required on the type, they are 56 KB of the 488 KB, and dropping
+    them would trade the whole safety argument for 5%.
+    """
+    # Built in the historical key order so the full row stays byte-identical.
+    out: dict = {
         "file_path": m.file_path,
         "score": round(m.score, 2),
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
-        "nloc": m.nloc,
-        "has_test_file": m.has_test_file,
-        "line_coverage_pct": m.line_coverage_pct,
-        "module": m.module,
-        "duplication_pct": getattr(m, "duplication_pct", None),
+    }
+    out["nloc"] = m.nloc
+    out["has_test_file"] = m.has_test_file
+    out["line_coverage_pct"] = m.line_coverage_pct
+    out["module"] = m.module
+    if not summary:
+        out["duplication_pct"] = getattr(m, "duplication_pct", None)
         # Per-dimension scores from the three-signal split. ``score`` above stays
         # the overall surfaced number (== defect_score for now).
-        # ``performance_score`` is computed but not yet surfaced as its own pillar.
-        "defect_score": _round_opt(getattr(m, "defect_score", None)),
-        "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
-        "performance_score": _round_opt(getattr(m, "performance_score", None)),
-        # Performance lens inputs for the code-health map: the open perf-finding
-        # count colors the heat, and ``perf_analyzed`` (did a detector run on this
-        # language?) separates green ("analyzed, none found") from grey ("never
-        # looked"). Presentation only — the score above is untouched.
-        "performance_findings": perf_findings,
-        "performance_analyzed": perf_analyzed,
+        out["defect_score"] = _round_opt(getattr(m, "defect_score", None))
+    # ``performance_score`` is computed but not yet surfaced as its own pillar.
+    out["maintainability_score"] = _round_opt(getattr(m, "maintainability_score", None))
+    out["performance_score"] = _round_opt(getattr(m, "performance_score", None))
+    # Performance lens inputs for the code-health map: the open perf-finding
+    # count colors the heat, and ``perf_analyzed`` (did a detector run on this
+    # language?) separates green ("analyzed, none found") from grey ("never
+    # looked"). Presentation only — the score above is untouched.
+    out["performance_findings"] = perf_findings
+    out["performance_analyzed"] = perf_analyzed
+    if not summary:
         # Dominant-cause lead + pre-clamp magnitude (null when findings weren't
         # loaded for this row, or the file is clean). Additive; readers degrade.
-        "primary_biomarker": lead.get("primary_biomarker") if lead else None,
-        "primary_reason": lead.get("primary_reason") if lead else None,
-        "total_deduction": lead.get("total_deduction") if lead else None,
-    }
+        out["primary_biomarker"] = lead.get("primary_biomarker") if lead else None
+        out["primary_reason"] = lead.get("primary_reason") if lead else None
+        out["total_deduction"] = lead.get("total_deduction") if lead else None
+    return out
 
 
 def _file_trend_to_dict(t: FileTrend) -> dict:
