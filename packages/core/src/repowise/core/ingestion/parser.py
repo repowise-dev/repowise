@@ -66,11 +66,13 @@ from .parser_helpers import (
     _classify_param_origin,
     _collect_error_nodes,
     _count_arguments,
+    _dedupe_pascal_interface_symbols,
     _find_enclosing_symbol,
     _has_callable_ancestor,
     _head_type_identifier,
     _is_async_node,
     _qualified_cpp_parent,
+    _qualified_pascal_parent,
     _run_query,
 )
 from .python_local_refs import extract_python_local_refs
@@ -421,6 +423,10 @@ class ASTParser:
     ) -> list[Symbol]:
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
+        # Parallel to ``symbols`` (same indices) -- only populated/consumed
+        # for Pascal, to dedupe interface-declaration vs. implementation
+        # method pairs after the loop. See _dedupe_pascal_interface_symbols.
+        node_types: list[str] = []
 
         # Deferred-export names (``export { x }`` / ``export default x``),
         # computed once per file for the TS/JS visibility refinement.
@@ -584,6 +590,15 @@ class ASTParser:
             if parent_name is None and file_info.language in ("cpp", "c") and name_nodes:
                 parent_name = _qualified_cpp_parent(name_nodes[0], src)
 
+            # Pascal out-of-line implementation: ``function TFoo.Bar(...);``
+            # -- the ``defProc`` node lives in the unit's implementation
+            # section, outside the class's ``declType`` body declared in the
+            # interface section, so nesting-based ``_find_parent`` above
+            # can't see it. The qualifying class lives beside the captured
+            # name in the ``genericDot`` header instead.
+            if parent_name is None and file_info.language == "pascal" and name_nodes:
+                parent_name = _qualified_pascal_parent(name_nodes[0], src)
+
             # Upgrade function → method when a parent class is detected
             if parent_name and kind == "function":
                 kind = "method"
@@ -622,6 +637,10 @@ class ASTParser:
                     is_exported_symbol=is_exported_symbol,
                 )
             )
+            node_types.append(node_type)
+
+        if file_info.language == "pascal":
+            symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
 
         return symbols
 
@@ -686,6 +705,35 @@ class ASTParser:
                 continue
 
             stmt_node = stmt_nodes[0]
+
+            # Pascal: `uses UnitA, UnitB, Ns.UnitC;` -- pascal.scm's
+            # unquantified pattern (see that file's comment on why) fires
+            # once PER moduleName, so a 3-unit clause arrives as 3 separate
+            # matches sharing one @import.statement span, each carrying a
+            # single-element ``module_nodes``. Handled before the
+            # ``seen_raws`` dedup below: that guard exists to skip a
+            # statement re-matched by an *overlapping* pattern (the normal
+            # case elsewhere), but here every match legitimately carries a
+            # different unit despite the identical raw statement text --
+            # dedup-by-raw would keep only the first and silently drop the
+            # rest, which is exactly the bug this branch fixes.
+            if file_info.language == "pascal":
+                raw = _node_text(stmt_node, src).strip()
+                unit_name = _node_text(module_nodes[0], src).strip()
+                if unit_name:
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            module_path=unit_name,
+                            imported_names=[],
+                            is_relative=False,
+                            resolved_file=None,
+                            bindings=[],
+                            is_reexport=False,
+                        )
+                    )
+                continue
+
             raw = _node_text(stmt_node, src).strip()
             if raw in seen_raws:
                 continue

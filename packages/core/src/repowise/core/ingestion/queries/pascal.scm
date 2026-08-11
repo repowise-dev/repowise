@@ -31,6 +31,14 @@
 ; implementation sections alike; not scoped to either.
 ; ---------------------------------------------------------------
 
+; No quantifier on purpose: `moduleName` siblings inside `declUses` are
+; separated by literal `,` tokens, so a `+`/`*` quantifier here can't
+; span them (tree-sitter quantifiers require adjacency) -- it collapses
+; to a single match on the FIRST unit and silently drops the rest.
+; Leaving this unquantified instead yields one match per moduleName
+; (all sharing the same @import.statement span), which parser.py's
+; Pascal-specific _extract_imports branch relies on to emit every unit
+; in `uses A, B, C;` -- see that branch for why the match count matters.
 (declUses
   (moduleName) @import.module) @import.statement
 

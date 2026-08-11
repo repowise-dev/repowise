@@ -11,11 +11,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 from tree_sitter import Node
 
 from .extractors import node_text
+
+if TYPE_CHECKING:
+    from .models import Symbol
 
 log = structlog.get_logger(__name__)
 
@@ -111,11 +115,95 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     return text.rsplit("::", 1)[-1] or None
 
 
+def _qualified_pascal_parent(name_node: Node, src: str) -> str | None:
+    """Return the owning class for a Pascal out-of-line method header.
+
+    ``function TCalculator.Add(...): Integer;`` in an implementation
+    section is captured by pascal.scm's ``genericDot`` patterns, where the
+    bare ``@symbol.name`` is the ``rhs`` (``Add``) and the qualifying type
+    lives in the sibling ``lhs`` field (``TCalculator``). Nesting-based
+    ``_find_parent`` can't see this: the ``defProc`` node sits in the
+    unit's implementation section, physically outside the class's
+    ``declType`` body declared in the interface section. Handles both the
+    plain (``genericDot rhs: identifier``) and generic-method
+    (``genericDot rhs: genericTpl entity: identifier``) query shapes.
+
+    Uses ``node_text`` (tree-sitter's own byte-accurate decode), not raw
+    ``src`` byte-offset slicing — Pascal identifiers and unit names are
+    frequently non-ASCII (Cyrillic) in this codebase's real-world sources,
+    and slicing a decoded ``str`` by *byte* offsets misaligns on any
+    multi-byte character.
+
+    Returns ``None`` when the name node isn't inside a qualified header
+    (i.e. a free function/procedure).
+    """
+    parent = name_node.parent
+    if parent is not None and parent.type == "genericTpl":
+        parent = parent.parent
+    if parent is None or parent.type != "genericDot":
+        return None
+    lhs = parent.child_by_field_name("lhs")
+    if lhs is None:
+        return None
+    text = node_text(lhs, src).strip()
+    return text or None
+
+
 def _build_qualified_name(file_path: str, parent_name: str | None, name: str) -> str:
     module = Path(file_path).with_suffix("").as_posix().replace("/", ".")
     if parent_name:
         return f"{module}.{parent_name}.{name}"
     return f"{module}.{name}"
+
+
+def _dedupe_pascal_interface_symbols(
+    symbols: list[Symbol], node_types: list[str]
+) -> list[Symbol]:
+    """Drop an interface-section method signature once its implementation
+    is also present, so the two don't become two graph nodes for one method.
+
+    Pascal declares a method's signature once in the ``interface`` section
+    (``declProc``, no body) and its full body once in the
+    ``implementation`` section (``defProc``) — two distinct physical AST
+    nodes pascal.scm both legitimately captures (see the query file's
+    comment). Once ``_find_parent`` (nesting) and ``_qualified_pascal_parent``
+    (the ``TFoo.Method`` header) resolve both to the same
+    ``(parent_name, name)``, keep only the ``defProc`` version: it carries
+    the real body, which is what ``get_symbol`` should return, and the
+    ``declProc`` duplicate would otherwise leave two ``Add`` nodes in the
+    graph for one logical method.
+
+    Keyed on ``(parent_name, signature)`` rather than just
+    ``(parent_name, name)`` so that Pascal ``overload;`` siblings (same
+    name, different parameter lists) are told apart: an interface-only
+    overload must survive even when a *different* overload of the same
+    name has a same-file implementation (verified against a reproduction
+    where a 2-overload class with only one variant implemented was
+    silently losing the other variant's interface declaration). Pascal's
+    generic ``f"{name}{params_text}"`` signature fallback (no per-node-type
+    branch in ``build_signature`` for ``declProc``/``defProc``) makes the
+    interface declaration's signature text match its implementation's
+    exactly, so this doesn't need a separate params-text pass.
+
+    Still imperfect: Pascal's compiler doesn't require parameter *names* to
+    match between an interface declaration and its implementation (only
+    the types, for overload resolution), so a same-file rename between the
+    two would produce different signature strings and defeat this dedup,
+    leaving both symbols. Rare in practice (renaming between declaration
+    and implementation is confusing even where legal) and left as a known
+    gap rather than parsing parameter types out of ``declArgs`` for an
+    exact match.
+    """
+    impl_keys = {
+        (s.parent_name, s.signature)
+        for s, nt in zip(symbols, node_types, strict=True)
+        if nt == "defProc"
+    }
+    return [
+        s
+        for s, nt in zip(symbols, node_types, strict=True)
+        if not (nt == "declProc" and (s.parent_name, s.signature) in impl_keys)
+    ]
 
 
 # ---------------------------------------------------------------------------
