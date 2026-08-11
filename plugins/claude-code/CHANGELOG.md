@@ -2,6 +2,13 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Added
+- `/repowise:export` runs `repowise export` so Claude can dump the wiki to
+  markdown / HTML / JSON (including `--full` archives) or emit a Structurizr
+  DSL architecture model without leaving the session.
+
 ## 0.40.0
 
 ### Added

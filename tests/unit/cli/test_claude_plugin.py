@@ -159,6 +159,7 @@ def test_claude_plugin_commands_have_frontmatter() -> None:
         "dead-code",
         "decision",
         "doctor",
+        "export",
         "health",
         "impacted-tests",
         "init",

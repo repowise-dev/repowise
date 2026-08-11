@@ -598,7 +598,7 @@ See [CLAUDE.md Generator →](claude-md-generator) for how the file is structure
 
 ## `export`
 
-Export wiki pages to files.
+Export wiki pages to files, or emit a Structurizr DSL architecture model.
 
 ```bash
 repowise export [PATH] [OPTIONS]
@@ -608,8 +608,13 @@ repowise export [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--format` / `-f` | choice | markdown | `markdown`, `html`, or `json` |
-| `--output` / `-o` | string | `.repowise/export` | Output directory |
+| `--format` / `-f` | choice | markdown | `markdown`, `html`, `json`, or `structurizr` |
+| `--output` / `-o` | string | `.repowise/export` | Output directory (for structurizr, a path ending in `.dsl` names the file) |
+| `--full` | flag | false | JSON: include tombstones plus decisions, dead code, and hotspot metadata |
+| `--standalone` | flag | false | Structurizr: emit a complete workspace with default views |
+| `--components` | flag | false | Structurizr: include the component level (one box per directory) |
+| `--force` | flag | false | Structurizr: overwrite the output file even if Repowise did not write it |
+| `--no-externals` | flag | false | Structurizr: leave third-party dependencies out of the model |
 
 ### Examples
 
@@ -617,7 +622,12 @@ repowise export [PATH] [OPTIONS]
 repowise export                          # Export all pages as markdown
 repowise export --format html -o ./site  # HTML export to ./site
 repowise export --format json            # Machine-readable JSON dump
+repowise export --format json --full     # Archival JSON with decisions / dead code
+repowise export --format structurizr --standalone --components
+repowise export --format structurizr -o architecture.dsl
 ```
+
+Also available as the Claude Code slash command `/repowise:export`.
 
 ---
 

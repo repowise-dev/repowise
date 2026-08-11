@@ -146,6 +146,16 @@ Unreachable files, unused exports, and zombie packages by confidence.
 
 ---
 
+### `/repowise:export`
+
+Export wiki pages or the architecture model (`repowise export`). Formats:
+`markdown` (default), `html`, `json`, and `structurizr`. JSON `--full` keeps
+tombstones and adds decisions / dead code / hotspots. Structurizr can emit a
+model fragment or a `--standalone` workspace (`--components`,
+`--no-externals`, `--force`).
+
+---
+
 ### `/repowise:decision`
 
 List, inspect, add, or confirm architectural decisions.

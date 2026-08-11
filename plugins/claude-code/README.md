@@ -57,6 +57,7 @@ defect-validated score from deterministic markers).
 | `/repowise:risk` | Defect-risk score for a change (commit or `base..head` range) |
 | `/repowise:security` | Full-history secret scan (`repowise security scan --history`) |
 | `/repowise:dead-code` | Unreachable files, unused exports, zombie packages by confidence |
+| `/repowise:export` | Export wiki pages or a Structurizr architecture model |
 | `/repowise:decision` | List, inspect, add, or confirm architectural decisions |
 | `/repowise:doctor` | Diagnose (and optionally repair) the setup, keys, and index drift |
 
