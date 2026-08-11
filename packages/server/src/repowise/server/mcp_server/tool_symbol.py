@@ -662,30 +662,32 @@ async def get_symbol(
     query: str | None = None,
     id: str | None = None,
 ) -> dict:
-    """Read one function/class/constant with live-verified line bounds.
+    """Follow-up read of one symbol whose id another response already gave you.
 
-    Raw source of one indexed symbol, bounded (~600 lines) — cheaper than
-    Read+offset math. ``source`` uses Read's exact line-numbered format;
-    treat it as an already-performed Read. ``verified: true`` = bounds
-    checked (or corrected) against the live file: no follow-up Read needed.
-    ``bounds: "approximate"`` = the symbol moved and re-location failed.
-    An ambiguous id (overloads, re-exports) returns ALL matching bodies in
-    ``candidates`` — none is silently chosen. Also serves live range reads
-    ("path.py:140-180", ≤200 lines, always verified) and omission refs
-    ("repowise#<12-hex>"). Index misses grep the live file and return
-    fallback_lines instead of a dead end. When ``truncated`` is true the
+    **Not an entry point.** ``get_answer`` already ships ``symbol_bodies``, and
+    for a whole file ``get_context(include=["skeleton"])`` or a plain Read is
+    one call instead of many. Reach here for a body that was elided, or for a
+    ``continuation`` / omission ref. Never walk a file symbol by symbol.
+
+    Raw source of one indexed symbol, bounded (~600 lines). ``source`` uses
+    Read's exact line-numbered format; treat it as an already-performed Read.
+    ``verified: true`` = bounds checked (or corrected) against the live file:
+    no follow-up Read needed. ``bounds: "approximate"`` = the symbol moved and
+    re-location failed. An ambiguous id (overloads, re-exports) returns ALL
+    matching bodies in ``candidates`` — none is silently chosen. Also serves
+    live range reads ("path.py:140-180", ≤200 lines, always verified) and
+    omission refs ("repowise#<12-hex>"). Index misses grep the live file and
+    return fallback_lines instead of a dead end. When ``truncated`` is true the
     response carries a ``continuation`` token — the exact range read that
     fetches the remainder; pass it straight back to get_symbol.
 
     Args:
-        symbol_id: "path/to/file.py::Name" (from get_context),
-            "path/to/file.py:140-180" for a live range, or an omission ref.
+        symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a
+            live range, or an omission ref.
         context_lines: extra lines before/after (0-50).
         repo: usually omitted.
         query: omission refs only — regex/substring filter on lines.
-        id: accepted alias for ``symbol_id`` — the tool table documents this
-            tool as ``get_symbol(id)``, so ``id=`` is the natural call and is
-            forgiven here rather than met with a hard argument error.
+        id: accepted alias for ``symbol_id``.
     """
     if repo == "all":
         return _unsupported_repo_all("get_symbol")

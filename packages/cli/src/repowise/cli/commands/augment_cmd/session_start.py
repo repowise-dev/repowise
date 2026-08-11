@@ -30,7 +30,18 @@ from ._shared import _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
 from .decision_inject import _session_decision_block
 
-_CORE_TOOLS = "get_answer, get_context, get_symbol, search_codebase, get_risk"
+#: The tools this block points a fresh session at. **Entry points only.**
+#:
+#: ``get_symbol`` used to be in this list and is deliberately not. It is a
+#: follow-up on an id another response already handed over, and naming it here
+#: — three times per session, in the one block every session reads first — is
+#: what turns it into a first-reach tool. An agent that sees it listed beside
+#: ``get_answer`` spends most of its retrieval calls fetching one symbol at a
+#: time; an agent that does not, reaches for the coarse tools instead. The tool
+#: is still served and still in the CLAUDE.md table, just not advertised as
+#: somewhere to start. Same reasoning, at more length, in
+#: ``generation/editor_files/tool_table.py``.
+_CORE_TOOLS = "get_answer, get_context, search_codebase, get_risk"
 
 
 def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
