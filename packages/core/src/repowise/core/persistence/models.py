@@ -1231,6 +1231,13 @@ class HealthFileMetric(Base):
     defect_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     maintainability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     performance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Commit this row was scored against. Health is a separate pass from indexing
+    # and can lag it, so ``Repository.head_commit`` does not answer "how old is
+    # this score". Per-row rather than per-repo because the incremental path
+    # (``upsert_health_metrics``) rewrites only the files that changed, so the
+    # table legitimately holds rows from several passes at once. NULL on every
+    # row written before this column existed.
+    analyzed_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )

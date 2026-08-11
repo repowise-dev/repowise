@@ -10,7 +10,9 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.biomarkers import continuous_biomarkers
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
+from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
@@ -37,6 +39,7 @@ from repowise.core.persistence.models import (
     RefactoringSuggestion,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._budget import effective_char_budget
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -119,6 +122,82 @@ _ONLY_ALIASES = {
 _DIRECTIVE_CANDIDATES = 3
 
 
+# Deliberately not ``CHAR_BUDGET`` (8000 tokens). That ceiling is for tools that
+# *summarize*; the dashboard is a ranked report and already measures ~44k chars
+# at the documented default ``limit=20``, so budgeting it there would silently
+# halve every list on a call that has never failed. The ceiling that matters here
+# is the one whose breach is an isError: pass an effectively-unbounded
+# ``configured`` so ``effective_char_budget`` returns the host-derived cap alone
+# (25000 tokens x 0.6 x 4 chars = 60,000), and follows a narrowed
+# ``MAX_MCP_OUTPUT_TOKENS`` down.
+_HOST_CEILING = 1 << 30
+
+# Room for what the guard adds *after* it measures: ``truncated_to_fit``, the
+# recovery sentence and ``timing_ms``. Without it the report of the trim pushed
+# the response back over the ceiling the trim existed to respect — the marker
+# has to be inside the budget, not on top of it. Same shape as ``tool_why``'s
+# ``_COLLECTOR_HEADROOM_CHARS``, and generous: over-reserving costs a row.
+_TRUNCATION_MARKER_HEADROOM = 400
+
+# Ranked lists this response may carry, trimmed longest-first when the whole
+# payload would overflow the host's tool-result cap. Named rather than derived
+# from "every value that is a list" so trimming can never eat a small structural
+# list (``kpis.performance_unsupported_languages``, ``unresolved``) to save bytes
+# a ranked list is responsible for.
+_TRIMMABLE_LISTS = (
+    "refactoring_plans",
+    "high_leverage_files",
+    "worst_files",
+    "test_findings",
+    "top_findings",
+    "findings",
+    "churn_complexity",
+    "modules",
+)
+
+
+def _fit_to_budget(result: dict[str, Any], budget: int) -> dict[str, int]:
+    """Trim ranked lists until *result* fits *budget* chars. Returns what it cut.
+
+    ``include`` only ever adds a block, and the dashboard's ranked lists compose:
+    measured on this repo, bare ``include=['refactoring']`` returns ~59k chars
+    with no single list at fault (refactoring_plans 34%, high_leverage_files 16%,
+    worst_files 16%, test_findings 13%, top_findings 13%). Past the host's
+    ``MAX_MCP_OUTPUT_TOKENS`` the result is *rejected* with an isError — the
+    agent loses the whole answer — so a per-list cap that is individually
+    reasonable is not enough; something has to bound the sum.
+
+    Trims the currently-longest list, so the cut lands on whichever block is
+    actually responsible rather than on a fixed victim. Every trimmed list keeps
+    its ``*_total`` sibling, and the cut is reported in
+    ``_meta.truncated_to_fit`` — the recovery path is ``only=[...]``, which gates
+    the work as well as the payload.
+    """
+    dropped: dict[str, int] = {}
+    size = len(json.dumps(result, default=str))
+    while size > budget:
+        longest = max(
+            (k for k in _TRIMMABLE_LISTS if result.get(k)),
+            key=lambda k: len(result[k]),
+            default=None,
+        )
+        if longest is None:
+            # Nothing left to give. Better an oversized response the host may
+            # reject than a silently empty one — and _meta says what happened.
+            break
+        rows = result[longest]
+        # Estimate how many rows the overflow is worth from this list's own mean
+        # row size, so a 200-row overflow is not 200 whole-response
+        # re-serializations. Never more than half the list per pass: the estimate
+        # is a mean over uneven rows, and over-trimming cannot be undone.
+        per_row = max(1, len(json.dumps(rows, default=str)) // len(rows))
+        take = max(1, min(len(rows), (size - budget) // per_row, max(1, len(rows) // 2)))
+        del rows[len(rows) - take :]
+        dropped[longest] = dropped.get(longest, 0) + take
+        size = len(json.dumps(result, default=str))
+    return dropped
+
+
 def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
     """True when *row* belongs to one of *dimensions* (empty set -> everything).
 
@@ -142,13 +221,25 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
     ``primary_biomarker`` / ``primary_reason`` give a low file "the one reason"
     to lead with; ``total_deduction`` (summed ``health_impact``) distinguishes
     two files that both floor at 1.0. Additive — the score itself is untouched.
+
+    The headline prefers the strongest **discrete** finding. A continuous
+    biomarker fires on every file carrying its input signal, so on a repo with
+    coverage data ``coverage_gradient`` wins the max-impact tiebreak nearly
+    everywhere: measured on this repo before the preference, it led 22 of the
+    top 50 ``worst_files`` and 14 of the top 50 ``high_leverage_files`` with
+    "N% of lines uncovered", which is true and tells a reader nothing about why
+    this file rather than any other. The gradient still counts in
+    ``total_deduction`` and still leads when it is a file's only finding — it
+    just stops crowding out a nameable cause.
     """
+    continuous = continuous_biomarkers()
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
     leads: dict[str, dict[str, Any]] = {}
     for path, fs in by_file.items():
-        primary = max(fs, key=lambda x: x.health_impact)
+        discrete = [f for f in fs if f.biomarker_type not in continuous]
+        primary = max(discrete or fs, key=lambda x: x.health_impact)
         leads[path] = {
             "primary_biomarker": primary.biomarker_type,
             "primary_reason": primary.reason,
@@ -184,11 +275,20 @@ def _serialize_metric(
         # headline recovers if the file reaches 8.0, so ranking by it — not by
         # raw score — points at the files that actually move the average. A tiny
         # 1.0 file and a 1200-line 1.0 file score the same but differ 40x here.
+        # The unit is score-points x NLOC, which is meaningless on its own — the
+        # docstring and ``gap_analysis.weighted_gap_points`` give it a
+        # denominator, and every ``high_leverage_files`` row carries the same
+        # quantity as ``share_of_repo_gap_pct``.
         "weighted_deficit": round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)),
-        # Per-dimension scores from the three-signal split. ``score`` is the
-        # overall surfaced number (== ``defect_score`` for now);
+        # Per-dimension scores from the three-signal split. ``defect_score`` is
+        # deliberately absent: ``engine.py`` sets it and ``score`` from the same
+        # ``scores["defect"]`` value, so it was pure duplication on every row of
+        # every response — measured on this repo, 3,314 of 3,314 rows had
+        # ``score == defect_score`` and none was NULL. Two names for one number
+        # cost an agent a source read to decide which to rank on, and the one to
+        # rank on is neither (it is ``weighted_deficit``). ``score`` survives
+        # because every doc, skill and UI already names it.
         # ``performance_score`` is computed but not yet surfaced as its own pillar.
-        "defect_score": _round_opt(getattr(m, "defect_score", None)),
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
         # Dominant-cause lead + pre-clamp magnitude (null when no findings for
@@ -471,11 +571,25 @@ def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict
     }
 
 
+def _code_only(
+    metrics: list[HealthFileMetric], lang_by_path: dict[str, str]
+) -> list[HealthFileMetric]:
+    """The metric rows the complexity walker actually walks.
+
+    ``LANGUAGE_MAPS`` is already the repo's definition of "real code" — the perf
+    pillar uses exactly this filter so docs/config rows never dilute its
+    coverage math (``perf/coverage.py::coverage_for_metrics``). The defect
+    headline never applied it.
+    """
+    return [m for m in metrics if lang_by_path.get(m.file_path, "") in LANGUAGE_MAPS]
+
+
 def _compute_kpis(
     metrics: list[HealthFileMetric],
     *,
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
+    lang_by_path: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not metrics:
         return {
@@ -490,9 +604,31 @@ def _compute_kpis(
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     worst = min(metrics, key=lambda r: r.score)
+    # What the headline would read over code alone. No biomarker walks a
+    # markdown or JSON file, so those rows carry a mechanical 10.0 that means
+    # "nothing looked at this", exactly the fabricated-10.0 problem the perf
+    # pillar already surfaces rather than hides (``perf/coverage.py``). Measured
+    # on this repo: 233 of 3,314 rows are non-code, 221 of them score exactly
+    # 10.0, they are 7.5% of NLOC, and they lift ``average_health`` 7.31 -> 7.47.
+    # Surfaced rather than subtracted: ``average_health`` is what the badge, the
+    # snapshots, the trend alerts and the web UI all read, and redefining it
+    # here alone would make this tool disagree with every one of them.
+    code_kpis: dict[str, Any] = {}
+    if lang_by_path is not None:
+        code = _code_only(metrics, lang_by_path)
+        code_nloc = sum(max(m.nloc, 1) for m in code)
+        code_kpis = {
+            "non_code_files": len(metrics) - len(code),
+            "average_health_code_only": (
+                round(sum(m.score * max(m.nloc, 1) for m in code) / code_nloc, 2)
+                if code_nloc
+                else None
+            ),
+        }
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        **code_kpis,
         # NLOC-weighted (``average_health``) vs plain file mean. When these
         # diverge, a few large low-scoring files are holding the headline down —
         # the weighted number is what the dashboard/badge surface, and the gap
@@ -526,24 +662,40 @@ async def get_health(
     ``weighted_deficit``, not ``score``: the score floors at 1.0 and cannot
     separate the worst band.
 
-    Three dimensions per file: ``score`` (defect risk, the headline),
+    Three dimensions per file: ``score`` (defect risk, the headline — it *is*
+    the defect dimension, there is no separate ``defect_score``),
     ``maintainability_score``, ``performance_score`` (static I/O-in-loop / N+1
     risk, never blended in). Each finding carries its ``dimension``. Dashboard
     mode buckets test material: ``top_findings`` is production,
     ``test_findings`` the rest, each row says ``is_test``.
+
+    Points units: ``weighted_deficit`` / ``recovers_points`` /
+    ``weighted_gap_points`` are all *score-points x NLOC*, comparable only
+    against each other. For "is this worth doing", read the
+    ``share_of_repo_gap_pct`` on ``directive`` and on every
+    ``high_leverage_files`` row, and ``gap_analysis.files_to_reach_target`` —
+    the same quantities with a denominator.
 
     Args:
         targets: file paths or ``module:<name>``. Empty → dashboard mode. A
             target matching nothing is named in ``unresolved`` with a reason
             (``not_indexed`` → run ``repowise update`` | ``no_such_path`` |
             ``excluded`` | ``no_such_module``), so empty ``findings`` means
-            healthy.
+            healthy. ``unresolved`` survives any ``only`` projection.
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
             ``accuracy`` | ``signals`` | ``churn_complexity`` |
-            ``performance``/``defect``/``maintainability`` (dimension).
+            ``performance``/``defect``/``maintainability`` (dimension). It only
+            *adds*: the dashboard's five ranked lists come back with it and they
+            compose, so pair it with ``only`` —
+            ``include=['refactoring'], only=['refactoring_plans']``, not bare
+            ``include=['refactoring']``. A response that would still overflow is
+            trimmed and says so in ``_meta.truncated_to_fit``.
         only: keep just these top-level keys — ``["directive"]`` is the cheapest
             useful call. Each kept list's ``*_total`` is retained too, and the
-            ``include`` names work as aliases. Unmatched keys land in
+            three *block* names ``biomarkers`` / ``accuracy`` / ``refactoring``
+            work as aliases. The ``include`` dimension names
+            (``performance`` / ``defect`` / ``maintainability``) and ``signals``
+            do not — they have no top-level key. Unmatched keys land in
             ``unknown_only_keys``.
         repo: usually omitted.
         limit: max rows per ranked list (max 50, ``0`` for none); each carries
@@ -612,6 +764,9 @@ async def get_health(
     # Performance headline inputs (dashboard mode): filled inside the session.
     perf_coverage: PerfCoverage | None = None
     perf_findings_count = 0
+    # ``None`` means "not read", which is what keeps the code/non-code KPI split
+    # off targeted responses rather than reporting it over one file.
+    lang_by_path: dict[str, str] | None = None
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
@@ -812,6 +967,8 @@ async def get_health(
         # Dashboard perf headline: coverage (how much of the analyzed code the
         # perf pass ran on) + open performance-finding count. Both feed ``kpis``
         # alone, so a projection that drops kpis skips the language-map read.
+        # The same map answers "how much of this headline is non-code" — one
+        # read, two KPIs.
         if not scoped and wants("kpis"):
             lang_by_path = await get_file_language_map(session, repository.id)
             perf_coverage = coverage_for_metrics(all_metrics, lang_by_path)
@@ -1006,6 +1163,7 @@ async def get_health(
         metric_rows if scoped else all_metrics,
         performance_findings=perf_findings_count,
         coverage=perf_coverage,
+        lang_by_path=lang_by_path,
     )
 
     if scoped:
@@ -1103,8 +1261,28 @@ async def get_health(
             # change which files the repo's "worst" are. The crowding is in the
             # *finding* lists, which is where the split below happens.
             "worst_files_total": len(metric_rows),
+            # The one list whose entire purpose is leverage ranking, so it is the
+            # one place ``weighted_deficit`` gets a denominator. The bare number
+            # is score-points x NLOC and answers "which is bigger" but never "is
+            # this worth doing"; the same quantity as a share of the repo's total
+            # gap does, and it is the unit ``directive`` already speaks.
             "high_leverage_files": [
-                _serialize_metric(m, leads.get(m.file_path), is_test=m.file_path in test_paths)
+                {
+                    **_serialize_metric(
+                        m, leads.get(m.file_path), is_test=m.file_path in test_paths
+                    ),
+                    "share_of_repo_gap_pct": (
+                        round(
+                            100.0
+                            * max(HEALTHY_MIN - m.score, 0.0)
+                            * max(m.nloc, 1)
+                            / gap["weighted_gap_points"],
+                            1,
+                        )
+                        if gap.get("weighted_gap_points")
+                        else None
+                    ),
+                }
                 for m in by_leverage[:limit]
             ],
             "high_leverage_files_total": len(by_leverage),
@@ -1300,7 +1478,18 @@ async def get_health(
         # ``only=["modules"]`` at ``limit=50`` returned 50 of 116 modules with
         # no ``modules_total`` to say so. Retaining it is not the caller's job —
         # a caller who knew to ask for the total would not need the guarantee.
-        keep = set(only_list) | {"mode"} | {f"{k}_total" for k in only_list}
+        # ``unresolved`` / ``known_modules`` survive any projection, for the same
+        # reason ``mode`` does. They are the block that stops an empty result
+        # reading as "this file is healthy" (A1), and projecting them away put a
+        # typo'd target straight back to silent: ``targets=["does/not/exist.py"],
+        # only=["metrics"]`` returned ``metrics: []`` and nothing else. A caller
+        # who has to ask for the error report in order to see it does not have an
+        # error report.
+        keep = (
+            set(only_list)
+            | {"mode", "unresolved", "known_modules"}
+            | {f"{k}_total" for k in only_list}
+        )
         # A key that does not exist in this response is named rather than
         # quietly yielding an empty one — same rule as ``unresolved`` above.
         # A misspelled projection is otherwise indistinguishable from a block
@@ -1319,9 +1508,33 @@ async def get_health(
     # When the health pass last ran, which is a separate pass from indexing and
     # can lag it. ``_build_meta``'s fields all describe the *index*, so a stale
     # health row was previously invisible.
-    analyzed = [m.updated_at for m in all_metrics if getattr(m, "updated_at", None)]
+    analyzed = [m for m in all_metrics if getattr(m, "updated_at", None)]
     if analyzed:
-        result["_meta"]["health_analyzed_at"] = max(analyzed).isoformat()
+        latest = max(analyzed, key=lambda m: m.updated_at)
+        result["_meta"]["health_analyzed_at"] = latest.updated_at.isoformat()
+        # The commit the health rows were scored against. Distinct from
+        # ``indexed_commit``: the incremental path upserts only the files that
+        # changed (``upsert_health_metrics``), so the table can legitimately hold
+        # rows from several passes, and reporting one SHA for all of them would
+        # be a claim this read cannot support. Report the newest pass's commit,
+        # and say how many others are still represented.
+        commits = {c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}
+        if latest_commit := getattr(latest, "analyzed_commit", None):
+            result["_meta"]["health_analyzed_commit"] = latest_commit[:12]
+        if len(commits) > 1:
+            result["_meta"]["health_analyzed_commits_distinct"] = len(commits)
+    # Keep the whole response under the host's tool-result cap. Applied after the
+    # projection (so ``only`` is credited for what it saved) and after ``_meta``
+    # (which the host tokenizes too), but before ``timing_ms`` so the reported
+    # time covers the trim.
+    if dropped := _fit_to_budget(
+        result, effective_char_budget(_HOST_CEILING) - _TRUNCATION_MARKER_HEADROOM
+    ):
+        result["_meta"]["truncated_to_fit"] = dropped
+        result["_meta"]["truncated_recovery"] = (
+            "Response exceeded the MCP result cap. Re-request a single block with "
+            "only=[...] — each list's *_total says what was there."
+        )
     # Server-side wall clock, as ``get_context`` already reports. Without it a
     # regression in here is invisible until someone profiles it by hand.
     result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)

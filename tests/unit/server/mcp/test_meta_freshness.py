@@ -78,6 +78,66 @@ def test_empty_targets_means_nothing_served_and_never_warns(tmp_path, monkeypatc
     assert out.get("index_behind") is True
 
 
+def test_no_targets_with_zero_changed_files_does_not_warn(tmp_path, monkeypatch):
+    """HEAD moved but the trees are identical — nothing anywhere can be stale.
+
+    Regression (N4): a repo-level response took the "no targets" branch before
+    ever asking git *what* changed, so an empty commit (or a merge that changed
+    nothing) produced ``stale_warning`` on a repo that was completely current.
+    A warning that fires when zero files changed is the loudest possible way to
+    be wrong, and it trains an agent to stop reading the field.
+    """
+    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    _prime(tmp_path, frozenset())
+    out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
+    assert "stale_warning" not in out
+    assert out.get("index_behind") is True
+    assert out.get("live_head") == _LIVE[:12]
+
+
+def test_no_targets_with_real_changes_still_warns(tmp_path, monkeypatch):
+    """The zero-change carve-out must not silence a genuinely behind index."""
+    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    _prime(tmp_path, frozenset({"src/a.py"}))
+    out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
+    assert "stale_warning" in out
+    assert "index_behind" not in out
+
+
+def test_empty_commit_over_real_git_is_not_stale(tmp_path):
+    """End to end against git, since the carve-out turns on a real empty diff."""
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True
+        )
+
+    def sha():
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "t@t.t")
+    git("config", "user.name", "t")
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "one")
+    indexed = sha()
+    git("commit", "-q", "--allow-empty", "-m", "empty")
+    live = sha()
+
+    assert live != indexed
+    assert _meta._changed_files_between(str(tmp_path), indexed, live) == frozenset()
+    repo = types.SimpleNamespace(updated_at=None, local_path=str(tmp_path), head_commit=indexed)
+    out = _meta.freshness_from_repo(repo, targets=None)
+    assert "stale_warning" not in out
+    assert out.get("index_behind") is True
+
+
 def test_git_diff_failure_falls_back_to_repo_level_warning(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
     _prime(tmp_path, None)  # git couldn't answer (rebased-away SHA, timeout)

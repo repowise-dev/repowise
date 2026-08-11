@@ -225,8 +225,13 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     Conditionally emitted:
       * ``live_head``       — only when it differs from the indexed commit
       * ``stale_warning``   — only on a real signal (a served target changed,
-        HEAD mismatch on a repo-level response, OR very old with no git)
-      * ``index_behind``    — HEAD moved but no served target is affected
+        HEAD mismatch with real file changes on a repo-level response, OR very
+        old with no git)
+      * ``index_behind``    — HEAD moved but nothing the response serves is
+        affected: either no served target changed, or the two commits have
+        identical trees so *no* file changed at all. The second case used to
+        warn on every repo-level response, which is the loudest possible way to
+        be wrong about a repo that is completely current.
 
     Defensive throughout: any missing piece is dropped rather than raised so
     an upstream change to the Repository model can never poison a tool result.
@@ -257,11 +262,19 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         if live_full != indexed_full:
             out["live_head"] = live_full[:12]
             changed = (
-                _changed_files_between(local_path, indexed_full, live_full)
-                if targets is not None and local_path
-                else None
+                _changed_files_between(local_path, indexed_full, live_full) if local_path else None
             )
-            if targets is not None and changed is not None:
+            if changed is not None and not changed:
+                # HEAD moved but the two trees are identical (an empty commit, a
+                # merge that changed nothing, a tag-only move). Nothing this or
+                # any other response serves can be stale, so the repo-level
+                # warning was crying wolf on a repo that was completely current —
+                # and a warning that fires when nothing changed trains an agent
+                # to stop reading the field. Checked before the targets branch
+                # because it holds for repo-level responses too, which are
+                # exactly the ones that previously always warned.
+                out["index_behind"] = True
+            elif targets is not None and changed is not None:
                 if targets_hit_by_changes(targets, changed):
                     out["stale_warning"] = (
                         "A file this response serves changed after indexing — "

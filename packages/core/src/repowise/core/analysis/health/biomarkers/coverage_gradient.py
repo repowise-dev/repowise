@@ -47,6 +47,12 @@ _COVERAGE_MEDIUM = 70.0
 class CoverageGradientDetector:
     name = "coverage_gradient"
     category = "test_coverage_gradient"
+    # Declares what the ``deduction`` override below already makes true: this
+    # fires on every file that has coverage data at all, so its magnitude ranks
+    # files against each other but never answers "why this file". Readers that
+    # pick one headline biomarker per file consult ``continuous_biomarkers()``
+    # to prefer a discrete cause.
+    continuous = True
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         cov = ctx.line_coverage_pct
