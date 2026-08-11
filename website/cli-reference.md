@@ -262,6 +262,44 @@ repowise search "database connection" --limit 20
 
 ---
 
+## `context`
+
+Triage card for files, modules or symbols: title, summary, architectural layer,
+hotspot and bug-fix history, doc freshness, and the shape of the verified
+skeleton. Relationships and risk signals, not source bytes. Batch targets in one
+call.
+
+```bash
+repowise context <TARGETS...> [OPTIONS]
+```
+
+TARGETS are file paths, module paths, or `path/to/file.py::Symbol` ids.
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--include` | choice | — | Opt-in block, repeatable: `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `metrics`, `community`, `decisions`, `skeleton` |
+| `--no-compact` | flag | false | Add structure, imports and docstrings to each card |
+| `--path` | string | cwd | Repo (or workspace) root |
+| `--repo` | string | — | Workspace repo alias to query |
+| `--no-workspace` | flag | false | Force single-repo mode even inside a workspace |
+| `--format` | choice | table | `table` or `json` |
+| `--full` | flag | false | Emit the raw MCP tool payload |
+
+### Examples
+
+```bash
+repowise context src/api/routes.py src/api/auth.py
+repowise context src/api/routes.py::login --include callers --include metrics
+repowise context src/api/routes.py --include skeleton   # + the file's source shape
+```
+
+Pass `--include skeleton` for the whole file body-elided and line-verified, or
+use [`symbol`](#symbol) for one function body. Also available as `/repowise:context`.
+
+---
+
 ## `reindex`
 
 Rebuild the vector search index from existing wiki pages. Does not make LLM calls.

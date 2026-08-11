@@ -96,6 +96,16 @@ Claude will ask for your query and search mode (fulltext, semantic, or symbol), 
 
 ---
 
+### `/repowise:context`
+
+Triage card for files, modules, or symbols (`repowise context`). CLI adapter
+over `get_context`: architectural layer, hotspot / fix history, doc freshness,
+and optional relationship blocks (`--include callers`, `skeleton`, …). Batch
+targets in one call. No source bytes by default — use `/repowise:symbol` for
+exact bodies.
+
+---
+
 ### `/repowise:reindex`
 
 Rebuild the vector search index without making LLM calls.

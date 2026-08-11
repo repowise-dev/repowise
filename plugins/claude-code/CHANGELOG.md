@@ -2,6 +2,13 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Added
+- `/repowise:context` runs `repowise context` — the CLI adapter over
+  `get_context` — so Claude can pull triage cards (layer, hotspot, fix history,
+  freshness) for files, modules, or symbols without MCP-only flows.
+
 ## 0.40.0
 
 ### Added
