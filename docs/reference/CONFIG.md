@@ -71,7 +71,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
+| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `minimax`, `ollama`, `litellm`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
 | `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
@@ -409,7 +409,7 @@ order:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
+3. API key env vars: `ANTHROPIC_API_KEY` -> `OPENAI_API_KEY` -> `OPENROUTER_API_KEY` -> `OLLAMA_BASE_URL` -> `GEMINI_API_KEY` -> `DEEPSEEK_API_KEY` -> `KIMI_API_KEY` -> `MINIMAX_API_KEY`
 
 ---
 
@@ -655,3 +655,13 @@ Rules are evaluated only against structural edges (HTTP, gRPC, event, package, d
 |----------|--------------|-------|
 | `max_pages_pct` | `coverage_pct` | Internal alias, still read for backward compatibility |
 | `REPOWISE_DATABASE_URL` | `REPOWISE_DB_URL` | Still honored |
+
+### MiniMax
+
+```bash
+export MINIMAX_API_KEY="..."
+repowise init --provider minimax --model MiniMax-M3
+```
+
+The global endpoint is used by default. Set
+`MINIMAX_BASE_URL=https://api.minimaxi.com/v1` for the China region.

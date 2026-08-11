@@ -78,12 +78,12 @@ def _minimax_model_leaf(model: str) -> str:
 
 def _is_always_on_thinking_model(model: str) -> bool:
     """True for the always-on-thinking family (MiniMax-M2.7)."""
-    return _minimax_model_leaf(model).startswith("MiniMax-M2.7")
+    return _minimax_model_leaf(model).casefold().startswith("minimax-m2.7")
 
 
 def _is_adaptive_thinking_model(model: str) -> bool:
     """True for the adaptive/disable-able thinking family (MiniMax-M3)."""
-    return _minimax_model_leaf(model).startswith("MiniMax-M3")
+    return _minimax_model_leaf(model).casefold().startswith("minimax-m3")
 
 
 def _minimax_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:

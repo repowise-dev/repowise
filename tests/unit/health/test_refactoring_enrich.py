@@ -400,6 +400,7 @@ def test_build_enrichment_provider_auto_detects_kimi(tmp_path, monkeypatch) -> N
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "DEEPSEEK_API_KEY",
+        "MINIMAX_API_KEY",
         "GEMINI_API_KEY",
         "LITELLM_API_KEY",
     ):
@@ -421,6 +422,37 @@ def test_build_enrichment_provider_auto_detects_kimi(tmp_path, monkeypatch) -> N
     assert captured == {
         "name": "kimi",
         "kwargs": {"api_key": "sk-kimi-test"},
+    }
+
+
+def test_build_enrichment_provider_auto_detects_minimax(tmp_path, monkeypatch) -> None:
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "KIMI_API_KEY",
+        "GEMINI_API_KEY",
+        "LITELLM_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-minimax-test")
+
+    captured = {}
+
+    def fake_get_provider(name, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
+
+    provider = build_enrichment_provider(tmp_path)
+
+    assert provider is not None
+    assert captured == {
+        "name": "minimax",
+        "kwargs": {"api_key": "sk-minimax-test"},
     }
 
 

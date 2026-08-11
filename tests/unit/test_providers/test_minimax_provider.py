@@ -70,6 +70,13 @@ def test_m3_supports_adaptive_and_disabled_thinking():
     assert p.supported_reasoning_modes() == ("auto", "off", "none")
 
 
+def test_model_matching_is_case_insensitive():
+    m3 = MiniMaxProvider(api_key="sk-test", model="minimax-m3")
+    m27 = MiniMaxProvider(api_key="sk-test", model="minimax-m2.7")
+    assert m3.supported_reasoning_modes() == ("auto", "off", "none")
+    assert m27.supported_reasoning_modes() == ("auto",)
+
+
 def test_m27_is_always_on_and_offers_auto_only():
     """M2.7 thinks always-on: no explicit toggle, auto only."""
     p = MiniMaxProvider(api_key="sk-test", model="MiniMax-M2.7")
