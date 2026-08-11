@@ -21,7 +21,7 @@ import secrets
 from functools import lru_cache
 from pathlib import Path
 
-__all__ = ["seal", "unseal", "reset_key_cache_for_tests"]
+__all__ = ["reset_key_cache_for_tests", "seal", "unseal"]
 
 #: Format tag. Bump the trailing digit only when the envelope layout changes.
 _MAGIC = b"RWCH1"
