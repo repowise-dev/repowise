@@ -128,7 +128,8 @@ def dead_code_command(
         assert target.repo_path is not None
         repo_path = target.repo_path
 
-    console.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
+    if fmt != "json":
+        console.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
 
     # Ingest — honor the persisted submodule flags so the analyzed file set
     # matches what `init` indexed (a flagless traverser on a submodule-indexed
