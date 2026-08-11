@@ -1549,3 +1549,30 @@ def test_only_docstring_does_not_overclaim_the_aliases():
     for name in ("performance", "defect", "maintainability"):
         assert name in only_section
     assert "do not" in only_section
+
+
+@pytest.mark.asyncio
+async def test_trimming_takes_from_the_longest_list_first(setup_mcp, health_data, monkeypatch):
+    """The cut has to land on whichever block is actually responsible.
+
+    Trimming a fixed victim would hold the payload down just as well and be
+    wrong about *why* it was over: on this fixture ``top_findings`` (4 rows) is
+    twice ``worst_files`` (2) and four times ``high_leverage_files`` (1), so a
+    small overflow must come out of ``top_findings`` and leave the one-row list
+    whole. (Found by mutation testing — the first version of this guard passed
+    every test with a fixed trim order.)
+    """
+    from repowise.server.mcp_server import get_health
+
+    baseline = await get_health()
+    size = len(json.dumps(baseline, default=str))
+    assert len(baseline["top_findings"]) == 4
+    # Budget = current size minus roughly one finding, plus the marker headroom
+    # the guard reserves, so exactly a row or two has to go.
+    per_row = len(json.dumps(baseline["top_findings"], default=str)) // 4
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", str(int((size - per_row + 400) / 4 / 0.6)))
+    result = await get_health()
+    dropped = result["_meta"]["truncated_to_fit"]
+    assert set(dropped) == {"top_findings"}
+    assert len(result["high_leverage_files"]) == 1
+    assert len(result["worst_files"]) == 2
