@@ -429,18 +429,10 @@ _RENDERABLE_BLOCKS = (
 )
 
 
-def _owner_share(value: object) -> str:
-    """Render ``author_commit_pct``, which is a fraction *or* a percentage.
-
-    Its source stores either, depending on which git-metadata path filled it in
-    — ``developer_congestion`` already normalises the same field the same way.
-    Printing it raw shows a dominant author as "0.99%".
-    """
-    try:
-        pct = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return "?"
-    return f"{pct * 100 if pct <= 1.0 else pct:.0f}%"
+#: Re-exported for the module's own readers; ``risk`` renders the same field
+#: (``owner_pct``) off the same git metadata, so the normalisation lives in
+#: ``_tool_adapters`` and both callers share one copy.
+_owner_share = _ta.owner_share
 
 
 def _render_archaeology(console, arch: dict, *, indent: str) -> None:

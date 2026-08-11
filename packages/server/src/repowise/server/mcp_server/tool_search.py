@@ -890,8 +890,14 @@ async def _structured_search(
     # hybrid modes the ranked pool leads with symbol hits, and those are the
     # entries most likely to collapse onto one another (several symbols of one
     # file). Deduping them is the point.
-    if candidates := file_candidates(results, limit=limit):
-        response["candidates"] = candidates
+    #
+    # Bound to its own name, NOT to ``candidates``: that one holds the query's
+    # identifiers, which the exact-match note below quotes. Rebinding it here
+    # made the note quote file paths as if they were the identifiers asked for,
+    # and — worse — made its gate true for any query with results at all, so a
+    # prose query that names no identifier was told no symbol matched it.
+    if file_cands := file_candidates(results, limit=limit):
+        response["candidates"] = file_cands
     # Exact-match honesty: an identifier-shaped query whose target names no
     # indexed symbol still returns fuzzy neighbours. Say so, or the agent
     # anchors on a wrong hit that looks authoritative (their Alamofire

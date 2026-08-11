@@ -23,12 +23,7 @@ import pytest
 from rich.console import Console
 from rich.table import Table
 
-from repowise.cli.commands.search_cmd import (
-    _answered_mode,
-    _display_results,
-    _display_results_multi,
-    _render_symbol_rows,
-)
+from repowise.cli.commands.search_cmd import project
 from repowise.cli.output import NON_TTY_WIDTH, emit_json, resolve_console_width
 
 LONG_PATH = "packages/core/src/repowise/core/persistence/vector_store/lancedb_store.py"
@@ -42,15 +37,23 @@ class _Stream:
         return self._tty
 
 
-class _Result:
-    """Minimal stand-in for a wiki-page search hit."""
+def _page_hit(path: str = LONG_PATH) -> dict:
+    """One page hit shaped the way ``search_codebase`` builds it.
 
-    def __init__(self, path: str = LONG_PATH) -> None:
-        self.score = 15.198
-        self.title = "Symbol: LanceDBVectorStore"
-        self.page_type = "symbol_spotlight"
-        self.target_path = path
-        self.snippet = "# a snippet that is comfortably longer than fifty characters wide"
+    Built from the tool's response-construction code (``_fused_entry`` plus
+    ``_attach_paths`` and ``_assign_confidence``), not from the projection —
+    a fixture shaped to the projection passes with the projection broken.
+    """
+    return {
+        "page_id": "symbol:lancedb_store.py::LanceDBVectorStore",
+        "title": "Symbol: LanceDBVectorStore",
+        "page_type": "symbol_spotlight",
+        "snippet": "# a snippet that is comfortably longer than fifty characters wide",
+        "relevance_score": 15.198,
+        "sources": ["fts", "vector"],
+        "target_path": path,
+        "confidence_score": 1.0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -126,69 +129,70 @@ def test_emit_json_degrades_unserialisable_values_instead_of_raising(capsys) -> 
     assert json.loads(capsys.readouterr().out) == {"score": "1.5"}
 
 
-def test_search_json_emits_a_document_even_with_no_results(capsys) -> None:
+def test_search_json_emits_a_document_even_with_no_results() -> None:
     """A consumer that gets nothing on stdout cannot tell success from a crash."""
-    _display_results([], "ignored", "json", query="nothing", mode="fulltext")
-
-    assert json.loads(capsys.readouterr().out) == {
+    assert project({"results": []}, "nothing", multi=False) == {
         "query": "nothing",
-        "mode": "fulltext",
+        "mode": "concept",
         "results": [],
     }
 
 
-def test_search_json_carries_whole_paths_and_declares_its_mode(capsys) -> None:
-    _display_results([_Result()], "ignored", "json", query="lancedb", mode="fulltext")
+def test_search_json_carries_whole_paths_and_declares_its_mode() -> None:
+    payload = project({"results": [_page_hit()]}, "lancedb", multi=False)
 
-    payload = json.loads(capsys.readouterr().out)
     assert payload["query"] == "lancedb"
-    assert payload["mode"] == "fulltext"
+    # An absent ``mode`` is the concept branch, which is the only one that does
+    # not report one — not an unknown to pass through as "auto".
+    assert payload["mode"] == "concept"
     assert payload["results"][0]["path"] == LONG_PATH
 
 
-def test_search_json_does_not_clip_the_snippet(capsys) -> None:
+def test_search_json_does_not_clip_the_snippet() -> None:
     """The 50-char clip is there to fit a column; JSON has no column."""
-    result = _Result()
-    _display_results([result], "ignored", "json", query="q", mode="fulltext")
+    hit = _page_hit()
+    projected = project({"results": [hit]}, "q", multi=False)
 
-    assert json.loads(capsys.readouterr().out)["results"][0]["snippet"] == result.snippet
+    assert projected["results"][0]["snippet"] == hit["snippet"]
 
 
-def test_multi_repo_json_labels_each_row_with_its_repo(capsys) -> None:
-    _display_results_multi(
-        [("api", _Result()), ("web", _Result())],
-        "ignored",
-        "json",
-        query="q",
-        mode="fulltext",
-    )
+def test_multi_repo_json_labels_each_row_with_its_repo() -> None:
+    hits = [{**_page_hit(), "repo": "api"}, {**_page_hit(), "repo": "web"}]
+    rows = project({"results": hits}, "q", multi=True)["results"]
 
-    rows = json.loads(capsys.readouterr().out)["results"]
     assert [r["repo"] for r in rows] == ["api", "web"]
 
 
-def test_symbol_json_omits_repo_in_single_repo_mode(capsys) -> None:
-    row = ("LanceDBVectorStore", "a.b.LanceDBVectorStore", "class", LONG_PATH, 60)
-    _render_symbol_rows([(None, row)], "lancedb", 10, "json", multi=False)
+def test_symbol_json_keeps_the_id_the_next_command_takes() -> None:
+    """``symbol_id`` is the handle ``repowise symbol`` reads; without it a
+    symbol hit cannot be followed anywhere."""
+    hit = {
+        "type": "symbol",
+        "symbol_id": f"{LONG_PATH}::LanceDBVectorStore",
+        "name": "LanceDBVectorStore",
+        "kind": "class",
+        "file": LONG_PATH,
+        "start_line": 60,
+        "end_line": 240,
+        "signature": "class LanceDBVectorStore(VectorStore)",
+        "qualified_name": "a.b.LanceDBVectorStore",
+        "language": "python",
+        "score": 12.5,
+        "next": "get_symbol",
+    }
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["mode"] == "symbol"
-    assert payload["results"] == [
+    assert project({"results": [hit], "mode": "symbol"}, "lancedb", multi=False)["results"] == [
         {
+            "type": "symbol",
+            "score": 12.5,
             "name": "LanceDBVectorStore",
             "qualified_name": "a.b.LanceDBVectorStore",
             "kind": "class",
             "path": LONG_PATH,
             "line": 60,
+            "symbol_id": f"{LONG_PATH}::LanceDBVectorStore",
         }
     ]
-
-
-def test_symbol_json_labels_the_repo_in_workspace_mode(capsys) -> None:
-    row = ("LanceDBVectorStore", "a.b.LanceDBVectorStore", "class", LONG_PATH, 60)
-    _render_symbol_rows([("api", row)], "lancedb", 10, "json", multi=True)
-
-    assert json.loads(capsys.readouterr().out)["results"][0]["repo"] == "api"
 
 
 def test_shared_console_actually_applies_the_policy() -> None:
@@ -233,28 +237,22 @@ def test_a_degraded_embedder_warns_on_stderr_so_json_stdout_stays_parseable(
 
 
 @pytest.mark.parametrize(
-    ("requested", "keyless", "mixed", "expected"),
+    ("requested", "expected"),
     [
-        # Nothing fell back: the request is the answer.
-        ("semantic", [], False, "semantic"),
-        # Every repo fell back, so these are FTS rows on an FTS score scale.
-        ("semantic", ["api"], False, "fulltext"),
-        # Some answered semantically and some did not; neither label is true,
-        # and this is the case the ranking code fuses on rank for.
-        ("semantic", ["api"], True, "mixed"),
-        # Non-semantic requests cannot degrade, so they pass through.
-        ("fulltext", ["api"], True, "fulltext"),
-        ("symbol", ["api"], True, "symbol"),
+        # The legacy spellings both fold onto the tool's fused concept branch,
+        # which is the successor to picking one leg or the other.
+        ("fulltext", "concept"),
+        ("semantic", "concept"),
+        ("symbol", "symbol"),
+        # The tool's own spellings pass through untouched.
+        ("auto", "auto"),
+        ("concept", "concept"),
+        ("path", "path"),
+        ("hybrid", "hybrid"),
     ],
 )
-def test_answered_mode_reports_what_answered_not_what_was_asked(
-    requested: str, keyless: list[str], mixed: bool, expected: str
-) -> None:
-    assert _answered_mode(requested, keyless, mixed) == expected
+def test_every_documented_mode_reaches_the_tool(requested: str, expected: str) -> None:
+    from repowise.cli.commands.search_cmd import _MODE_CHOICES, _tool_mode
 
-
-def test_symbol_json_honours_the_limit(capsys) -> None:
-    row = ("N", "q.N", "class", LONG_PATH, 1)
-    _render_symbol_rows([(None, row)] * 5, "n", 2, "json", multi=False)
-
-    assert len(json.loads(capsys.readouterr().out)["results"]) == 2
+    assert requested in _MODE_CHOICES
+    assert _tool_mode(requested) == expected

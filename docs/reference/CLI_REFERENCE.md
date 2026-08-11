@@ -411,26 +411,44 @@ and leaves the prose to a later `repowise update`.
 
 ### `repowise search QUERY [PATH]`
 
-Search wiki pages by keyword, meaning, or symbol name.
+Search wiki pages by keyword, meaning, or symbol name. Runs the same retrieval
+as the `search_codebase` MCP tool: the full-text and vector legs are fused
+rather than chosen between, per-repo excludes and tombstones are honoured, and
+decision / test pages are demoted on queries that did not ask for them.
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--mode` | `fulltext` (default), `semantic`, `symbol` |
+| `--mode` | `fulltext` (default), `semantic`, `symbol`, plus the tool's own `auto`, `concept`, `path`, `hybrid` |
 | `--limit` | Max results (default: 10) |
 | `--repo` | Scope to a specific workspace repo by alias |
 | `--all` | Fan out across every workspace repo and merge results |
 | `--workspace` / `--no-workspace` | Force workspace / single-repo mode |
 | `--format` | `table` (default) or `json` |
+| `--full` | Emit the complete tool payload as JSON (implies `--format json`) |
+
+`fulltext` and `semantic` both run the tool's fused `concept` search, which is
+the successor to picking one leg or the other; on an index built without an
+embedder the vector leg drops out by itself and `--mode semantic` says so.
+`auto` routes on the query's shape — an identifier goes to the symbol index, a
+path resolves files, prose stays conceptual, and a mixed query runs `hybrid`.
 
 ```bash
 repowise search "rate limiting"
 repowise search "how are errors handled" --mode semantic
 repowise search "AuthService" --mode symbol
+repowise search "cli/output.py" --mode path
+repowise search "where is resolve_console_width called" --mode auto
 repowise search "rate limit" --repo backend     # workspace, one repo
 repowise search "rate limit" --all              # workspace, fan-out
 ```
+
+The default payload is a trimmed projection carrying `score`, `title`,
+`page_type`, `path` and `snippet` per hit (symbol hits carry `name`,
+`qualified_name`, `kind`, `path`, `line` and the `symbol_id` you pass to
+`repowise symbol`), plus `candidates` — the distinct openable files the hits
+resolve to. `--full` returns the tool's own dict instead.
 
 For a synthesized answer rather than a keyword lookup, use `repowise ask`.
 
@@ -565,9 +583,15 @@ editor's MCP client receives. Measured on this repository:
 | `why` (question) | 10.4 KB | 20.9 KB |
 | `why` (path) | 10.4 KB | 28.5 KB |
 | `symbol` | 0.7 KB | 1.0 KB |
+| `search` (8 hits) | 4.9 KB | 6.8 KB |
+| `search --mode symbol` | 4.2 KB | 5.7 KB |
+| `risk --target` (one file) | 4.5 KB | 5.3 KB |
 
 `symbol` barely moves because its payload *is* its answer — only the call
-envelope is dropped. Nothing that changes the *answer* is ever trimmed: an
+envelope is dropped. `search` and `risk --target` are close for the same
+reason: a ranked hit and a risk card are already mostly the answer, so the trim
+takes ranking internals rather than content. The point of `--full` there is
+exactness, not size. Nothing that changes the *answer* is ever trimmed: an
 error, a not-found, a did-you-mean list, a truncation marker, a continuation
 token, and the ambiguity signals all survive at every format. `ask` reports the
 names of the heavy blocks it left out in `dropped_blocks`.
@@ -642,7 +666,10 @@ to the model's baseline commit, not this repo.
 | `--ext` | Comma-separated file suffixes to count (e.g. `.py` or `.ts,.tsx`) |
 | `--exclude` / `-x` | Gitignore-style path pattern to omit. Repeatable; filters both the change and baseline. Root `.riskignore` patterns also apply. |
 | `--baseline` | Recent commits to sample for the repo-relative percentile (default 200; `0` shows only the absolute calibrated band) |
+| `--target` / `-t` | Score what history says about these **files** instead of a change. Repeatable; switches the command to the `get_risk` tool |
+| `--changed-file` | With `--target`: PR mode. Leads with a directive naming what will break, which co-changes and tests are missing, and what to run |
 | `--format` | Output format: `table` (default) or `json` |
+| `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 
 ```bash
 repowise risk                 # score HEAD
@@ -650,6 +677,22 @@ repowise risk main..HEAD      # score a branch / PR range as one change
 repowise risk --ext .ts,.tsx  # restrict to specific suffixes
 repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit tests from scoring
 ```
+
+**`--target`: what history says about touching some files.** Two questions, one
+command, because they are the same question asked of different subjects. A
+`REVSPEC` scores a *change* from its diff shape; `--target` reports bug-fix
+pressure, churn trend, dependents, co-change partners and ownership for the
+named *files*. That half reads the index, so unlike the REVSPEC path it needs
+`repowise init` to have run. It is the `get_risk` MCP tool.
+
+```bash
+repowise risk --target src/auth.py                       # one file's history
+repowise risk -t src/auth.py -t src/session.py           # several
+repowise risk -t src/auth.py --changed-file src/auth.py  # PR mode + directive
+```
+
+Note `--path` on this command already means "the git repository", which is why
+the files are named with `--target`.
 
 See [`docs/layers/CHANGE_RISK.md`](../layers/CHANGE_RISK.md) for the scoring model.
 

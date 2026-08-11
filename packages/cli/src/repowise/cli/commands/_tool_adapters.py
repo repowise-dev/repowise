@@ -196,14 +196,37 @@ def emit_error(payload: dict, fmt: str, *, extra: dict | None = None) -> None:
     if fmt == "json":
         emit_json({**(extra or {}), "error": error, **companions})
     else:
+        # Escaped: a shaped internal error interpolates the exception verbatim,
+        # and exception text routinely carries brackets (``list[str]``, a repr'd
+        # list of aliases). Unescaped, a stray closing tag raises MarkupError
+        # and the command dies with an empty stdout — which is the exact state
+        # this function exists to prevent.
+        from rich.markup import escape
+
         notices = _notices(fmt)
-        notices.print(f"[red]{as_cli_prose(str(error))}[/red]")
+        notices.print(f"[red]{escape(as_cli_prose(str(error)))}[/red]")
         for value in companions.get("suggestions") or []:
-            notices.print(f"  [cyan]{value}[/cyan]")
+            notices.print(f"  [cyan]{escape(str(value))}[/cyan]")
         for key in ("remedy", "guidance"):
             if companions.get(key):
-                notices.print(f"[dim]{as_cli_prose(str(companions[key]))}[/dim]")
+                notices.print(f"[dim]{escape(as_cli_prose(str(companions[key])))}[/dim]")
     raise click.exceptions.Exit(1)
+
+
+def owner_share(value: object) -> str:
+    """Render an ownership share, which is a fraction *or* a percentage.
+
+    Its source stores either, depending on which git-metadata path filled it in
+    — ``developer_congestion`` already normalises the same field the same way.
+    Printing it raw shows a dominant author as "0.99%". ``why`` reads it as
+    ``author_commit_pct`` and ``risk`` as ``owner_pct``; same column, so one
+    copy of the normalisation.
+    """
+    try:
+        pct = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "?"
+    return f"{pct * 100 if pct <= 1.0 else pct:.0f}%"
 
 
 def index_note(payload: dict) -> dict[str, Any]:
@@ -241,6 +264,7 @@ __all__ = [
     "emit_error",
     "emit_full",
     "index_note",
+    "owner_share",
     "print_index_note",
     "resolve_format_for",
     "resolve_indexed_repo",
