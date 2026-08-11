@@ -115,7 +115,7 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | `index_age_days` | Days since the last `repowise update` |
 | `indexed_commit` | Short (12-char) SHA the index was built against |
 | `live_head` | Only when it differs from `indexed_commit` |
-| `stale_warning` | Only on a real signal: HEAD mismatch, or age over ~90 days when git is unreachable |
+| `stale_warning` | Only on a real signal: HEAD mismatch **that actually changed files**, or age over ~90 days when git is unreachable. Two commits with identical trees (an empty commit, a no-op merge) report `index_behind` instead |
 | `embedder`, `embedder_degraded`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
 
 Silence on these fields means the index is current; don't infer staleness from their absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all.
@@ -507,7 +507,7 @@ code-health merge-gate judges it on.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
 | `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
-| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta` and each kept list's `*_total` sibling always survive. The `include` block names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. `signals` has no top-level key (it merges into `metrics[].signals`), so it is reported in `unknown_only_keys` — in targeted mode, where `signals` applies, name `metrics` instead. |
+| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 
@@ -530,9 +530,28 @@ named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `known_modules`), so an empty `findings` list means healthy and nothing else. A
 target set that resolves to nothing still answers in targeted mode rather than
 falling back to the repo dashboard. Every capped list carries a `*_total`
-sibling — including under `only`, which retains it automatically — and
+sibling — including under `only`, which retains it automatically. `unresolved`
+and `known_modules` survive any `only` projection too, for the same reason
+`mode` does: a caller who has to ask for the error report in order to see it
+does not have an error report.
+
 `_meta.health_analyzed_at` dates the health pass, which is separate from
-indexing and can lag it.
+indexing and can lag it, and `_meta.health_analyzed_commit` says which commit
+those scores were computed against. The incremental update path rescores only
+the files that changed, so the metrics table can hold rows from several passes
+at once; when it does, `_meta.health_analyzed_commits_distinct` says how many
+and the reported commit is the newest pass's. Both fields are omitted rather
+than guessed when no row records a commit.
+
+**The response is bounded.** `include` only *adds* blocks, and the dashboard's
+five ranked lists compose: `include=['refactoring']` on a mid-size repo lands
+near the host's tool-result cap, past which the host rejects the whole result
+and you get nothing. Pair `include` with `only` —
+`get_health(include=['refactoring'], only=['refactoring_plans'])` is the call
+`directive.plan_via` names. Anything that would still overflow is trimmed
+longest-ranked-list-first and reported in `_meta.truncated_to_fit`
+(`{block: rows_dropped}`), never silently; the `*_total` siblings still describe
+what was there, and re-requesting one block with `only` recovers it.
 
 **Test material is bucketed, not hidden.** Every metric row carries `is_test`
 (distinct from `has_test_file`: "is this file a test" vs "is this file tested").
@@ -562,6 +581,32 @@ make that actionable rather than a mystery:
   (dashboard mode) is the top-N ranked by it, distinct from `worst_files`, which
   sorts by raw score and ranks a 30-line file at 1.0 equal to a 1,200-line file at
   1.0 that moves the average ~40x more.
+- `weighted_deficit`, `directive.recovers_points` and
+  `gap_analysis.weighted_gap_points` share one unit — *score-points x NLOC* —
+  which compares against itself and nothing else. Every `high_leverage_files`
+  row and the `directive` also carry `share_of_repo_gap_pct`, the same quantity
+  with a denominator; that plus `gap_analysis.files_to_reach_target` is what
+  answers "is this worth doing".
+- `kpis.non_code_files` and `kpis.average_health_code_only` say how much of the
+  headline is markdown/JSON/YAML. No biomarker walks those files, so they score
+  a mechanical 10.0 meaning "nothing looked at this" — on this repo, 233 of
+  3,314 rows, lifting `average_health` from 7.31 to 7.47. `average_health`
+  itself deliberately still counts them, so the tool, the badge, the snapshots
+  and the web UI all report the same number.
+
+**One score, not two.** A metric row carries `score` (the defect dimension and
+the headline), `maintainability_score` and `performance_score`. There is no
+`defect_score` in the response: it was set from the same value as `score` on
+every row, and two names for one number cost a reader a source dive to pick
+between them. The field to rank on is neither — it is `weighted_deficit`.
+
+**`primary_biomarker` names a discrete cause.** It prefers the strongest
+*discrete* finding over a continuous one. `coverage_gradient` fires on every
+file that has coverage data at all, so on a well-covered repo it used to win the
+max-impact tiebreak nearly everywhere and headline the list with "N% of lines
+uncovered" — true, and equally true of every other file. The gradient still
+counts in full toward `total_deduction` and the score, and still leads a file
+that has no discrete finding.
 
 The opt-in enrichments:
 

@@ -139,11 +139,25 @@ _HOST_CEILING = 1 << 30
 # ``_COLLECTOR_HEADROOM_CHARS``, and generous: over-reserving costs a row.
 _TRUNCATION_MARKER_HEADROOM = 400
 
-# Ranked lists this response may carry, trimmed longest-first when the whole
-# payload would overflow the host's tool-result cap. Named rather than derived
-# from "every value that is a list" so trimming can never eat a small structural
-# list (``kpis.performance_unsupported_languages``, ``unresolved``) to save bytes
-# a ranked list is responsible for.
+# Every list this response can carry that grows with the repo, trimmed
+# longest-first when the whole payload would overflow the host's tool-result cap.
+# Named rather than derived from "every value that is a list" so trimming can
+# never eat a small structural list (``kpis.performance_unsupported_languages``,
+# ``unresolved``) to save bytes a growable list is responsible for.
+#
+# **This list must stay exhaustive, and the first version of it was not.** It
+# held only the eight dashboard blocks that carry a ``limit`` cap, which are the
+# lists least able to overflow — while the three genuinely unbounded ones were
+# invisible to the guard. ``metrics`` and ``trends`` are built per *target* with
+# no cap at all (a ``module:`` target expands to every file in the module), and
+# targeted ``coverage.files`` serializes the per-line ``covered_lines`` arrays
+# that dashboard mode declines to read precisely because they measured 466,874 B.
+# A guard that misses those does something worse than nothing: it trims a small
+# capped list to zero, still overflows, and stamps ``truncated_to_fit`` claiming
+# it handled the problem. **When adding a list to this response, add it here.**
+#
+# Dotted entries address one level of nesting; the flat ``result.get(k)`` scan
+# would never have found them.
 _TRIMMABLE_LISTS = (
     "refactoring_plans",
     "high_leverage_files",
@@ -153,7 +167,21 @@ _TRIMMABLE_LISTS = (
     "findings",
     "churn_complexity",
     "modules",
+    "metrics",
+    "trends",
+    "coverage.files",
+    "trend.recent",
 )
+
+
+def _resolve_list(result: dict[str, Any], path: str) -> list[Any] | None:
+    """The list at a ``_TRIMMABLE_LISTS`` path, or ``None`` when absent."""
+    node: Any = result
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node if isinstance(node, list) and node else None
 
 
 def _fit_to_budget(result: dict[str, Any], budget: int) -> dict[str, int]:
@@ -176,16 +204,13 @@ def _fit_to_budget(result: dict[str, Any], budget: int) -> dict[str, int]:
     dropped: dict[str, int] = {}
     size = len(json.dumps(result, default=str))
     while size > budget:
-        longest = max(
-            (k for k in _TRIMMABLE_LISTS if result.get(k)),
-            key=lambda k: len(result[k]),
-            default=None,
-        )
+        candidates = {k: rs for k in _TRIMMABLE_LISTS if (rs := _resolve_list(result, k))}
+        longest = max(candidates, key=lambda k: len(candidates[k]), default=None)
         if longest is None:
             # Nothing left to give. Better an oversized response the host may
             # reject than a silently empty one — and _meta says what happened.
             break
-        rows = result[longest]
+        rows = candidates[longest]
         # Estimate how many rows the overflow is worth from this list's own mean
         # row size, so a 200-row overflow is not 200 whole-response
         # re-serializations. Never more than half the list per pass: the estimate
@@ -659,47 +684,30 @@ async def get_health(
 
     No ``targets`` → repo dashboard, led by a ``directive`` naming the one file
     to fix first. With ``targets`` → per-file scores + findings. Rank by
-    ``weighted_deficit``, not ``score``: the score floors at 1.0 and cannot
-    separate the worst band.
+    ``weighted_deficit`` (score-points x NLOC), not ``score``, which floors at
+    1.0; ``share_of_repo_gap_pct`` is the same quantity as a percentage.
 
-    Three dimensions per file: ``score`` (defect risk, the headline — it *is*
-    the defect dimension, there is no separate ``defect_score``),
-    ``maintainability_score``, ``performance_score`` (static I/O-in-loop / N+1
-    risk, never blended in). Each finding carries its ``dimension``. Dashboard
-    mode buckets test material: ``top_findings`` is production,
-    ``test_findings`` the rest, each row says ``is_test``.
-
-    Points units: ``weighted_deficit`` / ``recovers_points`` /
-    ``weighted_gap_points`` are all *score-points x NLOC*, comparable only
-    against each other. For "is this worth doing", read the
-    ``share_of_repo_gap_pct`` on ``directive`` and on every
-    ``high_leverage_files`` row, and ``gap_analysis.files_to_reach_target`` —
-    the same quantities with a denominator.
+    Per file: ``score`` is defect risk *and* the headline — there is no
+    ``defect_score`` — beside ``maintainability_score`` / ``performance_score``
+    (never blended in).
 
     Args:
-        targets: file paths or ``module:<name>``. Empty → dashboard mode. A
-            target matching nothing is named in ``unresolved`` with a reason
-            (``not_indexed`` → run ``repowise update`` | ``no_such_path`` |
-            ``excluded`` | ``no_such_module``), so empty ``findings`` means
-            healthy. ``unresolved`` survives any ``only`` projection.
+        targets: file paths or ``module:<name>``. Empty → dashboard. A target
+            matching nothing is named in ``unresolved`` with a reason (so empty
+            ``findings`` means healthy); it survives any ``only``.
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
             ``accuracy`` | ``signals`` | ``churn_complexity`` |
-            ``performance``/``defect``/``maintainability`` (dimension). It only
-            *adds*: the dashboard's five ranked lists come back with it and they
-            compose, so pair it with ``only`` —
-            ``include=['refactoring'], only=['refactoring_plans']``, not bare
-            ``include=['refactoring']``. A response that would still overflow is
-            trimmed and says so in ``_meta.truncated_to_fit``.
-        only: keep just these top-level keys — ``["directive"]`` is the cheapest
-            useful call. Each kept list's ``*_total`` is retained too, and the
-            three *block* names ``biomarkers`` / ``accuracy`` / ``refactoring``
-            work as aliases. The ``include`` dimension names
-            (``performance`` / ``defect`` / ``maintainability``) and ``signals``
-            do not — they have no top-level key. Unmatched keys land in
-            ``unknown_only_keys``.
+            ``performance``/``defect``/``maintainability`` (dimension). Only
+            *adds*, and the ranked lists compose — pair with ``only``, e.g.
+            ``include=['refactoring'], only=['refactoring_plans']``. Over-cap
+            responses are trimmed (``_meta.truncated_to_fit``).
+        only: keep just these top-level keys; ``["directive"]`` is cheapest and
+            ``*_total`` siblings survive. Only the three block names
+            alias (``biomarkers``/``accuracy``/``refactoring``); the dimension
+            names ``performance``/``defect``/``maintainability`` and ``signals``
+            do not, and land in ``unknown_only_keys``.
         repo: usually omitted.
-        limit: max rows per ranked list (max 50, ``0`` for none); each carries
-            a ``*_total`` sibling so truncation is never silent.
+        limit: max rows per ranked list (max 50, ``0`` for none).
     """
     started = perf_counter()
     # ``0`` means none, matching the ``module_limit`` convention on the REST
@@ -1176,7 +1184,15 @@ async def get_health(
         result: dict[str, Any] = {
             "mode": "targets",
             "targets": raw_targets,
+            # Deliberately NOT capped by ``limit``: the caller named these files
+            # and getting back fewer than they asked about would answer a
+            # different question. The response-size guard is what bounds it, and
+            # ``metrics_total`` is the ``*_total`` sibling that makes a trim
+            # visible — a ``module:`` target expands to every file in the module,
+            # so this is the one growable list whose length the caller cannot
+            # infer from what they passed.
             "metrics": metric_payload,
+            "metrics_total": len(metric_payload),
             # Capped like every other ranked list, with the total alongside so
             # the truncation is visible rather than inferred from the length.
             "findings": [_serialize_finding(f) for f in finding_rows[:limit]],

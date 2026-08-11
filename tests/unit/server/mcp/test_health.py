@@ -1222,8 +1222,15 @@ async def test_high_leverage_rows_carry_share_of_repo_gap(setup_mcp, health_data
         assert row["share_of_repo_gap_pct"] == pytest.approx(
             round(100.0 * row["weighted_deficit"] / gap, 1), abs=0.11
         )
-    # The lead file's share is the same number the directive already quotes.
-    assert rows[0]["share_of_repo_gap_pct"] == result["directive"]["share_of_repo_gap_pct"]
+    # The lead file's share is the same number the directive quotes. Not exact
+    # equality: `_directive` rounds `recovers_points` to an integer before
+    # dividing, the row divides the raw deficit, so the two agree to the
+    # rounding and not below it. (Flagged in review as a fixture coincidence —
+    # the fixture's deficit happens to be whole, which would have hidden a real
+    # divergence.)
+    assert rows[0]["share_of_repo_gap_pct"] == pytest.approx(
+        result["directive"]["share_of_repo_gap_pct"], abs=0.1
+    )
 
 
 @pytest.fixture
@@ -1576,3 +1583,55 @@ async def test_trimming_takes_from_the_longest_list_first(setup_mcp, health_data
     assert set(dropped) == {"top_findings"}
     assert len(result["high_leverage_files"]) == 1
     assert len(result["worst_files"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_guard_trims_the_uncapped_targeted_lists(setup_mcp, health_data, monkeypatch):
+    """The three lists that can actually run away are ``limit``-free.
+
+    Found in adversarial review, and it is the defect the guard was most likely
+    to have: the first ``_TRIMMABLE_LISTS`` held only the eight *capped*
+    dashboard blocks — the ones least able to overflow — while ``metrics``,
+    ``trends`` and ``coverage.files`` were invisible to it. Those three are
+    built per target with no cap (a ``module:`` target expands to every file in
+    the module) and targeted ``coverage.files`` carries the per-line
+    ``covered_lines`` arrays dashboard mode declines to read. A guard that
+    misses them is worse than none: it trims a small capped list to empty, still
+    overflows, and stamps ``truncated_to_fit`` claiming it handled it.
+    """
+    from repowise.server.mcp_server import get_health
+
+    targets = ["src/auth/service.py", "src/db/models.py"]
+    baseline = await get_health(targets=targets)
+    assert len(baseline["metrics"]) == 2
+    assert baseline["metrics_total"] == 2
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "400")
+    result = await get_health(targets=targets)
+    assert result["_meta"]["truncated_to_fit"].get("metrics"), (
+        "metrics is uncapped by limit, so the size guard is the only thing "
+        "bounding it — it must be reachable"
+    )
+    assert len(result["metrics"]) < 2
+    # The total still describes what was there, so the trim stays visible.
+    assert result["metrics_total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_guard_reaches_a_list_nested_one_level_down(setup_mcp, health_data, monkeypatch):
+    """``coverage.files`` is not a top-level key; a flat scan never finds it."""
+    from repowise.server.mcp_server import get_health
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "400")
+    result = await get_health(include=["coverage"])
+    # Whatever else it cut, it must not have stopped at the top level while a
+    # nested list still held rows.
+    assert result["_meta"]["truncated_to_fit"]
+    from repowise.server.mcp_server.tool_health import _TRIMMABLE_LISTS, _resolve_list
+
+    assert "coverage.files" in _TRIMMABLE_LISTS
+    assert "trends" in _TRIMMABLE_LISTS
+    assert _resolve_list({"coverage": {"files": [1, 2]}}, "coverage.files") == [1, 2]
+    assert _resolve_list({"coverage": {"files": []}}, "coverage.files") is None
+    assert _resolve_list({}, "coverage.files") is None
+    assert _resolve_list({"coverage": None}, "coverage.files") is None
