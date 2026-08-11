@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.41.0] — 2026-08-11
+
+This cycle closes the gap between what an agent can ask over MCP and what it can ask from a terminal. `get_answer`, `get_context`, `get_symbol` and `get_why` had no CLI form at all, so anyone driving repowise from a shell or a CI job could search the wiki but could not ask it a question, read a triage card, pull one verified symbol body, or ask why the code is shaped the way it is. Those four are commands now. `search` and `risk` were rebuilt as thin adapters over the same tool functions, so a CLI answer and an MCP answer are the same answer, and thirteen more commands gained a machine-readable mode under one flag spelling.
+
+The other theme is `get_health`, taken end to end by following its own advice as a sequence rather than testing calls one at a time. That found seventeen defects across three passes. The single call `directive.plan_via` told an agent to make returned 60k characters and failed the MCP token cap outright; `only` projected away the `unresolved` block, so a mistyped target went silent again; and one documented call shape took thirteen seconds.
+
+Alongside those: importing one MCP tool no longer costs all seventeen, four tool blocks stopped returning payload the caller already had, and two memory regressions on the indexing and generation paths are fixed. Three authentication holes in the local server are closed, including one on a route that had none.
+
+### Added
+- **`repowise ask`, `context`, `symbol` and `why`.** The four highest-value MCP tools now have CLI forms. They are not reimplementations: a registered tool is a plain `async def f() -> dict`, so each command awaits the same function the MCP server serves, over resources built by the existing tool bridge. (#1411)
+- **`--format table|json` across the agent-facing commands.** Four flag names used to mean the same thing (`--format`, `--json`, `--output`, `--progress`) and 54 commands had no machine-readable mode at all. Thirteen gain one: `status` (single-repo and workspace), `costs`, `saved`, `corrections`, `whats-new`, `decision list/show/health`, and `coverage status`. Three that already had a machine mode under another name fold onto `--format`, with the old flag kept but hidden so existing scripts keep working. `--progress` is an event stream rather than a result payload and is untouched. (#1407, #1402)
+- **Five plugin slash commands** for the new adapters: `/repowise:ask`, `/repowise:context`, `/repowise:symbol`, `/repowise:why`, `/repowise:export`. (#1428)
+
+### Changed
+- **`repowise search` and `repowise risk` are adapters over `search_codebase` and `get_risk`.** `search` carried its own retrieval: an FTS query, a LanceDB query, a LIKE over `wiki_symbols`, and a workspace fan-out that fused them. The tool already does that and does it better, fusing the full-text and vector legs through RRF instead of picking one, honouring per-repo excludes and tombstones, and routing an identifier-shaped query to the scored symbol index. Both halves of the public contract are preserved, including `--mode fulltext|semantic|symbol`. (#1412)
+- **`get_symbol` is presented as a follow-up rather than a place to start.** Where a short capability list names it beside `get_answer`, agents spend most of their retrieval calls on it and finish having made more tool calls than an agent with no tools at all, because a per-symbol tool supplements navigation rather than replacing it. Given the same surface with no such list, they reach for `get_answer` instead. The tool stays registered and stays in the lean profile; what changed is what four surfaces say about it. (#1427)
+- **Importing one MCP tool no longer imports seventeen.** The package imported all 17 tool modules at package import, and through them the health analysis, onboarding generation, FastMCP and sqlalchemy. A leaf import initialises its parent package first, so importing any one tool paid for all of them: about 2.5s, against about 290ms for the entire CLI. Tool modules resolve lazily now, through the module's existing PEP 562 `__getattr__`. (#1409)
+- **Four tool blocks stopped returning payload the caller already had.** A tool result is new text entering an already-cached conversation, so it is billed at the cache-write rate and paid again on every result. `get_context` serves the symbol card again instead of auto-upgrading file targets to a skeleton, which measured 2,171 characters against 6,585 on one mid-size library. Each cut is conditional, so nothing is lost. (#1426)
+- **The parse pool is capped instead of sized from the host's cores.** It asked for one spawned worker per CPU. Every worker is a fresh interpreter that imports the repowise stack and builds tree-sitter `Language`/`Query` objects, a flat cost of about 50 MB of private memory each, measured at 51.0 MB/worker on PowerToys and 49.2 MB/worker on hugo. Peak memory was set by the machine rather than the work: 32 workers held 1.57 GB where 8 hold 0.46 GB. Nothing was bought with it. With 16 cores free, 8 workers parsed PowerToys faster than 16 did. (#1410)
+
+### Fixed
+- **Seventeen `get_health` defects**, in three passes. `directive.plan_via` named a call that returns 60,296 characters and fails the MCP token cap, and now names the projected form at 13,503. `only` projected away `unresolved` and `known_modules`, so a typo'd target returned an empty list that read as healthy. The performance dimension had no ranking key, the refactoring surface offered clone plans that could not be extracted, and plan ranking clustered on one file. On the cost side, `graph_nodes` had no index covering `node_type`, its most-issued predicate, so every "all the file nodes" read scanned 36,480 rows to return 3,449 (new composite index, Alembic 0051). (#1413, #1414, #1415)
+- **`get_context` resolves the symbol ids `get_symbol` hands out.** `get_symbol` normalises the separator between qualified-name segments across `.`, `::` and `/`, since which one a caller writes is a fact about their language. `get_context` split on `::` only to gate the file path and then matched verbatim, so the dot form returned "Target not found" and the `::` form failed worse: it matched the graph-node rung, was typed as a file, and returned a card describing the method as empty. (#1435)
+- **Generation no longer holds a second copy of the repository's source for the whole run.** Every `FilePageContext` carried `file_source_snippet`, the decoded source trimmed to a 48k-token budget, which for almost every file is the entire file. No template, prompt or caller ever read it. Contexts stay alive until the run ends, so a large repository could exhaust memory during generation. (#1403, #1394)
+- **Piped and CI output stopped truncating result paths.** Rich sizes a non-terminal console at 80 columns, so a pipe got the most aggressive truncation of all while a human in a wide terminal saw everything. `search` rendered paths as `packages/core...`, which cannot be opened or grepped. Width is now resolved once where the shared consoles are built. `COLUMNS` still wins when set. (#1402)
+- **`export --format json --full` crashed** with an `AttributeError`, reading a `finding_type` attribute that does not exist on `DeadCodeFinding`. (#1416)
+- **The chat tool surface matches the registry it actually has.** Labels, suggestions, system prompt and artifact contracts still described tools that were removed or were never wired, including `get_architecture_diagram` and `get_dependency_path`, and `get_change_risk` results were not summarised. (#1417, #1418, #1419, #1420, #1421, #1423, #1424, #1425)
+
+### Security
+- **Webhook authentication fails closed.** `REPOWISE_GITHUB_WEBHOOK_SECRET` is required rather than recommended, the secret is read per request, and a request without a signature is refused with 403. (#1408)
+- **The MCP server binds explicitly on the HTTP and SSE transports** and warns when an exposed bind has no `REPOWISE_API_KEY`. (#1406)
+- **The repo health coordinator route requires an API key.** It was reachable off-host without one. (#1405)
+
+### Documentation
+- Command walkthroughs for `search`, `decision`, `wiki-export` and hooks sync. (#1385, #1386, #1387, #1388)
+- The architecture docs' MCP inventory matches the 11-tool default surface, and the chat tool registry matches the live 7-tool set. (#1173, #1174)
+
+### Dependencies
+- mermaid 11.16.0 to 11.16.1 clears three advisories at once: prototype pollution in architecture diagrams, an infinite-loop DoS in XY charts, and a DoS in radar diagrams. The declared floor in `packages/ui` moves with it so a later resolve cannot land back on a vulnerable build. nanoid and brace-expansion move too, closing two more. (#1433)
+
+---
+
 ## [0.40.0] — 2026-08-10
 
 The big one this cycle is a new kind of record. Repowise already told you what the code is and what history says about it; it had no way to say what has happened to a repository: that this directory is a separate checkout, that a console script is shadowed, that this bug was fixed in this commit and nothing in its scope has moved since. Episodes are those records: dated, bound to the files they touch, derived from the walk and the git pass that already run, and checkable against git rather than decayed by a curve. They are read by `get_answer`, `get_why`, `get_risk` and `get_context`, and served over HTTP for the dashboard.

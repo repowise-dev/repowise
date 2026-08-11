@@ -2,14 +2,14 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
-## Unreleased
+## 0.41.0
 
 ### Added
-- `/repowise:ask`, `/repowise:context`, `/repowise:symbol`, `/repowise:why`, and
-  `/repowise:export` — slash commands for the remaining CLI adapters so Claude
+- `/repowise:ask`, `/repowise:context`, `/repowise:symbol`, `/repowise:why` and
+  `/repowise:export`: slash commands for the remaining CLI adapters, so Claude
   can synthesise answers, pull triage cards, read live-verified symbol bodies,
-  query decisions/archaeology, and export the wiki or a Structurizr model
-  without MCP-only flows.
+  query decisions and archaeology, and export the wiki or a Structurizr model
+  without an MCP-only flow (#1428).
 
 ## 0.40.0
 
