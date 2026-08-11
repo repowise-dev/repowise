@@ -168,6 +168,7 @@ def test_claude_plugin_commands_have_frontmatter() -> None:
         "security",
         "status",
         "update",
+        "why",
     }
 
     for path in command_paths:

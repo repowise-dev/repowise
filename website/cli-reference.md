@@ -262,6 +262,46 @@ repowise search "database connection" --limit 20
 
 ---
 
+## `why`
+
+Why the code is shaped this way: decision records, rationale and git
+archaeology. Worth running before a refactor or a deliberate divergence from a
+pattern.
+
+```bash
+repowise why [QUERY] [OPTIONS]
+```
+
+QUERY is a question (`why is auth using JWT?`), a file path (its governing
+decisions, origin story and alignment score), or omitted for the
+decision-health dashboard.
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--target` | string | — | File path to anchor the search to (repeatable) |
+| `--path` | string | cwd | Repo (or workspace) root |
+| `--repo` | string | — | Workspace repo alias to query |
+| `--no-workspace` | flag | false | Force single-repo mode even inside a workspace |
+| `--format` | choice | table | `table` or `json` |
+| `--full` | flag | false | Emit the raw MCP tool payload |
+
+### Examples
+
+```bash
+repowise why "why is auth using JWT?"           # question
+repowise why src/api/auth.py                     # governing decisions + origin story
+repowise why "why the retry cap?" --target src/api/client.py
+repowise why                                     # decision health dashboard
+```
+
+Falls back to git archaeology when a path has no decisions, so it is never
+empty. Also available as `/repowise:why`. Use `repowise decision` /
+`/repowise:decision` to manage the records themselves.
+
+---
+
 ## `reindex`
 
 Rebuild the vector search index from existing wiki pages. Does not make LLM calls.

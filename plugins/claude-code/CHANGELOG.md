@@ -2,6 +2,13 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Added
+- `/repowise:why` runs `repowise why` — the CLI adapter over `get_why` — so
+  Claude can query decisions, alignment, and git archaeology (or the
+  decision-health dashboard) without MCP-only flows.
+
 ## 0.40.0
 
 ### Added

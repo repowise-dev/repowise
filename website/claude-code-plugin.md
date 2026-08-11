@@ -152,6 +152,16 @@ List, inspect, add, or confirm architectural decisions.
 
 ---
 
+### `/repowise:why`
+
+Why the code is shaped this way (`repowise why`). CLI adapter over `get_why`:
+decision search by question, governing decisions + origin story for a path,
+target-anchored search (`--target`), or the decision-health dashboard with no
+args. Falls back to git archaeology when no decision is recorded.
+`/repowise:decision` manages records; this command queries them.
+
+---
+
 ### `/repowise:doctor`
 
 Diagnose (and optionally repair) setup, keys, and index drift.
