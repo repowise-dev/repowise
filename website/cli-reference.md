@@ -262,6 +262,46 @@ repowise search "database connection" --limit 20
 
 ---
 
+## `symbol`
+
+Read one function, class or constant with live-verified line bounds. `source`
+arrives in the same line-numbered format a file read produces; `verified: true`
+means the bounds were checked against the live file.
+
+```bash
+repowise symbol <SYMBOL_ID> [OPTIONS]
+```
+
+`SYMBOL_ID` is `path/to/file.py::Name` (as `repowise context` reports it),
+`path/to/file.py:140-180` for a live range read, or a `repowise#<hex>`
+omission ref from a distilled command.
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--context-lines` | int | 0 | Extra lines before and after the body (0–50) |
+| `--query` | string | — | Omission refs only: regex or substring filter on restored lines |
+| `--path` | string | cwd | Repo (or workspace) root |
+| `--repo` | string | — | Workspace repo alias to query |
+| `--no-workspace` | flag | false | Force single-repo mode even inside a workspace |
+| `--format` | choice | table | `table` or `json` |
+| `--full` | flag | false | Emit the raw MCP tool payload |
+
+### Examples
+
+```bash
+repowise symbol "src/api/routes.py::login"
+repowise symbol "src/api/routes.py:140-180"     # live range read
+repowise symbol "repowise#a1b2c3d4e5f6"          # a distill omission ref
+```
+
+An ambiguous id returns every matching body rather than silently picking one.
+A truncated body carries a `continuation` you can pass straight back.
+Also available as `/repowise:symbol`.
+
+---
+
 ## `reindex`
 
 Rebuild the vector search index from existing wiki pages. Does not make LLM calls.

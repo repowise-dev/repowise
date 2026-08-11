@@ -50,6 +50,7 @@ defect-validated score from deterministic markers).
 | `/repowise:status` | Health check — sync state, page counts, provider info |
 | `/repowise:update` | Incremental update — sync the index with recent code changes |
 | `/repowise:search` | Search the codebase wiki (fulltext, semantic, or symbol) |
+| `/repowise:symbol` | Read one symbol body with live-verified line bounds |
 | `/repowise:reindex` | Rebuild the vector store (re-embed; no LLM calls) |
 | `/repowise:health` | Code-health KPIs, lowest-scoring files, refactoring targets, trends |
 | `/repowise:coverage` | Ingest or inspect coverage reports (lights up untested hotspots + per-test map) |

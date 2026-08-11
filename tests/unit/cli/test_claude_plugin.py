@@ -167,6 +167,7 @@ def test_claude_plugin_commands_have_frontmatter() -> None:
         "search",
         "security",
         "status",
+        "symbol",
         "update",
     }
 

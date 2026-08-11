@@ -96,6 +96,16 @@ Claude will ask for your query and search mode (fulltext, semantic, or symbol), 
 
 ---
 
+### `/repowise:symbol`
+
+Read one symbol body with live-verified line bounds (`repowise symbol`). CLI
+adapter over `get_symbol`. Accepts `path/to/file.py::Name`, a live range
+(`path:start-end`), or a `repowise#<hex>` distill omission ref.
+`--context-lines` adds surrounding lines; a truncated body returns a
+`continuation` you can pass straight back.
+
+---
+
 ### `/repowise:reindex`
 
 Rebuild the vector search index without making LLM calls.

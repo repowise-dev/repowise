@@ -2,6 +2,13 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Added
+- `/repowise:symbol` runs `repowise symbol` — the CLI adapter over
+  `get_symbol` — so Claude can fetch one live-verified symbol body (or a
+  distill omission ref) without MCP-only flows.
+
 ## 0.40.0
 
 ### Added
