@@ -979,6 +979,43 @@ async def test_targeted_mode_is_never_split(setup_mcp, health_data_with_tests):
 
 
 @pytest.mark.asyncio
+async def test_targeted_mode_asks_only_about_the_files_it_was_given(
+    setup_mcp, health_data_with_tests, monkeypatch
+):
+    """The test-path read is scoped to the targets in targeted mode.
+
+    It answers one question per mode. Targeted mode only ever asks
+    ``path in test_paths`` for paths the caller named, so it reads exactly
+    those — a keyed seek instead of a read over every file node the repo has.
+    Measured on the repowise index, 32.9ms -> 0.6ms on a single-file target,
+    which was a quarter of the whole call spent deciding whether one file is a
+    test. Dashboard mode partitions a ranked finding list whose paths are not
+    known until that list is built, so it must stay repo-wide.
+    """
+    import repowise.server.mcp_server.tool_health as th
+    from repowise.server.mcp_server import get_health
+
+    asked: list[object] = []
+    real = th.get_test_file_paths
+
+    async def spy(session, repository_id, paths=None):
+        asked.append(paths)
+        return await real(session, repository_id, paths)
+
+    monkeypatch.setattr(th, "get_test_file_paths", spy)
+
+    targeted = await get_health(targets=["tests/test_service.py"])
+    assert asked == [["tests/test_service.py"]]
+    # Scoping it must not change the answer.
+    assert targeted["metrics"][0]["is_test"] is True
+
+    asked.clear()
+    dashboard = await get_health()
+    assert asked == [None], "the dashboard split needs the repo-wide answer"
+    assert dashboard["test_findings"], "scoping the dashboard would empty this"
+
+
+@pytest.mark.asyncio
 async def test_kpis_still_include_test_files(setup_mcp, health_data_with_tests):
     """Excluding test material from the KPIs is a scoring change, not a display one.
 

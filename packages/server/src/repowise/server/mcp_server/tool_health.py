@@ -782,11 +782,6 @@ async def get_health(
             HealthFileMetric.repository_id == repository.id
         )
         exclude_spec = _get_exclude_spec(ctx.path)
-        # Test material, from the flag ingestion already decided per file.
-        # Gated on ``needs_test_paths`` — see the note at its definition.
-        test_paths: set[str] = set()
-        if needs_test_paths:
-            test_paths = await get_test_file_paths(session, repository.id)
         indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
         all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
         # Paths the index knows about but the exclude config drops. Kept so an
@@ -811,6 +806,22 @@ async def get_health(
         scoped = bool(raw_targets)
         effective_targets = file_targets if scoped else []
         nothing_resolved = scoped and not effective_targets
+
+        # Test material, from the flag ingestion already decided per file.
+        # Gated on ``needs_test_paths`` — see the note at its definition — and
+        # placed after the ``module:`` expansion so targeted mode can scope it.
+        #
+        # Targeted mode only ever asks ``path in test_paths`` for paths the
+        # caller named, so it reads exactly those; dashboard mode partitions a
+        # ranked finding list whose paths are not known until the read below
+        # runs, so it keeps the repo-wide answer. Measured on this repo, that
+        # is 32.9ms -> 0.6ms on a single-file target — a quarter of the whole
+        # call, paid to answer "is this one file a test".
+        test_paths: set[str] = set()
+        if needs_test_paths:
+            test_paths = await get_test_file_paths(
+                session, repository.id, effective_targets if scoped else None
+            )
 
         open_findings = (
             HealthFinding.repository_id == repository.id,

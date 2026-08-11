@@ -240,7 +240,18 @@ class GraphNode(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
-    __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),)
+    __table_args__ = (
+        UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),
+        # ``node_type == "file"`` is the most-issued predicate on this table and
+        # nothing covered it: ``uq_graph_node`` is keyed ``(repository_id,
+        # node_id)``, so every "all the file nodes" read seeked on the repo and
+        # then filtered ~36k rows in memory to return ~3.4k. Measured on the
+        # repowise index, the two reads ``get_health`` issues per dashboard call
+        # (language map, test-path set): 29.0ms -> 9.2ms and 27.2ms -> 8.4ms.
+        # Audited for the LIMIT-without-ORDER-BY hazard 0046 records — every
+        # ``node_type``-filtered query in the tree that limits also orders.
+        Index("ix_graph_nodes_repo_type", "repository_id", "node_type"),
+    )
 
 
 class ExternalSystem(Base):

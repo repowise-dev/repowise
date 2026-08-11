@@ -414,3 +414,84 @@ def test_snapshot_file_maps_round_trips_into_the_reader():
     t = file_trend(snaps, "a.py")
     assert t.delta == 0.0
     assert t.unclamped_delta == 2.0
+
+
+# --------------------------------------------------------------------------- #
+# The per-snapshot parse memo
+# --------------------------------------------------------------------------- #
+#
+# The per-file maps are per-*repo* blobs read one file at a time, so asking
+# about N files re-parsed the same few blobs N times. Measured on the repowise
+# index (20 snapshots averaging 186 KB each), ``get_health`` on a ``module:``
+# target expanding to 822 files spent 13.0s in ``json.loads``; memoized, 0.4s.
+
+
+def _counting_loads(monkeypatch) -> list[int]:
+    """Count ``json.loads`` calls made by ``trends``, without changing them.
+
+    Clears the memo first: it is content-keyed and process-wide, so a blob an
+    earlier test already parsed would otherwise make this one pass for the
+    wrong reason.
+    """
+    import repowise.core.analysis.health.trends as trends_mod
+
+    trends_mod._parsed_map.cache_clear()
+    calls = [0]
+    real = json.loads
+
+    def counted(s, *a, **kw):
+        calls[0] += 1
+        return real(s, *a, **kw)
+
+    monkeypatch.setattr(trends_mod.json, "loads", counted)
+    return calls
+
+
+def test_each_snapshot_map_is_parsed_once_however_many_files_are_asked_about(monkeypatch):
+    paths = [f"f{i}.py" for i in range(40)]
+    snaps = _file_series([{p: 9.0 for p in paths}, {p: 8.0 for p in paths}])
+    calls = _counting_loads(monkeypatch)
+
+    for p in paths:
+        assert file_trend(snaps, p).delta == -1.0
+
+    # One parse per distinct blob: two score maps, and the one empty deduction
+    # map both snapshots share. Unmemoized this is 40x that, and it is the shape
+    # that made a ``module:`` target take 13 seconds.
+    assert calls[0] <= 3, f"re-parsed per file: {calls[0]} loads"
+
+
+def test_the_memo_is_keyed_on_content_so_it_cannot_serve_a_stale_map():
+    """Different bytes are a different key.
+
+    A memo keyed on ``(snapshot, column)`` would keep answering with the first
+    map it ever saw. These are historical rows so a rewrite is not expected —
+    but a cache that *cannot* notice one is a different promise from a cache
+    that re-parses when the bytes change.
+    """
+    snaps = _file_series([{"a.py": 9.0}, {"a.py": 8.0}])
+    assert file_trend(snaps, "a.py").current == 8.0
+
+    snaps[-1].per_file_scores_json = json.dumps({"a.py": 3.0})
+    assert file_trend(snaps, "a.py").current == 3.0
+
+
+def test_the_memo_needs_nothing_of_the_snapshot_object():
+    """Content-keying is what lets an unhashable row through.
+
+    The obvious memo — a ``WeakKeyDictionary`` on the snapshot — silently
+    degrades to no caching for any snapshot type that is unhashable or not
+    weak-referenceable, which is every ``@dataclass`` row (``eq=True`` sets
+    ``__hash__`` to ``None``) and every ``__slots__`` stub.
+    """
+
+    class _Slotted:
+        __slots__ = ("per_file_deductions_json", "per_file_scores_json", "taken_at")
+
+        def __init__(self, taken_at, scores):
+            self.taken_at = taken_at
+            self.per_file_scores_json = json.dumps(scores)
+            self.per_file_deductions_json = "{}"
+
+    snaps = [_Slotted(_ts(0), {"a.py": 9.0}), _Slotted(_ts(1), {"a.py": 7.0})]
+    assert file_trend(snaps, "a.py").delta == -2.0
