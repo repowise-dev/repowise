@@ -521,9 +521,10 @@ mcp = FastMCP(
     instructions=(
         "repowise is a codebase documentation engine. Use these tools to query "
         "the wiki for architecture overviews, contextual docs on files/modules/"
-        "symbols, modification risk assessment, architectural decision rationale, "
-        "semantic search, dependency paths, dead code, and architecture diagrams. "
-        "If the tools report that the repo has no index, tell the user to run "
+        "symbols, modification and change-risk assessment, architectural decision "
+        "rationale, semantic search, dead code, and code health. In workspace mode, "
+        "get_architecture and get_blast_radius are also available. If the tools "
+        "report that the repo has no index, tell the user to run "
         "'repowise init --yes' in the repo root; it needs no API key. Suggest it, "
         "do not run it yourself."
     ),
