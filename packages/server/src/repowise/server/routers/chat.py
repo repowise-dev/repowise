@@ -538,6 +538,17 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
             parts.append(f"{bug_prone} bug-prone")
         return ", ".join(parts)
 
+    if tool_name == "get_change_risk":
+        ref = result.get("ref", "change")
+        priority = result.get("review_priority") or result.get("classification") or "unknown"
+        pct = result.get("risk_percentile")
+        if pct is not None:
+            return f"Change risk for {ref}: {priority} (p{pct})"
+        score = result.get("score")
+        if score is not None:
+            return f"Change risk for {ref}: {priority} (score {score})"
+        return f"Change risk for {ref}: {priority}"
+
     if tool_name == "get_why":
         mode = result.get("mode", "")
         if mode == "health":
