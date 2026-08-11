@@ -45,8 +45,10 @@ Call `get_why()` with no arguments to get the decision-health dashboard:
 - Proposed decisions awaiting confirmation
 - Ungoverned hotspots (high-churn files with no recorded decisions)
 
-The same signals surface in the CLI via `repowise decision health`, and you can
-review auto-proposed decisions with `repowise decision confirm`.
+The same signals surface in the CLI via `repowise decision health` /
+`/repowise:decision`, and you can query *why* mid-task with `repowise why` /
+`/repowise:why` (the `get_why` adapter). Review auto-proposed decisions with
+`repowise decision confirm`.
 
 ## When a file has decision markers
 

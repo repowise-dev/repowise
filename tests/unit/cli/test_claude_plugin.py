@@ -155,10 +155,13 @@ def test_claude_plugin_commands_have_frontmatter() -> None:
     command_paths = sorted((PLUGIN_ROOT / "commands").glob("*.md"))
 
     assert {path.stem for path in command_paths} == {
+        "ask",
+        "context",
         "coverage",
         "dead-code",
         "decision",
         "doctor",
+        "export",
         "health",
         "impacted-tests",
         "init",
@@ -167,7 +170,9 @@ def test_claude_plugin_commands_have_frontmatter() -> None:
         "search",
         "security",
         "status",
+        "symbol",
         "update",
+        "why",
     }
 
     for path in command_paths:
