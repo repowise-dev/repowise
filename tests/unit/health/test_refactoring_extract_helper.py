@@ -507,3 +507,173 @@ def test_deterministic_and_stable_order():
     # Bigger recovered impact first.
     assert [s.line_start for s in a] == [100, 10]
     assert [(s.target_symbol, s.plan) for s in a] == [(s.target_symbol, s.plan) for s in b]
+
+
+# ---- declaration-only blocks are not extractable -------------------------
+#
+# A clone made entirely of declarations has no behaviour to share, so a plan
+# proposing to extract it is advice no editor can follow. Three real shapes
+# from this repo's own index motivated the gate, and the worst of them arrived
+# in the most-trusted slot in the payload (highest occurrence count, biggest
+# blast radius): an `x49` import block and an `x32` one.
+#
+# The unit cases below cannot be revert-tested (the helper is new, so a revert
+# cannot import it); the `detect_refactorings` cases can, and do — without the
+# gate the detector emits a plan for every one of them.
+
+
+def _decl_source(body: list[str], *, at: int, total: int = 80) -> list[str]:
+    """A file whose lines *at*..*at+len(body)* are *body*, rest inert code."""
+    lines = [f"    value_{i} = compute_{i}(seed)" for i in range(1, total + 1)]
+    lines[at - 1 : at - 1 + len(body)] = body
+    return lines
+
+
+_IMPORT_BLOCK = [
+    "from repowise.cli.helpers import (",
+    "    clear_update_queued,",
+    "    console,",
+    "    consume_update_pending,",
+    "    ensure_repowise_dir,",
+    "    find_workspace_root,",
+    "    get_head_commit,",
+    "    load_config,",
+    "    save_state,",
+    ")",
+]
+
+_SIGNATURE_BLOCK = [
+    "def update_command(",
+    "    path: str | None,",
+    "    provider_name: str | None,",
+    "    since: str | None,",
+    "    dry_run: bool,",
+    "    workspace: bool,",
+    "    index_only: bool = False,",
+    "    concurrency: int = 10,",
+    ")",
+]
+
+_FIELD_BLOCK = [
+    "    name: str = ''",
+    "    items: list[str] = field(default_factory=list)",
+    "    mapping: dict[str, int] = field(default_factory=dict)",
+    "    alternatives: list[str] = field(default_factory=list)",
+    "    count: int = 0",
+    "    enabled: bool = False",
+    "    label: str = 'none'",
+    "    weight: float = 1.0",
+]
+
+_REAL_BLOCK = [
+    "    if result is not None:",
+    "        try:",
+    "            save_knowledge_graph_json(repo_path, result)",
+    "        except Exception as exc:",
+    "            degraded.append(exc)",
+    "    emitter.done(ok=True, pages_generated=0)",
+    "    consume_update_pending(repo_path, head)",
+    "    total = compute_total(rows)",
+    "    scaled = total * weight",
+]
+
+
+def _plans_for(body: list[str]):
+    """Plans the detector emits for a cross-file clone whose block is *body*."""
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 10 + len(body) - 1, 40, 40 + len(body) - 1)
+    return [
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_decl_source(body, at=10))
+        )
+        if s.refactoring_type == "extract_helper"
+    ]
+
+
+def test_import_block_clone_emits_no_plan():
+    """You cannot extract `from x import (...)` into a shared helper."""
+    assert _plans_for(_IMPORT_BLOCK) == []
+
+
+def test_function_signature_clone_emits_no_plan():
+    """Two functions whose parameter lists agree are not duplicated behaviour."""
+    assert _plans_for(_SIGNATURE_BLOCK) == []
+
+
+def test_dataclass_field_run_emits_no_plan():
+    """Unrelated dataclasses sharing a run of `field(default_factory=...)`
+    declarations share a shape, not code. This is the case filed as C6."""
+    assert _plans_for(_FIELD_BLOCK) == []
+
+
+def test_real_duplicated_code_still_emits_a_plan():
+    """The gate must stay conservative: a false negative silently drops real
+    duplication, which is the more expensive mistake."""
+    plans = _plans_for(_REAL_BLOCK)
+    assert len(plans) == 1
+    assert plans[0].plan["duplicated_lines"] == len(_REAL_BLOCK)
+
+
+def test_gate_abstains_when_no_source_is_threaded():
+    """No source means no evidence to reject on, so the plan survives — the
+    detector's pre-existing behaviour for non-clone / unreadable files."""
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    plans = [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair], source_lines=None))
+        if s.refactoring_type == "extract_helper"
+    ]
+    assert len(plans) == 1
+
+
+def test_declaration_only_unit_cases():
+    from repowise.core.analysis.health.refactoring.extract_helper import (
+        _is_declaration_only,
+    )
+
+    # Rejected: nothing to extract.
+    assert _is_declaration_only(_IMPORT_BLOCK)
+    assert _is_declaration_only(_SIGNATURE_BLOCK)
+    assert _is_declaration_only(_FIELD_BLOCK)
+    assert _is_declaration_only(["    ALPHA = 'a'", "    BETA = 'b'", "    GAMMA = 'c'"])
+    assert _is_declaration_only(["import os", "import sys", "from x import y"])
+    assert _is_declaration_only(['export { A } from "./a";', 'export * from "./b";'])
+    assert _is_declaration_only(["    # only a comment", "", "    # another"])
+
+    # Kept: real behaviour, by three different routes.
+    assert not _is_declaration_only(["    if x:", "        go()"])  # control flow
+    assert not _is_declaration_only(["    emit(a)", "    emit(b)"])  # statement calls
+    assert not _is_declaration_only(["    t = compute(x)"])  # computed assignment
+    assert not _is_declaration_only(["    total = sum_rows(rows)", "    n = len(total)"])
+
+    # A type annotation does not make code a declaration. This is the shape an
+    # adversarial review caught the first version of the gate dropping, and it
+    # is one of the most common lines in typed Python and TypeScript, so it is
+    # the highest-frequency false negative the gate could have had.
+    assert not _is_declaration_only(
+        [
+            "    result: int = calculate_total(items, tax_rate)",
+            "    status: str = fetch_status(connection)",
+        ]
+    )
+    # What separates it from a field run is the *constructor*, not the call: a
+    # closed vocabulary of field declarations is still a declaration.
+    assert _is_declaration_only(
+        [
+            "    items: list[str] = field(default_factory=list)",
+            "    id: int = Column(Integer)",
+            "    kids: list = relationship('K')",
+        ]
+    )
+
+    # A leading `*` is a javadoc continuation in one language and a pointer
+    # dereference in another. Stripping it unconditionally emptied the line list
+    # and read as "nothing but declarations", defanging the gate for C and Go.
+    assert not _is_declaration_only(["*x = compute_value(a, b);", "*y = another(c);"])
+    assert _is_declaration_only(["    * @param foo the thing", "    * @returns nothing"])
+
+    # Single-word control flow carries no other token to recognise it by, so it
+    # has to be in the keyword list or it reads as a bare identifier.
+    assert not _is_declaration_only(["    continue", "    continue"])
+    assert not _is_declaration_only(["    break", "    break"])
+    assert not _is_declaration_only(["    defer f.Close()", "    defer g.Close()"])

@@ -338,7 +338,15 @@ def _directive(
         "recovers_points": recovers,
         "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
         "then": [m.file_path for m in by_leverage[1:3]],
-        "plan_via": "get_health(include=['refactoring'])",
+        # Projected, not bare. ``include`` adds a block without subtracting the
+        # dashboard, and five ranked lists at the default ``limit`` compose: the
+        # bare ``include=['refactoring']`` measured 70,776 chars on this repo
+        # (refactoring_plans 34%, the other four lists 59%) and simply fails the
+        # MCP token cap, so the one call the directive tells an agent to make was
+        # the one call it could not complete. ``only`` already exists to fix this
+        # (it gates the work as well as the payload); the directive just has to
+        # ask for it. Same block, ~24k chars, no dashboard restated.
+        "plan_via": "get_health(include=['refactoring'], only=['refactoring_plans'])",
         "plan_addresses_reason": addresses,
     }
     # Only speak when there is a named cause to speak about. With no lead the
@@ -1167,12 +1175,31 @@ async def get_health(
             key=lambda r: (deficit_by_path.get(r.file_path, 0), r.impact_delta or 0.0),
             reverse=True,
         )
+        # ...then spread the cap across files. Deficit is a *file* property, so a
+        # pure deficit sort puts every plan on the worst file ahead of every plan
+        # on the second worst: asking for the top 8 returned 8 plans on one file
+        # out of 1,903, and an agent asking "what should I refactor?" saw no view
+        # of the repo at all. Round-robin one plan per file per pass, files in
+        # their ranked order (a file ranks by its best plan) and plans in theirs,
+        # so the head spans as many files as it has rows. The order is otherwise
+        # unchanged — the worst file still leads, it just no longer owns the list.
+        by_file: dict[str, list[Any]] = {}
+        for r in ranked:
+            by_file.setdefault(r.file_path, []).append(r)
+        spread: list[Any] = []
+        while len(spread) < limit and by_file:
+            for path in list(by_file):
+                spread.append(by_file[path].pop(0))
+                if not by_file[path]:
+                    del by_file[path]
+                if len(spread) >= limit:
+                    break
         result["refactoring_plans"] = [
             {
                 **_serialize_refactoring(r),
                 "file_weighted_deficit": deficit_by_path.get(r.file_path, 0),
             }
-            for r in ranked[:limit]
+            for r in spread
         ]
         result["refactoring_plans_total"] = len(refactoring_rows)
         # The deterministic prose suggestion is the fallback for biomarkers

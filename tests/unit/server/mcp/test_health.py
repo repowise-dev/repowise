@@ -1063,3 +1063,94 @@ async def test_coverage_payload_shape_is_unchanged(setup_mcp, health_data):
     targeted = await get_health(include=["coverage"], targets=["src/auth/service.py"])
     for row in targeted["coverage"]["files"]:
         assert "covered_lines" in row
+
+
+@pytest.mark.asyncio
+async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, session):
+    """The cap is spread over files instead of being spent on the worst one.
+
+    ``deficit_by_path`` is a *file* property, so a pure deficit sort puts every
+    plan on the worst file ahead of every plan on the second worst. Measured on
+    this repo's own index before the fix, asking for the top 8 plans returned 8
+    plans on a single file out of 1,903 — an agent asking "what should I
+    refactor?" got no view of the repo at all. Filed as C4.
+    """
+    from repowise.server.mcp_server import get_health
+
+    # Six plans on the worst file, two on the other. Impact descends within the
+    # worst file so a deficit-then-impact sort would take all six of them first.
+    await _seed_plans(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "target_symbol": f"worst_{i}",
+                "source_biomarker": "complex_method",
+                "impact_delta": 9.0 - i,
+            }
+            for i in range(6)
+        ]
+        + [
+            {
+                "file_path": "src/utils/helpers.py",
+                "target_symbol": f"other_{i}",
+                "source_biomarker": "complex_method",
+                "impact_delta": 0.1,
+            }
+            for i in range(2)
+        ],
+    )
+
+    plans = (await get_health(include=["refactoring"], limit=4))["refactoring_plans"]
+    assert len(plans) == 4
+    # Both files are represented rather than the worst file owning the list.
+    assert len({p["file_path"] for p in plans}) == 2
+    # The worst file still leads — spreading reorders within the cap, it does
+    # not demote the file the directive names.
+    assert plans[0]["file_path"] == "src/auth/service.py"
+    # Within a file, the higher-impact plan still comes first.
+    worst = [p["target_symbol"] for p in plans if p["file_path"] == "src/auth/service.py"]
+    assert worst == sorted(worst, key=lambda t: int(t.split("_")[1]))
+
+
+@pytest.mark.asyncio
+async def test_refactoring_spread_is_exhaustive_when_one_file_has_them_all(
+    setup_mcp, health_data, session
+):
+    """One file holding every plan must still fill the cap — the round-robin
+    drains a file's queue rather than capping it at one row per file."""
+    from repowise.server.mcp_server import get_health
+
+    await _seed_plans(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "target_symbol": f"only_{i}",
+                "source_biomarker": "complex_method",
+                "impact_delta": 5.0 - i,
+            }
+            for i in range(5)
+        ],
+    )
+
+    plans = (await get_health(include=["refactoring"], limit=4))["refactoring_plans"]
+    assert len(plans) == 4
+    assert {p["file_path"] for p in plans} == {"src/auth/service.py"}
+
+
+@pytest.mark.asyncio
+async def test_directive_plan_via_is_projected(setup_mcp, health_data):
+    """``plan_via`` must name a call that can actually complete.
+
+    The bare ``include=['refactoring']`` measured 70,776 chars on this repo and
+    fails the MCP token cap: five ranked lists at the default limit compose, and
+    ``include`` adds a block without subtracting the dashboard. The directive
+    told an agent to make the one call it could not finish.
+    """
+    from repowise.server.mcp_server import get_health
+
+    directive = (await get_health(only=["directive"]))["directive"]
+    assert "only=['refactoring_plans']" in directive["plan_via"]
