@@ -1027,9 +1027,14 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         result["tool_guide"] = {
             "first_call": "get_answer for any how/where/why question; trust "
             "confidence=high directly (it is content-grounded).",
-            "reading_code": "get_context skeleton (≈37% of a full Read) → "
-            "get_symbol for bodies (verified: true = no re-read needed). "
-            "Raw Read only for files marked mostly_full or unservable.",
+            # NOT "get_context skeleton -> get_symbol for bodies". That routed
+            # the agent into a per-signature walk, which is where three
+            # quarters of every measured session's retrieval calls went, on the
+            # one tool whose payload cannot be trimmed. get_context serves no
+            # source by default now, so this names the two whole-file routes.
+            "reading_code": 'get_context(include=["skeleton"]) for a whole file '
+            "verified, or just Read it. get_symbol only for an id a response "
+            "already gave you — never file-by-signature.",
             "recipes": [
                 "get_answer low confidence → Read best_guesses[0].file",
                 "get_context hotspot: true → get_risk before editing",

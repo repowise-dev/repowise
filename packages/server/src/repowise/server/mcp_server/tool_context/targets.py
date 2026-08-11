@@ -50,13 +50,27 @@ from repowise.server.mcp_server.tool_context.kg import (
 )
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
-# Skeleton-by-default threshold for file targets. Measured on this repo: a
-# 1,400-line file's default card costs ~2.5k tokens for 16 bare signatures,
-# while the smart skeleton costs ~1.7k and carries every signature plus
-# docstrings and the highest-PageRank bodies — strictly better per token.
-# Small files skeletonize poorly (pct_of_full approaches a plain Read), so
-# the card remains the default below this line count.
-_SKELETON_AUTO_MIN_LINES = 80
+# Skeleton-by-default is GONE; ``include=["skeleton"]`` still serves it in full.
+#
+# It was introduced on the claim that "a 1,400-line file's default card costs
+# ~2.5k tokens for 16 bare signatures, while the smart skeleton costs ~1.7k" —
+# strictly better per token. Re-measured 2026-08-11 on pinned Textualize/rich,
+# whole serialised cards in characters, auto-upgrade suppressed for the
+# comparison:
+#
+#   target          auto card   symbol-list card   skeleton text alone
+#   rich/ansi.py        6,585              2,171                 5,295
+#   rich/text.py       13,365              8,562                12,247
+#   rich/color.py       8,591              4,818                 7,405
+#
+# The symbol list is 1,321 chars on ansi.py where the skeleton text is 5,295.
+# The original claim is inverted on this corpus, and the auto card was 73-91%
+# source text on every sample — text the agent can Read for ~1/5 the marginal
+# cost of a mid-session tool result, which is what the block's own
+# ``mostly_full`` note ("a direct Read costs little more") was already saying
+# at the agent's expense. So the default card is the symbol list again and the
+# skeleton is opt-in. If you restore an auto-upgrade, re-run the measurement
+# first: the numbers above are the bar.
 
 
 def _synthesize_structural_summary(file_path: str, classes: list[str], functions: list[str]) -> str:
@@ -364,7 +378,6 @@ async def _resolve_one_target(
             }
 
     want_skeleton = bool(include and "skeleton" in include)
-    auto_skeleton = False
 
     # --- Docs ---
     # "full_doc" implies "docs" — entering the docs block whenever either is requested.
@@ -389,24 +402,11 @@ async def _resolve_one_target(
             symbols = res.scalars().all()
             classes = [s.name for s in symbols if s.kind == "class"]
             functions = [s.name for s in symbols if s.kind in ("function", "method")]
-            # Skeleton-by-default: for file targets of meaningful size the
-            # smart skeleton dominates the bare signature list per token, so
-            # the default card upgrades itself. compact=False (the rich
-            # symbol card) and full_doc both opt out.
-            if not want_skeleton and compact and not want_full_doc:
-                total_loc = max((s.end_line or 0 for s in symbols), default=0)
-                if total_loc > _SKELETON_AUTO_MIN_LINES:
-                    want_skeleton = auto_skeleton = True
-            # Explicitly requested skeleton suppresses the symbol list up
-            # front; the auto default still builds the card and only swaps
-            # it out once the skeleton actually resolved (see bottom), so a
-            # moved/unreadable source file degrades to the card, not to an
-            # error-only response.
-            if want_skeleton and not auto_skeleton:
-                # The skeleton block already renders every signature with
-                # line bounds — repeating the symbol list in docs would
-                # roughly double the response for zero information. Keep
-                # the cheap title/summary card only.
+            if want_skeleton:
+                # A requested skeleton suppresses the symbol list: it already
+                # renders every signature with line bounds, so repeating the
+                # list in docs would roughly double the response for zero
+                # information. Keep the cheap title/summary card only.
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(target, classes, functions)
             elif compact:
@@ -881,31 +881,10 @@ async def _resolve_one_target(
     if include and "health" in include:
         await _resolve_health(session, repository, target, target_type, result_data)
 
-    # --- Skeleton (distill) — explicit include or the file-target default ---
+    # --- Skeleton (distill) — opt-in only, see the module note ---
     if want_skeleton:
         await _resolve_skeleton(
             session, repository, target, target_type, result_data, repo_root=repo_root
         )
-        skeleton = result_data.get("skeleton")
-        if auto_skeleton and isinstance(skeleton, dict):
-            if "error" in skeleton:
-                # Auto-upgrade failed (source moved/unreadable) — keep the
-                # symbol card the docs block already built and drop the
-                # failed block so the default response stays usable.
-                result_data.pop("skeleton", None)
-            else:
-                skeleton["auto"] = True
-                skeleton["opt_out_hint"] = (
-                    "Skeleton is the default for file targets above "
-                    f"{_SKELETON_AUTO_MIN_LINES} lines. Pass compact=False "
-                    "for the symbol-list card instead."
-                )
-                docs_block = result_data.get("docs")
-                if isinstance(docs_block, dict):
-                    # The skeleton renders every signature with line bounds —
-                    # the symbol list would double the response for zero
-                    # information.
-                    docs_block.pop("symbols", None)
-                    docs_block.pop("symbols_truncated", None)
 
     return result_data

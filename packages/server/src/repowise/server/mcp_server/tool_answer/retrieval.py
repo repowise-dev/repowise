@@ -34,10 +34,22 @@ from repowise.server.mcp_server.tool_answer.config import (
 _log = logging.getLogger("repowise.mcp.answer")
 
 
-# How many files ``candidates`` names. Twenty path lines cost roughly 800
-# characters against the ~10k a get_answer response already spends, so the
-# block makes the tool *more* token-efficient per candidate offered, not less.
-_CANDIDATE_LIMIT = 20
+# How many files ``candidates`` names.
+#
+# Was 20, on the estimate that "twenty path lines cost roughly 800 characters
+# against the ~10k a get_answer response already spends". Measured on the wire
+# 2026-08-11 the block is **3,107-3,279 characters, up to 39.9% of a
+# get_answer payload** — four times the estimate, because ``defines`` and the
+# paths themselves are both longer than a bare path line. That estimate was
+# also made before ``defines`` existed.
+#
+# Five, not zero. Rows 6-20 appear in no other block, but nor are rows 1-5
+# redundant: on the repowise samples ``candidates`` is the only block naming
+# files outside the top-two ``citations``, and dropping it whole (which the
+# CLI projection does) pushes the agent into a Grep that costs more than the
+# rows saved. The head keeps the ``defines`` budget, so the navigational value
+# per character goes up.
+_CANDIDATE_LIMIT = 5
 
 
 def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> list[dict]:

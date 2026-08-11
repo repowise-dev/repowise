@@ -145,6 +145,7 @@ from repowise.server.mcp_server.tool_answer.episodes import (
     attach_episode as _attach_episode,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
+    _CANDIDATE_LIMIT,
     _apply_domain_penalty,
     _attach_page_excerpts,
     _candidate_justification,
@@ -401,12 +402,76 @@ def _build_best_guesses(hits: list[dict]) -> list[dict]:
             "file": h.get("target_path"),
             "why_relevant": _candidate_justification(h),
             "score": round(h.get("score", 0.0), 3),
-            "domain_penalty": h.get("_domain_penalty"),
+            # Absent rather than null. It was `null` in all six wire samples
+            # measured 2026-08-11 — a penalty applies to a minority of hits, so
+            # the common row paid 22 characters to say nothing happened.
+            **({"domain_penalty": h["_domain_penalty"]} if h.get("_domain_penalty") else {}),
             **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
         }
         for h in hits[:_GATED_RETURN_HITS]
         if h.get("target_path")
     ]
+
+
+def _trim_served_payload(payload: dict) -> dict:
+    """Every size cut that runs on the way OUT, on both the fresh and cache paths.
+
+    Serve-time rather than build-time, and that is the whole point. A cut
+    applied where the payload is assembled reaches only fresh answers: a cache
+    row written by an older build keeps the old shape until
+    ``_ANSWER_SCHEMA_VERSION`` moves, and bumping that invalidates every user's
+    answer cache — re-synthesis, i.e. real provider spend — to change the size
+    of a block. Measured: after capping ``candidates`` at build time only, a
+    re-measured ``get_answer`` came back byte-identical, because the tree's
+    cache answered. Trimming on the way out fixes old and new rows alike and
+    costs nobody a re-synthesis.
+
+    Anything that only REMOVES redundancy belongs here. Anything that changes
+    what an answer says does not, and still owes a schema bump.
+    """
+    _cap_candidates(payload)
+    _drop_duplicated_guess_excerpts(payload)
+    return payload
+
+
+def _cap_candidates(payload: dict) -> dict:
+    """Hold ``candidates`` to :data:`_CANDIDATE_LIMIT` rows on the way out."""
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list) and len(candidates) > _CANDIDATE_LIMIT:
+        payload["candidates"] = candidates[:_CANDIDATE_LIMIT]
+    return payload
+
+
+def _drop_duplicated_guess_excerpts(payload: dict) -> dict:
+    """Drop ``best_guesses[].excerpt`` where ``retrieval[]`` already carries it.
+
+    Both blocks slice the same 1,500-character page excerpt for the same file,
+    and when both are present the guess copy is byte-for-byte redundant —
+    measured at 4,714 characters, 21.3% of one low-confidence payload, 3 of 3
+    guesses duplicated.
+
+    **Conditional, and the condition matters.** ``retrieval`` is
+    confidence-gated and shrinks to nothing as the prose gets more
+    trustworthy; the legacy abstain path ships ``retrieval: []`` outright. On
+    those responses the guess excerpt is the only content in the payload, not a
+    duplicate of anything, and a sample measured here carried 4,667 characters
+    of it. So the drop is keyed on the duplicate actually being present, which
+    makes it lossless rather than merely cheap — and keeps every ``excerpt``
+    mentioned by ``note`` / ``next_action_hint`` on the paths that mention it.
+    """
+    guesses = payload.get("best_guesses")
+    if not guesses:
+        return payload
+    # Substring, not equality: the two blocks cut their slabs independently and
+    # the retrieval one is the longer of the two where they differ.
+    carried = [r["excerpt"] for r in (payload.get("retrieval") or []) if r.get("excerpt")]
+    if not carried:
+        return payload
+    for guess in guesses:
+        excerpt = guess.get("excerpt")
+        if excerpt and any(excerpt in c for c in carried):
+            del guess["excerpt"]
+    return payload
 
 
 def _json_default(obj):
@@ -890,6 +955,7 @@ async def get_answer(
                     targets=[p for p in cached_paths if isinstance(p, str) and p],
                 )
                 _apply_lean_high(payload, question)
+                _trim_served_payload(payload)
                 # Serve-time, on this path as well as the fresh one: the
                 # episode is read on every call and never cached into an
                 # answer, so a disagreement cannot be frozen into a row and
@@ -1895,6 +1961,10 @@ async def get_answer(
     if degraded := _degraded_legs(_retrieval_legs()):
         payload["_meta"]["retrieval_degraded"] = degraded
     _apply_lean_high(payload, question)
+    # After the cache write above and after lean-high (which can remove
+    # ``best_guesses`` outright), so the cut sees the finished payload and the
+    # cached row keeps the shape its schema version promises.
+    _trim_served_payload(payload)
     # After the cache write above, deliberately. ``cache_payload`` is a shallow
     # copy taken before this point, so the episode reaches the caller and never
     # the cache row — which is why adding it needs no _ANSWER_SCHEMA_VERSION

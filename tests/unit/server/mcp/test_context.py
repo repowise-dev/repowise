@@ -330,9 +330,14 @@ def test_truncate_noop_when_under_budget():
         "_meta": {},
     }
     out = _truncate_to_budget(small)
-    assert out["truncated"] is False
-    assert out["dropped_targets"] == []
-    assert out["dropped_symbols"] == {}
+    # Absent, not false. ``truncated: false`` plus two empty containers is 60
+    # characters of "nothing happened" on every response that fits — which is
+    # nearly all of them. Both projections read these with ``.get()``, so empty
+    # and absent are the same answer to a consumer.
+    assert not out.get("truncated")
+    assert not out.get("dropped_targets")
+    assert not out.get("dropped_symbols")
+    assert "truncated" not in out
     assert "content_md" not in out["targets"]["a.py"]["docs"]  # wasn't there anyway
 
 

@@ -1044,8 +1044,15 @@ async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, mon
 
     A pointers-only reply makes the agent re-acquire all content natively
     (observed as an 8-15 call Grep/Read spree in agent transcripts), so the
-    best_guesses folded into a non-dominant reply carry the top candidates'
-    actual page content beside the synthesized prose.
+    non-dominant reply ships the top candidates' actual page content beside
+    the synthesized prose.
+
+    **Once, not twice.** ``best_guesses`` and ``retrieval`` used to slice the
+    same 1,500-character page excerpt for the same file — 21.3% of one measured
+    payload, duplicated byte for byte — so the guess copy is dropped wherever
+    ``retrieval`` already carries it. The content requirement above is
+    unchanged and is what the second half of this test pins: the excerpt is
+    still in the response, in exactly one place.
     """
     import repowise.server.mcp_server as mcp_mod
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
@@ -1083,7 +1090,13 @@ async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, mon
     assert result["confidence"] == "medium"  # non-dominant ceiling
     assert result["answer"]
     top = result["best_guesses"][0]
-    assert top["excerpt"].startswith("Page content for pkg/alpha/one.py")
+    assert top["file"] == "pkg/alpha/one.py"
+    assert top["why_relevant"]
+    # The content is in the response exactly once: dropped from the guess
+    # because retrieval carries the identical slab for the same file.
+    assert "excerpt" not in top
+    carried = [r.get("excerpt", "") for r in result["retrieval"]]
+    assert any(e.startswith("Page content for pkg/alpha/one.py") for e in carried)
     # The reply names the ambiguity and points at best_guesses to verify.
     assert "best_guesses" in result["note"]
     assert "ambiguous" in result["note"]

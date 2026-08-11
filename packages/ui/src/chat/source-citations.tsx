@@ -35,7 +35,15 @@ export function extractSources(
     if (tc.name === "search_codebase") {
       const results = (result.results as Array<Record<string, unknown>>) ?? [];
       for (const r of results) {
-        const pageId = r.page_id as string;
+        // `page_id` is `${page_type}:${target_path}`, and the tool now omits it
+        // wherever those two rebuild it. Derive rather than skip: the previous
+        // `const pageId = r.page_id` dropped the whole row — and its citation —
+        // for any result without one. Same fallback the get_context branch uses.
+        const pageType = r.page_type as string | undefined;
+        const targetPath = r.target_path as string | undefined;
+        const pageId =
+          (r.page_id as string | undefined) ??
+          (pageType && targetPath ? `${pageType}:${targetPath}` : "");
         if (!pageId || seen.has(pageId)) continue;
         seen.add(pageId);
         sources.push({

@@ -106,7 +106,11 @@ async def test_search_drops_tombstoned_pages(setup_mcp, session, monkeypatch):
 
     mcp_mod._vector_store.search = fake_search
     result = await search_codebase("auth service")
-    ids = [r["page_id"] for r in result["results"]]
+    # ``page_id`` is omitted from any result that can rebuild it from
+    # ``page_type`` + ``target_path``, which is every result whose Page row
+    # loaded. Reconstruct rather than read — the tombstone filter itself is
+    # unchanged and still keys on the id internally.
+    ids = [f"{r['page_type']}:{r['target_path']}" for r in result["results"]]
     assert "file_page:src/auth/service.py" not in ids
     assert "file_page:src/db/models.py" in ids
 

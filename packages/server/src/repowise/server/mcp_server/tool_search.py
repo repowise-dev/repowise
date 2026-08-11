@@ -486,6 +486,33 @@ def _attach_paths(output: list[dict], page_info: dict) -> None:
             item["file"] = item["target_path"].split("::", 1)[0]
 
 
+def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
+    """Strip ``page_id`` from every result that can rebuild it, in place.
+
+    A page id is ``compute_page_id(page_type, target_path)`` — literally
+    ``f"{page_type}:{target_path}"`` (``core/generation/models.py``) — and both
+    halves ship in the same row. So the field is 229-369 characters per
+    response, 7.8-10.3% of the payload, restating two of its own siblings. It
+    is ranking plumbing: every internal use above keys the fused dict on it,
+    and none of that needs to reach the wire.
+
+    Conditional rather than unconditional, and the condition is the derivation
+    itself. ``_attach_paths`` writes ``target_path: ""`` for a hit whose Page
+    row did not load, and a row like that cannot be rebuilt — so it keeps its
+    id instead of losing one. The rule is "drop it only where it is provably
+    redundant", which is also the check: if this ever stops firing, the
+    invariant it rests on has changed.
+
+    Consumers rebuild with the same expression; ``ui/src/chat/source-citations``
+    does exactly that, and used to skip any row whose ``page_id`` was missing.
+    """
+    for item in results:
+        derived = f"{item.get('page_type', '')}:{item.get('target_path', '')}"
+        if item.get("page_id") == derived:
+            item.pop("page_id", None)
+    return results
+
+
 async def _load_page_info(
     session, output: list[dict], *, with_git: bool = False
 ) -> tuple[dict, set, dict]:
@@ -712,6 +739,8 @@ async def _federated_search(
     # name files.
     if candidates := file_candidates(all_results, limit=limit):
         response["candidates"] = candidates
+    # Last, so nothing above has to know the field is on its way out.
+    _drop_derivable_page_ids(output)
     return response
 
 
@@ -917,6 +946,8 @@ async def _structured_search(
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
+    # Last, so nothing above has to know the field is on its way out.
+    _drop_derivable_page_ids(results)
     return response
 
 
@@ -1044,4 +1075,6 @@ async def search_codebase(
         response["candidates"] = candidates
     if grep_hint and not output:
         response["grep_hint"] = grep_hint
+    # Last, so nothing above has to know the field is on its way out.
+    _drop_derivable_page_ids(output)
     return response

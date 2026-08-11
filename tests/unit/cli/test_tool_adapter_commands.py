@@ -325,7 +325,16 @@ def test_ask_projection_is_a_fraction_of_the_payload():
     assert trimmed * 3 < full, f"trim saved too little: {trimmed} of {full}"
 
 
-def test_context_projection_keeps_the_skeleton_shape_without_its_text():
+def test_context_projection_passes_a_requested_skeleton_through_whole():
+    """A skeleton in the card was asked for by name, so it survives the trim.
+
+    This used to strip ``skeleton.text``, and that was right while the tool
+    auto-upgraded every file target above 80 lines: the text was 73-91% of the
+    payload and nobody had requested it. The tool no longer auto-upgrades, so
+    the only way a skeleton reaches this function is ``--include skeleton``,
+    and trimming its text back out would make that flag inert — the same
+    failure the include passthrough two tests below exists to prevent.
+    """
     out = project_context(CONTEXT_PAYLOAD, ("a.py",))
     card = out["targets"]["a.py"]
     assert card["title"] == "File: a.py"
@@ -338,11 +347,8 @@ def test_context_projection_keeps_the_skeleton_shape_without_its_text():
     unknown = {"target": "a.py", "freshness": {"is_stale": None}}
     assert "stale" not in project_context({"targets": {"a.py": unknown}}, ("a.py",))["targets"]["a.py"]
     assert card["episodes"] == 4
-    assert card["skeleton"] == {
-        "mode": "smart", "tokens": 100, "full_tokens": 400,
-        "pct_of_full": 25.0, "verified": True, "bodies_kept": ["f"],
-    }
-    assert "z" * 100 not in json.dumps(out), "skeleton text survived the trim"
+    assert card["skeleton"] == CONTEXT_PAYLOAD["targets"]["a.py"]["skeleton"]
+    assert "z" * 100 in card["skeleton"]["text"], "the requested source went missing"
     assert "parent_page" not in card
 
 
