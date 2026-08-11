@@ -407,8 +407,43 @@ def test_both_failure_modes_return_the_same_payload_shape(reason):
 def test_degraded_payload_still_hands_back_usable_retrieval():
     """Retrieval succeeded; losing it too would waste the work already done."""
     payload = _payload()
-    assert payload["answer"] == ""
     assert payload["confidence"] == "low"
     assert payload["fallback_targets"] == ["pkg/mod.py"]
     assert len(payload["retrieval"]) == 1
     assert payload["retrieval"][0]["path"] == "pkg/mod.py"
+
+
+def test_degraded_answer_describes_the_payload_instead_of_being_empty():
+    """An empty ``answer`` beside working retrieval reads as a failed call.
+
+    The field is the first thing a reader looks at, so leaving it blank while
+    ``retrieval``/``candidates`` are populated invites throwing the whole
+    result away. It must name what survived and where to find it.
+    """
+    payload = _payload()
+    answer = payload["answer"]
+    assert answer, "degraded answer must not be empty"
+    assert "synthesis-failed" in answer, "the reason belongs in the visible field"
+    for field in ("retrieval", "fallback_targets", "candidates"):
+        assert field in answer, f"{field} is populated but never mentioned"
+
+
+def test_degraded_answer_does_not_promise_hits_it_does_not_have():
+    """The other direction: no hits must not produce a 'this is usable' claim.
+
+    A sentence assembled from a template rather than from the payload would
+    advertise ranked hits on an empty retrieval, which is the failure mode that
+    would make the wording worse than the blank field it replaced.
+    """
+    payload = _degraded_payload(
+        reason="no-llm-provider",
+        note="DEGRADED",
+        hits=[],
+        fallback_targets=[],
+        repository=None,
+        t0=0.0,
+    )
+    answer = payload["answer"]
+    assert answer
+    assert "matched nothing" in answer
+    assert "ranked hit" not in answer

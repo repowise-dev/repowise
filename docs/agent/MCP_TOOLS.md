@@ -188,12 +188,22 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. |
+| `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. Symbol ids take the same `"path/to/file.py::Name"` form `get_symbol` accepts, with the same `::` / `.` / `/` separator normalisation, so an id from either tool works in the other. |
 | `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this, symbol targets), `"callees"` (what this calls, symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only; the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens) |
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
 
 **Returns per target:** Documentation summary, symbols defined, ownership percentages, freshness score, co-change partners, architectural decisions governing the file. With `include` options: source code, call graph, graph metrics, community membership.
+
+A file with no indexed symbols (README, config, plain data) gets a
+`docs.file_preview` instead of an empty symbol list: line and character counts,
+plus the heading spine for markdown or the first non-blank lines otherwise.
+Counts and verbatim excerpts only, nothing inferred.
+
+When the symbol half of a `path::Name` target does not resolve but the file
+half does, the reply is that file's card with `resolved_to` naming the file and
+a `note` saying which symbol was not found. The file's symbol list is where the
+correct id is, so this is a partial answer rather than a dead end.
 
 **When to use:** Before reading or modifying code. Pass all relevant targets in one call to minimize round-trips. In workspace mode, enriched with cross-repo co-change and contract data.
 
@@ -229,6 +239,7 @@ Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
 | `symbol_id` | string | Yes | One of three forms: `"path/to/file.py::SymbolName"` (canonical, from `get_context`'s symbol list; normalises `::` / `.` / `/` separators across languages), `"path/to/file.py:140-180"` (a live range read, 200 lines max), or an omission ref `"repowise#<12-hex>"` / a pasted whole `[repowise#...]` marker. |
 | `query` | string | No | Omission refs only: return just the stored lines matching this regex (or substring). Ignored for symbol ids and range reads. |
 | `context_lines` | int | No | Extra source lines before/after the symbol (0-50, default 0) |
+| `depth` | int | No | Follow the call graph outward from this symbol and include what it calls, with bodies (1-3, default 1 = this symbol only). Out-of-range values clamp. |
 | `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
 
 **Returns:** For a symbol id or range: the source (bounded at ~600 lines,
@@ -242,17 +253,30 @@ budget appear in `not_rendered` with a `fetch_with` range read. For an
 omission ref: the stored content plus provenance (`source`, `created_at`,
 `original_tokens`).
 
+With `depth` above 1 the response also carries `callee_bodies`: the symbols
+this one calls, transitively, each with its `depth` (hops from the root), its
+source, and a `verified` flag. Every symbol appears once, at the shallowest
+depth it was reached from. Callees past the response budget are listed in
+`not_rendered` with the `fetch_with` range that retrieves them, so a bounded
+walk never looks like a complete one.
+
 **When to use:** When you need the body of one function or class: pipe the
 `symbol_id` straight from `get_context`'s symbol list. Use the line-range form
 for anything that falls between symbols. Or when a response's `_meta.omitted`
 lists refs you want back and you have no shell for `repowise expand` (e.g.
 Claude Desktop).
 
+Reach for `depth=2` when you are following a call chain: reading a body,
+finding the next name in it, then fetching that one. The graph already holds
+those edges before the first call, so one `depth=2` call replaces the whole
+sequence of round trips.
+
 **Example calls:**
 
 ```
 get_symbol(symbol_id="src/auth/service.py::AuthService")
 get_symbol(symbol_id="src/auth/service.py::login", context_lines=10)
+get_symbol(symbol_id="src/auth/service.py::login", depth=2)
 get_symbol(symbol_id="src/auth/service.py:140-180")
 get_symbol(symbol_id="repowise#a1b2c3d4e5f6")
 get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")

@@ -769,10 +769,36 @@ def _degraded_payload(
     read freshness and health signals from there. The failure path used to
     set only the top-level key, so a caller watching ``_meta`` saw a normal
     empty answer.
+
+    ``answer`` states what the payload IS rather than being left empty. Only
+    the synthesis step is missing here. Retrieval ran, ranked the corpus and
+    succeeded, and its result is the most useful part of a normal reply. An
+    empty ``answer`` beside it reads as a failed call rather than a partial
+    one, and a reader who takes it at face value discards a working result and
+    starts over. The sentence is assembled from what the payload actually
+    carries, so it can never claim more than it has, and no prose about the
+    question itself is invented, that being precisely the part that needs a
+    provider.
     """
+    served = len(hits)
+    if served:
+        summary = (
+            f"No synthesized prose ({reason}), but retrieval succeeded and this "
+            f"payload is usable: {served} ranked "
+            f"{'hit' if served == 1 else 'hits'} in `retrieval`, the files to open "
+            "in `fallback_targets`, and the wider ranked shortlist in `candidates`. "
+            "Read those rather than starting a fresh search."
+        )
+    else:
+        summary = (
+            f"No synthesized prose ({reason}), and retrieval matched nothing for "
+            "this question. Rephrase with an identifier or path from the codebase, "
+            "or search directly."
+        )
+
     return _with_candidates(
         {
-            "answer": "",
+            "answer": summary,
             "citations": [],
             "confidence": "low",
             "degraded": reason,

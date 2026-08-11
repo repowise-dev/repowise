@@ -48,7 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
@@ -59,9 +59,19 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
     is_excluded,
+    read_repo_file_text,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
+from repowise.server.mcp_server._symbol_lookup import (
+    NAME_SEPARATORS,
+    bare_name,
+    name_variants,
+    order_candidates,
+    parse_symbol_id,
+    resolve_symbol_rows,
+    symbol_id_variants,
+)
 from repowise.server.mcp_server._verify import check_symbol_bounds, heal_symbol_row
 
 _log = __import__("logging").getLogger("repowise.mcp.symbol")
@@ -101,6 +111,153 @@ _MAX_FALLBACK_MATCHES = 8
 # renders, the rest render while budget remains and are otherwise listed with
 # an exact range read that fetches them.
 _AMBIGUITY_CHAR_BUDGET = 20_000
+
+
+# Callee expansion. A symbol whose body names the next symbol you need is the
+# common case, and fetching that next one is a fresh round trip: the chain gets
+# walked a hop at a time, each hop a full request/response, when the graph
+# already knows every edge. ``depth`` serves the reachable bodies together.
+#
+# Depth is capped low on purpose. Fan-out compounds, so depth 3 on a hub symbol
+# is a payload nobody asked for; the observed hand-walks are chains, not trees,
+# and are covered well before the cap.
+_MAX_CALLEE_DEPTH = 3
+# Total chars of callee source served. Sized against the symbol cap above: a
+# handful of ordinary bodies, and a hub is truncated rather than serialised.
+_CALLEE_CHAR_BUDGET = 24_000
+# Per-hop fan-out cap, applied before any body is read.
+_MAX_CALLEES_PER_HOP = 12
+# Callee bodies are context for the root symbol, not the subject of the call,
+# so they are bounded tighter than the root's ~600.
+_MAX_CALLEE_BODY_LINES = 150
+
+
+async def _expand_callees(
+    session,
+    repo_id: str,
+    root_row: WikiSymbol,
+    repo_root: Path,
+    depth: int,
+    exclude_spec: Any,
+) -> dict[str, Any] | None:
+    """Breadth-first walk of the call graph from *root_row*, bodies included.
+
+    Symbol graph nodes are keyed by the same ``"{path}::{Name}"`` string as
+    ``WikiSymbol.symbol_id``, so each hop is one edge query plus one row query
+    regardless of fan-out. Every symbol is served at most once and at the
+    shallowest depth it was reached from, which keeps a diamond in the call
+    graph from being serialised twice.
+
+    Returns None when the root has no outbound call edges, so the caller adds
+    no empty block to an ordinary response.
+    """
+    from repowise.core.persistence.crud import get_graph_edges_for_node
+    from repowise.server.mcp_server.tool_context.enrichment import (
+        _CALL_EDGE_TYPES,
+        _MIN_CALL_CONFIDENCE,
+    )
+
+    seen: set[str] = {root_row.symbol_id}
+    frontier = [root_row.symbol_id]
+    entries: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
+    text_cache: dict[str, str | None] = {}
+    remaining = _CALLEE_CHAR_BUDGET
+
+    for hop in range(1, depth):
+        if not frontier:
+            break
+        next_ids: list[str] = []
+        for node_id in frontier:
+            edges = await get_graph_edges_for_node(
+                session,
+                repo_id,
+                node_id,
+                direction="callees",
+                edge_types=_CALL_EDGE_TYPES,
+                limit=_MAX_CALLEES_PER_HOP,
+            )
+            for e in edges:
+                if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
+                    continue
+                if e.target_node_id not in seen:
+                    seen.add(e.target_node_id)
+                    next_ids.append(e.target_node_id)
+        if not next_ids:
+            break
+
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.symbol_id.in_(next_ids),
+            )
+        )
+        rows = [r for r in res.scalars().all() if not is_excluded(r.file_path, exclude_spec)]
+        # Stable order so the same call returns the same payload twice.
+        rows.sort(key=lambda r: (r.file_path or "", r.start_line or 0, r.symbol_id or ""))
+
+        for row in rows:
+            entry: dict[str, Any] = {
+                "symbol_id": row.symbol_id,
+                "name": row.name,
+                "file": row.file_path,
+                "kind": row.kind,
+                "signature": _clean_symbol_signature(row.signature),
+                "depth": hop,
+            }
+            if row.file_path not in text_cache:
+                text_cache[row.file_path] = _read_file_text(repo_root, row.file_path)
+            text = text_cache[row.file_path]
+            if text is None:
+                entry["note"] = "source file could not be read"
+                omitted.append(entry)
+                continue
+
+            # Bounds are checked so ``verified`` is honest, but a correction is
+            # not written back here: healing belongs to the read that asked for
+            # the symbol, not to a neighbour swept up by a graph walk.
+            check = check_symbol_bounds(row, text)
+            source, start, end, _total = _slice_text(
+                text, check.start_line, check.end_line, 0, max_lines=_MAX_CALLEE_BODY_LINES
+            )
+            numbered = _number_lines(source, start)
+            if len(numbered) > remaining:
+                # Out of budget: name the read that fetches it rather than
+                # dropping the symbol silently.
+                entry["fetch_with"] = f"{row.file_path}:{check.start_line}-{check.end_line}"
+                omitted.append(entry)
+                continue
+            remaining -= len(numbered)
+            entry.update(
+                {
+                    "start_line": start,
+                    "end_line": end,
+                    "source": numbered,
+                    "verified": check.verified,
+                }
+            )
+            if end < check.end_line:
+                entry["truncated"] = True
+                entry["continuation"] = f"{row.file_path}:{end + 1}-{check.end_line}"
+            entries.append(entry)
+
+        frontier = next_ids
+
+    if not entries and not omitted:
+        return None
+    block: dict[str, Any] = {"depth": depth, "callees": entries}
+    if omitted:
+        block["not_rendered"] = omitted
+        block["note"] = (
+            "Callees past the response budget are listed in not_rendered; "
+            "fetch one with its fetch_with range."
+        )
+    return block
+
+
+def _clean_symbol_signature(signature: str | None) -> str:
+    """Collapse a stored signature onto one line (CRLF indices keep the \\r\\n)."""
+    return " ".join((signature or "").split())
 
 
 def _extract_omission_ref(symbol_id: str) -> str | None:
@@ -285,198 +442,16 @@ def _live_grep_fallback(repo_root: Path, file_path: str, name: str) -> list[dict
     return matches
 
 
-def _parse_symbol_id(symbol_id: str) -> tuple[str | None, str | None]:
-    """Split a "{path}::{name}" id. Either side may be None if missing.
-
-    Tolerant of double-colons in qualified names like "Foo::Bar::baz" by
-    splitting on the FIRST "::" only — the first segment is always the file
-    path. Returns (file_path, name) where name may itself contain "::" for
-    nested qualified forms ("Class::method").
-    """
-    if not symbol_id or "::" not in symbol_id:
-        return symbol_id or None, None
-    file_part, _, name_part = symbol_id.partition("::")
-    return (file_part or None, name_part or None)
-
-
-# Separators used between name segments AFTER the file path. Different
-# languages use different conventions: Python/TS/Go use ".", C++/Rust use
-# "::", and some tools emit "/". The lookup must be uniform across all of
-# them — we never encode a single language's rule.
-_NAME_SEPARATORS = (".", "::", "/")
-
-
-def _name_variants(name: str) -> list[str]:
-    """Generate all separator variants of a qualified name segment.
-
-    Given "App.update_template_context" we yield the same name with every
-    supported separator between segments, so a DB storing "App::method"
-    still resolves when the agent passed dot-form (or vice versa).
-
-    Operates only on the *name* (post file-path), never on the path itself.
-    """
-    if not name:
-        return []
-    # Split on any of the known separators to get atomic segments.
-    segments = [name]
-    for sep in _NAME_SEPARATORS:
-        next_segments: list[str] = []
-        for seg in segments:
-            next_segments.extend(seg.split(sep))
-        segments = next_segments
-    segments = [s for s in segments if s]
-    if not segments:
-        return [name]
-    variants: list[str] = []
-    seen: set[str] = set()
-    for sep in _NAME_SEPARATORS:
-        v = sep.join(segments)
-        if v not in seen:
-            seen.add(v)
-            variants.append(v)
-    # Also include the original as-is in case it used a mixed separator.
-    if name not in seen:
-        variants.append(name)
-    return variants
-
-
-def _symbol_id_variants(symbol_id: str) -> list[str]:
-    """Generate {file_path}::{name_variant} for every name separator form."""
-    file_path, name = _parse_symbol_id(symbol_id)
-    if not file_path or not name:
-        return [symbol_id]
-    out: list[str] = []
-    seen: set[str] = set()
-    for nv in _name_variants(name):
-        sid = f"{file_path}::{nv}"
-        if sid not in seen:
-            seen.add(sid)
-            out.append(sid)
-    if symbol_id not in seen:
-        out.append(symbol_id)
-    return out
-
-
-def _bare_name(name: str) -> str:
-    """Return the last name segment regardless of separator style."""
-    tail = name
-    for sep in _NAME_SEPARATORS:
-        tail = tail.rsplit(sep, 1)[-1]
-    return tail
-
-
-def _order_candidates(rows: list[WikiSymbol], queried_file_path: str | None) -> list[WikiSymbol]:
-    """Deterministically order a candidate list, best match first.
-
-    Priority for the head slot:
-      1. file_path matches the file_path embedded in the queried symbol_id
-      2. deterministic tiebreak on the (id) primary key (ascending)
-
-    Ambiguous lookups (len > 1) are NOT collapsed here — get_symbol serves
-    every candidate so the agent, not a heuristic, decides which one it
-    meant. The remainder is ordered by source position for readability.
-    """
-    if len(rows) <= 1:
-        return rows
-
-    def _head_key(r: WikiSymbol) -> tuple:
-        file_match = 0 if (queried_file_path and r.file_path == queried_file_path) else 1
-        return (file_match, r.id or "")
-
-    head = min(rows, key=_head_key)
-    rest = sorted(
-        (r for r in rows if r is not head),
-        key=lambda r: (r.file_path or "", r.start_line or 0, r.id or ""),
-    )
-    return [head, *rest]
-
-
-async def _resolve_symbol(session, repo_id: str, symbol_id: str) -> list[WikiSymbol]:
-    """Look up a symbol by id, qualified_name, or bare name.
-
-    Returns every row the first matching lookup stage produced, best match
-    first (see :func:`_order_candidates`); ``[]`` when nothing matched.
-    A multi-row result means the id is genuinely ambiguous — overloads,
-    re-exports, conditional defs — and the caller serves ALL of them rather
-    than guessing (a wrong silent pick triggers a read-spiral).
-
-    Language-agnostic: the qualified-name portion of the symbol_id is
-    normalized across ``.``, ``::`` and ``/`` separators before matching,
-    so callers can pass any of ``Class.method``, ``Class::method``, or
-    ``Class/method`` and still resolve. Only the name part is normalized —
-    file paths are never rewritten.
-    """
-    file_path, _name = _parse_symbol_id(symbol_id)
-    variants = _symbol_id_variants(symbol_id)
-
-    # 1. Exact symbol_id — try every separator variant.
-    res = await session.execute(
-        select(WikiSymbol).where(
-            WikiSymbol.repository_id == repo_id,
-            WikiSymbol.symbol_id.in_(variants),
-        )
-    )
-    rows = list(res.scalars().all())
-    if rows:
-        return _order_candidates(rows, file_path)
-
-    _, name = _parse_symbol_id(symbol_id)
-    if not name:
-        return []
-
-    name_variants = _name_variants(name)
-
-    # 2. Match on (file_path, qualified_name) across name variants.
-    if file_path:
-        res = await session.execute(
-            select(WikiSymbol).where(
-                WikiSymbol.repository_id == repo_id,
-                WikiSymbol.file_path == file_path,
-                WikiSymbol.qualified_name.in_(name_variants),
-            )
-        )
-        rows = list(res.scalars().all())
-        if rows:
-            return _order_candidates(rows, file_path)
-
-        # 3. Match on (file_path, name) — last segment of qualified name.
-        bare = _bare_name(name)
-        res = await session.execute(
-            select(WikiSymbol).where(
-                WikiSymbol.repository_id == repo_id,
-                WikiSymbol.file_path == file_path,
-                WikiSymbol.name == bare,
-            )
-        )
-        rows = list(res.scalars().all())
-        if rows:
-            return _order_candidates(rows, file_path)
-
-    # 4. Suffix file-path match — the caller passed a bare filename or partial
-    #    path ("answer.py::get_answer") instead of the full indexed path.
-    #    Resolve against any file whose path ends with that segment on a "/"
-    #    boundary, on the bare leaf name. Mirrors get_context's basename ladder
-    #    so both tools accept the same shorthand instead of a dead "not found".
-    if file_path and name:
-        from repowise.server.mcp_server._helpers import LIKE_ESCAPE, escape_like
-
-        esc = escape_like(file_path.strip("/").replace("\\", "/"))
-        bare = _bare_name(name)
-        res = await session.execute(
-            select(WikiSymbol).where(
-                WikiSymbol.repository_id == repo_id,
-                WikiSymbol.name == bare,
-                or_(
-                    WikiSymbol.file_path == file_path.strip("/").replace("\\", "/"),
-                    WikiSymbol.file_path.like(f"%/{esc}", escape=LIKE_ESCAPE),
-                ),
-            )
-        )
-        rows = list(res.scalars().all())
-        if rows:
-            return _order_candidates(rows, file_path)
-
-    return []
+# The symbol-id grammar, separator normalisation and lookup ladder are shared
+# with get_context (see _symbol_lookup for why they cannot diverge). Re-exported
+# under the module-private names this file has always used.
+_NAME_SEPARATORS = NAME_SEPARATORS
+_parse_symbol_id = parse_symbol_id
+_name_variants = name_variants
+_symbol_id_variants = symbol_id_variants
+_bare_name = bare_name
+_order_candidates = order_candidates
+_resolve_symbol = resolve_symbol_rows
 
 
 async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spec) -> list[str]:
@@ -509,19 +484,10 @@ async def _symbol_suggestions(session, repo_id: str, symbol_id: str, exclude_spe
 
 def _read_file_text(repo_path: Path, file_path: str) -> str | None:
     """Read a repo file's live text, or None when unreadable/outside the root."""
-    abs_path = (repo_path / file_path).resolve()
-    # Defense in depth: never read outside the repo root, even if the
-    # WikiSymbol.file_path was somehow tampered with.
-    try:
-        abs_path.relative_to(repo_path.resolve())
-    except ValueError:
-        _log.warning("get_symbol path escape attempt: %s", file_path)
-        return None
-    try:
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        _log.warning("get_symbol read failed for %s: %s", abs_path, exc)
-        return None
+    text = read_repo_file_text(repo_path, file_path)
+    if text is None:
+        _log.warning("get_symbol could not serve %s (unreadable or outside repo root)", file_path)
+    return text
 
 
 def _slice_text(
@@ -661,6 +627,7 @@ async def get_symbol(
     repo: str | None = None,
     query: str | None = None,
     id: str | None = None,
+    depth: int = 1,
 ) -> dict:
     """Follow-up read of one symbol whose id another response already gave you.
 
@@ -674,11 +641,11 @@ async def get_symbol(
     ``verified: true`` = bounds checked (or corrected) against the live file:
     no follow-up Read needed. ``bounds: "approximate"`` = the symbol moved and
     re-location failed. An ambiguous id (overloads, re-exports) returns ALL
-    matching bodies in ``candidates`` — none is silently chosen. Also serves
+    matching bodies in ``candidates``; none is silently chosen. Also serves
     live range reads ("path.py:140-180", ≤200 lines, always verified) and
-    omission refs ("repowise#<12-hex>"). Index misses grep the live file and
-    return fallback_lines instead of a dead end. When ``truncated`` is true the
-    response carries a ``continuation`` token — the exact range read that
+    omission refs ("repowise#<12-hex>"). An index miss returns fallback_lines
+    from a live grep rather than a dead end. When ``truncated`` is true the
+    response carries a ``continuation`` token: the exact range read that
     fetches the remainder; pass it straight back to get_symbol.
 
     Args:
@@ -686,8 +653,10 @@ async def get_symbol(
             live range, or an omission ref.
         context_lines: extra lines before/after (0-50).
         repo: usually omitted.
-        query: omission refs only — regex/substring filter on lines.
+        query: omission refs only, regex/substring filter on lines.
         id: accepted alias for ``symbol_id``.
+        depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
+            it calls, transitively, in ``callee_bodies``.
     """
     if repo == "all":
         return _unsupported_repo_all("get_symbol")
@@ -732,6 +701,9 @@ async def get_symbol(
         # Bound context_lines to a sane range — runaway values would
         # defeat the whole point of symbol-level retrieval.
         context_lines = max(0, min(50, context_lines))
+    # Clamp rather than reject: an out-of-range depth is a caller reaching for
+    # more of the chain, and the useful reply is the deepest walk we will do.
+    depth = max(1, min(_MAX_CALLEE_DEPTH, depth))
 
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -890,6 +862,14 @@ async def get_symbol(
             "the indexed line range from the current file contents; verify "
             "before citing."
         )
+    if depth > 1:
+        async with get_session(ctx.session_factory) as session:
+            callee_block = await _expand_callees(
+                session, repository.id, row, repo_root, depth, exclude_spec
+            )
+        if callee_block is not None:
+            response["callee_bodies"] = callee_block
+
     # Declare the exact counterfactual: serving one symbol replaced Reading the
     # whole file. The savings instrumentation prefers this over its estimator.
     from repowise.server.mcp_server._savings import declare_replaced
