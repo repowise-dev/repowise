@@ -584,7 +584,4 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
         lines = summary.get("deletable_lines", 0)
         return f"{total} findings ({high_count} high-confidence), {lines} deletable lines"
 
-    if tool_name == "get_architecture_diagram":
-        return f"Generated {result.get('diagram_type', 'diagram')}"
-
     return "Completed"
