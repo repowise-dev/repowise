@@ -87,7 +87,7 @@ async def test_full_is_the_default_and_carries_every_key(client: AsyncClient, ap
 
     assert default == explicit, "the default must stay the wide row"
     row = next(f for f in default["files"] if f["file_path"] == "src/f00.py")
-    assert _FULL_ONLY <= set(row)
+    assert set(row) >= _FULL_ONLY
     assert row["primary_biomarker"] == "complex_method"
     assert row["total_deduction"] == 2.5
 

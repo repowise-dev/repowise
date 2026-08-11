@@ -288,6 +288,59 @@ class TestLinksDoNotShadowTheirTarget:
         assert _walked(tmp_path) == (_EXPECTED_DIRS, _EXPECTED_FILES)
 
 
+class TestALinkedWalkRootStillSeesItsOwnTree:
+    """The topology every other test in this file happens to avoid.
+
+    Found by adversarial review, and it is the interesting kind of miss: the
+    first fix asked "is this child a link?" as ``realpath(child) !=
+    abspath(child)``. ``abspath`` resolves nothing, so a symlink anywhere in the
+    **root's own prefix** makes every child at every depth compare unequal, and
+    the walk prunes the whole tree — ``walk_repo(linked_root)`` returned the
+    root and nothing under it.
+
+    Not exotic: macOS ``/tmp`` is a symlink to ``/private/tmp``, container bind
+    mounts and mapped drives do the same, and ``walk_repo`` is shared by module
+    attribution, package-root discovery, both resolvers and the CLI scanner —
+    a repo checked out under one would have indexed as empty. Every link test
+    above seeds a real ``tmp_path`` and links only *inside* it, so all of them
+    passed on the broken version.
+    """
+
+    def test_a_symlinked_root_walks_the_same_tree_as_the_real_one(
+        self, tmp_path: Path
+    ) -> None:
+        real = tmp_path / "real"
+        real.mkdir()
+        _seed_tree(real)
+        _symlink(tmp_path / "via_link", real)
+
+        assert _walked(tmp_path / "via_link") == _walked(real)
+        assert _walked(real) == (_EXPECTED_DIRS, _EXPECTED_FILES)
+
+    def test_a_junctioned_root_walks_the_same_tree_as_the_real_one(
+        self, tmp_path: Path
+    ) -> None:
+        real = tmp_path / "real"
+        real.mkdir()
+        _seed_tree(real)
+        _junction(tmp_path / "via_junction", real)
+
+        assert _walked(tmp_path / "via_junction") == _walked(real)
+
+    def test_an_in_tree_link_is_still_caught_under_a_linked_root(
+        self, tmp_path: Path
+    ) -> None:
+        """Both halves at once — the prefix must not mask a real reparse point."""
+        real = tmp_path / "real"
+        real.mkdir()
+        _seed_tree(real)
+        _symlink(real / "linked", real / "svc")
+
+        assert _walked(real) == (_EXPECTED_DIRS, _EXPECTED_FILES)
+        _symlink(tmp_path / "via_link", real)
+        assert _walked(tmp_path / "via_link") == (_EXPECTED_DIRS, _EXPECTED_FILES)
+
+
 class TestLinkCyclesStillTerminate:
     """The guard the fix had to preserve. ``visited_real`` exists because
     ``os.walk`` cannot detect a junction cycle by inode on Windows; pruning
@@ -327,6 +380,37 @@ class TestLinkCyclesStillTerminate:
         _dirs, files = _walked(root)
         assert "vendored/pkg/ext.py" in files
         assert set(_EXPECTED_FILES) <= set(files)
+
+    def test_a_cycle_inside_an_out_of_tree_target_is_still_caught(
+        self, tmp_path: Path
+    ) -> None:
+        """``visited_real`` is still load-bearing, and only here.
+
+        In-tree links never reach it now — they are pruned first — so it would
+        be easy to conclude it is dead and delete it. It is not: an out-of-tree
+        junction is *descended*, and a link inside that external tree pointing
+        back at the external tree's own root is outside the walk root, so the
+        in-tree rule does not fire. Without the realpath set the walk re-enters
+        it until ``max_depth`` and reports the same files 60-odd times.
+
+        Mutation-checked: neutering ``visited_real`` passes every other test in
+        this file.
+        """
+        outside = tmp_path.parent / f"{tmp_path.name}_ext_cycle"
+        (outside / "pkg").mkdir(parents=True)
+        (outside / "pkg" / "ext.py").write_text("x", encoding="utf-8")
+        _junction(outside / "pkg" / "back", outside)
+        root = tmp_path / "repo"
+        root.mkdir()
+        _seed_tree(root)
+        _junction(root / "vendored", outside)
+
+        _dirs, files = _walked(root)
+        # Every re-entry yields a *new* relative path
+        # (``vendored/pkg/back/pkg/ext.py`` and so on down to ``max_depth``), so
+        # asserting uniqueness or a per-path count proves nothing — the total is
+        # what moves. Four files: the three seeded plus the external one, once.
+        assert files == sorted([*_EXPECTED_FILES, "vendored/pkg/ext.py"]), files[:8]
 
 
 # ---------------------------------------------------------------------------

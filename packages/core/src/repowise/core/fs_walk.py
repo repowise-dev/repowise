@@ -177,6 +177,22 @@ def walk_repo(
         # Windows junctions and other cycles ``os.walk`` can't detect via
         # inode (Windows doesn't expose real inodes outside NTFS proper).
         cycle_pruned: list[str] = []
+        # The resolved form of *this* directory, so "is the child itself a link"
+        # can be asked without the answer depending on the path the caller
+        # happened to pass in. Comparing ``realpath(child)`` against
+        # ``abspath(child)`` looks equivalent and is not: ``abspath`` resolves
+        # nothing, so a symlink anywhere in the *root's own prefix* makes every
+        # child at every depth compare unequal, and the walk prunes the entire
+        # tree. That is not exotic — macOS ``/tmp`` is a symlink to
+        # ``/private/tmp``, container bind mounts and mapped drives do the same,
+        # and a repo checked out under one would have indexed as empty.
+        # Resolving the parent once per directory keeps both sides of the
+        # comparison resolved to the same depth, so only a genuine reparse point
+        # differs.
+        try:
+            parent_real = os.path.realpath(dirpath)
+        except OSError:
+            parent_real = str(dirpath)
         for d in dirnames:
             child = os.path.join(dirpath, d)
             try:
@@ -201,9 +217,9 @@ def walk_repo(
             # they are a genuine external tree, and cycle protection still
             # needs their realpath because ``os.walk`` will descend a junction
             # into one.
-            if _normcase(child_real) != _normcase(os.path.abspath(child)) and _is_within(
-                child_real, root_real
-            ):
+            if _normcase(child_real) != _normcase(
+                os.path.join(parent_real, d)
+            ) and _is_within(child_real, root_real):
                 cycle_pruned.append(d)
                 continue
             if child_real in visited_real:
