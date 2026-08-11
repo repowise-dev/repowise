@@ -11,8 +11,13 @@ Every repo-wide scan must go through ``fs_walk``.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from repowise.core.fs_walk import PRUNED_DIRS, PRUNED_DIRS_DERIVED, iter_glob, walk_repo
 
@@ -179,6 +184,149 @@ class TestWalkRepo:
         _write(tmp_path, "other/theirs.txt")
         yielded_dirs = [d for d, _, _ in walk_repo(tmp_path)]
         assert tmp_path / "other" not in yielded_dirs
+
+
+# ---------------------------------------------------------------------------
+# Links: a link must never delete its target's subtree
+# ---------------------------------------------------------------------------
+
+
+def _walked(root: Path) -> tuple[list[str], list[str]]:
+    """``(dirs, files)`` of one walk, root-relative and posix, sorted."""
+    dirs: list[str] = []
+    files: list[str] = []
+    for dirpath, _dirnames, filenames in walk_repo(root):
+        rel = dirpath.relative_to(root).as_posix()
+        dirs.append(rel)
+        files.extend(f"{rel}/{f}".removeprefix("./") for f in filenames)
+    return sorted(dirs), sorted(files)
+
+
+def _seed_tree(root: Path) -> None:
+    _write(root, "svc/svc.py")
+    _write(root, "svc/api/main.py")
+    _write(root, "zz/z.py")
+
+
+def _symlink(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - env dependent
+        pytest.skip(f"cannot create a directory symlink here: {exc}")
+
+
+def _junction(link: Path, target: Path) -> None:
+    if sys.platform != "win32":  # pragma: no cover - platform dependent
+        pytest.skip("junctions are Windows-only")
+    r = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode:  # pragma: no cover - env dependent
+        pytest.skip(f"mklink /J unavailable: {r.stderr.strip()}")
+
+
+_EXPECTED_DIRS = [".", "svc", "svc/api", "zz"]
+_EXPECTED_FILES = ["svc/api/main.py", "svc/svc.py", "zz/z.py"]
+
+
+class TestLinksDoNotShadowTheirTarget:
+    """``visited_real`` recorded a link's *target* as visited, and
+    ``followlinks=False`` meant the walk then never went there — so whichever
+    of the pair sorted first won, and a link sorted ahead of its target removed
+    the target's whole subtree from the result.
+
+    The walk is shared by module attribution (a persisted, user-visible column),
+    package-root discovery, the manifest scan, the TS/.NET resolvers and the
+    workspace service-boundary extractor, so a shadowed subtree is silently
+    wrong in all of them at once.
+    """
+
+    def test_a_symlink_sorted_ahead_of_its_target_keeps_the_target(
+        self, tmp_path: Path
+    ) -> None:
+        _seed_tree(tmp_path)
+        # "linked" sorts before "svc", so os.walk reaches the link first.
+        _symlink(tmp_path / "linked", tmp_path / "svc")
+
+        dirs, files = _walked(tmp_path)
+        assert dirs == _EXPECTED_DIRS
+        assert files == _EXPECTED_FILES
+
+    def test_a_symlink_sorted_after_its_target_is_still_not_duplicated(
+        self, tmp_path: Path
+    ) -> None:
+        """The order that always worked has to keep working — and the subtree
+        must appear once, under its real name, not twice."""
+        _seed_tree(tmp_path)
+        _symlink(tmp_path / "zzz_linked", tmp_path / "svc")
+
+        dirs, files = _walked(tmp_path)
+        assert dirs == _EXPECTED_DIRS
+        assert files == _EXPECTED_FILES
+
+    def test_a_junction_reports_files_under_their_real_path(self, tmp_path: Path) -> None:
+        """Junctions are the worse half and were filed as merely "the same
+        shape". ``followlinks=False`` does not suppress them — Windows tags a
+        junction a mount point rather than a symlink — so the walk descended
+        the link, claimed the target as visited, and then reported every file
+        under ``linked/...`` instead of ``svc/...``: not a missing subtree but
+        a wrongly-named one, which is worse for a persisted path column.
+        """
+        _seed_tree(tmp_path)
+        _junction(tmp_path / "linked", tmp_path / "svc")
+
+        dirs, files = _walked(tmp_path)
+        assert dirs == _EXPECTED_DIRS
+        assert files == _EXPECTED_FILES
+
+    def test_an_unlinked_tree_is_untouched(self, tmp_path: Path) -> None:
+        """The fix must be invisible on a tree with no links in it, which is
+        every repo this has ever been run against."""
+        _seed_tree(tmp_path)
+        assert _walked(tmp_path) == (_EXPECTED_DIRS, _EXPECTED_FILES)
+
+
+class TestLinkCyclesStillTerminate:
+    """The guard the fix had to preserve. ``visited_real`` exists because
+    ``os.walk`` cannot detect a junction cycle by inode on Windows; pruning
+    in-tree link targets must not give that up.
+    """
+
+    def test_a_self_referential_link_does_not_recurse(self, tmp_path: Path) -> None:
+        _seed_tree(tmp_path)
+        _symlink(tmp_path / "svc" / "loop", tmp_path / "svc")
+
+        dirs, files = _walked(tmp_path)
+        assert dirs == _EXPECTED_DIRS
+        assert files == _EXPECTED_FILES
+
+    def test_a_junction_to_an_ancestor_does_not_recurse(self, tmp_path: Path) -> None:
+        _seed_tree(tmp_path)
+        _junction(tmp_path / "svc" / "api" / "up", tmp_path)
+
+        dirs, files = _walked(tmp_path)
+        assert dirs == _EXPECTED_DIRS
+        assert files == _EXPECTED_FILES
+
+    def test_a_junction_to_an_external_tree_is_still_walked(self, tmp_path: Path) -> None:
+        """Only *in-tree* targets are pruned. A link out of the tree is a
+        genuine external mount the caller asked to include, and it is also the
+        case that still needs its realpath recorded — ``os.walk`` will descend
+        a junction into it, so a cycle inside that tree has to be caught.
+        """
+        outside = tmp_path.parent / f"{tmp_path.name}_external"
+        (outside / "pkg").mkdir(parents=True)
+        (outside / "pkg" / "ext.py").write_text("x", encoding="utf-8")
+        root = tmp_path / "repo"
+        root.mkdir()
+        _seed_tree(root)
+        _junction(root / "vendored", outside)
+
+        _dirs, files = _walked(root)
+        assert "vendored/pkg/ext.py" in files
+        assert set(_EXPECTED_FILES) <= set(files)
 
 
 # ---------------------------------------------------------------------------
