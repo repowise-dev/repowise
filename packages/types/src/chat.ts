@@ -125,7 +125,7 @@ export interface ContextArtifact {
   data: ContextArtifactData;
 }
 
-/** `get_risk` — modification risk report per target. */
+/** `get_risk` / `get_change_risk` — modification or commit-range risk report. */
 export interface RiskReportArtifactData {
   targets: Array<{
     file_path: string;
@@ -157,7 +157,11 @@ export interface SearchResultsArtifact {
   data: SearchResultsArtifactData;
 }
 
-/** `get_dependency_path` — short import-graph path. */
+/**
+ * Legacy wire shape from the removed chat tool `get_dependency_path`.
+ * Retained so stored conversations / SSE history still narrow; not emitted
+ * by the current 7-tool chat registry (MCP still offers it as opt-in).
+ */
 export interface GraphPathArtifactData {
   path: string[];
   distance: number;
@@ -213,7 +217,10 @@ export interface DeadCodeArtifact {
   data: DeadCodeArtifactData;
 }
 
-/** `get_architecture_diagram` — Mermaid flowchart. */
+/**
+ * Legacy wire shape from the removed chat tool `get_architecture_diagram`.
+ * Retained for historical SSE payloads; current chat does not emit `diagram`.
+ */
 export interface DiagramArtifactData {
   diagram_type: string;
   mermaid_syntax: string;
