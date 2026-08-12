@@ -84,12 +84,22 @@ def is_damaged(config_path: Path) -> bool:
 
     False for a file that is absent or that cannot be opened at all: neither is
     damage we can claim to have seen.
+
+    A file that is not UTF-8 counts as damage. It is present, it was opened,
+    and it is not readable JSON, which is exactly what this answers. It used to
+    escape instead: ``UnicodeDecodeError`` is a ``ValueError``, so neither
+    handler below caught it, and both callers run this inside ``doctor()``. The
+    result was not a crash -- ``repo_checks`` catches a raising ``doctor()`` --
+    but something quieter and worse: a cp1252 ``settings.json`` or
+    ``hooks.json``, an ordinary thing to meet on Windows, rendered as a
+    **passing** "Could not check" row, so the one file state this check exists
+    to report was the one state it could not report.
     """
     if not config_path.exists():
         return False
     try:
         json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return True
     except OSError:
         return False

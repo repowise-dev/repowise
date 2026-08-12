@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..formats.server_entry import RemoteServerEntryError
 from ..types import (
     Capability,
     DoctorReport,
@@ -87,6 +88,7 @@ def write_mcp_config(repo_path: Path) -> FileWrite:
         merge_server_entries,
         write_json_config,
     )
+    from ..formats.server_entry import is_remote_entry
 
     config_path = mcp_config_path(repo_path)
     new_entry = {"repowise": server_entry(repo_path)}
@@ -97,6 +99,14 @@ def write_mcp_config(repo_path: Path) -> FileWrite:
         if not isinstance(servers, dict):
             raise ValueError("mcp.json 'servers' must be a JSON object")
         servers = dict(servers)
+        stored = servers.get("repowise")
+        if isinstance(stored, dict) and is_remote_entry(stored, local_type="stdio"):
+            # VS Code documents ``"type": "http"`` in this file, so a hand-wired
+            # remote repowise server is a shape that really turns up. See
+            # ``formats.server_entry``: the merge would force ``type`` back to
+            # ``stdio`` and keep the ``url`` beside it, leaving an entry that is
+            # neither.
+            raise RemoteServerEntryError("mcp.json 'repowise' is wired to a remote server")
         merge_server_entries(servers, new_entry)
         existing["servers"] = servers
         merged = existing
@@ -257,6 +267,17 @@ class VSCodeTarget:
         try:
             written = write_mcp_config(repo_path)
             result.record(written.path, written.action)
+        except RemoteServerEntryError:
+            # Before the broader handler below, which it would otherwise reach
+            # as a ``ValueError`` and be described as an unreadable file. It is
+            # a perfectly readable file holding a deliberate choice.
+            result.record(mcp_config_path(repo_path), FileAction.KEPT)
+            result.note(
+                '.vscode/mcp.json left unchanged: its "repowise" entry names a remote '
+                "server, and converting it in place would leave an entry that is "
+                "neither. Run 'repowise agents remove --target=vscode' first if you "
+                "want the local server instead."
+            )
         except (ValueError, OSError):
             result.record(mcp_config_path(repo_path), FileAction.KEPT)
             result.note(
