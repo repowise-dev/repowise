@@ -47,14 +47,16 @@ def main() -> None:
         pass
 
     # Best-effort self-heal for users whose only repowise invocation is
-    # through this hook. Idempotent: rewrites settings.json only when a
-    # legacy `repowise augment` entry is still present, then becomes a
-    # no-op on every subsequent fire. Wrapped so a write failure never
-    # propagates back to the agent.
+    # through this hook. Wrapped so a write failure never propagates back to
+    # the agent.
+    #
+    # This is the fire that runs once per matched tool call, so it is where the
+    # version stamp pays for itself: it used to parse ~/.claude/settings.json
+    # every time to discover, almost always, that there was nothing to do.
     try:
-        from repowise.cli.editor_integrations.claude_config import migrate_claude_code_hooks
+        from repowise.cli.self_heal import run_editor_migrations
 
-        migrate_claude_code_hooks()
+        run_editor_migrations()
     except BaseException:
         pass
 

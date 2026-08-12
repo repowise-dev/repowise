@@ -85,6 +85,46 @@ def test_the_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
     assert heavy == "", f"the hook self-heal pulled in:\n{heavy}"
 
 
+def test_the_stamped_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
+    """The version stamp sits in front of the migrations, so it is hot-path too.
+
+    It gates on ``is_editor_setup_disabled``, which lives in ``editor_setup`` —
+    a module that imports ``agent_targets.types``. That is stdlib-only today and
+    the whole seam depends on it staying that way; this is what notices when it
+    stops being.
+    """
+    heavy = _heavy_after(
+        "from repowise.cli.self_heal import run_editor_migrations; run_editor_migrations();",
+        env=_fake_home(tmp_path),
+    )
+    assert heavy == "", f"the stamped self-heal pulled in:\n{heavy}"
+
+
+def test_the_stamp_spares_the_settings_read_on_the_common_path(tmp_path: Path) -> None:
+    """The point of the stamp, measured as file access rather than asserted.
+
+    Before it, every hook fire opened and parsed ``~/.claude/settings.json`` to
+    discover there was nothing to do — once per matched tool call. The second
+    run must not open it at all.
+    """
+    env = _fake_home(tmp_path)
+    probe = (
+        "import json, pathlib; "
+        "from repowise.cli.self_heal import run_editor_migrations, stamp_path; "
+        "run_editor_migrations(); "
+        "opened = []; "
+        "import builtins; real = builtins.open; "
+        "builtins.open = lambda f, *a, **k: (opened.append(str(f)), real(f, *a, **k))[1]; "
+        "run_editor_migrations(); "
+        "builtins.open = real; "
+        "print('\\n'.join(p for p in opened if 'settings.json' in p or 'hooks.json' in p));"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, env=env
+    )
+    assert out.stdout.strip() == "", f"the stamped run still read:\n{out.stdout}"
+
+
 def _read_payload_probe(repo: Path, rel: str) -> str:
     """Source that fires the PostToolUse Read hook against a real file.
 
