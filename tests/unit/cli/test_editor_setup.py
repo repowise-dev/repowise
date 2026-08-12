@@ -282,6 +282,7 @@ def test_the_rewrite_hook_answer_decides_every_replacing_surface(
     """
     from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
 
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setattr(
         "repowise.cli.agent_adapters.claude_code.ClaudeCodeAdapter.install_rewrite_hook",
