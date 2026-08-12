@@ -546,7 +546,10 @@ per-dimension scores, and the score breakdown. Each finding carries a `dimension
 
 **Lead with `directive`.** Dashboard mode opens with the single file to fix
 first, its dominant finding, `recovers_points` / `share_of_repo_gap_pct` (what
-fixing it buys the headline), and `then`, the next two by leverage. Every other
+fixing it buys the headline; the share is bounded by 100% and sums to 100%
+across `high_leverage_files` — the gross deficit of below-target files is the
+denominator, not the net gap, so a single file cannot read as closing more than
+the whole remaining gap), and `then`, the next two by leverage. Every other
 block ranks and describes; this one recommends. Same role as `get_risk`'s
 `directive`. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
 
@@ -611,8 +614,10 @@ make that actionable rather than a mystery:
   `gap_analysis.weighted_gap_points` share one unit — *score-points x NLOC* —
   which compares against itself and nothing else. Every `high_leverage_files`
   row and the `directive` also carry `share_of_repo_gap_pct`, the same quantity
-  with a denominator; that plus `gap_analysis.files_to_reach_target` is what
-  answers "is this worth doing".
+  over the gross deficit of all below-target files
+  (`gap_analysis.weighted_gross_gap_points`), so the shares are bounded by 100%
+  and sum to 100% by construction; that plus
+  `gap_analysis.files_to_reach_target` is what answers "is this worth doing".
 - `kpis.non_code_files` and `kpis.average_health_code_only` say how much of the
   headline is markdown/JSON/YAML. No biomarker walks those files, so they score
   a mechanical 10.0 meaning "nothing looked at this" — on this repo, 233 of
