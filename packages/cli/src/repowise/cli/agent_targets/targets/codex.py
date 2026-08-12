@@ -578,6 +578,31 @@ class CodexTarget:
         if repo_path is None:
             raise ValueError("project-scope uninstall needs a repo_path")
         instructions = instructions_path(repo_path)
+
+        from ..formats.marker_block import BlockState, inspect
+        from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+        from ..registry import other_managers_of
+
+        # ``AGENTS.md`` is a host-neutral convention, not this target's private
+        # file: OpenCode reads the same path in the same repo and manages the
+        # same marker block. Stripping it while that agent is still wired leaves
+        # it configured and silently without its instructions, so the block
+        # stays and the caller is told which agent is still reading it.
+        #
+        # This guard arrived with OpenCode and belongs here just as much. A
+        # shared-ownership fix applied only to the agent added most recently
+        # leaves the identical bug in its sibling, which is how this class of
+        # defect has kept surviving a review round on this track.
+        owners = other_managers_of(instructions, exclude=ID, scope=scope, repo_path=repo_path)
+        block_state = inspect(instructions, DISTILL_MARKER_START, DISTILL_MARKER_END).state
+        if owners and block_state is BlockState.PRESENT:
+            result.record(instructions, FileAction.KEPT)
+            result.note(
+                f"{instructions} kept: {' and '.join(owners)} still reads the same "
+                "managed block. Remove that agent too if you want the block gone."
+            )
+            return result
+
         if remove_agents_md_distill_section(repo_path):
             result.record(instructions, FileAction.REMOVED)
             return result
@@ -586,10 +611,9 @@ class CodexTarget:
         # them all as not-found says "there was nothing of ours here" about a
         # file we deliberately declined to touch. Same distinction the Cursor
         # rules file draws, and it matters more here: AGENTS.md is a file users
-        # write in, so "left alone" is the common answer.
-        from ..formats.marker_block import BlockState, inspect
-        from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
-
+        # write in, so "left alone" is the common answer. Re-inspected rather
+        # than reusing ``block_state``: the removal above runs in between and
+        # the whole question here is what the file looks like after it.
         state = inspect(instructions, DISTILL_MARKER_START, DISTILL_MARKER_END).state
         result.record(
             instructions,

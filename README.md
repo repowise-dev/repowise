@@ -368,7 +368,7 @@ Set Up This Repository**. Guide: **[docs/agent/VSCODE.md →](docs/agent/VSCODE.
 
 ## Supported agents
 
-**Four agents wired end to end · two at the Full tier · every other MCP host one
+**Five agents wired end to end · two at the Full tier · every other MCP host one
 paste away.**
 
 <p>
@@ -380,6 +380,7 @@ paste away.**
   <strong>Good tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/VS_Code-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white" alt="VS Code" />
   <img src="https://img.shields.io/badge/Cursor-000000?style=flat-square&logo=cursor&logoColor=white" alt="Cursor" />
+  <img src="https://img.shields.io/badge/OpenCode-000000?style=flat-square&logo=opencode&logoColor=white" alt="OpenCode" />
 </p>
 
 **Full** is every surface repowise has: MCP tools, skills, slash commands, a managed

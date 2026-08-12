@@ -136,6 +136,26 @@ Cursor does not read `.vscode/mcp.json`, so this is separate from the VS Code
 setup below. See [Agent integrations](../agent/INTEGRATIONS.md).
 </details>
 
+<details><summary><b>OpenCode</b></summary>
+
+```bash
+repowise agents add --target=opencode                  # this repo and this machine
+repowise agents add --target=opencode --scope=project  # this repo only
+```
+
+Writes `opencode.jsonc` (or an existing `opencode.json`) and a managed section in
+`AGENTS.md`, in both scopes by default. The repo-local pair sits at the repo root;
+the per-machine pair goes to `$XDG_CONFIG_HOME/opencode`, falling back to
+`~/.config/opencode`. That path is the same on Windows: OpenCode does not read
+`%APPDATA%`. The repo-local entry names its repo outright, while the per-machine one
+resolves whichever repo OpenCode was launched in.
+
+OpenCode accepts comments in its config. Repowise does not rewrite a file it cannot
+parse as strict JSON, so if yours has comments it prints the entry to paste instead:
+`repowise agents print-config opencode`. See
+[Agent integrations](../agent/INTEGRATIONS.md).
+</details>
+
 <details><summary><b>Cline, Windsurf, and other MCP clients</b></summary>
 
 Print the server entry and paste it into whatever config the host reads:

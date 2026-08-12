@@ -47,7 +47,7 @@ def test_registry_exposes_the_shipped_targets() -> None:
     Order is load-bearing: it is the order agents appear in prompts, in
     ``--target=all`` and in listings, and new ids append rather than sort in.
     """
-    assert ALL_IDS == ["claude-code", "codex", "vscode", "cursor"]
+    assert ALL_IDS == ["claude-code", "codex", "vscode", "cursor", "opencode"]
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -124,6 +124,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("codex") is Tier.FULL
     assert tier_of("vscode") is Tier.GOOD
     assert tier_of("cursor") is Tier.GOOD
+    assert tier_of("opencode") is Tier.GOOD
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
@@ -741,6 +742,419 @@ def test_plugin_detection_degrades_to_absent_on_a_broken_manifest(
     monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
 
     assert target_mod._plugin_installs() == []
+
+
+# ---------------------------------------------------------------------------
+# OpenCode
+# ---------------------------------------------------------------------------
+
+
+def _opencode():
+    from repowise.cli.agent_targets.targets import opencode as opencode_target
+
+    return opencode_target
+
+
+def test_opencode_resolves_its_user_dir_through_xdg_on_every_platform(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """XDG on Windows too, and a blank value is not a value.
+
+    The absence of a Windows branch is the point: ``%APPDATA%/opencode`` is
+    where a platform-conventional implementation would land, and OpenCode has
+    never read it, so an entry written there is invisible rather than broken.
+
+    The blank guard is the other half. An exported-but-empty ``XDG_CONFIG_HOME``
+    is ordinary in trimmed CI images, and a plain truthiness test on it resolves
+    the config directory to ``/opencode`` at the filesystem root.
+    """
+    opencode = _opencode()
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert opencode.user_config_dir() == tmp_path / "xdg" / "opencode"
+
+    for blank in ("", "   ", "\t"):
+        monkeypatch.setenv("XDG_CONFIG_HOME", blank)
+        assert opencode.user_config_dir() == Path.home() / ".config" / "opencode"
+
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert opencode.user_config_dir() == Path.home() / ".config" / "opencode"
+
+    # Not %APPDATA%, whatever the platform and whatever APPDATA says.
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    assert (tmp_path / "roaming") not in opencode.user_config_dir().parents
+
+
+def test_opencode_writes_opencodes_config_shape_not_its_neighbours(tmp_path: Path) -> None:
+    """``mcp``, ``type: local``, and one combined ``command`` array.
+
+    Every other JSON host repowise writes for keys on ``mcpServers`` and splits
+    the invocation into ``command`` plus ``args``. This one does neither, which
+    makes it the shape most likely to be quietly made consistent with its
+    neighbours, so all three halves are pinned.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    written = json.loads(opencode.TARGET.print_config(Scope.PROJECT, repo_path=repo))
+
+    assert set(written) == {"mcp"}
+    entry = written["mcp"]["repowise"]
+    assert entry["type"] == "local"
+    assert isinstance(entry["command"], list)
+    assert "args" not in entry
+    # Binary first, then its arguments, in one array.
+    assert entry["command"][0] == "repowise"
+    assert entry["command"][1] == "mcp"
+    assert str(repo.resolve()).replace("\\", "/") in entry["command"]
+
+
+def test_opencode_user_scope_names_no_repo(tmp_path: Path) -> None:
+    """One global entry serves every workspace, so it cannot name one repo.
+
+    The user entry pins the absolute binary of the install that wrote it, so a
+    PATH shadow cannot hijack it, and passes no repo path so the server resolves
+    whichever repo it was launched in. The project entry does the opposite on
+    both counts, and swapping either would be silent.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    user = opencode.server_entry(Scope.USER)
+    project = opencode.server_entry(Scope.PROJECT, repo)
+
+    assert str(repo.resolve()).replace("\\", "/") not in user["command"]
+    assert str(repo.resolve()).replace("\\", "/") in project["command"]
+    # Repo-shared file keeps the bare command; the per-user one pins its install.
+    assert project["command"][0] == "repowise"
+
+
+def test_opencode_round_trips_to_nothing(tmp_path: Path) -> None:
+    """Install then uninstall leaves no file and no wrapper key behind.
+
+    Including the ``$schema`` this target seeds into a file it created: a
+    leftover ``{"$schema": ...}`` is a file the user never asked for and still
+    reads as repowise having been here.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    config = opencode.config_path(Scope.PROJECT, repo)
+    assert config.name == "opencode.jsonc"
+    assert json.loads(config.read_text(encoding="utf-8"))["$schema"]
+
+    opencode.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert not config.exists()
+    assert not (repo / "opencode.json").exists()
+    assert not (repo / "AGENTS.md").exists()
+
+
+def test_opencode_reinstall_reports_unchanged(tmp_path: Path) -> None:
+    """``agents refresh`` on a settled repo reports no movement on either file."""
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    first = opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert first.changed
+
+    second = opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert not second.changed
+    assert {f.action for f in second.files} == {FileAction.UNCHANGED}
+
+
+def test_opencode_prefers_an_existing_json_over_creating_a_jsonc(tmp_path: Path) -> None:
+    """Writing the file the host does not read is the failure this ordering avoids.
+
+    ``.jsonc`` wins when it exists, ``.json`` when only it does, and a brand-new
+    file is ``.jsonc`` to match what OpenCode itself creates. What must never
+    happen is a second config file appearing beside the one already there.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "opencode.json").write_text("{}\n", encoding="utf-8")
+
+    assert opencode.config_path(Scope.PROJECT, repo).name == "opencode.json"
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert not (repo / "opencode.jsonc").exists()
+    assert "repowise" in json.loads((repo / "opencode.json").read_text(encoding="utf-8"))["mcp"]
+
+    (repo / "opencode.jsonc").write_text("{}\n", encoding="utf-8")
+    assert opencode.config_path(Scope.PROJECT, repo).name == "opencode.jsonc"
+
+
+def test_opencode_declines_a_commented_config_rather_than_stripping_it(tmp_path: Path) -> None:
+    """A JSONC file is legal here, and repowise ships no parser that preserves it.
+
+    Declining leaves a working config untouched and prints what to add.
+    Re-serialising it through a strict parser with comments stripped would
+    delete every one of them, which is unrecoverable and silent.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "opencode.jsonc"
+    commented = '{\n  // my provider settings\n  "mcp": {}\n}\n'
+    config.write_text(commented, encoding="utf-8")
+
+    result = opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert config.read_text(encoding="utf-8") == commented
+    assert any(f.action is FileAction.KEPT for f in result.files)
+    assert any("print-config opencode" in note for note in result.notes)
+
+
+def test_opencode_keeps_a_sibling_server_and_a_user_environment_block(tmp_path: Path) -> None:
+    """The merge is per server, and per key inside ours."""
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "opencode.jsonc"
+    config.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "other": {"type": "local", "command": ["other-server"]},
+                    "repowise": {
+                        "type": "local",
+                        "command": ["stale"],
+                        "environment": {"RUST_LOG": "debug"},
+                    },
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    servers = json.loads(config.read_text(encoding="utf-8"))["mcp"]
+    assert servers["other"] == {"type": "local", "command": ["other-server"]}
+    assert servers["repowise"]["environment"] == {"RUST_LOG": "debug"}
+    assert servers["repowise"]["command"] != ["stale"]
+
+
+def test_opencode_does_not_re_enable_a_server_the_user_disabled(tmp_path: Path) -> None:
+    """``enabled`` is a switch the user flips, not a field repowise computes.
+
+    ``false`` is the documented way to park a server without deleting it, and
+    ``agents refresh`` and ``doctor --repair`` both call ``install``. Forcing it
+    back to ``true`` there would silently undo a deliberate choice, which is the
+    same class of bug as overwriting a user's ``env`` block.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "opencode.jsonc"
+    config.write_text(
+        json.dumps({"mcp": {"repowise": {"type": "local", "command": ["x"], "enabled": False}}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcp"]["repowise"]
+    assert entry["enabled"] is False
+    # The rest of the entry is still repointed.
+    assert entry["command"] != ["x"]
+
+    # A fresh entry gets it seeded on, so a first install is usable.
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    opencode.TARGET.install(Scope.PROJECT, repo_path=fresh)
+    written = json.loads((fresh / "opencode.jsonc").read_text(encoding="utf-8"))
+    assert written["mcp"]["repowise"]["enabled"] is True
+
+
+def test_opencode_keeps_a_config_holding_more_than_our_own_schema(tmp_path: Path) -> None:
+    """The file is deleted only when nothing of the user's is in it."""
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "opencode.jsonc"
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    data = json.loads(config.read_text(encoding="utf-8"))
+    data["theme"] = "tokyonight"
+    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    opencode.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert config.exists()
+    remaining = json.loads(config.read_text(encoding="utf-8"))
+    assert remaining["theme"] == "tokyonight"
+    assert "mcp" not in remaining
+
+
+def test_opencode_detect_survives_a_config_that_is_not_utf8(tmp_path: Path) -> None:
+    """``detect`` is contracted never to raise, and cp1252 files are ordinary.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so a handler
+    naming only ``OSError`` and ``JSONDecodeError`` lets it escape a probe that
+    runs on paths which do not catch.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "opencode.jsonc").write_bytes(b'{"mcp": {"repowise": {}}} \xff\xfe caf\xe9')
+
+    assert opencode.TARGET.detect(repo) == []
+
+
+def test_opencode_install_survives_a_config_path_that_is_a_directory(tmp_path: Path) -> None:
+    """Nothing wraps ``install``, so an escape aborts a multi-agent run.
+
+    ``agents add``, ``agents refresh`` and ``doctor --repair`` all call it bare,
+    and a traceback here replaces the summary naming the agents already written.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "opencode.jsonc").mkdir()
+
+    result = opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert any(f.action is FileAction.KEPT for f in result.files)
+    assert result.notes
+
+
+def test_opencode_is_present_checks_each_limb_on_its_own(tmp_path: Path, monkeypatch) -> None:
+    """Neither limb may be carried by the other, or the test proves nothing.
+
+    A single assertion over the real machine passes for whichever reason
+    happens to hold there, which is how a probe with a dead limb ships green.
+    """
+    opencode = _opencode()
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert opencode.TARGET.is_present() is False
+
+    # Limb one: the config directory, with nothing on PATH.
+    (tmp_path / "xdg" / "opencode").mkdir(parents=True)
+    assert opencode.TARGET.is_present() is True
+
+    # Limb two: the binary, with no config directory.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    assert opencode.TARGET.is_present() is False
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/opencode" if name == "opencode" else None)
+    assert opencode.TARGET.is_present() is True
+
+
+def test_opencode_does_not_read_its_own_output_as_evidence_of_the_agent(tmp_path: Path, monkeypatch) -> None:
+    """A repo-local limb would make our own install the reason we keep offering.
+
+    OpenCode keeps nothing repo-local of its own: the project config is a bare
+    ``opencode.json`` at the root, which this target may well have written
+    itself. Cursor and VS Code can read a repo-local directory as evidence
+    because those directories are the editor's, not ours.
+    """
+    opencode = _opencode()
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert opencode.TARGET.is_present(repo) is False
+
+
+# ---------------------------------------------------------------------------
+# AGENTS.md is shared between targets
+# ---------------------------------------------------------------------------
+
+
+def test_agents_md_survives_removing_one_of_two_agents_that_read_it(tmp_path: Path) -> None:
+    """The shared-file case, in both directions.
+
+    ``AGENTS.md`` is a host-neutral convention rather than one agent's private
+    config: Codex and OpenCode both manage the same path in the same repo, and
+    both are right to. Install is safe because the block is marker-delimited and
+    idempotent. Uninstall is not: removing either agent stripped the block out
+    from under the other, which stayed wired and silently lost its instructions.
+
+    Asserted for Codex as well as OpenCode on purpose. A guard added only to the
+    agent that arrived most recently leaves the identical bug in its sibling.
+    """
+    from repowise.cli.agent_targets.instructions import (
+        DISTILL_MARKER_START,
+    )
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    agents_md = repo / "AGENTS.md"
+
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert DISTILL_MARKER_START in agents_md.read_text(encoding="utf-8")
+
+    # Removing OpenCode leaves Codex's block alone, and says why.
+    result = opencode.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+    assert DISTILL_MARKER_START in agents_md.read_text(encoding="utf-8")
+    assert any(f.path == agents_md and f.action is FileAction.KEPT for f in result.files)
+    assert any("Codex" in note for note in result.notes)
+
+    # And the mirror: with only Codex left, removing Codex does strip it. The
+    # file held nothing but our block, so it goes with it.
+    codex_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+    assert not agents_md.exists()
+
+
+def test_agents_md_is_kept_by_codex_while_opencode_still_reads_it(tmp_path: Path) -> None:
+    """The same guard, driven from the other side."""
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    agents_md = repo / "AGENTS.md"
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    result = codex_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert DISTILL_MARKER_START in agents_md.read_text(encoding="utf-8")
+    assert any(f.path == agents_md and f.action is FileAction.KEPT for f in result.files)
+    assert any("OpenCode" in note for note in result.notes)
+
+
+def test_a_target_that_is_not_wired_does_not_hold_the_shared_file(tmp_path: Path) -> None:
+    """Only *wired* agents count, or nothing could ever be removed.
+
+    Every descriptor claims paths it has never written, so ``describe_paths``
+    alone would make ``AGENTS.md`` permanently unremovable by anyone.
+    """
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert DISTILL_MARKER_START in (repo / "AGENTS.md").read_text(encoding="utf-8")
+
+    # Codex knows the path but has never been wired here.
+    opencode.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert not (repo / "AGENTS.md").exists()
 
 
 # ---------------------------------------------------------------------------
