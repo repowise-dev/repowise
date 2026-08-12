@@ -2523,3 +2523,58 @@ def test_yaml_merge_removes_the_parent_once_it_is_empty() -> None:
 
     assert yaml_merge.load_mapping(merged) == {"model": "gpt"}
     assert "mcp_servers" not in merged
+
+
+def test_yaml_merge_keeps_a_comment_on_the_line_it_replaces() -> None:
+    """Replacing a child replaces its whole first line, comment included.
+
+    Recovering it is conservative: a ``#`` inside a quoted scalar is not a
+    comment, and moving a fragment of the user's data into one is a worse
+    outcome than losing a comment in a rare shape.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    kept = yaml_merge.set_child(
+        "platform_toolsets:\n  cli: [hermes-cli]   # deliberately an allowlist\n",
+        "platform_toolsets",
+        "cli",
+        ["hermes-cli", "repowise"],
+    )
+    assert "# deliberately an allowlist" in kept
+    assert yaml_merge.load_mapping(kept) == {
+        "platform_toolsets": {"cli": ["hermes-cli", "repowise"]}
+    }
+
+    quoted = yaml_merge.set_child(
+        'platform_toolsets:\n  cli: ["a#b"]\n', "platform_toolsets", "cli", ["x"]
+    )
+    assert "#" not in quoted
+    assert yaml_merge.load_mapping(quoted) == {"platform_toolsets": {"cli": ["x"]}}
+
+
+def test_yaml_merge_keeps_an_inline_list_inline_and_still_findable() -> None:
+    """Editing one item of a user's inline list gives back an inline list.
+
+    The second assertion is the one that matters, and it is the defect this
+    pins: rendering the *pair* in flow style produces ``{cli: [a, b]}``, which
+    is valid YAML and the right document, so nothing downstream complains --
+    but the key is then inside a flow mapping where the line-based search
+    cannot find it, and the next edit appends a second copy rather than
+    replacing it. Uninstall is where that surfaces, as a removal that silently
+    does nothing.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    text = "platform_toolsets:\n  cli: [hermes-cli, othersrv]\n"
+    added = yaml_merge.set_child(
+        text, "platform_toolsets", "cli", ["hermes-cli", "othersrv", "repowise"]
+    )
+    assert "  cli: [hermes-cli, othersrv, repowise]\n" in added
+    assert "{cli:" not in added
+
+    # The round trip has to land back on the exact bytes, which only holds if
+    # the edited line is still reachable.
+    restored = yaml_merge.set_child(
+        added, "platform_toolsets", "cli", ["hermes-cli", "othersrv"]
+    )
+    assert restored == text

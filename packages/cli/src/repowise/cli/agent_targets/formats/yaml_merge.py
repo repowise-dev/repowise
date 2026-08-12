@@ -102,7 +102,7 @@ def load_mapping(text: str) -> dict:
     return data
 
 
-def render_child(key: str, value: Any, indent: int) -> list[str]:
+def render_child(key: str, value: Any, indent: int, *, flow: bool = False) -> list[str]:
     """Render ``key: value`` as block YAML, indented by *indent* spaces.
 
     The dumper does the serializing rather than a hand-written encoder. That is
@@ -118,8 +118,32 @@ def render_child(key: str, value: Any, indent: int) -> list[str]:
     repo path containing a space would be wrapped across two lines. It still
     parses back to the same string, but it is unreadable in a config file and
     it makes the rendering depend on how long the user's path happens to be.
+
+    *flow* renders ``key: [a, b]`` instead of a block sequence. Callers pass
+    what the key was already written as, so editing one item of a user's inline
+    list gives back an inline list rather than silently restyling the line.
+    Block is the default because it is what the dumper and these hosts emit.
+
+    The flow branch dumps the **value** alone rather than passing
+    ``default_flow_style=True`` for the whole pair. That flag applies to the
+    enclosing mapping too, so the pair comes back as ``{key: [a, b]}`` -- still
+    valid YAML and still the right document, which is why nothing downstream
+    catches it, but the key is then inside a flow mapping where no line-based
+    search will find it again. The next edit appends a second copy instead of
+    replacing it.
     """
     import yaml
+
+    pad = " " * indent
+    if flow and isinstance(value, (list, dict)):
+        inline = yaml.safe_dump(
+            value,
+            default_flow_style=True,
+            sort_keys=False,
+            allow_unicode=True,
+            width=1_000_000,
+        ).strip()
+        return [f"{pad}{key}: {inline}"]
 
     dumped = yaml.safe_dump(
         {key: value},
@@ -128,7 +152,6 @@ def render_child(key: str, value: Any, indent: int) -> list[str]:
         allow_unicode=True,
         width=1_000_000,
     )
-    pad = " " * indent
     return [pad + line if line else line for line in dumped.rstrip("\n").split("\n")]
 
 
@@ -214,6 +237,40 @@ def _child_end(lines: list[str], child_start: int, end: int, indent: int) -> int
     return cursor
 
 
+def _trailing_comment(line: str) -> str:
+    """A comment sitting on the key's own line, or ``""``.
+
+    Replacing a child replaces the whole of its first line, and that line can
+    carry a comment describing the value being replaced -- ``cli: [a, b]  # an
+    allowlist`` is exactly the shape this module meets. Losing it would be the
+    one place a module built to preserve comments silently ate one.
+
+    Conservative on purpose: the comment is only recovered when nothing after
+    the colon is quoted. A ``#`` inside a quoted scalar is not a comment, and
+    telling the two apart properly means tokenising the line. Skipping the
+    recovery there costs a comment in a rare shape; getting it wrong would move
+    a fragment of the user's data into a comment. The wrong direction is not
+    worth the coverage.
+    """
+    _, separator, rest = line.partition(":")
+    if not separator or '"' in rest or "'" in rest:
+        return ""
+    marker = rest.find("#")
+    return rest[marker:].rstrip() if marker != -1 else ""
+
+
+def _is_flow_value(line: str) -> bool:
+    """Whether the key on *line* already holds an inline ``[...]`` or ``{...}``.
+
+    Editing one item of a user's inline list should give back an inline list.
+    Re-rendering it as a block sequence is a correct document and a gratuitous
+    diff, and on uninstall it would mean the value came back while the
+    formatting did not.
+    """
+    _, separator, rest = line.partition(":")
+    return bool(separator) and rest.lstrip().startswith(("[", "{"))
+
+
 def _split(text: str) -> list[str]:
     return text.split("\n")
 
@@ -243,12 +300,19 @@ def set_child(text: str, parent: str, child: str, value: Any) -> str:
 
     start, end = found
     indent = _child_indent(lines, start, end)
-    rendered = render_child(child, value, indent)
 
     existing = _find_child(lines, start, end, child, indent)
     if existing is not None:
         child_start, child_end = existing
+        rendered = render_child(
+            child, value, indent, flow=_is_flow_value(lines[child_start])
+        )
+        comment = _trailing_comment(lines[child_start])
+        if comment:
+            rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
         return _join(lines[:child_start] + rendered + lines[child_end:])
+
+    rendered = render_child(child, value, indent)
 
     # Append inside the parent's block, above any blank or comment lines that
     # trail it, so a comment introducing the next top-level section keeps its
