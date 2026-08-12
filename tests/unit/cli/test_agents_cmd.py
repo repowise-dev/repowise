@@ -76,6 +76,7 @@ def test_bare_agents_lists_every_registered_target_as_json(repo: Path) -> None:
         "vscode",
         "cursor",
         "opencode",
+        "hermes",
     ]
     for row in payload["agents"]:
         # The keys the table renders, so a dropped one is a broken table.
@@ -355,6 +356,7 @@ def test_doctor_reports_one_row_per_agent_from_its_own_descriptor(repo: Path) ->
         "Agent: vscode",
         "Agent: cursor",
         "Agent: opencode",
+        "Agent: hermes",
     ]
     # Nothing is wired on a clean machine, and an agent you do not use is not a
     # problem with your setup.

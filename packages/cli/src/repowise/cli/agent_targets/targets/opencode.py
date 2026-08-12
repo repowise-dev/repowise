@@ -398,19 +398,22 @@ def _remove_instructions(
     **The shared-file case, and it is the whole reason this function is not two
     lines.** ``AGENTS.md`` is a host-neutral convention, not this target's
     private config: Codex has managed the same path in the same repo since long
-    before OpenCode was wired, and both descriptors are right to claim it.
+    before OpenCode was wired, Hermes reads it too, and every one of those
+    descriptors is right to claim it.
 
     Install is unaffected -- the block is marker-delimited and idempotent, so
-    whichever agent writes second reports ``unchanged``. Uninstall is where the
-    sharing bites. Removing OpenCode from a repo that still has Codex wired
-    would strip the block out from under Codex, which stays configured, stops
-    getting its instructions, and says nothing about it. So the file is left
-    alone while another wired agent is still reading it, and the note names
+    whichever agent writes last reports ``unchanged``. Uninstall is where the
+    sharing bites. Removing OpenCode from a repo that still has another of them
+    wired would strip the block out from under an agent that stays configured,
+    stops getting its instructions, and says nothing about it. So the file is
+    left alone while another wired agent is still reading it, and the note names
     which one, because a silent ``kept`` is the state that reads as a bug.
 
-    The same guard is in ``codex.py``. It has to be: a fix that only runs on the
-    agent added most recently leaves the identical bug sitting in its sibling,
-    which is exactly how it went unnoticed for four phases.
+    The same guard is in ``codex.py`` and ``hermes.py``, and all three ask the
+    registry rather than naming each other, so the next agent to adopt this file
+    gets it for free. A fix that only runs on the agent added most recently
+    leaves the identical bug sitting in its siblings, which is exactly how it
+    went unnoticed for four phases.
 
     Returns the owners that caused a ``KEPT``, empty when something else did.
     The caller needs that distinction rather than re-deriving it: ``KEPT`` also

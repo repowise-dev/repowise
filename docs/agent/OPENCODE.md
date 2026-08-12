@@ -34,9 +34,9 @@ Two things worth knowing:
   not rewrite a config it cannot parse as strict JSON. If yours has comments,
   `repowise agents add` leaves it alone and tells you to run
   `repowise agents print-config opencode` and paste the entry yourself.
-- **`AGENTS.md` is shared with Codex.** Both agents read the same file, and both
-  manage the same marker-delimited section of it. Removing one of them leaves the
-  section in place while the other is still wired, and says so.
+- **`AGENTS.md` is shared with Codex and Hermes.** All three agents read the same
+  file, and all three manage the same marker-delimited section of it. Removing one
+  of them leaves the section in place while another is still wired, and says so.
 
 Remove it with `repowise agents remove --target=opencode`, and check it with
 `repowise agents` or `repowise doctor`.

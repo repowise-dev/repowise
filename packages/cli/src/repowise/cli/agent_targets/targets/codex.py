@@ -584,15 +584,18 @@ class CodexTarget:
         from ..registry import other_managers_of
 
         # ``AGENTS.md`` is a host-neutral convention, not this target's private
-        # file: OpenCode reads the same path in the same repo and manages the
-        # same marker block. Stripping it while that agent is still wired leaves
-        # it configured and silently without its instructions, so the block
-        # stays and the caller is told which agent is still reading it.
+        # file: OpenCode and Hermes read the same path in the same repo and
+        # manage the same marker block. Stripping it while any of them is still
+        # wired leaves that agent configured and silently without its
+        # instructions, so the block stays and the caller is told who is still
+        # reading it.
         #
-        # This guard arrived with OpenCode and belongs here just as much. A
-        # shared-ownership fix applied only to the agent added most recently
-        # leaves the identical bug in its sibling, which is how this class of
-        # defect has kept surviving a review round on this track.
+        # The owner lookup is over the registry rather than a named sibling, so
+        # a fourth agent adopting this file inherits the guard. That matters
+        # more than it sounds: a shared-ownership fix applied only to the agent
+        # added most recently leaves the identical bug in its siblings, which is
+        # how this class of defect has kept surviving a review round on this
+        # track.
         owners = other_managers_of(instructions, exclude=ID, scope=scope, repo_path=repo_path)
         block_state = inspect(instructions, DISTILL_MARKER_START, DISTILL_MARKER_END).state
         if owners and block_state is BlockState.PRESENT:

@@ -128,7 +128,7 @@ Note this is the mirror image of Claude Code, where the commands come from the p
 
 `repowise init --codex` generates a managed `AGENTS.md` by default. `repowise update` refreshes it when `editor_files.agents_md` is enabled, or when `--agents` is passed. The Repowise section is bounded by managed markers and user content outside the markers is preserved.
 
-`AGENTS.md` is a host-neutral convention rather than a Codex-only file: [OpenCode](OPENCODE.md) reads the same path and manages the same section. Both writing it is safe, because the section is idempotent. Removing one of the two agents while the other is still wired leaves the section in place and reports that it did, so the agent still using it does not silently lose its instructions.
+`AGENTS.md` is a host-neutral convention rather than a Codex-only file: [OpenCode](OPENCODE.md) and [Hermes](HERMES.md) read the same path and manage the same section. All of them writing it is safe, because the section is idempotent. Removing one agent while another is still wired leaves the section in place and reports that it did, so the agent still using it does not silently lose its instructions.
 
 Controls:
 

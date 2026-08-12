@@ -33,6 +33,7 @@ _TARGET_MODULES: dict[str, str] = {
     "vscode": "repowise.cli.agent_targets.targets.vscode:TARGET",
     "cursor": "repowise.cli.agent_targets.targets.cursor:TARGET",
     "opencode": "repowise.cli.agent_targets.targets.opencode:TARGET",
+    "hermes": "repowise.cli.agent_targets.targets.hermes:TARGET",
 }
 
 #: Resolved when :meth:`resolve_target_flag` is asked for ``auto`` and nothing

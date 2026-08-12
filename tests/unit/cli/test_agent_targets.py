@@ -47,7 +47,7 @@ def test_registry_exposes_the_shipped_targets() -> None:
     Order is load-bearing: it is the order agents appear in prompts, in
     ``--target=all`` and in listings, and new ids append rather than sort in.
     """
-    assert ALL_IDS == ["claude-code", "codex", "vscode", "cursor", "opencode"]
+    assert ALL_IDS == ["claude-code", "codex", "vscode", "cursor", "opencode", "hermes"]
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -125,6 +125,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("vscode") is Tier.GOOD
     assert tier_of("cursor") is Tier.GOOD
     assert tier_of("opencode") is Tier.GOOD
+    assert tier_of("hermes") is Tier.GOOD
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
@@ -1935,3 +1936,590 @@ def test_marker_block_names_the_malformed_states(tmp_path: Path) -> None:
 
     doc.write_text("<!--S-->dangling\n", encoding="utf-8")
     assert marker_block.inspect(doc, "<!--S-->", "<!--E-->").state.value == "orphaned"
+
+
+# ---------------------------------------------------------------------------
+# Hermes
+#
+# The first target whose config is YAML, and the first whose two config keys
+# invite a second write that would be actively harmful. Both properties get
+# their own tests, because neither is visible in a fresh-install golden.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def _hermes():
+    from repowise.cli.agent_targets.targets import hermes
+
+    return hermes
+
+
+def _seed(home: Path, body: str) -> Path:
+    home.mkdir(parents=True, exist_ok=True)
+    config = home / "config.yaml"
+    config.write_bytes(body.encode("utf-8"))
+    return config
+
+
+def test_hermes_home_follows_the_hosts_own_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HERMES_HOME wins, then the platform default, and Windows is not ``~/.hermes``.
+
+    The Windows branch is the one worth pinning. An entry written to
+    ``~/.hermes`` on Windows is not broken, it is invisible, and nothing about
+    the install would report a problem.
+    """
+    hermes = _hermes()
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "explicit"))
+    assert hermes.hermes_home() == tmp_path / "explicit"
+
+    # Blank and whitespace-only are not a prefix: joining them resolves to the
+    # filesystem root, or to a relative path named " ".
+    monkeypatch.setenv("HERMES_HOME", "   ")
+    monkeypatch.setattr(hermes.sys, "platform", "linux")
+    assert hermes.hermes_home() == Path.home() / ".hermes"
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(hermes.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    assert hermes.hermes_home() == tmp_path / "AppData" / "Local" / "hermes"
+    assert hermes.hermes_home() != Path.home() / ".hermes"
+
+
+def test_hermes_writes_the_server_entry_and_is_idempotent(hermes_home: Path) -> None:
+    import yaml
+
+    hermes = _hermes()
+    target = get_target("hermes")
+
+    first = target.install(Scope.USER)
+    assert [written.action for written in first.files] == [FileAction.CREATED]
+
+    config = hermes.config_path()
+    doc = yaml.safe_load(config.read_text(encoding="utf-8"))
+    entry = doc["mcp_servers"]["repowise"]
+    # No repo path: one per-machine registration serves every repo, and the
+    # server resolves the repo it was launched in.
+    assert entry["args"] == ["mcp", "--transport", "stdio"]
+    # Keys Hermes does not document must not be invented, and ``enabled``
+    # defaults to true so writing it only creates something to overwrite.
+    assert set(entry) == {"command", "args"}
+
+    second = target.install(Scope.USER)
+    assert [written.action for written in second.files] == [FileAction.UNCHANGED]
+
+
+def test_hermes_does_not_turn_a_permissive_config_into_an_allowlist(
+    hermes_home: Path,
+) -> None:
+    """The single most consequential thing this target does not do.
+
+    Hermes exposes every enabled MCP server to a platform unless that
+    platform's toolset list already names one, at which point the list becomes
+    an allowlist. Adding ``repowise`` to a list that names none would flip the
+    config onto the allowlist branch with exactly one entry and cut off every
+    other MCP server the user had.
+    """
+    import yaml
+
+    config = _seed(
+        hermes_home,
+        "mcp_servers:\n"
+        "  github:\n"
+        "    command: npx\n"
+        "\n"
+        "platform_toolsets:\n"
+        "  cli: [hermes-cli]\n",
+    )
+    get_target("hermes").install(Scope.USER)
+
+    doc = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert doc["platform_toolsets"]["cli"] == ["hermes-cli"]
+    assert "repowise" in doc["mcp_servers"]
+    assert "github" in doc["mcp_servers"]
+
+
+def test_hermes_joins_a_list_that_is_already_an_mcp_allowlist(hermes_home: Path) -> None:
+    """The mirror case, where omitting the entry is the silent failure.
+
+    The list already names an MCP server, so Hermes is filtering on it, and a
+    repowise absent from it would be registered and never reach the CLI.
+    """
+    import yaml
+
+    config = _seed(
+        hermes_home,
+        "mcp_servers:\n"
+        "  github:\n"
+        "    command: npx\n"
+        "\n"
+        "platform_toolsets:\n"
+        "  cli:\n"
+        "  - hermes-cli\n"
+        "  - github\n",
+    )
+    get_target("hermes").install(Scope.USER)
+
+    doc = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert doc["platform_toolsets"]["cli"] == ["hermes-cli", "github", "repowise"]
+
+
+def test_hermes_ignores_an_allowlist_naming_only_a_disabled_server(
+    hermes_home: Path,
+) -> None:
+    """Membership is tested against *enabled* servers, exactly as the host tests it.
+
+    A list naming a server the user has since switched off is not an allowlist
+    to Hermes, so joining it would create the restriction the test above exists
+    to prevent.
+    """
+    import yaml
+
+    config = _seed(
+        hermes_home,
+        "mcp_servers:\n"
+        "  github:\n"
+        "    command: npx\n"
+        "    enabled: false\n"
+        "\n"
+        "platform_toolsets:\n"
+        "  cli: [hermes-cli, github]\n",
+    )
+    get_target("hermes").install(Scope.USER)
+
+    doc = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert doc["platform_toolsets"]["cli"] == ["hermes-cli", "github"]
+
+
+def test_hermes_reports_the_no_mcp_sentinel_rather_than_writing_past_it(
+    hermes_home: Path,
+) -> None:
+    """``no_mcp`` turns every MCP server off for the platform.
+
+    The entry is still written, because the sentinel is a per-platform switch
+    the user can flip back, but a silent success here looks exactly like a
+    working install right up to the point where no tools appear.
+    """
+    import yaml
+
+    config = _seed(
+        hermes_home,
+        "mcp_servers:\n"
+        "  github:\n"
+        "    command: npx\n"
+        "\n"
+        "platform_toolsets:\n"
+        "  cli: [hermes-cli, no_mcp]\n",
+    )
+    result = get_target("hermes").install(Scope.USER)
+
+    assert any("no_mcp" in note for note in result.notes)
+    doc = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert doc["platform_toolsets"]["cli"] == ["hermes-cli", "no_mcp"]
+
+
+def test_hermes_preserves_comments_anchors_and_line_endings(hermes_home: Path) -> None:
+    """The reason this target splices rather than reserializing.
+
+    A ``safe_load``/``safe_dump`` round-trip loses all three: the comments
+    outright, and the anchors by expanding them into the values they stand for,
+    which is a change no diff of the parsed data would show.
+    """
+    original = (
+        "# my hermes config\r\n"
+        "defaults: &d\r\n"
+        "  timeout: 30\r\n"
+        "model:\r\n"
+        "  <<: *d\r\n"
+        "  name: gpt-5  # the good one\r\n"
+    )
+    config = _seed(hermes_home, original)
+    get_target("hermes").install(Scope.USER)
+
+    text = config.read_bytes().decode("utf-8")
+    assert "# my hermes config" in text
+    assert "&d" in text
+    assert "<<: *d" in text
+    assert "# the good one" in text
+    assert "\r\n" in text
+    assert "\n" not in text.replace("\r\n", "")
+
+
+def test_hermes_does_not_convert_an_lf_config_to_crlf(hermes_home: Path) -> None:
+    """The discriminating half of line-ending preservation, and it only shows on Windows.
+
+    A CRLF fixture cannot prove this here: the platform translation an ordinary
+    config write uses *also* emits CRLF on Windows, so that test stays green
+    against a writer that ignores the file entirely. An LF file is the case
+    where the two answers differ, and turning every line of a user's config
+    over on a three-line edit is a whole-file diff rather than a cosmetic one.
+    """
+    config = _seed(hermes_home, "# my hermes config\nmodel:\n  name: gpt-5\n")
+    get_target("hermes").install(Scope.USER)
+
+    assert b"\r\n" not in config.read_bytes()
+
+
+def test_hermes_round_trips_a_seeded_config_byte_for_byte(hermes_home: Path) -> None:
+    original = (
+        "# my hermes config\n"
+        "model:\n"
+        "  name: gpt-5  # the good one\n"
+        "\n"
+        "platform_toolsets:\n"
+        "  cli: [hermes-cli]\n"
+    )
+    config = _seed(hermes_home, original)
+    target = get_target("hermes")
+
+    target.install(Scope.USER)
+    assert config.read_bytes() != original.encode("utf-8")
+
+    target.uninstall(Scope.USER)
+    assert config.read_bytes() == original.encode("utf-8")
+
+
+def test_hermes_declines_a_config_it_cannot_splice_safely(hermes_home: Path) -> None:
+    """A flow mapping is a shape the line matching does not understand.
+
+    It is caught by re-parsing the spliced text and comparing it against the
+    document the target meant to write, which is what makes line-based surgery
+    safe to ship: a mis-fired splice becomes a decline, never a corrupted file.
+    """
+    original = "mcp_servers: {github: {command: npx}}\n"
+    config = _seed(hermes_home, original)
+
+    result = get_target("hermes").install(Scope.USER)
+
+    assert [written.action for written in result.files] == [FileAction.KEPT]
+    assert config.read_bytes() == original.encode("utf-8")
+    assert any("print-config hermes" in note for note in result.notes)
+
+
+def test_hermes_declines_unparseable_and_undecodable_configs(hermes_home: Path) -> None:
+    """``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``.
+
+    Nothing wraps ``install``, so an escape here aborts the whole run after
+    other agents' configs have been written.
+    """
+    hermes = _hermes()
+    target = get_target("hermes")
+
+    broken = _seed(hermes_home, "model: [unclosed\n")
+    result = target.install(Scope.USER)
+    assert [written.action for written in result.files] == [FileAction.KEPT]
+    assert broken.read_bytes() == b"model: [unclosed\n"
+    assert target.doctor().status.value == "broken"
+
+    (hermes_home / "config.yaml").write_bytes(b"model:\n  name: caf\xe9\n")
+    result = target.install(Scope.USER)
+    assert [written.action for written in result.files] == [FileAction.KEPT]
+    assert (hermes_home / "config.yaml").read_bytes() == b"model:\n  name: caf\xe9\n"
+    # detect is contracted never to raise, whatever the file holds.
+    assert hermes.detect() == []
+
+
+def test_hermes_leaves_a_remote_entry_alone(hermes_home: Path) -> None:
+    """Hermes prefers a ``url`` over a ``command`` even when both are present.
+
+    So merging our command into an entry that has a url would leave a
+    registration that reads as repointed and still never launches us. The
+    shared ``is_remote_entry`` helper keys on a declared ``type`` field, which
+    this host does not have, and its fallback limb would call this entry local.
+    """
+    original = (
+        "mcp_servers:\n"
+        "  repowise:\n"
+        '    url: "https://example.invalid/mcp"\n'
+        "    command: repowise\n"
+    )
+    config = _seed(hermes_home, original)
+
+    result = get_target("hermes").install(Scope.USER)
+
+    assert [written.action for written in result.files] == [FileAction.KEPT]
+    assert config.read_bytes() == original.encode("utf-8")
+    assert any("remote server" in note for note in result.notes)
+
+
+def test_hermes_keeps_the_keys_a_user_added_to_our_entry(hermes_home: Path) -> None:
+    """Generated keys win so a moved install takes effect; everything else survives.
+
+    ``enabled: false`` is the one most worth keeping: parking a server without
+    deleting it is the documented use of that flag, and re-enabling it on every
+    ``agents refresh`` would undo a deliberate choice.
+    """
+    import yaml
+
+    config = _seed(
+        hermes_home,
+        "mcp_servers:\n"
+        "  repowise:\n"
+        "    command: /old/path/repowise\n"
+        "    args: [mcp]\n"
+        "    env:\n"
+        "      MY_KEY: secret\n"
+        "    timeout: 300\n"
+        "    enabled: false\n",
+    )
+    get_target("hermes").install(Scope.USER)
+
+    entry = yaml.safe_load(config.read_text(encoding="utf-8"))["mcp_servers"]["repowise"]
+    assert entry["command"] != "/old/path/repowise"
+    assert entry["args"] == ["mcp", "--transport", "stdio"]
+    assert entry["env"] == {"MY_KEY": "secret"}
+    assert entry["timeout"] == 300
+    assert entry["enabled"] is False
+
+
+def test_hermes_uninstall_keeps_a_config_file_it_did_not_create(hermes_home: Path) -> None:
+    """``config.yaml`` is the host's own file, so an empty one is not proof it is ours.
+
+    The unambiguous signal is the directory: Hermes seeds ``SOUL.md`` and ten
+    subdirectories into its home on every config load, so a lone ``config.yaml``
+    cannot have come from it, and anything else beside it means the file stays.
+    """
+    hermes = _hermes()
+    config = _seed(hermes_home, "")
+    (hermes_home / "SOUL.md").write_text("you are helpful\n", encoding="utf-8")
+
+    target = get_target("hermes")
+    target.install(Scope.USER)
+    target.uninstall(Scope.USER)
+
+    assert config.exists()
+    assert hermes.hermes_home().exists()
+    assert config.read_text(encoding="utf-8").strip() == ""
+
+
+def test_hermes_uninstall_removes_a_home_it_created(hermes_home: Path) -> None:
+    """Otherwise our own residue keeps the agent pre-ticked forever.
+
+    ``is_present`` reads this directory as evidence the user has Hermes, so an
+    ``agents add`` followed by an ``agents remove`` would leave the machine
+    looking like a Hermes machine when it never was.
+    """
+    hermes = _hermes()
+    target = get_target("hermes")
+
+    assert not hermes.hermes_home().exists()
+    target.install(Scope.USER)
+    assert hermes.config_path().exists()
+
+    target.uninstall(Scope.USER)
+    assert not hermes.config_path().exists()
+    assert not hermes.hermes_home().exists()
+
+
+def test_hermes_project_scope_manages_the_agents_md_block(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "AGENTS.md").write_bytes(b"# House rules\n\nBe nice.\n")
+    target = get_target("hermes")
+
+    first = target.install(Scope.PROJECT, repo_path=repo)
+    assert [written.action for written in first.files] == [FileAction.UPDATED]
+    second = target.install(Scope.PROJECT, repo_path=repo)
+    assert [written.action for written in second.files] == [FileAction.UNCHANGED]
+
+    target.uninstall(Scope.PROJECT, repo_path=repo)
+    assert (repo / "AGENTS.md").read_bytes() == b"# House rules\n\nBe nice.\n"
+
+
+def test_hermes_does_not_write_the_file_the_host_prefers(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    """Hermes loads one project context file, and ``HERMES.md`` outranks ``AGENTS.md``.
+
+    Writing the host-named file into a repo that already has an ``AGENTS.md``
+    would take precedence over it and suppress the repo's real instructions.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    get_target("hermes").install(Scope.PROJECT, repo_path=repo)
+
+    assert (repo / "AGENTS.md").exists()
+    assert not (repo / "HERMES.md").exists()
+    assert not (repo / ".hermes.md").exists()
+
+
+def test_hermes_project_registration_requires_the_global_one(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    """A managed block on its own must not report Hermes as wired.
+
+    ``AGENTS.md`` is written by two other agents, so reading the block alone as
+    "Hermes is wired here" would report Hermes as an owner of that file on a
+    machine that has never had Hermes, and ``other_managers_of`` asks exactly
+    that before letting ``agents remove --target=codex`` strip the block.
+    """
+    hermes = _hermes()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = get_target("hermes")
+
+    target.install(Scope.PROJECT, repo_path=repo)
+    assert hermes.detect(repo) == []
+
+    target.install(Scope.USER)
+    assert [registration.scope for registration in hermes.detect(repo)] == [
+        Scope.USER,
+        Scope.PROJECT,
+    ]
+
+
+def test_hermes_and_codex_do_not_strip_the_shared_block_from_each_other(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    """Three targets now manage ``AGENTS.md``, and the guard is over the registry.
+
+    Driven through both targets rather than by calling the helper by hand, so
+    deleting either side's guard fails this.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    hermes_target = get_target("hermes")
+    codex_target = get_target("codex")
+
+    codex_target.install(Scope.PROJECT, repo_path=repo)
+    hermes_target.install(Scope.USER)
+    hermes_target.install(Scope.PROJECT, repo_path=repo)
+
+    removed_codex = codex_target.uninstall(Scope.PROJECT, repo_path=repo)
+    assert FileAction.KEPT in [written.action for written in removed_codex.files]
+    assert any("Hermes" in note for note in removed_codex.notes)
+
+    removed_hermes = hermes_target.uninstall(Scope.PROJECT, repo_path=repo)
+    assert FileAction.KEPT in [written.action for written in removed_hermes.files]
+    assert any("Codex" in note for note in removed_hermes.notes)
+
+    # The block is still there, which is the whole point.
+    assert "REPOWISE_DISTILL:START" in (repo / "AGENTS.md").read_text(encoding="utf-8")
+
+
+def test_hermes_batch_removal_does_not_deadlock_on_the_shared_block(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    """Removing both at once must not have each keep the file for the other."""
+    from repowise.cli.agent_targets.registry import removing
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    hermes_target = get_target("hermes")
+    codex_target = get_target("codex")
+
+    codex_target.install(Scope.PROJECT, repo_path=repo)
+    hermes_target.install(Scope.USER)
+    hermes_target.install(Scope.PROJECT, repo_path=repo)
+
+    with removing(["codex", "hermes"]):
+        codex_target.uninstall(Scope.PROJECT, repo_path=repo)
+        hermes_target.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert not (repo / "AGENTS.md").exists()
+
+
+def test_hermes_print_config_parses_as_the_shape_the_host_reads(hermes_home: Path) -> None:
+    """It also must not touch the filesystem, and must not print the toolset key.
+
+    Printing ``platform_toolsets`` would invite the user to paste the exact
+    change this target declines to make, and a snippet cannot carry the
+    condition under which it is correct.
+    """
+    import yaml
+
+    snippet = get_target("hermes").print_config(Scope.USER)
+    assert not hermes_home.exists()
+
+    doc = yaml.safe_load(snippet)
+    assert set(doc) == {"mcp_servers"}
+    assert doc["mcp_servers"]["repowise"]["args"] == ["mcp", "--transport", "stdio"]
+
+
+def test_hermes_describe_paths_names_what_each_scope_writes(
+    hermes_home: Path, tmp_path: Path
+) -> None:
+    target = get_target("hermes")
+    repo = tmp_path / "repo"
+
+    assert target.describe_paths(Scope.USER) == [str(hermes_home / "config.yaml")]
+    assert target.describe_paths(Scope.PROJECT, repo_path=repo) == [str(repo / "AGENTS.md")]
+
+
+def test_hermes_doctor_distinguishes_absent_from_damaged(hermes_home: Path) -> None:
+    target = get_target("hermes")
+    assert target.doctor().status.value == "not-installed"
+
+    target.install(Scope.USER)
+    assert target.doctor().status.value == "ok"
+
+
+# ---------------------------------------------------------------------------
+# yaml_merge
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_merge_treats_a_same_indent_block_list_as_part_of_its_key() -> None:
+    """The dumper writes block sequences at the parent key's own indent.
+
+    Reading the first ``- `` line as the next sibling truncates the block after
+    one line, and the edit then lands above items that are still there.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    text = "platform_toolsets:\n  cli:\n  - hermes-cli\n  - github\nother: 1\n"
+    merged = yaml_merge.set_child(text, "platform_toolsets", "cli", ["hermes-cli", "x"])
+
+    assert yaml_merge.load_mapping(merged) == {
+        "platform_toolsets": {"cli": ["hermes-cli", "x"]},
+        "other": 1,
+    }
+    assert "github" not in merged
+
+
+def test_yaml_merge_verify_refuses_a_splice_that_missed() -> None:
+    """The guard that makes line surgery safe: intent is checked, not assumed."""
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    yaml_merge.verify("a: 1\n", {"a": 1})
+    with pytest.raises(ValueError):
+        yaml_merge.verify("a: 1\n", {"a": 2})
+
+
+def test_yaml_merge_rejects_what_is_not_a_mapping() -> None:
+    """A ``yaml.YAMLError`` is not a ``ValueError``, so it would escape every handler."""
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    assert yaml_merge.load_mapping("") == {}
+    with pytest.raises(ValueError):
+        yaml_merge.load_mapping("- a\n- b\n")
+    with pytest.raises(ValueError):
+        yaml_merge.load_mapping("a: [unclosed\n")
+
+
+def test_yaml_merge_detects_the_newline_to_write_back_with() -> None:
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    assert yaml_merge.detect_newline("a: 1\nb: 2\n") == "\n"
+    assert yaml_merge.detect_newline("a: 1\r\nb: 2\r\n") == "\r\n"
+
+
+def test_yaml_merge_removes_the_parent_once_it_is_empty() -> None:
+    """A bare ``parent:`` parses as ``None``, which is a different document."""
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    text = "mcp_servers:\n  repowise:\n    command: x\nmodel: gpt\n"
+    merged = yaml_merge.remove_child(text, "mcp_servers", "repowise")
+
+    assert yaml_merge.load_mapping(merged) == {"model": "gpt"}
+    assert "mcp_servers" not in merged

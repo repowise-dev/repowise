@@ -156,6 +156,29 @@ parse as strict JSON, so if yours has comments it prints the entry to paste inst
 [Agent integrations](../agent/INTEGRATIONS.md).
 </details>
 
+<details><summary><b>Hermes</b></summary>
+
+```bash
+repowise agents add --target=hermes                  # this repo and this machine
+repowise agents add --target=hermes --scope=user     # the MCP server only
+```
+
+Hermes reads one `config.yaml` per machine, so the MCP server is registered there
+and serves every repo: `%LOCALAPPDATA%\hermes\config.yaml` on Windows,
+`~/.hermes/config.yaml` elsewhere, or `$HERMES_HOME/config.yaml` when that is set.
+Project scope writes a managed section in `AGENTS.md`, which Hermes loads per repo.
+
+Repowise edits that config in place rather than rewriting it, so your comments, key
+order and any anchors survive. If it cannot parse the file it leaves it alone and
+prints the entry to paste instead: `repowise agents print-config hermes`.
+
+`platform_toolsets.cli` is deliberately left alone. Hermes exposes every enabled MCP
+server to the CLI by default, and that list only becomes an allowlist once it already
+names one — so repowise adds itself there **only** when the list is already an
+allowlist, and never converts a permissive config into a restrictive one. See
+[Hermes](../agent/HERMES.md).
+</details>
+
 <details><summary><b>Cline, Windsurf, and other MCP clients</b></summary>
 
 Print the server entry and paste it into whatever config the host reads:
