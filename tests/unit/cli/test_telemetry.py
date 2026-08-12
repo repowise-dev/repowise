@@ -102,6 +102,31 @@ class TestEnvelopePrivacy:
         env = emitter.build_envelope(CommandRunEvent(command="status"))
         assert env["python_version"].count(".") == 1  # major.minor only
 
+    def test_a_pytest_run_is_flagged_automated(self):
+        # This assertion runs under pytest, so it is its own fixture: the
+        # suite's fixtures relocate the home holding anon_id, and every run
+        # would otherwise arrive as a brand new install.
+        env = emitter.build_envelope(CommandRunEvent(command="status"))
+        assert env["is_ci"] is True
+
+    def test_automated_detection_reads_the_env_not_sys_modules(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A test may shell out to a real repowise process: the child inherits
+        # the env but builds its own module table, so the env is what travels.
+        from repowise.cli.platform.telemetry import environment
+
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("PYTEST_VERSION", raising=False)
+        for var in environment._CI_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        assert environment.under_pytest() is False
+        assert environment.is_ci() is False
+
+        monkeypatch.setenv("PYTEST_VERSION", "8.4.1")
+        assert environment.under_pytest() is True
+        assert environment.is_ci() is True
+
     def test_flags_carry_no_values(self):
         env = emitter.build_envelope(
             CommandRunEvent(command="update", flags=["--provider", "--exclude"])
@@ -338,6 +363,52 @@ class TestOutcomeClassification:
         props = rec[0]["properties"]
         assert props["file_count_bucket"] == "500-999"
         assert props["docs_mode"] is False
+
+    def test_bare_system_exit_still_names_a_class(self, monkeypatch: pytest.MonkeyPatch):
+        # Commands that exit via ``SystemExit`` rather than ``ctx.exit()`` used
+        # to record an error with no class at all, which left the whole bucket
+        # undiagnosable.
+        def body() -> None:
+            raise SystemExit(1)
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "error"
+        assert rec[0]["properties"]["error_type"] == "SystemExit"
+
+    def test_system_exit_reports_the_cause_it_was_raised_from(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # ``raise SystemExit(1) from exc`` carries the real reason; report that
+        # rather than the exit wrapper.
+        def body() -> None:
+            try:
+                raise ModuleNotFoundError("no uvicorn")
+            except ModuleNotFoundError as exc:
+                raise SystemExit(1) from exc
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["error_type"] == "ModuleNotFoundError"
+
+    def test_suppressed_context_is_not_reported(self, monkeypatch: pytest.MonkeyPatch):
+        # ``from None`` is the author saying the in-flight exception is not the
+        # explanation, so it must not be mined for an error class.
+        def body() -> None:
+            try:
+                raise ModuleNotFoundError("no uvicorn")
+            except ModuleNotFoundError:
+                raise SystemExit(1) from None
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["error_type"] == "SystemExit"
+
+    def test_clean_system_exit_records_no_error_class(self, monkeypatch: pytest.MonkeyPatch):
+        # Exit code 0 is a success: naming a class here would invent a failure.
+        def body() -> None:
+            raise SystemExit(0)
+
+        rec = self._run(monkeypatch, body)
+        assert rec and rec[0]["properties"]["status"] == "ok"
+        assert rec[0]["properties"].get("error_type") is None
 
 
 class TestBucketCount:
