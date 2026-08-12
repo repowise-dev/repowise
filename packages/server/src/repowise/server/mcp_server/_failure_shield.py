@@ -73,12 +73,24 @@ def _shape_unknown_repo(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _driver_message(exc: Exception) -> str:
+    """The DBAPI error's own message, without SQLAlchemy's appended context.
+
+    ``str()`` on a SQLAlchemy ``OperationalError`` appends the compiled
+    statement and its bound parameters. For ``get_answer`` those parameters
+    include the user's question, so matching on the full string lets a caller
+    who merely *asks about* "no such column" be told their index is stale.
+    ``exc.orig`` is the driver exception alone.
+    """
+    orig = getattr(exc, "orig", None)
+    return str(exc if orig is None else orig).lower()
+
+
 def _is_stale_index_error(exc: Exception) -> bool:
     """True for the ORM failure a store older than the models produces."""
     if type(exc).__name__ != "OperationalError":
         return False
-    text = str(exc).lower()
-    return any(marker in text for marker in _STALE_INDEX_MARKERS)
+    return any(marker in _driver_message(exc) for marker in _STALE_INDEX_MARKERS)
 
 
 def _shape_stale_index(exc: Exception) -> dict[str, Any]:
@@ -92,11 +104,12 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
     ``repowise update`` fixes it.
     """
     return {
-        # First line only: SQLAlchemy appends the whole compiled statement and
-        # its parameters, which is pages of SQL an agent cannot act on.
+        # The driver's own message: SQLAlchemy appends the whole compiled
+        # statement and its parameters, which is pages of SQL an agent cannot
+        # act on — and which carries the caller's own question back to them.
         "error": (
             "This repository's repowise index predates the installed "
-            f"repowise: {str(exc).splitlines()[0].strip()}"
+            f"repowise: {_driver_message(exc).splitlines()[0].strip()}"
         ),
         "remedy": (
             "The user can rebuild it by running 'repowise update' in the repo "

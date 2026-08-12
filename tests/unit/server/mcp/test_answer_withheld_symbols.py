@@ -779,6 +779,28 @@ def test_a_python_function_actually_named_func_is_still_reported(tmp_path) -> No
     assert "func" in names, names
 
 
+def test_a_c_style_function_actually_named_func_is_still_reported(tmp_path) -> None:
+    """The reason the guard requires ``func`` to OPEN the line.
+
+    ``int func(int a) {`` is a real definition named ``func`` in C, C++, Java,
+    C# and Kotlin, and it reaches the same brace-member pattern the Go literal
+    does. A name-only test suppresses all five languages.
+    """
+    from repowise.server.mcp_server.tool_answer.symbols import withheld_definitions
+
+    (tmp_path / "u.c").write_text(
+        "#include <stdio.h>\n"
+        "\n"
+        "int func(int a) {\n"
+        "    int total = a + 1;\n"
+        "    return total;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    names = [d["name"] for d in withheld_definitions(tmp_path, "u.c:4-6")]
+    assert "func" in names, names
+
+
 def test_java_members_are_found(tmp_path) -> None:
     from repowise.server.mcp_server.tool_answer.symbols import withheld_definitions
 

@@ -63,13 +63,14 @@ async def _acall_tool(
     # opening the store and building the embedder all touch config and disk,
     # and a failure there is the same condition from the caller's side.
     try:
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        db_url = get_db_url_for_repo(repo_path)
         # Mirrors the MCP server's lifespan (``_server.py``), which every tool
         # reached through MCP already gets. Every tool's first query is
         # ``select(Repository)``, so without this the whole CLI tool surface —
         # ask, context, symbol, why, search, risk — fails on a raw
         # ``no such column`` before it reads a single page.
-        await reconcile_schema_best_effort(engine)
+        await reconcile_schema_best_effort(db_url)
+        engine = create_engine(db_url)
         session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         store = await _open_vector_store(repo_path)
         init_tool_state(

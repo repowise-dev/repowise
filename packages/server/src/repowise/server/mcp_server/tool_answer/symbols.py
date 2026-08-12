@@ -107,18 +107,30 @@ def union_defers_to_synthesis(
 
 
 def is_symbol_lookup_question(question: str, question_ids: set[str]) -> bool:
-    """True when the question is a lookup of named symbols, not prose about them.
+    """True when the question IS the symbol names, not prose that mentions them.
 
-    The same test ``union_defers_to_synthesis`` uses, lifted out under a name,
-    because the confidence gates need it for a case the union path never sees.
     ``ModelAdmin`` is a lookup; "how does ModelAdmin dispatch a request" is
     prose that merely names one. The distinction matters wherever the question
     is whether a served BODY is the answer: for a lookup it is, so truncating
     it is a loss on its own; for prose the body is evidence for a claim, and
     truncation alone says little (22% of truncations withhold nothing the
     response leans on).
+
+    **Stricter than ``_prose_dominates``, deliberately.** That predicate counts
+    ``[A-Za-z0-9_]+`` tokens, so a question written in Cyrillic, Japanese or
+    Chinese tokenises to nothing but its identifiers and reads as a bare
+    lookup — and repowise ships an output-language feature, so those callers
+    exist. It also misreads dense English ("Why does ModelAdmin call
+    get_queryset, get_form and save_model?" is 4 identifiers in 7 tokens).
+    Removing the identifiers and asking whether any word character survives is
+    script-independent and says what "bare lookup" actually means.
     """
     if not question_ids:
+        return False
+    residual = question
+    for ident in sorted(question_ids, key=len, reverse=True):
+        residual = residual.replace(ident, " ")
+    if re.search(r"\w", residual, re.UNICODE):
         return False
     return not _prose_dominates(question, list(question_ids))
 
@@ -1018,7 +1030,12 @@ def _match_definition(raw: str, next_raw: str = "") -> re.Match[str] | None:
             # is a real Python definition (41 of them in django alone), while
             # ``_NOT_A_DEFINITION`` is also tested against the line's FIRST
             # word, which is ``func`` on every named Go function too.
-            if m.group("name") == "func":
+            #
+            # Requiring ``func`` to open the line is what keeps it to the Go
+            # literal: ``int func(int a) {`` is a real definition named ``func``
+            # in C, C++, Java, C# and Kotlin, and a name-only test suppresses
+            # all five.
+            if m.group("name") == "func" and head and head.group(0) == "func":
                 continue
             # Allman: the brace is on the next line. A declaration never ends in
             # a comma, but an argument on its own line inside a multi-line call

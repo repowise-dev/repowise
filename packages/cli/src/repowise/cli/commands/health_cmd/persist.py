@@ -31,10 +31,11 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
     )
 
     async def _do() -> dict[str, dict]:
-        engine = create_engine(get_db_url_for_repo(repo_path))
+        url = get_db_url_for_repo(repo_path)
         # Without this the ORM's `no such column` on a store one repowise
         # older is swallowed below and reads as "no coverage".
-        await reconcile_schema_best_effort(engine)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))
@@ -87,8 +88,8 @@ def _persist_health(repo_path: object, *, report: object) -> None:
 
     async def _do() -> None:
         url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
         engine = create_engine(url)
-        await reconcile_schema_best_effort(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))

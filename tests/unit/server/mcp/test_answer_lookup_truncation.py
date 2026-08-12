@@ -51,7 +51,7 @@ _WHOLE_SYMBOL = {
 }
 
 
-def _patch_pipeline(monkeypatch, answer_mod, *, symbol: dict):
+def _patch_pipeline(monkeypatch, answer_mod, *, symbol: dict, path: str | None = None):
     async def _fake_retrieve(question, ctx):
         return [
             {"page_id": "file_page:pkg/alpha/one.py", "score": 5.0},
@@ -60,7 +60,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, symbol: dict):
 
     async def _fake_hydrate(hits, ctx, *, scope=None):
         for i, h in enumerate(hits):
-            h["target_path"] = h["page_id"].removeprefix("file_page:")
+            h["target_path"] = path or h["page_id"].removeprefix("file_page:")
             h["title"] = h["target_path"]
             h["summary"] = "Policy module summary."
             h["snippet"] = ""
@@ -99,6 +99,36 @@ class TestLookupPredicate:
             "how does ModelAdmin build its changelist form", {"ModelAdmin"}
         )
 
+    def test_prose_in_a_non_latin_script_is_not_a_lookup(self) -> None:
+        """`_prose_dominates` counts [A-Za-z0-9_], so a Cyrillic or CJK question
+        tokenises to nothing but its identifiers and read as a bare lookup —
+        capping a genuine prose question and telling the caller "you asked for
+        X" when they did not. repowise ships an output-language feature, so
+        these callers exist."""
+        from repowise.server.mcp_server.tool_answer.symbols import is_symbol_lookup_question
+
+        for q in (
+            "Как работает ModelAdmin в этом коде?",
+            "ModelAdmin はこのコードでどのように動作しますか",
+            "ModelAdmin 在这段代码中是如何工作的",
+        ):
+            assert not is_symbol_lookup_question(q, {"ModelAdmin"}), q
+
+    def test_dense_english_prose_is_not_a_lookup(self) -> None:
+        """4 identifiers in 7 tokens beats the ratio test but is still prose."""
+        from repowise.server.mcp_server.tool_answer.symbols import is_symbol_lookup_question
+
+        assert not is_symbol_lookup_question(
+            "Why does ModelAdmin call get_queryset, get_form and save_model?",
+            {"ModelAdmin", "get_queryset", "get_form", "save_model"},
+        )
+
+    def test_a_bare_name_with_punctuation_is_still_a_lookup(self) -> None:
+        from repowise.server.mcp_server.tool_answer.symbols import is_symbol_lookup_question
+
+        assert is_symbol_lookup_question("ModelAdmin?", {"ModelAdmin"})
+        assert is_symbol_lookup_question("get_form ModelAdmin", {"ModelAdmin", "get_form"})
+
     def test_a_question_naming_no_symbol_is_not_a_lookup(self) -> None:
         """Guards the empty-identifier case: ``_prose_dominates`` returns False
         when there are no identifiers at all, which would otherwise read as
@@ -108,18 +138,46 @@ class TestLookupPredicate:
         assert not is_symbol_lookup_question("how do i run the tests", set())
 
 
+def _write_oversized_symbol(tmp_path, monkeypatch, *, name="min_count_policy", body_lines=300):
+    """A real file whose function genuinely runs past _INLINE_BODY_MAX_LINES.
+
+    Needed rather than a short `source_excerpt`: the gate requires the served
+    span to have hit the 120-line cap, because that is what distinguishes a cut
+    we made from a stale indexed end_line over a body that fits.
+    """
+    import repowise.server.mcp_server as mcp_mod
+
+    src = ["import os", ""]
+    src.append(f"def {name}():")
+    src += [f"    step_{i} = {i}" for i in range(body_lines)]
+    src.append("    return step_0")
+    (tmp_path / "policy.py").write_text("\n".join(src) + "\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+    return {
+        "name": name,
+        "kind": "function",
+        "signature": f"def {name}()",
+        "docstring": "Gate retries.",
+        "start_line": 3,
+        "end_line": len(src),
+        "_matched": True,
+        "source_excerpt": f"def {name}():\n    step_0 = 0",
+    }
+
+
 @pytest.mark.asyncio
-async def test_a_bare_lookup_whose_body_was_cut_is_not_high(setup_mcp, monkeypatch):
+async def test_a_bare_lookup_whose_body_was_cut_is_not_high(setup_mcp, monkeypatch, tmp_path):
     """FAILS at the parent. The D4 shape, in one fixture.
 
-    Bare name, one definition, body truncated. Gate 8 cannot save this: it
-    fires on a withheld symbol the QUESTION names or the ANSWER references,
-    and here the question names the symbol that was SERVED.
+    Bare name, one definition, body genuinely longer than the inline cap. Gate
+    8 cannot save this: it fires on a withheld symbol the QUESTION names or the
+    ANSWER references, and here the question names the symbol that was SERVED.
     """
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
-    _patch_pipeline(monkeypatch, answer_mod, symbol=_CUT_SYMBOL)
+    symbol = _write_oversized_symbol(tmp_path, monkeypatch)
+    _patch_pipeline(monkeypatch, answer_mod, symbol=symbol, path="policy.py")
     _patch_provider(monkeypatch, answer_mod, "min_count_policy returns the configured floor.")
 
     result = await get_answer("min_count_policy")
@@ -128,14 +186,69 @@ async def test_a_bare_lookup_whose_body_was_cut_is_not_high(setup_mcp, monkeypat
     assert any(b.get("truncated") for b in bodies), (
         "fixture is vacuous: nothing was truncated, so the gate had nothing to fire on"
     )
+    assert bodies[0]["lines"][1] - bodies[0]["lines"][0] + 1 >= 120, (
+        "fixture is vacuous: the body did not reach the inline cap, so the cut "
+        "was not ours and the gate is right to ignore it"
+    )
     assert result["confidence"] != "high", (
         "A bare symbol lookup whose only definition arrived truncated must not "
         f"read 'high'; got {result['confidence']!r}"
     )
     # The note must point at the part that is missing, not re-fetch the whole.
-    note = result.get("note", "")
-    assert "continues at" in note, note
-    assert "get_symbol id='pkg/alpha/one.py:" in (result.get("next_action_hint") or "")
+    # Either the ninth gate's own note or the reworded gate-8 note may carry
+    # this — with a real file on disk the enclosing symbol is also the headline
+    # withheld entry, so gate 8 fires first. Both are correct, and both must
+    # point at the continuation rather than at the whole body.
+    cont = bodies[0]["continuation"]
+    assert cont in result.get("note", ""), result.get("note")
+    assert f"get_symbol id='{cont}'" in (result.get("next_action_hint") or ""), (
+        result.get("next_action_hint")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_end_line_does_not_cap_a_body_that_was_served_whole(
+    setup_mcp, monkeypatch, tmp_path
+):
+    """`truncated` is not by itself evidence that anything was withheld.
+
+    It compares the INDEXED end_line against what was read, while the read
+    clamps to the end of the live file. A symbol whose stored end overshoots —
+    `check_symbol_bounds` leaves bounds unverified for an unsupported language
+    or a syntax error, and a file that shrank since indexing does it too — is
+    served in full and still flagged. Capping on that would demote a complete
+    answer and print a continuation that points past EOF.
+    """
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "policy.py").write_text(
+        "\n".join(
+            ["import os", ""] * 4
+            + ["def min_count_policy():", "    # gate retries", "    return 3"]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    stale = dict(_CUT_SYMBOL)
+    stale["start_line"] = 9
+    stale["end_line"] = 900  # the file has 11 lines
+
+    _patch_pipeline(monkeypatch, answer_mod, symbol=stale, path="policy.py")
+    _patch_provider(monkeypatch, answer_mod, "min_count_policy returns the configured floor.")
+
+    result = await get_answer("min_count_policy")
+
+    body = (result.get("symbol_bodies") or [{}])[0]
+    served = body["lines"][1] - body["lines"][0] + 1
+    assert served < 120, f"fixture is vacuous: {served} lines served, cap is 120"
+    assert result["confidence"] == "high", (
+        "the whole live symbol is in the payload; a stale indexed end_line must "
+        f"not demote it. Got {result['confidence']!r}, note={result.get('note')!r}"
+    )
 
 
 @pytest.mark.asyncio

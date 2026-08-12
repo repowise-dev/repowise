@@ -31,8 +31,8 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
 
     async def _fetch() -> tuple[list[dict], object]:
         url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
         engine = create_engine(url)
-        await reconcile_schema_best_effort(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))

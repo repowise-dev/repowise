@@ -103,10 +103,10 @@ def _run_repo_checks(
                 )
 
                 url = get_db_url_for_repo(repo_path)
-                engine = create_engine(url)
                 # So doctor reports the store's real state rather than a
                 # `no such column` failure on a store one repowise older.
-                await reconcile_schema_best_effort(engine)
+                await reconcile_schema_best_effort(url)
+                engine = create_engine(url)
                 sf = create_session_factory(engine)
                 count = 0
                 async with get_session(sf) as session:
@@ -218,8 +218,8 @@ def _run_repo_checks(
                 )
 
                 url = get_db_url_for_repo(repo_path)
+                await reconcile_schema_best_effort(url)
                 engine = create_engine(url)
-                await reconcile_schema_best_effort(engine)
                 sf = create_session_factory(engine)
                 async with get_session(sf) as session:
                     repo = await get_repository_by_path(session, str(repo_path))
@@ -262,8 +262,8 @@ def _run_repo_checks(
                 from repowise.core.providers.embedding.base import MockEmbedder
 
                 url = get_db_url_for_repo(repo_path)
+                await reconcile_schema_best_effort(url)
                 engine = create_engine(url)
-                await reconcile_schema_best_effort(engine)
                 sf = create_session_factory(engine)
 
                 # Get all SQL page IDs
@@ -404,8 +404,8 @@ def _run_repo_checks(
                 from repowise.core.providers.embedding.base import MockEmbedder
 
                 url = get_db_url_for_repo(repo_path)
+                await reconcile_schema_best_effort(url)
                 engine = create_engine(url)
-                await reconcile_schema_best_effort(engine)
                 sf = create_session_factory(engine)
 
                 vector_store = None
@@ -542,8 +542,8 @@ def _run_repo_checks(
             )
 
             url = get_db_url_for_repo(repo_path)
+            await reconcile_schema_best_effort(url)
             engine = create_engine(url)
-            await reconcile_schema_best_effort(engine)
             sf = create_session_factory(engine)
             repaired = 0
 

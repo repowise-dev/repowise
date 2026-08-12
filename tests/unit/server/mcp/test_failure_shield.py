@@ -116,6 +116,30 @@ async def test_an_unrelated_operationalerror_keeps_the_internal_error_shape():
 
 
 @pytest.mark.asyncio
+async def test_the_users_own_question_cannot_fake_a_stale_index():
+    """`str()` on a SQLAlchemy error appends the statement AND its parameters.
+
+    `get_answer` binds the caller's question as a parameter, so matching the
+    full string let someone who merely ASKS about "no such column" be told
+    their index is stale and to re-index — over what is really a transient
+    lock. Match the driver's own message instead.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    async def locked_while_asking_about_columns() -> dict:
+        raise OperationalError(
+            "INSERT INTO answer_cache (question, payload) VALUES (?, ?)",
+            ("why do I get no such column errors when I upgrade?", "{}"),
+            Exception("database is locked"),
+        )
+
+    result = await shield(locked_while_asking_about_columns)()
+
+    assert "predates" not in result["error"], result["error"]
+    assert "Retry this call once" in result["guidance"]
+
+
+@pytest.mark.asyncio
 async def test_unexpected_exception_is_success_shaped():
     async def exploding_tool(x: int) -> dict:
         raise RuntimeError("boom")

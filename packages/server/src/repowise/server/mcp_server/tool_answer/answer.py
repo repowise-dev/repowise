@@ -1824,11 +1824,23 @@ async def get_answer(
     # which is why gate 8 keeps the dependency test for that population.
     # Kept as the entry rather than a flag so the note can quote the real served
     # range and continuation instead of describing the cut in the abstract.
+    #
+    # `truncated` alone is not trustworthy enough to demote on. It is set by
+    # comparing the INDEXED end_line against what was read, while the read
+    # clamps to the end of the live file — so a symbol whose stored end
+    # overshoots (an unsupported language or a syntax error leaves
+    # `check_symbol_bounds` unverified, and a file that shrank since indexing
+    # does it too) is served WHOLE and still flagged. Requiring the served span
+    # to have hit the line cap says the cut was ours, which is the only case
+    # where something was really withheld.
     named_body_cut = next(
         (
             b
             for b in symbol_bodies
-            if b.get("truncated") and b.get("continuation") and b.get("name") in question_ids
+            if b.get("truncated")
+            and b.get("continuation")
+            and b.get("name") in question_ids
+            and b["lines"][1] - b["lines"][0] + 1 >= _INLINE_BODY_MAX_LINES
         ),
         None,
     )
@@ -2039,9 +2051,14 @@ async def get_answer(
                         else ""
                     )
                 )
+            # Qualify by path only when the same name was cut in more than one
+            # file, so the common case stays readable and the ambiguous case
+            # does not ship two sentences that look identical.
+            _dupe = len({_b["name"] for _b in _continuing}) < len(_continuing)
             for _b in _continuing:
+                _who = f"{_b['name']} ({_b['path']})" if _dupe else _b["name"]
                 _parts.append(
-                    f"{_b['name']} was served through line {_b['lines'][1]}; the rest "
+                    f"{_who} was served through line {_b['lines'][1]}; the rest "
                     f"of its body is at {_b['continuation']}."
                 )
             payload["note"] = " ".join(_parts)

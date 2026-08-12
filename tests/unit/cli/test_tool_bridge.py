@@ -293,14 +293,79 @@ def test_a_store_that_cannot_be_repaired_still_serves_the_read(monkeypatch, tmp_
     """
     import asyncio
 
-    from repowise.cli.helpers import reconcile_schema_best_effort
+    from repowise.cli import helpers
 
-    class _Boom:
-        def begin(self):
-            raise RuntimeError("attempt to write a readonly database")
+    db = tmp_path / "wiki.db"
+    db.write_text("not a database", encoding="utf-8")
 
+    async def _explode(_engine):
+        raise RuntimeError("attempt to write a readonly database")
+
+    monkeypatch.setattr("repowise.core.persistence.init_db", _explode, raising=False)
     # Must not raise.
-    asyncio.run(reconcile_schema_best_effort(_Boom()))
+    asyncio.run(helpers.reconcile_schema_best_effort(f"sqlite+aiosqlite:///{db}"))
+
+
+def test_the_repair_never_creates_a_store_that_did_not_exist(tmp_path):
+    """A read command in an un-indexed repo must not leave a database behind.
+
+    ``init_db`` on a fresh path materialises the full 42-table schema, so
+    without this guard ``repowise ask`` in a repo that was never indexed writes
+    a ~512 KB ``wiki.db`` where the user expects "not indexed yet".
+    """
+    import asyncio
+
+    from repowise.cli import helpers
+
+    db = tmp_path / "wiki.db"
+    asyncio.run(helpers.reconcile_schema_best_effort(f"sqlite+aiosqlite:///{db}"))
+    assert not db.exists(), "the repair created a store where none existed"
+
+
+def test_the_repair_is_bounded_when_the_store_is_locked(tmp_path):
+    """It must fail fast, not inherit the 30s bulk-write window.
+
+    ``status`` opens four engines and ``doctor`` five. At the engine default a
+    store locked by a concurrent ``repowise update`` stalled ``status`` for
+    ~133s in silence — swallowing the exception does not swallow the wait.
+    """
+    import asyncio
+    import sqlite3
+    import time
+
+    from repowise.cli import helpers
+    from repowise.core.persistence import create_engine, init_db
+
+    db = tmp_path / "wiki.db"
+    url = f"sqlite+aiosqlite:///{db}"
+
+    async def _build():
+        engine = create_engine(url)
+        await init_db(engine)
+        await engine.dispose()
+
+    asyncio.run(_build())
+    # Real drift, so the repair has DDL to issue and must take the write lock.
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE repositories DROP COLUMN churn_anchor_sha")
+    conn.commit()
+    conn.close()
+
+    holder = sqlite3.connect(db, isolation_level=None, timeout=1)
+    holder.execute("BEGIN EXCLUSIVE")
+    holder.execute("UPDATE repositories SET name = name")
+    try:
+        t0 = time.perf_counter()
+        asyncio.run(helpers.reconcile_schema_best_effort(url))
+        elapsed = time.perf_counter() - t0
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+    assert elapsed < 10, (
+        f"the contended repair took {elapsed:.1f}s; the engine default is 30s and "
+        "status calls this four times"
+    )
 
 
 def test_a_repo_that_asked_for_keyless_is_not_reported_as_degraded(
