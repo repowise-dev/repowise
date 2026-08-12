@@ -1,10 +1,18 @@
 """Codex CLI as an agent target.
 
 Full tier by the derived rule — it names both a hook adapter and a transcript
-adapter — but asymmetric with Claude Code in a way worth stating: its plugin
-ships skills and no ``commands/`` directory, so Codex users have no slash
-commands today. That gap is Phase 3's, and the tier rule does not paper over it
-because slash commands are not one of the two surfaces Full is derived from.
+adapter — but asymmetric with Claude Code in a way worth stating, because it
+runs the *opposite* way round for each of the two content surfaces.
+
+Skills reach Claude Code and Codex the same way, through the plugin. Slash
+commands do not, and cannot: a Codex plugin manifest has no slot for them. A
+plugin may bundle ``skills/``, ``hooks/``, ``assets/``, ``.mcp.json`` and
+``.app.json``, and that is the whole list. The only surface that yields a Codex
+slash command is ``~/.codex/prompts/``, which is local-only — plugins cannot
+write it — so the CLI installs them from package data, off the same shared
+source that renders the plugin's skills. Claude Code gets its commands from the
+plugin and never from ``init``; Codex gets its commands from ``init``'s
+successor commands and never from the plugin.
 
 Codex is the only target that writes three formats for one install: a TOML
 server table, a TOML feature flag that has to be switched on separately or the
@@ -53,7 +61,17 @@ METHODS = (
     ),
     InstallMethod(
         id="direct",
-        provides=frozenset({Capability.MCP, Capability.HOOKS, Capability.INSTRUCTIONS}),
+        provides=frozenset(
+            {
+                Capability.MCP,
+                Capability.HOOKS,
+                Capability.INSTRUCTIONS,
+                # Slash commands come from the direct path, not the plugin —
+                # see the module docstring. This is the mirror image of Claude
+                # Code, where they come from the plugin and not the direct path.
+                Capability.COMMANDS,
+            }
+        ),
         managed_by="repowise",
         preferred=True,
     ),
@@ -81,6 +99,15 @@ def user_hooks_path() -> Path:
 
 def instructions_path(repo_path: Path) -> Path:
     return repo_path / "AGENTS.md"
+
+
+def user_prompts_dir() -> Path:
+    """Where Codex looks for slash commands.
+
+    Global and flat — it is shared with every other tool the user has installed,
+    which is why every file we put there is prefixed ``repowise-``.
+    """
+    return Path.home() / ".codex" / "prompts"
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +292,87 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     return FileWrite(path=hooks_path, action=action), enable_hooks_feature(repo_path)
 
 
+#: Every prompt this target owns starts with it. Both the install and the
+#: uninstall read the set from the bundled files rather than a hardcoded list,
+#: so a command added to ``plugins/shared/commands/`` needs no edit here — but
+#: the uninstall also needs to recognise a prompt from a *previous* release
+#: whose shared source has since been deleted, which is what the prefix is for.
+PROMPT_PREFIX = "repowise-"
+
+
+def bundled_prompts() -> list[tuple[str, str]]:
+    """The Codex prompts shipped in the wheel, as ``(filename, text)``, sorted.
+
+    Package data rather than ``plugins/codex/``: a Codex plugin manifest has no
+    slot for commands (``skills/``, ``hooks/``, ``assets/``, ``.mcp.json`` and
+    ``.app.json``, and nothing else), so the only surface that yields a Codex
+    slash command is this directory, and the CLI is the only thing that can
+    write it. Generated from ``plugins/shared/commands/`` — see
+    ``scripts/gen_plugin_content.py``.
+    """
+    from importlib.resources import files
+
+    root = files("repowise.cli.agent_targets").joinpath("_data").joinpath("codex_prompts")
+    prompts = [entry for entry in root.iterdir() if entry.name.endswith(".md")]
+    return sorted(
+        ((entry.name, entry.read_text(encoding="utf-8")) for entry in prompts),
+        key=lambda pair: pair[0],
+    )
+
+
+def write_prompts() -> list[FileWrite]:
+    """Install the slash commands into ``~/.codex/prompts``, one file each.
+
+    LF discipline rather than the platform translation the JSON configs take:
+    these are whole files repowise owns end to end, so pinning the endings makes
+    a re-run on a different machine a no-op instead of a rewrite. The comparison
+    reads the file back through the same normalisation for the same reason.
+    """
+    from ..formats.json_merge import atomic_write_text
+
+    directory = user_prompts_dir()
+    writes: list[FileWrite] = []
+    for name, text in bundled_prompts():
+        path = directory / name
+        current: str | None = None
+        try:
+            current = path.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current is not None and current.replace("\r\n", "\n") == text:
+            writes.append(FileWrite(path=path, action=FileAction.UNCHANGED))
+            continue
+        directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, text, newline="\n")
+        writes.append(
+            FileWrite(
+                path=path,
+                action=FileAction.UPDATED if current is not None else FileAction.CREATED,
+            )
+        )
+    return writes
+
+
+def remove_prompts() -> list[FileWrite]:
+    """Delete every prompt in ``~/.codex/prompts`` that repowise put there.
+
+    Matched on the filename prefix, not on the bundled set: a prompt shipped by
+    an older release whose shared source has since been deleted is still ours,
+    and leaving it behind is how a global directory silently accumulates.
+    """
+    directory = user_prompts_dir()
+    if not directory.is_dir():
+        return []
+    removed: list[FileWrite] = []
+    for path in sorted(directory.glob(f"{PROMPT_PREFIX}*.md")):
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(FileWrite(path=path, action=FileAction.REMOVED))
+    return removed
+
+
 def _combined(first: FileAction, second: FileAction) -> FileAction:
     """One action describing two writes to the same file.
 
@@ -385,10 +493,16 @@ class CodexTarget:
         hooks_path = user_hooks_path()
         before = read_bytes(hooks_path)
         installed = install_codex_rewrite_hook()
-        if not installed:
+        if installed:
+            result.record(hooks_path, observed_action(before, read_bytes(hooks_path)))
+        else:
             result.record(hooks_path, FileAction.NOT_FOUND)
-            return result
-        result.record(hooks_path, observed_action(before, read_bytes(hooks_path)))
+
+        # Not gated on the hook install: the prompts are a separate surface in a
+        # separate directory, and a Codex build too old for PreToolUse rewriting
+        # still reads slash commands perfectly well.
+        for written in write_prompts():
+            result.record(written.path, written.action)
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
@@ -404,6 +518,8 @@ class CodexTarget:
                 user_hooks_path(),
                 FileAction.REMOVED if removed else FileAction.NOT_FOUND,
             )
+            for deleted in remove_prompts():
+                result.record(deleted.path, deleted.action)
             return result
 
         if repo_path is None:
@@ -427,7 +543,7 @@ class CodexTarget:
 
     def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
         if scope is Scope.USER:
-            return [str(user_hooks_path())]
+            return [str(user_hooks_path()), str(user_prompts_dir())]
         repo = repo_path or Path.cwd()
         return [
             str(project_config_path(repo)),

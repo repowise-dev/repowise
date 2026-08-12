@@ -170,6 +170,36 @@ def _plugin_installs() -> list[dict]:
     return [entry for entry in installs if isinstance(entry, dict)]
 
 
+#: What the host, not repowise, has to run to update the plugin.
+PLUGIN_UPDATE_COMMAND = "/plugin update repowise@repowise"
+
+
+def plugin_version_skew() -> list[str]:
+    """Installed plugin versions that are not this CLI's version, sorted.
+
+    The plugin is the one artifact the CLI cannot rewrite. ``pip install -U
+    repowise`` upgrades the MCP server and every command, and leaves the plugin's
+    skills and slash commands exactly where they were — so the two drift apart
+    silently, and silence is the worst of the available behaviours. Measured on a
+    real machine: an 0.16.0 plugin installed months earlier against a 0.41.0 CLI,
+    which is why five slash commands the CLI had shipped did not exist in the
+    session.
+
+    Reads the host's own manifest through :func:`_plugin_installs` rather than a
+    second parser. An entry with no ``version`` is skipped: it cannot be compared,
+    and a report the user cannot act on is noise.
+    """
+    from repowise.cli import __version__
+
+    return sorted(
+        {
+            str(entry["version"])
+            for entry in _plugin_installs()
+            if entry.get("version") and str(entry["version"]) != __version__
+        }
+    )
+
+
 def _has_repowise_server(config_path: Path) -> bool:
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
@@ -406,13 +436,33 @@ class ClaudeCodeTarget:
                 "so its MCP tool schemas and hooks are loaded twice."
             )
 
+        # Reported last and fixed first: an out-of-date plugin ships its own
+        # copy of the hooks, so updating it can resolve the matcher issue above
+        # as a side effect, where repairing the matcher does nothing for it.
+        fix_command = "repowise hook rewrite install"
+        skew = plugin_version_skew()
+        if skew:
+            from repowise.cli import __version__
+            from repowise.core.upgrade.release import is_newer_version
+
+            versions = ", ".join(skew)
+            behind = any(is_newer_version(__version__, version) for version in skew)
+            issues.append(
+                f"The Claude Code plugin is at {versions} but this CLI is {__version__}. "
+                "Its skills and slash commands are the plugin's, not the CLI's, and "
+                "`pip install -U repowise` does not touch them."
+            )
+            # Ahead of the CLI is the same drift running the other way, and
+            # telling someone to update an already-newer plugin is a dead end.
+            fix_command = PLUGIN_UPDATE_COMMAND if behind else "pip install -U repowise"
+
         if not issues:
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
         return DoctorReport(
             target_id=ID,
             status=DoctorStatus.STALE,
             issues=tuple(issues),
-            fix_command="repowise hook rewrite install",
+            fix_command=fix_command,
         )
 
 
