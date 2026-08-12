@@ -2813,11 +2813,125 @@ def test_yaml_merge_does_not_read_a_hash_inside_an_inline_value_as_a_comment() -
         }
     }
 
-    # A real trailing comment still survives.
-    kept = yaml_merge.set_child(
-        "mcp_servers: {}  # my servers\n", "mcp_servers", "repowise", {"command": "x"}
+    # A real trailing comment survives, including one that mentions a bracket.
+    # Searching backwards from the last bracket looks like the same answer and
+    # reads the brace in "e.g. {a: b}" as the end of the value, throwing the
+    # comment away, so both limbs are here.
+    for comment in ("# my servers", "# e.g. {name: {command: x}}", "# note with ] bracket"):
+        kept = yaml_merge.set_child(
+            f"mcp_servers: {{}}  {comment}\n",
+            "mcp_servers",
+            "repowise",
+            {"command": "x"},
+        )
+        assert comment in kept
+
+
+def test_yaml_merge_handles_an_inline_value_that_wraps_across_lines() -> None:
+    """The shortest slice that parses is the value.
+
+    An unbalanced flow collection does not parse, so the first slice that does
+    is the whole of it. Reading only the first line looks equivalent and turns
+    a wrapped value from a working install into a permanent refusal.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    merged = yaml_merge.set_child(
+        "mcp_servers: {github: {command: gh},\n              other: {command: o}}\nmodel: a\n",
+        "mcp_servers",
+        "repowise",
+        {"command": "x"},
     )
-    assert "# my servers" in kept
+
+    assert yaml_merge.load_mapping(merged) == {
+        "mcp_servers": {
+            "github": {"command": "gh"},
+            "other": {"command": "o"},
+            "repowise": {"command": "x"},
+        },
+        "model": "a",
+    }
+
+
+def test_yaml_merge_refuses_an_inline_value_carrying_an_anchor() -> None:
+    """Adding a child re-renders the whole inline value, and anchors do not survive.
+
+    The dumper writes them back under generated names, so a factoring the user
+    wrote is replaced by ``&id001``. Everything else re-rendering normalises is
+    cosmetic; this one is the damage the module refuses to do to a whole file,
+    so it refuses it here too.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    original = "mcp_servers: {a: &base {command: gh}, b: *base}\n"
+    assert (
+        yaml_merge.set_child(original, "mcp_servers", "repowise", {"command": "x"})
+        == original
+    )
+
+    # A star inside an ordinary scalar is not an alias and must not be refused.
+    shell = "mcp_servers: {a: {command: sh, args: [-c, 'ls *']}}\n"
+    merged = yaml_merge.set_child(shell, "mcp_servers", "repowise", {"command": "x"})
+    assert "repowise" in yaml_merge.load_mapping(merged)["mcp_servers"]
+
+
+def test_hermes_uninstall_declines_when_the_splice_missed(hermes_home: Path) -> None:
+    """A removal that changed nothing must never report ``removed``.
+
+    ``remove_child`` reports what it did, and reporting it by re-parsing its own
+    output looks like the same answer: the caller feeds that value straight into
+    the document it hands ``verify``, so both sides came from one parse of one
+    string and the check could not fail. It then reported ``removed`` over a
+    file that still held the entry, leaving repowise registered.
+
+    The shape here is a repeated top-level key. The parser keeps the last, so
+    the entry is genuinely registered, while the line search finds the first and
+    edits a block the document does not use.
+    """
+    original = (
+        "mcp_servers:\n"
+        "  other:\n"
+        "    command: y\n"
+        "mcp_servers:\n"
+        "  repowise:\n"
+        "    command: x\n"
+    )
+    config = _seed(hermes_home, original)
+
+    result = get_target("hermes").uninstall(Scope.USER)
+
+    assert [written.action for written in result.files] == [FileAction.KEPT]
+    assert config.read_bytes() == original.encode("utf-8")
+
+
+def test_hermes_updates_a_quoted_key_in_place(hermes_home: Path) -> None:
+    """Quoting a mapping key is ordinary YAML, and matching only the bare form
+    was wrong in both directions: the write appended a second entry beside the
+    quoted one, leaving a duplicate key the parser silently resolves to the
+    last, and the removal then found neither and declined for good.
+    """
+    import yaml
+
+    config = _seed(
+        hermes_home,
+        'mcp_servers:\n  "repowise":\n    command: old\n    env:\n      K: v\nmodel: a\n',
+    )
+    target = get_target("hermes")
+
+    target.install(Scope.USER)
+    text = config.read_text(encoding="utf-8")
+    assert text.count("repowise:") == 1
+    entry = yaml.safe_load(text)["mcp_servers"]["repowise"]
+    assert entry["command"] != "old"
+    assert entry["env"] == {"K": "v"}
+
+    assert [written.action for written in target.install(Scope.USER).files] == [
+        FileAction.UNCHANGED
+    ]
+    assert [written.action for written in target.uninstall(Scope.USER).files] == [
+        FileAction.REMOVED
+    ]
+    assert "repowise" not in config.read_text(encoding="utf-8")
 
 
 def test_yaml_merge_removes_a_child_from_an_inline_parent() -> None:

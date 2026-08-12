@@ -202,9 +202,23 @@ def _child_indent(lines: list[str], start: int, end: int) -> int:
 
 
 def _find_child(lines: list[str], start: int, end: int, child: str, indent: int) -> tuple[int, int] | None:
-    """Line range ``[start, end)`` of *child* inside its parent's block."""
+    """Line range ``[start, end)`` of *child* inside its parent's block.
+
+    All three spellings of the key are matched, bare and either quote. Quoting a
+    mapping key is ordinary YAML and it is what a user pasting an entry by hand
+    tends to produce, and matching only the bare form was worse than it looks in
+    both directions: the write appended a *second* entry beside the quoted one,
+    leaving a duplicate key that the parser silently resolves to the last, and
+    the removal then found neither and declined for good.
+
+    The replacement is written bare, which changes the quoting of the one key
+    repowise owns and nothing else.
+    """
     pad = " " * indent
-    pattern = re.compile(r"^" + re.escape(pad + child) + r":(?=\s|$)")
+    name = re.escape(child)
+    pattern = re.compile(
+        r"^" + re.escape(pad) + r"(?:" + name + r'|"' + name + r"\"|'" + name + r"')" + r":(?=\s|$)"
+    )
     for index in range(start + 1, end):
         if pattern.match(lines[index]):
             return index, _child_end(lines, index, end, indent)
@@ -251,18 +265,53 @@ def _trailing_comment(line: str) -> str:
     allowlist`` is exactly the shape this module meets. Losing it would be the
     one place a module built to preserve comments silently ate one.
 
-    Conservative on purpose: the comment is only recovered when nothing after
-    the colon is quoted. A ``#`` inside a quoted scalar is not a comment, and
-    telling the two apart properly means tokenising the line. Skipping the
-    recovery there costs a comment in a rare shape; getting it wrong would move
-    a fragment of the user's data into a comment. The wrong direction is not
-    worth the coverage.
+    One scanner serves every line shape this module edits, inline or scalar.
+    Two versions of "where does the comment start" is how the earlier pair went
+    wrong in opposite directions: the quote-only guard here copied a fragment of
+    an inline value out into a comment, and the bracket-only guard written to
+    replace it deleted any comment that mentioned a brace.
     """
     _, separator, rest = line.partition(":")
-    if not separator or '"' in rest or "'" in rest:
+    if not separator:
         return ""
-    marker = rest.find("#")
+    marker = _comment_start(rest)
     return rest[marker:].rstrip() if marker != -1 else ""
+
+
+def _comment_start(text: str) -> int:
+    """Index of the comment in *text*, or ``-1``.
+
+    A ``#`` only opens a comment when it is outside every quote and bracket and
+    is preceded by whitespace or begins the text. Both of those matter, and
+    both were got wrong by simpler rules before this:
+
+    * inside a quoted scalar or a flow collection it is data, so
+      ``{args: [-c, foo#bar]}`` has no comment at all;
+    * a ``#`` glued to the preceding character is part of a plain scalar, which
+      is the same rule the YAML parser applies.
+
+    Scanning left to right is what makes a comment containing ``}`` or ``]``
+    safe. Searching backwards from the last bracket looks equivalent and is
+    not: it reads the brace in ``# e.g. {a: b}`` as the end of the value and
+    throws the comment away.
+    """
+    depth = 0
+    quote = ""
+    previous = " "
+    for index, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        elif char == "#" and depth <= 0 and previous in " \t":
+            return index
+        previous = char
+    return -1
 
 
 def _is_flow_value(line: str) -> bool:
@@ -376,50 +425,81 @@ def _set_child_in_flow_parent(
     cannot see it because the document is identical either way.
 
     The value is re-rendered **inline**, so a parent written as one line stays
-    one line and the round trip is byte exact. Only a genuinely single-line flow
-    value is handled: a multi-line one is left for :func:`verify` to refuse
-    rather than guessed at.
+    one line. What that costs is stated in :func:`_flow_span`: the value's own
+    formatting is normalised by the dumper, and a value carrying an anchor is
+    refused rather than re-rendered.
     """
-    import yaml
-
-    try:
-        parsed = yaml.safe_load(lines[start])
-    except yaml.YAMLError:
-        # Unbalanced on this line alone, so the value spans several. Leave it
-        # and let ``verify`` refuse, which is the honest outcome.
+    span = _flow_span(lines, start, end, parent)
+    if span is None:
         return _join(lines)
-    current = parsed.get(parent) if isinstance(parsed, dict) else None
+    stop, current = span
     if current is not None and not isinstance(current, dict):
         # A flow *sequence* is not a mapping we can add a child to.
         return _join(lines)
 
     merged = {**(current or {}), child: value}
     rendered = render_child(parent, merged, 0, flow=True)
-    comment = _flow_trailing_comment(lines[start])
+    comment = _trailing_comment(lines[stop - 1])
     if comment:
         rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
-    return _join(lines[:start] + rendered + lines[start + 1 :])
+    return _join(lines[:start] + rendered + lines[stop:])
 
 
-def _flow_trailing_comment(line: str) -> str:
-    """A comment following an inline value, or ``""``.
+def _flow_span(
+    lines: list[str], start: int, end: int, parent: str
+) -> tuple[int, object] | None:
+    """Where the inline value ends, and what it holds. ``None`` to leave it alone.
 
-    Not :func:`_trailing_comment`, which is the "nearby but different question"
-    trap in its purest form. That one was written for a line holding a scalar,
-    and its only guard is that nothing after the colon is quoted. An inline
-    mapping routinely carries an unquoted ``#`` **inside** a nested plain
-    scalar, where it is data and not a comment: given
-    ``{a: {args: [-c, foo#bar]}}`` it returned ``#bar]}}`` and wrote that
-    fragment of the user's own config into their file as a comment.
+    An inline value may wrap across lines, so the shortest slice from *start*
+    that parses is the value: an unbalanced flow collection does not parse, so
+    the first slice that does is the whole of it. Reading only the first line
+    looks equivalent and turned a wrapped value from a working install into a
+    permanent refusal.
 
-    A comment can only follow the value, so the search starts after the last
-    bracket that closes it. Anything before that is inside the value.
+    **A value carrying an anchor or an alias is refused.** Adding a child means
+    re-rendering the whole inline value, and the dumper writes anchors back out
+    under generated names, so ``{a: &base {...}, b: *base}`` returns with the
+    name replaced. Every other thing re-rendering normalises here is cosmetic
+    (quote style, the spaces inside the braces) and this one is not: the module
+    header calls losing a factoring the one damage that cannot be undone, so
+    the same rule that keeps this module off a whole-file round trip keeps it
+    off these values.
     """
-    close = max(line.rfind("}"), line.rfind("]"))
-    if close == -1:
-        return ""
-    marker = line.find("#", close)
-    return line[marker:].rstrip() if marker != -1 else ""
+    import yaml
+
+    for stop in range(start + 1, end + 1):
+        text = "\n".join(lines[start:stop])
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(parsed, dict) or parent not in parsed:
+            return None
+        if _has_anchors(text):
+            return None
+        return stop, parsed.get(parent)
+    return None
+
+
+def _has_anchors(text: str) -> bool:
+    """Whether *text* declares an anchor or uses an alias.
+
+    Asked of the parser rather than by looking for ``&`` and ``*`` in the text,
+    which appear freely inside ordinary scalars: a shell argument like
+    ``sh -c 'ls *'`` would otherwise read as an alias and refuse a config that
+    is fine.
+    """
+    import yaml
+
+    try:
+        for event in yaml.parse(text):
+            if isinstance(event, yaml.events.AliasEvent):
+                return True
+            if getattr(event, "anchor", None):
+                return True
+    except yaml.YAMLError:
+        return True
+    return False
 
 
 #: Returned by :func:`remove_child` when the parent key is gone from the file.
@@ -437,6 +517,16 @@ def remove_child(text: str, parent: str, child: str) -> tuple[str, object]:
     afterwards, or :data:`ABSENT` when the key is gone. The caller cannot work
     that out from the text and has to state it to describe the document it
     means to write, so it is reported rather than left to be guessed.
+
+    **It is reported from what this function did, never by re-reading its own
+    output.** Re-parsing the spliced text to answer the question looks like the
+    same answer and is not: the caller feeds the value straight into the
+    document it hands :func:`verify`, so both sides of that comparison would
+    come from one parse of one string and the check could not fail. It stopped
+    catching a splice that missed, and ``agents remove`` reported ``removed``
+    over a file that still held the entry. Only the caller's own arithmetic is
+    an independent statement of intent, so this reports structure and leaves
+    the value to the caller wherever the caller already knows it.
 
     Three outcomes, and each is the only safe answer for its case:
 
@@ -461,12 +551,17 @@ def remove_child(text: str, parent: str, child: str) -> tuple[str, object]:
 
     start, end = found
     if _is_flow_value(lines[start]):
-        return _remove_child_from_flow_parent(lines, start, parent, child)
+        return _remove_child_from_flow_parent(lines, start, end, parent, child)
 
     indent = _child_indent(lines, start, end)
     existing = _find_child(lines, start, end, child, indent)
     if existing is None:
-        return text, _parent_value(text, parent)
+        # Nothing was removed, most often because the key is written in a form
+        # the line match does not recognise, a quoted ``"child":`` for one. The
+        # header is still there, which is what this reports. The caller's own
+        # document says the child is gone while the text still holds it, so
+        # :func:`verify` refuses, which is the honest outcome.
+        return text, None
 
     child_start, child_end = existing
     remaining = lines[:child_start] + lines[child_end:]
@@ -480,47 +575,42 @@ def remove_child(text: str, parent: str, child: str) -> tuple[str, object]:
     new_start, new_end = refound
     body = remaining[new_start + 1 : new_end]
     if any(line.strip() for line in body):
-        return _join(remaining), _parent_value(_join(remaining), parent)
+        return _join(remaining), None
     return _join(remaining[:new_start] + remaining[new_end:]), ABSENT
 
 
 def _remove_child_from_flow_parent(
-    lines: list[str], start: int, parent: str, child: str
+    lines: list[str], start: int, end: int, parent: str, child: str
 ) -> tuple[str, object]:
     """Take a child out of an inline parent, leaving it inline.
 
-    The mirror of :func:`_set_child_in_flow_parent`, and it has to exist for the
-    same reason that one does. Teaching the write path about inline parents and
-    leaving this one behind meant ``_find_child`` looked for a ``child:`` line
-    that is not on a line of its own, found nothing, and reported the parent
-    unchanged: uninstall then failed its own consistency check and left the
-    entry in place, on exactly the configs the write path had just learned to
-    support.
-    """
-    import yaml
+    The mirror of :func:`_set_child_in_flow_parent`, sharing :func:`_flow_span`
+    with it so the two cannot disagree about which lines the value occupies or
+    about which values they will touch. It has to exist for the same reason
+    that one does: teaching the write path about inline parents and leaving
+    this one behind meant ``_find_child`` looked for a ``child:`` line that is
+    not on a line of its own, found nothing, and reported the parent unchanged.
+    Uninstall then failed its own consistency check and left the entry in
+    place, on exactly the configs the write path had just learned to support.
 
-    try:
-        parsed = yaml.safe_load(lines[start])
-    except yaml.YAMLError:
-        return _join(lines), ABSENT
-    current = parsed.get(parent) if isinstance(parsed, dict) else None
+    ``None`` is reported for every path that changes nothing, which says the
+    header is still there and is true. The caller's own document still says the
+    child is gone, so :func:`verify` refuses rather than reporting a removal
+    that did not happen.
+    """
+    span = _flow_span(lines, start, end, parent)
+    if span is None:
+        return _join(lines), None
+    stop, current = span
     if not isinstance(current, dict) or child not in current:
-        return _join(lines), current
+        return _join(lines), None
 
     remaining = {key: item for key, item in current.items() if key != child}
     rendered = render_child(parent, remaining, 0, flow=True)
-    comment = _flow_trailing_comment(lines[start])
+    comment = _trailing_comment(lines[stop - 1])
     if comment:
         rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
-    return _join(lines[:start] + rendered + lines[start + 1 :]), remaining
-
-
-def _parent_value(text: str, parent: str) -> object:
-    """What top-level *parent* holds in *text*, or :data:`ABSENT`."""
-    try:
-        return load_mapping(text).get(parent, ABSENT)
-    except ValueError:
-        return ABSENT
+    return _join(lines[:start] + rendered + lines[stop:]), remaining
 
 
 def verify(merged_text: str, expected: dict) -> None:
