@@ -163,29 +163,50 @@ def tool_counts() -> dict[str, int]:
     }
 
 
+#: Complete through twenty, not just the values in use today. A partial map is
+#: a landmine: the counts here feed a module-scope constant and a parametrize
+#: argument in the golden test, so a missing entry is a *collection* error that
+#: takes down the very drift guards that exist to say which files to edit. The
+#: first tool to push a count to twelve, or the renamed lean tool this file
+#: warns about elsewhere, would have hit exactly that.
 _WORDS = {
+    0: "zero",
     1: "one",
     2: "two",
     3: "three",
     4: "four",
+    5: "five",
     6: "six",
     7: "seven",
+    8: "eight",
+    9: "nine",
     10: "ten",
     11: "eleven",
+    12: "twelve",
     13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
+    16: "sixteen",
     17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
 }
 
 
 def spell(count: int) -> str:
     """*count* as an English word, for prose that spells small numbers out.
 
-    Raises rather than falling back to the digits: the artifacts this guards say
-    "eleven MCP tools", and a silent switch to "12 MCP tools" mid-sentence is
-    exactly the kind of drift that goes unnoticed for twenty-four releases.
+    Raises past twenty rather than falling back to the digits: the artifacts
+    this guards say "eleven MCP tools", and a silent switch to "21 MCP tools"
+    mid-sentence is the kind of drift that goes unnoticed for twenty-four
+    releases. Past twenty the prose wants rewriting by a person anyway.
     """
     if count not in _WORDS:
-        raise ValueError(f"no spelled form for {count}; add it to scripts/gen_agent_matrix.py")
+        raise ValueError(
+            f"no spelled form for {count}. Prose that spells a number this large reads "
+            "badly; rewrite the sentence, or extend _WORDS in scripts/gen_agent_matrix.py."
+        )
     return _WORDS[count]
 
 
@@ -304,8 +325,9 @@ def render() -> str:
         "",
         "That emits an `mcpServers` block, which is the shape Cursor, Cline, Windsurf,",
         "Zed and most others read. Ask for `vscode` instead when the host follows VS",
-        "Code and keys on `servers` with a `type` field. Either way the server entry",
-        "itself is identical; only the wrapper differs. Hosts people ask about most,",
+        "Code: that one keys on `servers` and adds a `type` field inside each entry, so",
+        "it is not the same text with a different wrapper. Print the one that matches",
+        "your host rather than editing either by hand. Hosts people ask about most,",
         "none of which repowise writes config for today:",
         "",
         ", ".join(PASTE_CONFIG_HOSTS) + ".",

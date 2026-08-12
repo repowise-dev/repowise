@@ -20,6 +20,11 @@ appearing in it is not evidence that every count it publishes is guarded. Adding
 new count sentence anywhere means adding a row here. Release changelogs are
 excluded on purpose: they record what was true at the time.
 
+Accepted cost: the rows that match source docstrings are pinned to the current
+hard wrap, so re-flowing one of those docstrings turns this red. That is cheap to
+fix and the failure names the file and the exact phrase, which is a better trade
+than matching loosely enough to miss a real stale count.
+
 Phrases rather than a regex on purpose: several artifacts correctly say "the ten
 flagship tools", which is a deliberate subset of the eleven-tool default surface
 and not a stale count. A pattern loose enough to catch drift is loose enough to
@@ -118,21 +123,49 @@ def test_no_paste_config_host_is_secretly_a_registered_target() -> None:
     )
 
 
-def test_the_readme_badge_rows_name_every_registered_agent() -> None:
+def _readme_badge_rows() -> dict[str, set[str]]:
+    """Tier label to the set of badge alt texts under it, from README.md.
+
+    Scoped to the ``## Supported agents`` section, which is load-bearing rather
+    than tidy. A plain search of the whole README is satisfied by a badge
+    sitting anywhere at all, so it passes on a VS Code badge moved into the
+    Full-tier row, and it collides with the language block below (``alt="Go"``,
+    ``alt="Java"``), which would pre-satisfy any future agent sharing a name
+    with a language.
+    """
+    readme = _on_disk(ROOT / "README.md")
+    start = readme.index("## Supported agents")
+    section = readme[start : readme.index("\n## ", start + 1)]
+    rows: dict[str, set[str]] = {}
+    for block in re.findall(r"<p>(.*?)</p>", section, re.S):
+        label = re.search(r"<strong>(.*?)\s*(?:tier)?\s*&nbsp;</strong>", block)
+        if label is None:
+            continue
+        rows[label.group(1).strip()] = set(re.findall(r'alt="([^"]+)"', block))
+    return rows
+
+
+def test_the_readme_badge_rows_match_the_registry() -> None:
     """The README badges are hand-maintained, so something has to check them.
 
-    Everything else on this page is derived, which makes the badges the one
-    place a fourth agent can be silently missing. They cannot be generated: a
-    brand colour and a logo slug per agent are editorial, and the README is not
-    a generated file.
+    Everything else about the tiers is derived, which makes the badges the one
+    place a fourth agent can be silently missing, or an old one can sit under
+    the wrong tier. They cannot be generated: a brand colour and a logo slug
+    per agent are editorial, and the README is not a generated file.
     """
     from repowise.cli.agent_targets import registry
+    from repowise.cli.agent_targets.types import derive_tier
 
-    readme = _on_disk(ROOT / "README.md")
-    missing = [t.display_name for t in registry.all_targets() if f'alt="{t.display_name}"' not in readme]
-    assert not missing, (
-        f"README.md has no agent badge for {missing}. Add one to the tier row under "
-        "'## Supported agents', matching the shields.io pattern of its neighbours."
+    expected: dict[str, set[str]] = {}
+    for target in registry.all_targets():
+        label = GEN.TIER_BLURBS[derive_tier(target).value][0]
+        expected.setdefault(label, set()).add(target.display_name)
+
+    found = _readme_badge_rows()
+    assert found == expected, (
+        f"README.md's agent badge rows are {found}, the registry says {expected}. "
+        "Every registered agent needs exactly one badge, under its own tier row, "
+        "in the '## Supported agents' section."
     )
 
 
@@ -231,7 +264,19 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "plus {w} more by default",
     ),
     ("packages/cli/src/repowise/cli/commands/mcp_cmd.py", "opt_in", "{W} more are opt-in"),
-    ("packages/cli/src/repowise/cli/commands/mcp_cmd.py", "lean", "{w}-tool agent-lean profile"),
+    # The lean count is written twice in this file, in the --tools help and in
+    # the worked example. One row matching either would let the other go stale,
+    # so each occurrence is pinned by the text around it.
+    (
+        "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
+        "lean",
+        "{w}-tool agent-lean profile. Overrides",
+    ),
+    (
+        "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
+        "lean",
+        "--tools lean        # {w}-tool agent-lean profile",
+    ),
     ("scripts/gen_readme_hero.py", "single_repo", '"{n} MCP tools"'),
     ("scripts/gen_readme_hero.py", "single_repo", "decisions, and {w} MCP tools"),
     (".github/assets/one-index.svg", "single_repo", "{n} MCP tools"),

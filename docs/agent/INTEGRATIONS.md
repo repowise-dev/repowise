@@ -55,8 +55,9 @@ repowise agents print-config claude-code   # prints, writes nothing
 
 That emits an `mcpServers` block, which is the shape Cursor, Cline, Windsurf,
 Zed and most others read. Ask for `vscode` instead when the host follows VS
-Code and keys on `servers` with a `type` field. Either way the server entry
-itself is identical; only the wrapper differs. Hosts people ask about most,
+Code: that one keys on `servers` and adds a `type` field inside each entry, so
+it is not the same text with a different wrapper. Print the one that matches
+your host rather than editing either by hand. Hosts people ask about most,
 none of which repowise writes config for today:
 
 Cursor, Cline, Windsurf, Zed, Continue, Gemini CLI, OpenCode, JetBrains AI Assistant, Amp.
