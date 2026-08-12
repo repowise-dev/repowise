@@ -827,16 +827,24 @@ def test_opencode_user_scope_names_no_repo(tmp_path: Path) -> None:
 
     assert str(repo.resolve()).replace("\\", "/") not in user["command"]
     assert str(repo.resolve()).replace("\\", "/") in project["command"]
-    # Repo-shared file keeps the bare command; the per-user one pins its install.
+
+    # Repo-shared file keeps the bare command, because one contributor's
+    # absolute path breaks everyone else's checkout. The per-user one pins the
+    # install that wrote it so a PATH shadow cannot hijack the server. Both
+    # halves are asserted: checking only the project one leaves the user limb
+    # free to be "simplified" to the bare name with nothing going red.
+    from repowise.cli.mcp_config import resolve_repowise_command
+
     assert project["command"][0] == "repowise"
+    assert user["command"][0] == resolve_repowise_command()
 
 
 def test_opencode_round_trips_to_nothing(tmp_path: Path) -> None:
     """Install then uninstall leaves no file and no wrapper key behind.
 
-    Including the ``$schema`` this target seeds into a file it created: a
-    leftover ``{"$schema": ...}`` is a file the user never asked for and still
-    reads as repowise having been here.
+    A file repowise created holds only ``mcp``, so removing the entry empties
+    it and it goes. Nothing is left that still reads as repowise having been
+    here.
     """
     opencode = _opencode()
     repo = tmp_path / "repo"
@@ -845,7 +853,7 @@ def test_opencode_round_trips_to_nothing(tmp_path: Path) -> None:
     opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
     config = opencode.config_path(Scope.PROJECT, repo)
     assert config.name == "opencode.jsonc"
-    assert json.loads(config.read_text(encoding="utf-8"))["$schema"]
+    assert "repowise" in json.loads(config.read_text(encoding="utf-8"))["mcp"]
 
     opencode.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
 
@@ -977,7 +985,7 @@ def test_opencode_does_not_re_enable_a_server_the_user_disabled(tmp_path: Path) 
     assert written["mcp"]["repowise"]["enabled"] is True
 
 
-def test_opencode_keeps_a_config_holding_more_than_our_own_schema(tmp_path: Path) -> None:
+def test_opencode_keeps_a_config_holding_anything_of_the_users(tmp_path: Path) -> None:
     """The file is deleted only when nothing of the user's is in it."""
     opencode = _opencode()
     repo = tmp_path / "repo"
@@ -995,6 +1003,158 @@ def test_opencode_keeps_a_config_holding_more_than_our_own_schema(tmp_path: Path
     remaining = json.loads(config.read_text(encoding="utf-8"))
     assert remaining["theme"] == "tokyonight"
     assert "mcp" not in remaining
+
+
+def test_opencode_never_deletes_the_config_file_opencode_itself_created(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A bare ``{"$schema": ...}`` file is the host's first-run config, not our stub.
+
+    Uninstall used to delete a file holding only that, on the invariant that
+    repowise had seeded it. False in the most ordinary case there is: OpenCode
+    writes exactly that file on first run. Not seeding a ``$schema`` on create
+    is what makes "is this file empty" an unambiguous test.
+
+    The config directory is not pruned either. It is the host's, and "we
+    emptied it, so it was ours" is the same false claim one level up.
+    """
+    opencode = _opencode()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    config_dir = tmp_path / "xdg" / "opencode"
+    config_dir.mkdir(parents=True)
+    host_file = config_dir / "opencode.jsonc"
+    host_file.write_text('{\n  "$schema": "https://opencode.ai/config.json"\n}\n', encoding="utf-8")
+
+    opencode.TARGET.install(Scope.USER)
+    opencode.TARGET.uninstall(Scope.USER)
+
+    assert host_file.exists(), "deleted the host's own config file"
+    assert config_dir.is_dir(), "deleted the host's own config directory"
+    assert "mcp" not in json.loads(host_file.read_text(encoding="utf-8"))
+
+
+def test_opencode_creates_no_schema_key_of_its_own(tmp_path: Path) -> None:
+    """A file repowise creates holds only ``mcp``, so it empties to nothing."""
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    written = json.loads((repo / "opencode.jsonc").read_text(encoding="utf-8"))
+
+    assert set(written) == {"mcp"}
+
+
+def test_opencode_removes_an_entry_from_whichever_file_holds_it(tmp_path: Path) -> None:
+    """Uninstall and detection sweep both spellings, not the one preferred today.
+
+    Install into a repo holding only ``opencode.json`` writes there. When an
+    ``opencode.jsonc`` later appears beside it -- the host creates one, or the
+    user does -- ``config_path`` flips to the new file. Uninstall then reported
+    success against the empty one while the real registration sat in the old,
+    invisible to ``detect`` and so unreachable by every command that could have
+    removed it.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "opencode.json").write_text("{}\n", encoding="utf-8")
+
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert "repowise" in json.loads((repo / "opencode.json").read_text(encoding="utf-8"))["mcp"]
+
+    (repo / "opencode.jsonc").write_text("{}\n", encoding="utf-8")
+    assert opencode.config_path(Scope.PROJECT, repo).name == "opencode.jsonc"
+
+    # Still found, so still removable.
+    assert [r.config_path.name for r in opencode.TARGET.detect(repo)] == ["opencode.json"]
+
+    opencode.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert opencode.TARGET.detect(repo) == []
+    assert not (repo / "opencode.json").exists()
+
+
+def test_opencode_declines_a_hand_wired_remote_server(tmp_path: Path) -> None:
+    """Half-converting a remote entry leaves one that is neither.
+
+    The merge lets generated keys win and keeps the rest, which forces ``type``
+    back to ``local`` while faithfully preserving the ``url`` beside it. The
+    preservation rule is what makes the result broken rather than merely
+    overwritten, and this config is ``$schema``-validated, so a stray key can
+    cost the whole file rather than the one entry.
+    """
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = repo / "opencode.jsonc"
+    remote = {
+        "mcp": {"repowise": {"type": "remote", "url": "https://mcp.repowise.dev/sse", "enabled": True}}
+    }
+    config.write_text(json.dumps(remote, indent=2) + "\n", encoding="utf-8")
+
+    result = opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert json.loads(config.read_text(encoding="utf-8")) == remote
+    assert any(f.action is FileAction.KEPT for f in result.files)
+    assert any("remote server" in note for note in result.notes)
+
+
+def test_opencode_doctor_does_not_call_a_legal_jsonc_config_broken(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``BROKEN`` fails the whole doctor run, and a commented config is not damage.
+
+    OpenCode accepts JSONC by design, so a file ``json.loads`` rejects is far
+    more likely to be a legal config with a comment in it. Reporting that as
+    broken failed ``repowise doctor`` -- and any CI running it -- for someone
+    who had installed OpenCode and never touched repowise, then handed them a
+    fix command that declines for the same reason.
+    """
+    from repowise.cli.agent_targets.types import DoctorStatus
+
+    opencode = _opencode()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    config_dir = tmp_path / "xdg" / "opencode"
+    config_dir.mkdir(parents=True)
+    (config_dir / "opencode.jsonc").write_text(
+        '{\n  // my theme\n  "theme": "tokyonight"\n}\n', encoding="utf-8"
+    )
+
+    report = opencode.TARGET.doctor()
+
+    assert report.status is not DoctorStatus.BROKEN
+    assert report.repairable is False
+    assert any("Comments are legal" in issue for issue in report.issues)
+
+
+def test_opencode_uninstall_note_names_the_real_reason_it_kept_the_file(tmp_path: Path) -> None:
+    """A malformed marker pair is not shared ownership, and the advice differs.
+
+    ``KEPT`` covers three unrelated causes. Blaming the shared block for an
+    orphaned marker sends the user to remove an agent, after which the block
+    still will not go and nothing has said why.
+    """
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    opencode = _opencode()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    # Break the pair by hand, leaving the start marker orphaned.
+    agents_md = repo / "AGENTS.md"
+    text = agents_md.read_text(encoding="utf-8")
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END
+
+    agents_md.write_text(text.replace(DISTILL_MARKER_END, ""), encoding="utf-8")
+
+    result = opencode.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert DISTILL_MARKER_START in agents_md.read_text(encoding="utf-8")
+    assert not any("still reads the same managed block" in note for note in result.notes)
 
 
 def test_opencode_detect_survives_a_config_that_is_not_utf8(tmp_path: Path) -> None:
@@ -1134,6 +1294,41 @@ def test_agents_md_is_kept_by_codex_while_opencode_still_reads_it(tmp_path: Path
     assert DISTILL_MARKER_START in agents_md.read_text(encoding="utf-8")
     assert any(f.path == agents_md and f.action is FileAction.KEPT for f in result.files)
     assert any("OpenCode" in note for note in result.notes)
+
+
+def test_removing_both_agents_at_once_does_not_deadlock_on_the_shared_file(
+    tmp_path: Path,
+) -> None:
+    """``agents remove --target=all`` must not keep the block for an agent it is removing.
+
+    Each target's uninstall asks who else is still wired, and during a batch
+    removal the answer is "the one that has not been processed yet" -- or worse,
+    one whose detection is latched on by a file its own uninstall does not
+    delete. Both then keep the block on the other's behalf, and each tells the
+    user to remove an agent they removed in the same command.
+
+    Asserted in **both orders**, because the failure is order-dependent and the
+    order that works proves nothing about the one that does not.
+    """
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+    from repowise.cli.agent_targets.registry import removing
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    opencode = _opencode()
+    for order in ([codex_target.TARGET, opencode.TARGET], [opencode.TARGET, codex_target.TARGET]):
+        repo = tmp_path / f"repo-{order[0].id}"
+        repo.mkdir()
+        agents_md = repo / "AGENTS.md"
+
+        codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+        opencode.TARGET.install(Scope.PROJECT, repo_path=repo)
+        assert DISTILL_MARKER_START in agents_md.read_text(encoding="utf-8")
+
+        with removing(t.id for t in order):
+            for target in order:
+                target.uninstall(Scope.PROJECT, repo_path=repo)
+
+        assert not agents_md.exists(), f"block survived removal in order {[t.id for t in order]}"
 
 
 def test_a_target_that_is_not_wired_does_not_hold_the_shared_file(tmp_path: Path) -> None:

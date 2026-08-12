@@ -51,7 +51,6 @@ host reads whichever it prefers and repowise writes the other.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 from pathlib import Path
@@ -80,10 +79,13 @@ PROJECT_FILE_ID = "agents_md"
 #: Name of the server entry inside the ``mcp`` table.
 SERVER_NAME = "repowise"
 
-#: Seeded into a file repowise creates, and never onto one that already has a
-#: ``$schema`` of its own. It is what gives the user completion and validation
-#: in their editor, and OpenCode's own first-run file carries it.
-SCHEMA_URL = "https://opencode.ai/config.json"
+#: Both spellings OpenCode reads, in the order :func:`config_path` prefers them.
+#: Uninstall and detection sweep the whole tuple rather than the one file
+#: :func:`config_path` picks today, because which one that is depends on what
+#: exists at the moment of the call. An entry written into ``opencode.json``
+#: before an ``opencode.jsonc`` appeared beside it would otherwise be invisible
+#: to every command that could remove it.
+CONFIG_NAMES = ("opencode.jsonc", "opencode.json")
 
 METHODS = (
     InstallMethod(
@@ -106,17 +108,21 @@ def user_config_dir() -> Path:
     resolves the config directory to ``/opencode`` at the filesystem root.
     Whitespace-only gets the same treatment for the same reason.
 
-    The untrimmed value is what gets joined once the check passes. Trimming a
-    path is a different decision from rejecting a blank one, and a directory
-    whose name legitimately ends in a space is the user's business.
+    The **stripped** value is what gets joined. Surrounding whitespace on this
+    variable comes from the same sloppy profile line that produces the blank
+    value above, and leaving it in is worse than blank rather than merely
+    untidy: ``Path(" /home/u/.config")`` is a *relative* path, so the config
+    would be written into a directory named ``" "`` inside whatever repo the
+    user happened to be standing in, and read back from somewhere else on the
+    next call from a different working directory.
 
     There is deliberately **no Windows branch**. The absence is the feature:
     ``%APPDATA%\\opencode`` is where this would land if it followed the platform
     convention, OpenCode has never read that location, and an entry written
     there is invisible rather than broken, which is the harder bug to see.
     """
-    configured = os.environ.get("XDG_CONFIG_HOME")
-    if configured and configured.strip():
+    configured = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
+    if configured:
         return Path(configured) / "opencode"
     return Path.home() / ".config" / "opencode"
 
@@ -138,15 +144,33 @@ def config_path(scope: Scope, repo_path: Path | None = None) -> Path:
     merge across the two, because OpenCode's own precedence between them is not
     something repowise should be guessing at, and writing to the one the host
     does not read is the failure this ordering exists to avoid.
+
+    **This answers "where should a write go", and only that.** Removal and
+    detection use :func:`config_paths` instead, because the answer here depends
+    on what exists at the moment of the call and that can change between an
+    install and the uninstall that undoes it.
     """
     directory = config_dir(scope, repo_path)
-    preferred = directory / "opencode.jsonc"
-    if preferred.exists():
-        return preferred
-    fallback = directory / "opencode.json"
-    if fallback.exists():
-        return fallback
-    return preferred
+    for name in CONFIG_NAMES:
+        candidate = directory / name
+        if candidate.exists():
+            return candidate
+    return directory / CONFIG_NAMES[0]
+
+
+def config_paths(scope: Scope, repo_path: Path | None = None) -> list[Path]:
+    """Every file this target may have written an entry into, preferred first.
+
+    Removal and detection sweep all of them rather than trusting
+    :func:`config_path`. The failure that forces this is ordinary: install into
+    a repo that has only ``opencode.json`` writes there, OpenCode later creates
+    an ``opencode.jsonc`` beside it, and from then on ``config_path`` answers
+    ``.jsonc``. Uninstall would report success against the empty new file while
+    the real registration sat in the old one, invisible to ``detect`` and so
+    unreachable by every command that could have removed it.
+    """
+    directory = config_dir(scope, repo_path)
+    return [directory / name for name in CONFIG_NAMES]
 
 
 def instructions_path(scope: Scope, repo_path: Path | None = None) -> Path:
@@ -188,6 +212,32 @@ def server_entry(scope: Scope, repo_path: Path | None = None) -> dict:
         "type": "local",
         "command": [generated["command"], *generated["args"]],
     }
+
+
+class RemoteServerEntryError(ValueError):
+    """The stored ``repowise`` entry names a transport repowise did not write.
+
+    A ``ValueError`` so it lands in the same handler as an unparseable file, and
+    a distinct type so the caller can say which of the two happened. Both mean
+    "left alone"; only one of them is a broken file.
+    """
+
+
+def _is_remote_entry(entry: dict) -> bool:
+    """Whether a stored server entry describes a transport repowise did not write.
+
+    OpenCode splits its MCP servers into ``type: "local"`` and
+    ``type: "remote"``, the latter carrying a ``url`` instead of a command. The
+    entry's own ``type`` decides, and a bare ``url`` counts only when there is
+    no ``command`` beside it: reading ``"url" in entry`` ahead of the declared
+    type calls a local entry with a leftover ``url`` remote, in contradiction of
+    what it says about itself, and wedges the exact stale state ``agents add``
+    exists to repoint.
+    """
+    declared = entry.get("type")
+    if declared is not None:
+        return declared != "local"
+    return "url" in entry and "command" not in entry
 
 
 def _merge_entry(stored: object, generated: dict) -> dict:
@@ -235,15 +285,34 @@ def write_mcp_config(scope: Scope, repo_path: Path | None = None) -> FileWrite:
         if not isinstance(servers, dict):
             raise ValueError(f"{path.name} 'mcp' must be a JSON object")
         servers = dict(servers)
-        servers[SERVER_NAME] = _merge_entry(servers.get(SERVER_NAME), generated)
+        stored = servers.get(SERVER_NAME)
+        if isinstance(stored, dict) and _is_remote_entry(stored):
+            # The merge lets generated keys win and keeps the rest, which is
+            # right for ``command`` and wrong for ``type``. Against a hand-wired
+            # remote server it forces ``type`` back to ``local`` while
+            # faithfully preserving the ``url`` beside it, producing an entry
+            # that is neither a valid local server nor a valid remote one. The
+            # preservation rule is what makes it broken rather than merely
+            # overwritten, and this config is ``$schema``-validated, so a stray
+            # key can cost the whole file rather than the one entry.
+            #
+            # A remote entry is a deliberate choice repowise did not make, so
+            # the honest answer is to leave it and say so.
+            raise RemoteServerEntryError(f"{path.name} 'repowise' is wired to a remote server")
+        servers[SERVER_NAME] = _merge_entry(stored, generated)
         existing["mcp"] = servers
         merged = existing
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # ``$schema`` first so it renders at the top of a file repowise created,
-        # where a reader looks for it. Only ever on a new file: an existing one
-        # without a ``$schema`` is a choice the user made.
-        merged = {"$schema": SCHEMA_URL, "mcp": {SERVER_NAME: {**generated, "enabled": True}}}
+        # No ``$schema`` seeded here, deliberately. It would be a nice courtesy
+        # and it costs more than it gives: OpenCode's own first-run file is
+        # exactly ``{"$schema": "..."}`` and nothing else, so a file holding
+        # only that is far more likely to be the host's than ours. Writing one
+        # leaves uninstall no way to tell "a stub we created" from "the config
+        # the user already had", and the safe reading of that ambiguity is the
+        # one that never deletes. Without it, a file repowise created holds only
+        # ``mcp`` and empties to nothing, which is unambiguous.
+        merged = {"mcp": {SERVER_NAME: {**generated, "enabled": True}}}
 
     return FileWrite(path=path, action=write_json_config(path, merged))
 
@@ -276,13 +345,14 @@ def _remove_server_entry(path: Path) -> tuple[Path, FileAction]:
     """Drop ``mcp.repowise``, preserving sibling servers.
 
     Rounds the install trip back to nothing: the ``mcp`` wrapper goes once it is
-    empty, and the file goes once it holds nothing but the ``$schema`` this
-    module seeded into it. That last part is the difference between "uninstalled"
-    and "left a file behind that still reads as repowise having been here", and
-    a bare ``{"$schema": ...}`` is a file the user never asked for.
+    empty, and the file goes once *it* is empty, so a file repowise created
+    leaves no stub behind.
 
-    A ``$schema`` the user set to something else, or any other key of theirs,
-    keeps the file.
+    "Empty" means empty, not "holds nothing we recognise". An earlier version
+    also deleted a file holding just ``{"$schema": "..."}`` on the grounds that
+    it was a stub of ours, which is false in the most ordinary case there is:
+    that is exactly the file OpenCode itself writes on first run. Not seeding a
+    ``$schema`` on create is what makes this test unambiguous.
     """
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
@@ -302,7 +372,7 @@ def _remove_server_entry(path: Path) -> tuple[Path, FileAction]:
 
     if not servers:
         existing.pop("mcp", None)
-    if not existing or existing == {"$schema": SCHEMA_URL}:
+    if not existing:
         try:
             path.unlink()
         except OSError:
@@ -318,7 +388,9 @@ def _remove_server_entry(path: Path) -> tuple[Path, FileAction]:
     return path, FileAction.REMOVED
 
 
-def _remove_instructions(scope: Scope, repo_path: Path | None = None) -> tuple[Path, FileAction]:
+def _remove_instructions(
+    scope: Scope, repo_path: Path | None = None
+) -> tuple[Path, FileAction, list[str]]:
     """Strip the managed block from ``AGENTS.md``, unless another agent needs it.
 
     **The shared-file case, and it is the whole reason this function is not two
@@ -337,6 +409,12 @@ def _remove_instructions(scope: Scope, repo_path: Path | None = None) -> tuple[P
     The same guard is in ``codex.py``. It has to be: a fix that only runs on the
     agent added most recently leaves the identical bug sitting in its sibling,
     which is exactly how it went unnoticed for four phases.
+
+    Returns the owners that caused a ``KEPT``, empty when something else did.
+    The caller needs that distinction rather than re-deriving it: ``KEPT`` also
+    means "the markers are malformed" and "the file could not be read", and a
+    note blaming shared ownership for one of those sends the user to remove an
+    agent that will not help.
     """
     from ..formats import marker_block
     from ..formats.marker_block import BlockState
@@ -345,43 +423,43 @@ def _remove_instructions(scope: Scope, repo_path: Path | None = None) -> tuple[P
 
     path = instructions_path(scope, repo_path)
 
-    owners = other_managers_of(path, exclude=ID, scope=scope, repo_path=repo_path)
-    if owners:
-        state = marker_block.inspect(path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
-        if state is BlockState.PRESENT:
-            return path, FileAction.KEPT
+    state = marker_block.inspect(path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
+    if state is BlockState.PRESENT:
+        owners = other_managers_of(path, exclude=ID, scope=scope, repo_path=repo_path)
+        if owners:
+            return path, FileAction.KEPT, owners
 
     if marker_block.remove(path, DISTILL_MARKER_START, DISTILL_MARKER_END):
-        return path, FileAction.REMOVED
+        return path, FileAction.REMOVED, []
 
     # ``remove`` returns False for several distinct reasons and they do not mean
     # the same thing to a reader. "There was nothing of ours here" is not-found;
     # "there is a file we deliberately did not touch" is kept. Asking
     # ``exists()`` conflates them, and AGENTS.md is a file users write in, so
     # "left alone" is a common and honest answer.
-    state = marker_block.inspect(path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
     if state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
-        return path, FileAction.NOT_FOUND
-    return path, FileAction.KEPT
+        return path, FileAction.NOT_FOUND, []
+    return path, FileAction.KEPT, []
 
 
-def _prune_user_dir() -> None:
-    """Remove ``<config>/opencode`` when a user-scope uninstall emptied it.
+def _parses_as_strict_json(path: Path) -> bool:
+    """Whether *path* can be read as strict JSON at all.
 
-    Only ever the directory this module created, only when it is empty, and
-    never through a symlink. ``rmdir`` refuses a non-empty *directory*, but a
-    Windows junction is a reparse point rather than a directory, so ``rmdir``
-    unlinks it however full its target is -- the target survives and the link
-    does not, which is a machine whose OpenCode config stopped resolving.
+    Separate from :func:`_reads_repowise` because "we could not read it" and
+    "we read it and repowise is not in it" lead a health check to say different
+    things, and both make :func:`_reads_repowise` answer False.
 
-    Not applied to project scope. There is no directory to prune there: both
-    files sit at the repo root.
+    Not :func:`json_merge.is_damaged`, for two reasons. It exists to answer "is
+    this file damaged", which for a host that accepts JSONC is the wrong
+    question. And it lets ``UnicodeDecodeError`` escape: that is a ``ValueError``
+    rather than an ``OSError`` or a ``JSONDecodeError``, so neither of its
+    handlers catches it.
     """
-    candidate = user_config_dir()
-    if candidate.is_symlink():
-        return
-    with contextlib.suppress(OSError):
-        candidate.rmdir()
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _reads_repowise(path: Path) -> bool:
@@ -404,20 +482,21 @@ def _reads_repowise(path: Path) -> bool:
 def detect(repo_path: Path | None = None) -> list[Registration]:
     """Every place OpenCode is currently wired to repowise.
 
-    Both scopes, matching what this target writes. Contracted never to raise.
+    Both scopes, matching what this target writes, and both config spellings
+    within each scope: an entry written into ``opencode.json`` stays findable
+    after an ``opencode.jsonc`` appears beside it, which is what makes it
+    removable. Contracted never to raise.
     """
     found: list[Registration] = []
 
-    user_config = config_path(Scope.USER)
-    if user_config.exists() and _reads_repowise(user_config):
-        found.append(Registration(method="direct", scope=Scope.USER, config_path=user_config))
-
+    scopes: list[tuple[Scope, Path | None]] = [(Scope.USER, None)]
     if repo_path is not None:
-        project_config = config_path(Scope.PROJECT, repo_path)
-        if project_config.exists() and _reads_repowise(project_config):
-            found.append(
-                Registration(method="direct", scope=Scope.PROJECT, config_path=project_config)
-            )
+        scopes.append((Scope.PROJECT, repo_path))
+
+    for scope, repo in scopes:
+        for candidate in config_paths(scope, repo):
+            if candidate.exists() and _reads_repowise(candidate):
+                found.append(Registration(method="direct", scope=scope, config_path=candidate))
 
     return found
 
@@ -479,6 +558,15 @@ class OpenCodeTarget:
         try:
             written = write_mcp_config(scope, repo_path)
             result.record(written.path, written.action)
+        except RemoteServerEntryError:
+            path = config_path(scope, repo_path)
+            result.record(path, FileAction.KEPT)
+            result.note(
+                f'{path.name} left unchanged: its "repowise" entry names a remote server, '
+                "and converting it in place would leave an entry that is neither. Run "
+                "'repowise agents remove --target=opencode' first if you want the local "
+                "server instead."
+            )
         except (ValueError, OSError) as exc:
             path = config_path(scope, repo_path)
             result.record(path, FileAction.KEPT)
@@ -519,32 +607,26 @@ class OpenCodeTarget:
         if scope is Scope.PROJECT and repo_path is None:
             raise ValueError("project-scope uninstall needs a repo_path")
 
-        result.record(*_remove_server_entry(config_path(scope, repo_path)))
+        # Both spellings, not just the one ``config_path`` prefers right now.
+        # A file that never held our entry reports not-found and costs a stat.
+        for candidate in config_paths(scope, repo_path):
+            path, action = _remove_server_entry(candidate)
+            if action is not FileAction.NOT_FOUND or path == config_path(scope, repo_path):
+                result.record(path, action)
 
-        instructions, action = _remove_instructions(scope, repo_path)
+        instructions, action, owners = _remove_instructions(scope, repo_path)
         result.record(instructions, action)
-        if action is FileAction.KEPT:
-            owners = self._other_instruction_owners(scope, repo_path)
-            if owners:
-                result.note(
-                    f"{instructions} kept: {' and '.join(owners)} still reads the same "
-                    "managed block. Remove that agent too if you want the block gone."
-                )
+        if owners:
+            result.note(
+                f"{instructions} kept: {' and '.join(owners)} still reads the same "
+                "managed block. Remove that agent too if you want the block gone."
+            )
 
-        if scope is Scope.USER and any(
-            written.action is FileAction.REMOVED for written in result.files
-        ):
-            _prune_user_dir()
+        # The config directory is deliberately not pruned. ``~/.config/opencode``
+        # is OpenCode's own, created by the host on first run and holding its
+        # state, so "we emptied it, so it was ours" is the same false ownership
+        # claim that used to delete the host's ``opencode.jsonc`` here.
         return result
-
-    def _other_instruction_owners(
-        self, scope: Scope, repo_path: Path | None = None
-    ) -> list[str]:
-        from ..registry import other_managers_of
-
-        return other_managers_of(
-            instructions_path(scope, repo_path), exclude=ID, scope=scope, repo_path=repo_path
-        )
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:
         """The entry to paste, in the shape OpenCode reads.
@@ -577,26 +659,38 @@ class OpenCodeTarget:
         Unlike Cursor and VS Code there *is* something user-level to look at, so
         a wired user config is reported as wired and the repo-scoped half is
         named as the part still unchecked.
+
+        **An unparseable config is never reported as BROKEN here**, which is
+        where this differs from every other target. ``BROKEN`` fails the whole
+        ``doctor`` run, and for a host that accepts JSONC by design a file
+        ``json.loads`` rejects is far more likely to be a legal config with a
+        comment in it than a damaged one. Calling that broken would fail
+        ``doctor`` -- and any CI running it -- for someone who has simply
+        installed OpenCode and never touched repowise, and then hand them a fix
+        command that declines for the same reason. It is reported as unknown
+        rather than as damage, which is what it is.
         """
         user_config = config_path(Scope.USER)
-        from ..formats.json_merge import is_damaged
-
-        if is_damaged(user_config):
-            return DoctorReport(
-                target_id=ID,
-                status=DoctorStatus.BROKEN,
-                issues=(f"{user_config} is present but is not valid JSON.",),
-                # ``add`` rather than ``refresh``: refresh skips what it cannot
-                # detect, and an unparseable config detects as nothing, so it
-                # would report success having done nothing at all.
-                fix_command="repowise agents add --target=opencode",
-                # Neither command repairs this. The file may be JSONC, which is
-                # legal here, and repowise declines to rewrite it either way.
-                repairable=False,
-            )
 
         if user_config.exists() and _reads_repowise(user_config):
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+
+        if user_config.exists() and not _parses_as_strict_json(user_config):
+            return DoctorReport(
+                target_id=ID,
+                status=DoctorStatus.NOT_INSTALLED,
+                issues=(
+                    f"{user_config} could not be read as strict JSON, so whether repowise "
+                    "is registered in it is unknown. Comments are legal in this file; if "
+                    "yours has them, add the entry with "
+                    "'repowise agents print-config opencode'.",
+                ),
+                fix_command="repowise agents print-config opencode",
+                # Neither refresh nor add rewrites a file repowise cannot parse,
+                # so offering a repair here would report success having done
+                # nothing.
+                repairable=False,
+            )
 
         return DoctorReport(
             target_id=ID,

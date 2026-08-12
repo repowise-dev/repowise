@@ -18,6 +18,9 @@ ids *are* the registry keys, so there is nothing to synchronise.
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from .types import AgentTarget, InstallMethod, Registration, Scope, Tier, derive_tier
@@ -180,6 +183,35 @@ def select_install_method(
     return writable[0] if writable else None
 
 
+#: Ids being removed by the command currently running, so a shared file is not
+#: kept on behalf of an agent the same invocation is also removing.
+#:
+#: A context variable rather than a parameter on
+#: :meth:`~.types.AgentTarget.uninstall` because the fact belongs to the *run*,
+#: not to the target: a descriptor is asked to remove itself and has no business
+#: knowing what else the user asked for. Adding it to the Protocol would put a
+#: batch concern into the contract every future target has to implement.
+_REMOVING: ContextVar[frozenset[str]] = ContextVar("_REMOVING", default=frozenset())
+
+
+@contextmanager
+def removing(target_ids: Iterable[str]):
+    """Declare which targets the current command is removing.
+
+    Set by ``agents remove`` and ``doctor --repair`` around the whole batch.
+    Without it, ``agents remove --target=all`` deadlocks on any file two agents
+    share: each target's uninstall sees the other still wired -- it has not been
+    processed yet, or its own config is not what detection keys on -- and keeps
+    the shared block on its behalf, so both keep it and the user is told twice
+    to remove an agent they just removed.
+    """
+    token = _REMOVING.set(frozenset(target_ids))
+    try:
+        yield
+    finally:
+        _REMOVING.reset(token)
+
+
 def other_managers_of(
     config_path: Path,
     *,
@@ -201,7 +233,8 @@ def other_managers_of(
     So a target about to remove a shared file asks who else is still using it.
     Only *wired* targets count: a descriptor that merely knows about the path is
     not a reason to leave a block behind, and every target claims paths it has
-    never written.
+    never written. Targets the current command is itself removing do not count
+    either -- see :func:`removing`.
 
     Deliberately built out of :meth:`~.types.AgentTarget.detect` and
     :meth:`~.types.AgentTarget.describe_paths`, both of which already exist and
@@ -219,9 +252,10 @@ def other_managers_of(
     except OSError:
         wanted = config_path
 
+    ignored = _REMOVING.get() | {exclude}
     owners: list[str] = []
     for target_id in _TARGET_MODULES:
-        if target_id == exclude:
+        if target_id in ignored:
             continue
         target = get_target(target_id)
         if target is None:

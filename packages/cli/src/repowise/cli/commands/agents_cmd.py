@@ -24,6 +24,7 @@ test that checks the projection by itself.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -126,11 +127,53 @@ def _write_payload(
       written, or ``doctor --repair`` buys a global config write with a local
       detection.
     """
-    from repowise.cli.agent_targets.registry import select_install_method
-    from repowise.cli.agent_targets.types import Scope
+    from repowise.cli.agent_targets.registry import removing
     from repowise.cli.editor_setup import is_editor_setup_disabled
 
     user_scope_disabled = is_editor_setup_disabled()
+
+    # Declared for the whole batch, before the first uninstall runs. A file two
+    # agents share is kept on behalf of an agent that is staying, never on
+    # behalf of one this same command is also removing -- which otherwise
+    # deadlocks `--target=all` on AGENTS.md and tells the user to remove an
+    # agent they just removed.
+    with removing(t.id for t in targets) if remove else contextlib.nullcontext():
+        agents = _run_writes(
+            targets,
+            repo_path,
+            scope,
+            remove=remove,
+            refresh_only=refresh_only,
+            user_scope_disabled=user_scope_disabled,
+        )
+
+    changed = any(
+        f["action"] in ("created", "updated", "removed")
+        for agent in agents
+        for write in agent["writes"].values()
+        for f in write["files"]
+    )
+    return {
+        "action": action,
+        "repo": str(repo_path),
+        "scope": scope,
+        "changed": changed,
+        "agents": agents,
+    }
+
+
+def _run_writes(
+    targets: list[Any],
+    repo_path: Path,
+    scope: str,
+    *,
+    remove: bool,
+    refresh_only: bool,
+    user_scope_disabled: bool,
+) -> list[dict]:
+    """The per-target loop of :func:`_write_payload`. See its docstring."""
+    from repowise.cli.agent_targets.registry import select_install_method
+    from repowise.cli.agent_targets.types import Scope
 
     agents: list[dict] = []
     for target in targets:
@@ -187,19 +230,7 @@ def _write_payload(
             entry["writes"][target_scope.value] = result.as_dict()
         agents.append(entry)
 
-    changed = any(
-        f["action"] in ("created", "updated", "removed")
-        for agent in agents
-        for write in agent["writes"].values()
-        for f in write["files"]
-    )
-    return {
-        "action": action,
-        "repo": str(repo_path),
-        "scope": scope,
-        "changed": changed,
-        "agents": agents,
-    }
+    return agents
 
 
 # ---------------------------------------------------------------------------
