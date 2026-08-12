@@ -12,8 +12,13 @@ The second is the one this whole exercise exists for. A generated doc protects
 itself and nothing else, and the tool count was never wrong in one place. It was
 wrong in six, including twice in the README two hundred lines apart, because every
 mention was hand-typed and no two were checked against each other. So the counts
-are computed from the live MCP registry and asserted **as exact phrases** in every
-artifact that publishes one. Add a tool and this test names each file to edit.
+are computed from the live MCP registry and asserted **as exact phrases** against
+the artifacts in ``COUNT_CLAIMS``. Add a tool and this test names each file to edit.
+
+``COUNT_CLAIMS`` covers each sentence individually, not each file, so a file
+appearing in it is not evidence that every count it publishes is guarded. Adding a
+new count sentence anywhere means adding a row here. Release changelogs are
+excluded on purpose: they record what was true at the time.
 
 Phrases rather than a regex on purpose: several artifacts correctly say "the ten
 flagship tools", which is a deliberate subset of the eleven-tool default surface
@@ -113,6 +118,46 @@ def test_no_paste_config_host_is_secretly_a_registered_target() -> None:
     )
 
 
+def test_the_readme_badge_rows_name_every_registered_agent() -> None:
+    """The README badges are hand-maintained, so something has to check them.
+
+    Everything else on this page is derived, which makes the badges the one
+    place a fourth agent can be silently missing. They cannot be generated: a
+    brand colour and a logo slug per agent are editorial, and the README is not
+    a generated file.
+    """
+    from repowise.cli.agent_targets import registry
+
+    readme = _on_disk(ROOT / "README.md")
+    missing = [t.display_name for t in registry.all_targets() if f'alt="{t.display_name}"' not in readme]
+    assert not missing, (
+        f"README.md has no agent badge for {missing}. Add one to the tier row under "
+        "'## Supported agents', matching the shields.io pattern of its neighbours."
+    )
+
+
+def test_the_readme_agent_headline_counts_the_registry() -> None:
+    """The sentence above the badges is a count, and counts drift.
+
+    This is the same failure the tool count spent twenty-four releases in. A
+    headline that says three while the registry holds four is the version of it
+    that a reader meets first.
+    """
+    from repowise.cli.agent_targets import registry
+    from repowise.cli.agent_targets.types import Tier, derive_tier
+
+    targets = registry.all_targets()
+    full = [t for t in targets if derive_tier(t) is Tier.FULL]
+    expected = (
+        f"**{GEN.spell(len(targets)).capitalize()} agents wired end to end · "
+        f"{GEN.spell(len(full))} at the Full tier"
+    )
+    assert expected in _on_disk(ROOT / "README.md"), (
+        f"README.md does not open the agent section with {expected!r}. "
+        f"The registry holds {len(targets)} targets, {len(full)} of them Full tier."
+    )
+
+
 def test_the_hooks_column_cannot_lie() -> None:
     """A target's declared HOOKS capability agrees with its hook adapter.
 
@@ -167,6 +212,26 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "single_repo",
         "{w} task-shaped MCP tools",
     ),
+    ("docs/agent/MCP_TOOLS.md", "single_repo", "**Default (single-repo):** {n} tools"),
+    ("docs/agent/MCP_TOOLS.md", "single_repo", "those {n} plus"),
+    ("docs/architecture/ARCHITECTURE.md", "single_repo", "advertises **{n}** tools by default"),
+    ("docs/reference/CLI_REFERENCE.md", "lean", "the {w}-tool agent-lean profile"),
+    ("packages/server/README.md", "total", "{n} registered MCP tools"),
+    ("packages/server/README.md", "single_repo", "({n} advertised by default"),
+    # The CLI help text is the copy every user reads, and it was the only place
+    # publishing the opt-in and lean counts outside a doc.
+    (
+        "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
+        "single_repo",
+        "{w} by default in single-repo mode",
+    ),
+    (
+        "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
+        "workspace_extra",
+        "plus {w} more by default",
+    ),
+    ("packages/cli/src/repowise/cli/commands/mcp_cmd.py", "opt_in", "{W} more are opt-in"),
+    ("packages/cli/src/repowise/cli/commands/mcp_cmd.py", "lean", "{w}-tool agent-lean profile"),
     ("scripts/gen_readme_hero.py", "single_repo", '"{n} MCP tools"'),
     ("scripts/gen_readme_hero.py", "single_repo", "decisions, and {w} MCP tools"),
     (".github/assets/one-index.svg", "single_repo", "{n} MCP tools"),

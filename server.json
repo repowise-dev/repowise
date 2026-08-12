@@ -26,7 +26,7 @@
         {
           "type": "positional",
           "valueHint": "repo_path",
-          "description": "Path to the repository to serve, indexed first with `repowise init`. Optional: omitted, the server serves the working directory.",
+          "description": "Path to the repository to serve, indexed first with `repowise init`. Optional: if omitted, the server serves the nearest indexed repository at or above the working directory.",
           "isRequired": false,
           "format": "filepath"
         },

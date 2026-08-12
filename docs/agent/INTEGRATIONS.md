@@ -50,12 +50,14 @@ Every other MCP host is served without writing a descriptor for it. Print
 the server entry and paste it into whatever config that host reads:
 
 ```bash
-repowise agents print-config vscode   # prints, writes nothing
+repowise agents print-config claude-code   # prints, writes nothing
 ```
 
-That is a plain stdio MCP server entry, which is the shape nearly every host
-wants. Hosts people ask about most, none of which repowise writes config for
-today:
+That emits an `mcpServers` block, which is the shape Cursor, Cline, Windsurf,
+Zed and most others read. Ask for `vscode` instead when the host follows VS
+Code and keys on `servers` with a `type` field. Either way the server entry
+itself is identical; only the wrapper differs. Hosts people ask about most,
+none of which repowise writes config for today:
 
 Cursor, Cline, Windsurf, Zed, Continue, Gemini CLI, OpenCode, JetBrains AI Assistant, Amp.
 
@@ -64,14 +66,11 @@ name for a host at this tier, which is the point of the tier.
 
 ## The MCP surface
 
-repowise registers **seventeen MCP tools**. A single-repo
-server advertises **eleven** of them by default, and
-workspace mode adds two more automatically for **thirteen**.
-A further **four** are off by default, enabled through the
-`mcp.tools` config block or `--tools +name`. The `lean` profile trims the
-default surface to **six** tools
-(seven in workspace mode) for agents on a tight
-context budget.
+repowise registers **seventeen MCP tools**. A single-repo server advertises
+**eleven** of them by default, and workspace mode adds two more automatically for
+**thirteen**. A further **four** are off by default, enabled through the `mcp.tools`
+config block or `--tools +name`. The `lean` profile trims the default surface to
+**six** tools (seven in workspace mode) for agents on a tight context budget.
 
 Per-tool detail: [MCP_TOOLS.md](MCP_TOOLS.md).
 
@@ -90,10 +89,16 @@ Per-tool detail: [MCP_TOOLS.md](MCP_TOOLS.md).
    in listings, so keep it stable.
 3. Run `python scripts/gen_agent_matrix.py` to add the row here.
 
-There is no third file. The tier, this matrix, the README badge and the
+There is no third file for anything derived. The tier, this matrix and the
 `repowise agents` listing all read the descriptor, and the contract tests in
 `tests/unit/cli/test_agent_targets.py` are parameterized over the registry,
 so a new target inherits them.
+
+The README badge rows are the exception: a brand colour and a logo per agent
+are not derivable, and the README is not generated, so a new agent needs a
+badge added by hand and the count above them updated. That is checked rather
+than trusted. `tests/unit/cli/test_agent_matrix.py` fails when the badge rows
+and the registry disagree, and names what to add.
 
 Declare only what the agent genuinely has. `derive_tier` reads the adapter
 names, so a descriptor that names a hook adapter it has not implemented

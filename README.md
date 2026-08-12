@@ -389,9 +389,9 @@ ask repowise anything; repowise never sees the tool calls in between. The tier i
 computed from what each integration actually wires, so this list cannot claim a depth
 the code does not have.
 
-Everything else that speaks MCP is one snippet away. `repowise agents print-config`
-prints a stdio server entry to paste into Cursor, Cline, Windsurf, Zed, Gemini CLI or
-any other host, and repowise writes nothing.
+Everything else that speaks MCP is one snippet away. `repowise agents print-config
+claude-code` prints a stdio server entry to paste into Cursor, Cline, Windsurf, Zed,
+Gemini CLI or any other host that keys on `mcpServers`, and repowise writes nothing.
 
 Adding an agent takes **one descriptor file and one registry line**, with no changes to
 the orchestrators. Full matrix and the contributor recipe:

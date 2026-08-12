@@ -2,19 +2,18 @@
 
 ``server.json`` is the MCP registry manifest, and it sat at 0.17.1 against a
 0.41.0 package for roughly twenty-four releases. The cause was not carelessness:
-it is named nowhere in the release runbook and matched by nothing in the drift
-grep, so there was no moment at which anyone was supposed to notice. The runbook
-now names it, and this test is the half of the fix that does not depend on
-anyone reading the runbook.
+nothing in the release process named it, so there was no moment at which anyone
+was supposed to notice. This test is the half of the fix that does not depend on
+anyone reading a checklist. The files below are the complete set that must move
+with ``pyproject.toml``, so a red run here names exactly what to bump.
 
 Deliberately out of scope:
 
 * ``plugins/codex/.codex-plugin/plugin.json`` rides its own cadence by decision,
-  bumped only in releases where the Codex plugin shipped changes. It is in the
-  runbook's drift grep so a release notices it, and it is correct for it to
-  differ here.
+  bumped only in releases where the Codex plugin shipped changes, so it is
+  correct for it to differ here.
 * ``packages/vscode/package.json`` is an independent version line with its own
-  tag namespace, and the runbook says so explicitly.
+  tag namespace.
 
 ``server.json`` also has to stay factually true about the CLI it describes, not
 just current. It told installers the repository path was required while
@@ -67,7 +66,7 @@ def test_a_release_manifest_tracks_the_package_version(
     found = _dig(_read_json(relpath), dotted)
     assert found == package_version, (
         f"{relpath} {dotted} is {found!r}, pyproject.toml is {package_version!r}. "
-        "See the version bump list in .claude/RELEASING.md."
+        "Every file this module names has to move together in a release commit."
     )
 
 

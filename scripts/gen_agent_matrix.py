@@ -26,10 +26,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs" / "agent" / "INTEGRATIONS.md"
+
+#: Prose width. Only paragraphs whose text is computed are wrapped here; the
+#: hand-authored lines are wrapped as written, because reflowing them through
+#: ``textwrap`` would rewrite the file every time a sentence changed length.
+_WRAP = 84
 
 # The script runs standalone as well as under pytest, so make the workspace
 # packages importable either way. Harmless when they are already installed.
@@ -133,25 +139,34 @@ def tool_counts() -> dict[str, int]:
     """
     from repowise.core.registry import mcp_tool_registry
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import (
-        _LEAN_WORKSPACE_EXTRAS,
-        LEAN_TOOLS,
-        resolve_enabled_tools,
-    )
+    from repowise.server.mcp_server._tool_selection import LEAN, resolve_enabled_tools
 
     ensure_full_surface()
     entries = mcp_tool_registry.entries()
+    # Every count goes through the resolver the server itself uses, including
+    # the lean ones. Counting ``LEAN_TOOLS`` directly looks equivalent and is
+    # not: the resolver drops a lean name the registry no longer carries, so a
+    # renamed tool would leave the published "six tools" claiming a surface the
+    # server had quietly trimmed to five.
+    single_repo = len(resolve_enabled_tools(entries, is_workspace=False))
+    workspace = len(resolve_enabled_tools(entries, is_workspace=True))
     return {
         "total": len(entries),
-        "single_repo": len(resolve_enabled_tools(entries, is_workspace=False)),
-        "workspace": len(resolve_enabled_tools(entries, is_workspace=True)),
+        "single_repo": single_repo,
+        "workspace": workspace,
+        # The delta is published in its own right ("adds two more"), so it is
+        # derived rather than written as a literal next to a derived total.
+        "workspace_extra": workspace - single_repo,
         "opt_in": len([entry for entry in entries if not entry.default]),
-        "lean": len(LEAN_TOOLS),
-        "lean_workspace": len(LEAN_TOOLS | _LEAN_WORKSPACE_EXTRAS),
+        "lean": len(resolve_enabled_tools(entries, is_workspace=False, override=LEAN)),
+        "lean_workspace": len(resolve_enabled_tools(entries, is_workspace=True, override=LEAN)),
     }
 
 
 _WORDS = {
+    1: "one",
+    2: "two",
+    3: "three",
     4: "four",
     6: "six",
     7: "seven",
@@ -284,12 +299,14 @@ def render() -> str:
         "the server entry and paste it into whatever config that host reads:",
         "",
         "```bash",
-        "repowise agents print-config vscode   # prints, writes nothing",
+        "repowise agents print-config claude-code   # prints, writes nothing",
         "```",
         "",
-        "That is a plain stdio MCP server entry, which is the shape nearly every host",
-        "wants. Hosts people ask about most, none of which repowise writes config for",
-        "today:",
+        "That emits an `mcpServers` block, which is the shape Cursor, Cline, Windsurf,",
+        "Zed and most others read. Ask for `vscode` instead when the host follows VS",
+        "Code and keys on `servers` with a `type` field. Either way the server entry",
+        "itself is identical; only the wrapper differs. Hosts people ask about most,",
+        "none of which repowise writes config for today:",
         "",
         ", ".join(PASTE_CONFIG_HOSTS) + ".",
         "",
@@ -298,14 +315,18 @@ def render() -> str:
         "",
         "## The MCP surface",
         "",
-        f"repowise registers **{spell(counts['total'])} MCP tools**. A single-repo",
-        f"server advertises **{spell(counts['single_repo'])}** of them by default, and",
-        f"workspace mode adds two more automatically for **{spell(counts['workspace'])}**.",
-        f"A further **{spell(counts['opt_in'])}** are off by default, enabled through the",
-        "`mcp.tools` config block or `--tools +name`. The `lean` profile trims the",
-        f"default surface to **{spell(counts['lean'])}** tools",
-        f"({spell(counts['lean_workspace'])} in workspace mode) for agents on a tight",
-        "context budget.",
+        textwrap.fill(
+            f"repowise registers **{spell(counts['total'])} MCP tools**. A single-repo "
+            f"server advertises **{spell(counts['single_repo'])}** of them by default, "
+            f"and workspace mode adds {spell(counts['workspace_extra'])} more "
+            f"automatically for **{spell(counts['workspace'])}**. A further "
+            f"**{spell(counts['opt_in'])}** are off by default, enabled through the "
+            "`mcp.tools` config block or `--tools +name`. The `lean` profile trims the "
+            f"default surface to **{spell(counts['lean'])}** tools "
+            f"({spell(counts['lean_workspace'])} in workspace mode) for agents on a "
+            "tight context budget.",
+            width=_WRAP,
+        ),
         "",
         "Per-tool detail: [MCP_TOOLS.md](MCP_TOOLS.md).",
         "",
@@ -324,10 +345,16 @@ def render() -> str:
         "   in listings, so keep it stable.",
         "3. Run `python scripts/gen_agent_matrix.py` to add the row here.",
         "",
-        "There is no third file. The tier, this matrix, the README badge and the",
+        "There is no third file for anything derived. The tier, this matrix and the",
         "`repowise agents` listing all read the descriptor, and the contract tests in",
         "`tests/unit/cli/test_agent_targets.py` are parameterized over the registry,",
         "so a new target inherits them.",
+        "",
+        "The README badge rows are the exception: a brand colour and a logo per agent",
+        "are not derivable, and the README is not generated, so a new agent needs a",
+        "badge added by hand and the count above them updated. That is checked rather",
+        "than trusted. `tests/unit/cli/test_agent_matrix.py` fails when the badge rows",
+        "and the registry disagree, and names what to add.",
         "",
         "Declare only what the agent genuinely has. `derive_tier` reads the adapter",
         "names, so a descriptor that names a hook adapter it has not implemented",

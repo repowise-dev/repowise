@@ -254,8 +254,11 @@ add(f'<text x="{ex+22}" y="{ey+RH-25}" class="outsub">Captured nowhere else.</te
 fx0, fy0 = ex + ew + GAP, ROW2
 fw = W - PAD - fx0
 card(fx0, fy0, fw, RH, "SERVED TO YOUR AGENT", "11 MCP tools")
+# All eleven of the single-repo default surface. The card headline counts them,
+# so a chip missing here is a picture that contradicts its own title.
 tools = ["get_overview", "get_answer", "get_context", "get_symbol", "search_codebase",
-         "get_risk", "get_change_risk", "get_why", "get_dead_code", "get_health"]
+         "get_risk", "get_change_risk", "get_why", "get_dead_code", "get_health",
+         "list_repos"]
 tx, ty = fx0 + 20, fy0 + 54
 for _i, t in enumerate(tools):
     wpx = 12 + len(t) * 6.9
