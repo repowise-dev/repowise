@@ -43,6 +43,11 @@ class BlockState(StrEnum):
     DUPLICATED = "duplicated"
     #: A start without its end, or an end without its start.
     ORPHANED = "orphaned"
+    #: The file is there and we could not read it, so we do not know what is in
+    #: it. Distinct from :attr:`ABSENT_FILE` because the two lead to opposite
+    #: actions: an absent file is created, and a file whose contents are unknown
+    #: must be left strictly alone.
+    UNREADABLE = "unreadable"
 
 
 @dataclass(frozen=True)
@@ -58,8 +63,19 @@ def inspect(path: Path, start: str, end: str) -> BlockInspection:
         return BlockInspection(BlockState.ABSENT_FILE)
     try:
         content = path.read_text(encoding="utf-8")
-    except OSError:
-        return BlockInspection(BlockState.ABSENT_FILE)
+    except (OSError, ValueError):
+        # ``ValueError`` is here for ``UnicodeDecodeError``, which is a subclass
+        # of it and not of ``OSError``. A rule or instructions file saved in
+        # cp1252 is an ordinary thing to meet on Windows, and it used to escape
+        # this handler entirely and traceback out of ``install`` after other
+        # agents' configs had already been written.
+        #
+        # Reporting it as ABSENT_FILE, which is what an ``OSError`` used to get,
+        # is the worse half of the same bug: a decode failure does not stop the
+        # *write*, so ``upsert`` would have replaced a file it could not read.
+        # ``codex.py::_current_prompt_text`` catches the same pair for the same
+        # reason.
+        return BlockInspection(BlockState.UNREADABLE)
 
     starts = content.count(start)
     ends = content.count(end)
@@ -102,9 +118,10 @@ def upsert(
     contain either, and the failure mode is a corrupted managed block or a
     ``bad escape`` crash at install time.
 
-    **A malformed marker pair returns** :attr:`~..types.FileAction.KEPT` **and
-    writes nothing.** Both malformed states mean a user edited across one of our
-    markers, and for both, every available repair can destroy text:
+    **A malformed marker pair, or a file we could not read, returns**
+    :attr:`~..types.FileAction.KEPT` **and writes nothing.** The two malformed
+    states mean a user edited across one of our markers, and for both, every
+    available repair can destroy text:
 
     * An **orphan** — a start with no end. Appending a fresh block leaves the
       stray start above it, so the next run's non-greedy ``start.*?end`` spans
@@ -121,11 +138,15 @@ def upsert(
     So both are refused, and the caller surfaces it as something to unpick by
     hand. What this fixes relative to that hand-rolled writer is the *silence*:
     an orphan used to report "unchanged" while the block was in fact absent.
+
+    :attr:`~.BlockState.UNREADABLE` is refused for a different reason. A decode
+    failure stops the read and not the write, so treating it as an absent file
+    would replace content we never saw.
     """
     wrapped = f"{start}{body}{end}"
     inspection = inspect(path, start, end)
 
-    if inspection.state in (BlockState.ORPHANED, BlockState.DUPLICATED):
+    if inspection.state in (BlockState.ORPHANED, BlockState.DUPLICATED, BlockState.UNREADABLE):
         return FileAction.KEPT
 
     if inspection.state is BlockState.ABSENT_FILE:
@@ -169,13 +190,16 @@ def remove(path: Path, start: str, end: str, *, delete_if_only: str | None = Non
     Returns True when something was removed.
     """
     inspection = inspect(path, start, end)
-    if inspection.state in (BlockState.ORPHANED, BlockState.DUPLICATED):
-        return False
-    if inspection.state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
+    if inspection.state is not BlockState.PRESENT:
+        # PRESENT is the only state with a block to strip. Every other one is
+        # either nothing to do (absent) or something we must not touch (a
+        # malformed pair, a file we could not read), and enumerating the
+        # refusals by name let UNREADABLE fall through the gap when it was
+        # added.
         return False
     try:
         existing = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
         return False
 
     pattern = r"\n*" + re.escape(start) + r".*?" + re.escape(end) + r"\n?"

@@ -437,14 +437,34 @@ def test_checklist_ticking_everything_disables_nothing(monkeypatch, tmp_path) ->
         monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices}
     )
 
-    from repowise.cli.agent_targets.registry import list_target_ids
+    from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
 
     assert options.disabled_project_files == frozenset()
-    # Derived rather than frozen: this test is about "ticking everything leaves
-    # nothing off", and the list of agents that exist is pinned once, in
-    # ``test_agent_targets``. Restating it here would make a fifth target fail
-    # two tests for one reason.
-    assert options.integration_overrides == dict.fromkeys(list_target_ids(), True)
+    # Derived from the *setup integrations*, not the target registry, and the
+    # difference is the point: the checklist offers what ``init`` can write, and
+    # a registered agent without a setup integration is not that. Restating the
+    # list here would make a fifth agent fail two tests for one reason.
+    assert options.integration_overrides == {
+        integration.integration_id: True for integration in get_default_editor_integrations()
+    }
+
+
+def test_checklist_offers_only_agents_init_can_write(monkeypatch, tmp_path) -> None:
+    """A ticked box that writes nothing reads as success, because the others print a line.
+
+    The checklist is built from the agent registry and the writing is done by
+    the setup integrations, and those are two lists. An agent can be registered
+    (matrix row, ``--target`` id, ``doctor`` row) without ``init`` having a
+    writer for it, and Cursor is the first one that is. It gets a pointer to the
+    command that does wire it, not a box that quietly does nothing.
+    """
+    from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
+
+    _, choices = _select(monkeypatch, tmp_path, lambda c: {choice.id for choice in c})
+
+    offered = {choice.id for choice in choices}
+    assert offered == {i.integration_id for i in get_default_editor_integrations()}
+    assert "cursor" not in offered
 
 
 def test_checklist_pre_ticks_an_agent_an_explicit_flag_asked_for(monkeypatch, tmp_path) -> None:

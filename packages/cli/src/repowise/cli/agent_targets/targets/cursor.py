@@ -43,6 +43,7 @@ who wants to paste it themselves.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -93,6 +94,21 @@ RULES_PREFIX = (
 )
 
 
+class RemoteServerEntryError(ValueError):
+    """The stored ``repowise`` entry names a transport repowise did not write.
+
+    A ``ValueError`` so it lands in the same handler as an unparseable file, and
+    a distinct type so the caller can say which of the two happened. Both mean
+    "left alone"; only one of them is a broken file.
+    """
+
+
+def _is_remote_entry(entry: dict) -> bool:
+    """Whether a stored server entry describes something other than our stdio server."""
+    declared = entry.get("type")
+    return "url" in entry or (declared is not None and declared != "stdio")
+
+
 def mcp_config_path(repo_path: Path) -> Path:
     return repo_path / ".cursor" / "mcp.json"
 
@@ -139,6 +155,20 @@ def write_mcp_config(repo_path: Path) -> FileWrite:
         if not isinstance(servers, dict):
             raise ValueError("mcp.json 'mcpServers' must be a JSON object")
         servers = dict(servers)
+        stored = servers.get("repowise")
+        if isinstance(stored, dict) and _is_remote_entry(stored):
+            # ``merge_server_entries`` keeps every key the user added and lets
+            # the generated ones win, which is right for ``command`` and
+            # ``args`` and wrong for ``type``. Against a hand-wired remote
+            # server it forces ``type`` back to ``stdio`` while faithfully
+            # preserving the ``url`` beside it, producing an entry that is
+            # neither a valid local server nor a valid remote one. The
+            # preservation rule is what makes it broken rather than merely
+            # overwritten.
+            #
+            # A remote entry is a deliberate choice repowise did not make, so
+            # the honest answer is to leave it and say so.
+            raise RemoteServerEntryError("mcp.json 'repowise' is wired to a remote server")
         merge_server_entries(servers, new_entry)
         existing["mcpServers"] = servers
         merged = existing
@@ -190,6 +220,18 @@ def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
     if not isinstance(servers, dict) or "repowise" not in servers:
         return config_path, FileAction.NOT_FOUND
     servers.pop("repowise")
+
+    # Drop the wrapper once it is empty, and the file once *it* is empty, so an
+    # install followed by an uninstall leaves no trace. A `.cursor/mcp.json`
+    # holding `{"mcpServers": {}}` is a file we created, that the user did not
+    # ask for, and that still reads as repowise having been here.
+    if not servers:
+        existing.pop("mcpServers", None)
+    if not existing:
+        with contextlib.suppress(OSError):
+            config_path.unlink()
+        return config_path, FileAction.REMOVED
+
     write_json_config(config_path, existing)
     return config_path, FileAction.REMOVED
 
@@ -197,21 +239,45 @@ def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
 def _remove_rules_file(repo_path: Path) -> tuple[Path, FileAction]:
     """Strip the managed block, deleting the file if it held nothing else."""
     from ..formats import marker_block
+    from ..formats.marker_block import BlockState
     from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
 
     config_path = rules_path(repo_path)
-    removed = marker_block.remove(
+    if marker_block.remove(
         config_path,
         DISTILL_MARKER_START,
         DISTILL_MARKER_END,
         delete_if_only=RULES_PREFIX,
-    )
-    if removed:
+    ):
         return config_path, FileAction.REMOVED
-    # ``remove`` reports False for both "no block here" and "the markers are
-    # malformed, so touching this would eat the user's text". Only the second is
-    # a file left standing on purpose, and the two want different words.
-    return config_path, FileAction.KEPT if config_path.exists() else FileAction.NOT_FOUND
+
+    # ``remove`` returns False for four different reasons, and they do not mean
+    # the same thing to a reader of the output. "There was nothing of ours here"
+    # is not-found; "there is a file we deliberately did not touch" is kept.
+    # Asking ``exists()`` conflates them, because a rules file with none of our
+    # markers in it exists and is not ours.
+    state = marker_block.inspect(config_path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
+    if state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
+        return config_path, FileAction.NOT_FOUND
+    return config_path, FileAction.KEPT
+
+
+def _prune_empty_dirs(repo_path: Path) -> None:
+    """Remove ``.cursor/rules`` and ``.cursor`` when uninstall emptied them.
+
+    ``write_rules_file`` creates both, so leaving them is the directory-shaped
+    version of the stub file ``delete_if_only`` exists to prevent. It also has a
+    second-order effect worth naming: :meth:`CursorTarget.is_present` reads
+    ``.cursor/`` as evidence the user has Cursor, so our own leftovers would
+    keep the agent pre-ticked in every later listing and checklist, for a repo
+    it had just been removed from.
+
+    ``rmdir`` refuses a non-empty directory, which is exactly the guard wanted:
+    anything else under ``.cursor/`` is somebody else's and stays.
+    """
+    for candidate in (rules_path(repo_path).parent, repo_path / ".cursor"):
+        with contextlib.suppress(OSError):
+            candidate.rmdir()
 
 
 def detect(repo_path: Path | None = None) -> list[Registration]:
@@ -228,7 +294,12 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
         return []
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ``ValueError`` covers ``json.JSONDecodeError`` and, separately,
+        # ``UnicodeDecodeError`` from a file that is not UTF-8. Naming
+        # JSONDecodeError alone let the decode failure escape a probe whose
+        # whole contract is that it never raises, and detection runs on paths
+        # (``resolve_target_flag``) that do not catch for it.
         return []
     servers = data.get("mcpServers")
     if not isinstance(servers, dict) or "repowise" not in servers:
@@ -286,10 +357,23 @@ class CursorTarget:
         try:
             written = write_mcp_config(repo_path)
             result.record(written.path, written.action)
-        except ValueError:
+        except RemoteServerEntryError:
             result.record(mcp_config_path(repo_path), FileAction.KEPT)
             result.note(
-                ".cursor/mcp.json left unchanged (not valid JSON). Add a "
+                '.cursor/mcp.json left unchanged: its "repowise" entry names a remote '
+                "server. Remove that entry first if you want the local one instead."
+            )
+        # ``OSError`` alongside ``ValueError`` because the read and the parent
+        # ``mkdir`` both live in there, and neither is exotic: ``.cursor`` can be
+        # a plain file, and a config in a shared checkout can be unreadable.
+        # Nothing wraps ``install`` — ``agents add``, ``agents refresh`` and
+        # ``doctor --repair`` all call it bare — so an escape here aborts the run
+        # after other agents' configs have already been written, and prints a
+        # traceback instead of the summary that would have said so.
+        except (ValueError, OSError):
+            result.record(mcp_config_path(repo_path), FileAction.KEPT)
+            result.note(
+                ".cursor/mcp.json left unchanged (unreadable or not valid JSON). Add a "
                 '"repowise" server under "mcpServers" manually.'
             )
 
@@ -302,9 +386,10 @@ class CursorTarget:
                 # so say which file needs unpicking instead of reporting a write.
                 result.note(
                     f"{rules_path(repo_path).name} left unchanged: its Repowise markers are "
-                    "unpaired or duplicated. Fix them by hand and re-run."
+                    "unpaired or duplicated, or the file could not be read. Fix it by "
+                    "hand and re-run."
                 )
-        except OSError:
+        except (OSError, ValueError):
             result.record(rules_path(repo_path), FileAction.KEPT)
             result.note(".cursor/rules/repowise.mdc could not be written.")
 
@@ -317,6 +402,7 @@ class CursorTarget:
             return result
         result.record(*_remove_server_entry(mcp_config_path(repo_path)))
         result.record(*_remove_rules_file(repo_path))
+        _prune_empty_dirs(repo_path)
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:

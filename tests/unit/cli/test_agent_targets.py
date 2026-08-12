@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -394,7 +395,10 @@ def test_cursor_leaves_a_rules_file_it_does_not_own(tmp_path: Path) -> None:
     """Uninstall reports what it did not touch rather than deleting a user's rule.
 
     ``.cursor/rules/repowise.mdc`` is a name a user could plausibly have written
-    themselves, and a marker-free file at that path is theirs.
+    themselves, and a marker-free file at that path is theirs. It reports
+    ``not-found`` rather than ``kept``: there was no block of ours to remove,
+    which is a different statement from "we deliberately left this alone", and
+    that second one is reserved for a file we could not safely touch.
     """
     from repowise.cli.agent_targets.targets import cursor as cursor_target
 
@@ -408,7 +412,119 @@ def test_cursor_leaves_a_rules_file_it_does_not_own(tmp_path: Path) -> None:
     result = cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
 
     assert rules.read_text(encoding="utf-8") == original
-    assert next(f.action for f in result.files if f.path == rules) is FileAction.KEPT
+    assert next(f.action for f in result.files if f.path == rules) is FileAction.NOT_FOUND
+
+
+def test_cursor_uninstall_leaves_no_directories_of_ours_behind(tmp_path: Path) -> None:
+    """The directory-shaped version of the stub file ``delete_if_only`` prevents.
+
+    It is not only tidiness. ``is_present`` reads ``.cursor/`` as evidence the
+    user has Cursor, so our own residue would keep the agent pre-ticked in every
+    later listing for a repo it had just been removed from.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert (repo / ".cursor").is_dir()
+
+    cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert list(repo.iterdir()) == []
+    assert not cursor_target.TARGET.is_present(repo) or shutil.which("cursor")
+
+
+def test_cursor_keeps_a_sibling_server_when_it_removes_ours(tmp_path: Path) -> None:
+    """Deleting the file is only right when the file held nothing else."""
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    config = cursor_target.mcp_config_path(repo)
+    data = json.loads(config.read_text(encoding="utf-8"))
+    data["mcpServers"]["other"] = {"command": "other-server"}
+    config.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert json.loads(config.read_text(encoding="utf-8")) == {
+        "mcpServers": {"other": {"command": "other-server"}}
+    }
+
+
+def test_cursor_declines_a_hand_wired_remote_server(tmp_path: Path) -> None:
+    """The third variant of the preserve-user-keys trap: the key that had to go stayed.
+
+    ``merge_server_entries`` lets generated keys win and keeps everything else,
+    which is right for ``command`` and ``args`` and wrong for ``type``. Against
+    an entry the user pointed at a remote server it forced ``type`` back to
+    ``stdio`` while faithfully preserving the ``url`` beside it, producing an
+    entry that was neither a valid local server nor a valid remote one.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = cursor_target.mcp_config_path(repo)
+    config.parent.mkdir(parents=True)
+    remote = {"mcpServers": {"repowise": {"type": "http", "url": "https://example/mcp"}}}
+    config.write_text(json.dumps(remote, indent=2), encoding="utf-8", newline="\n")
+
+    result = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert json.loads(config.read_text(encoding="utf-8")) == remote
+    assert next(f.action for f in result.files if f.path == config) is FileAction.KEPT
+    assert any("remote server" in note for note in result.notes)
+
+
+@pytest.mark.parametrize("filename", ["mcp.json", "rules"])
+def test_cursor_survives_a_config_file_that_is_not_utf8(tmp_path: Path, filename: str) -> None:
+    """A cp1252 file is ordinary on Windows and used to abort the whole run.
+
+    ``UnicodeDecodeError`` is a ``ValueError`` and not an ``OSError``, so it
+    escaped every handler here and tracebacked out of ``install`` after other
+    agents' configs had already been written, taking the summary that would
+    have named them with it.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = (
+        cursor_target.mcp_config_path(repo)
+        if filename == "mcp.json"
+        else cursor_target.rules_path(repo)
+    )
+    path.parent.mkdir(parents=True)
+    path.write_bytes("caf\xe9".encode("latin-1"))
+    before = path.read_bytes()
+
+    # Every entry point, because they take different routes into the same read.
+    assert cursor_target.TARGET.detect(repo) == []
+    result = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    # Refused, not replaced. A decode failure stops the read and not the write,
+    # so the dangerous outcome here is a silent overwrite, not a crash.
+    assert path.read_bytes() == before
+    assert next(f.action for f in result.files if f.path == path) is FileAction.KEPT
+
+
+def test_cursor_install_survives_a_cursor_path_that_is_a_file(tmp_path: Path) -> None:
+    """``.cursor`` as a plain file made ``mkdir`` raise straight out of ``install``."""
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".cursor").write_text("not a directory\n", encoding="utf-8")
+
+    result = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert (repo / ".cursor").is_file()
+    assert all(f.action is FileAction.KEPT for f in result.files)
+    assert result.notes
 
 
 def test_the_shared_instruction_body_has_one_home() -> None:

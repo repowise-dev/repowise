@@ -183,9 +183,14 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
         return []
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         # A JSONC workspace file is unparseable here but may well be wired up.
         # Reporting "not configured" would be a guess, so report nothing.
+        #
+        # ``ValueError`` rather than ``json.JSONDecodeError`` so a file that is
+        # not UTF-8 lands here too. It is a ``UnicodeDecodeError``, which is a
+        # ``ValueError`` and not a ``JSONDecodeError``, so it used to escape a
+        # probe contracted never to raise.
         return []
     servers = data.get("servers")
     if not isinstance(servers, dict) or "repowise" not in servers:

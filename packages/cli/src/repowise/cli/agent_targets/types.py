@@ -388,6 +388,14 @@ class InstallLifecycle(Protocol):
     stops a fourth agent from meaning a fourth prompt in a fourth module.
     """
 
+    #: The :class:`AgentTarget` id this integration writes for. Declared here
+    #: because the checklist reads it to answer "can ``init`` act on this
+    #: agent", which is a question the registry alone cannot: a target can be
+    #: registered without ``init`` having a writer for it. Two of the three
+    #: implementations already carried it; the third did not, and the gap was
+    #: invisible until something asked all of them at once.
+    integration_id: str
+
     def write_project_files(
         self, console_obj: object, repo_path: Path, options: object
     ) -> None:
