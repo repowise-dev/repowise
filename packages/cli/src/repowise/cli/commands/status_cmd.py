@@ -16,6 +16,7 @@ from repowise.cli.helpers import (
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
+    reconcile_schema_best_effort,
     resolve_command_target,
     run_async,
 )
@@ -51,17 +52,14 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
             create_engine,
             create_session_factory,
             get_session,
-            init_db,
         )
         from repowise.core.persistence.models import GraphNode, Repository
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
-        # An index built by an older repowise is missing whatever columns the
-        # models have gained since, and every query below selects a full ORM
-        # row. Without this the counts silently report 0 (the caller swallows
-        # the `no such column` OperationalError) rather than the real figures.
-        await init_db(engine)
+        # Without this a store one repowise older reports 0 files / 0 pages:
+        # the `no such column` is swallowed by the caller's except.
+        await reconcile_schema_best_effort(engine)
         sf = create_session_factory(engine)
 
         try:
@@ -117,13 +115,12 @@ def _query_page_count(repo_path: Path) -> int:
             create_engine,
             create_session_factory,
             get_session,
-            init_db,
         )
         from repowise.core.persistence.models import Page, Repository
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
-        await init_db(engine)
+        await reconcile_schema_best_effort(engine)
         sf = create_session_factory(engine)
         try:
             async with get_session(sf) as session:
@@ -158,12 +155,11 @@ async def _query_pages(repo_path: Path) -> tuple[dict[str, int], int]:
         create_session_factory,
         get_repository_by_path,
         get_session,
-        init_db,
         list_pages,
     )
 
     engine = create_engine(get_db_url_for_repo(repo_path))
-    await init_db(engine)
+    await reconcile_schema_best_effort(engine)
     sf = create_session_factory(engine)
 
     counts: dict[str, int] = {}
@@ -197,7 +193,6 @@ def _query_health(repo_path: Path) -> dict | None:
             create_engine,
             create_session_factory,
             get_session,
-            init_db,
         )
         from repowise.core.persistence.crud import (
             get_health_metrics,
@@ -207,7 +202,7 @@ def _query_health(repo_path: Path) -> dict | None:
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
-        await init_db(engine)
+        await reconcile_schema_best_effort(engine)
         sf = create_session_factory(engine)
         try:
             async with get_session(sf) as session:

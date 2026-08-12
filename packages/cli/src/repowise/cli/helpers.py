@@ -187,6 +187,31 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     return resolve_db_url(repo_path)
 
 
+async def reconcile_schema_best_effort(engine: Any) -> None:
+    """Back-fill additive schema drift on *engine*, tolerating a failed repair.
+
+    An index built by an older repowise is missing whatever columns the models
+    have gained since, and the ORM then fails with a raw ``no such column`` on
+    the first query — which for a read command means every read. ``init_db``
+    back-fills those columns in place and is idempotent, so the CLI pairs it
+    with ``create_engine`` everywhere it opens a store, the way the MCP server,
+    the workspace registry and the FastAPI app already do in their lifespans.
+
+    Opportunistic, not a precondition, which is the part worth having in one
+    place. Reconciling needs a write, and a store can be read-only or
+    exclusively locked by a concurrent ``repowise update``. Aborting there would
+    be a regression twice over: a store already on the current schema needs no
+    DDL and would have read fine, and where the drift is real the following
+    query fails with the ``no such column`` that the failure shield turns into
+    "this index predates the installed repowise, run repowise update" — a
+    better answer than whichever write error stopped the repair.
+    """
+    from repowise.core.persistence import init_db
+
+    with contextlib.suppress(Exception):
+        await init_db(engine)
+
+
 def db_configured() -> bool:
     """True when ``REPOWISE_DB_URL`` or ``REPOWISE_DATABASE_URL`` is set.
 

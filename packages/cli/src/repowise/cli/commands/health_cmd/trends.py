@@ -17,13 +17,12 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     workspace and single-repo indexes alike. When no snapshots exist
     (e.g. health was never run), prints a friendly hint.
     """
-    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
     from repowise.core.analysis.health.trends import diff_snapshots, recent_kpis
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
         get_session,
-        init_db,
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
@@ -33,7 +32,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     async def _fetch() -> tuple[list[dict], object]:
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
-        await init_db(engine)
+        await reconcile_schema_best_effort(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))

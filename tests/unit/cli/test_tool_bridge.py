@@ -43,10 +43,10 @@ def wired(monkeypatch, tmp_path):
         "repowise.core.persistence.create_engine", lambda url: engine, raising=False
     )
 
-    async def _fake_init_db(eng):
+    async def _fake_reconcile(eng):
         engine.reconciled = True
 
-    monkeypatch.setattr("repowise.core.persistence.init_db", _fake_init_db, raising=False)
+    monkeypatch.setattr("repowise.cli.helpers.reconcile_schema_best_effort", _fake_reconcile)
     monkeypatch.setattr(
         "repowise.core.persistence.FullTextSearch", lambda eng: ("fts", eng), raising=False
     )
@@ -280,6 +280,27 @@ def test_a_store_one_repowise_older_than_the_models_is_still_readable(monkeypatc
     healed = {r[1] for r in conn.execute("pragma table_info(repositories)")}
     conn.close()
     assert "churn_anchor_sha" in healed
+
+
+def test_a_store_that_cannot_be_repaired_still_serves_the_read(monkeypatch, tmp_path):
+    """Reconciling is opportunistic; a failed repair must not fail the call.
+
+    Measured while reviewing the fix: a read-only store, and a store whose
+    write lock is held by a concurrent ``repowise update``, both make the
+    ``ALTER TABLE`` raise. Aborting there would be a regression — a store
+    already on the current schema needs no DDL and reads fine either way, so
+    the repair failing says nothing about whether the read can succeed.
+    """
+    import asyncio
+
+    from repowise.cli.helpers import reconcile_schema_best_effort
+
+    class _Boom:
+        def begin(self):
+            raise RuntimeError("attempt to write a readonly database")
+
+    # Must not raise.
+    asyncio.run(reconcile_schema_best_effort(_Boom()))
 
 
 def test_a_repo_that_asked_for_keyless_is_not_reported_as_degraded(
