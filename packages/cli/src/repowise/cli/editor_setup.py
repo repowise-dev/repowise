@@ -1,9 +1,16 @@
 """AI editor setup orchestration for repowise init.
 
 The indexing command should not know the details of each editor's config files,
-global settings, or managed instruction files.  This module keeps that product
-setup layer behind a small integration interface; concrete editor integrations
-live in ``repowise.cli.editor_integrations``.
+global settings, or managed instruction files. This module keeps that product
+setup layer behind an integration interface; concrete editor integrations live
+in ``repowise.cli.editor_integrations`` and the config writes they drive live in
+``repowise.cli.agent_targets``.
+
+The interface itself is no longer declared here. It is
+:class:`~repowise.cli.agent_targets.types.InstallLifecycle`, next to the
+:class:`~repowise.cli.agent_targets.types.AgentTarget` descriptor whose surface
+it is a subset of — one home for integration protocols rather than two that
+drift.
 """
 
 from __future__ import annotations
@@ -12,7 +19,9 @@ import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
+
+from repowise.cli.agent_targets.types import InstallLifecycle
 
 # When set (truthy), `repowise init` skips registering MCP servers / hooks in
 # the user's *global* editor config (~/.claude/settings.json, Claude Desktop).
@@ -171,43 +180,9 @@ class EditorSetupOptions:
         )
 
 
-class EditorSetupIntegration(Protocol):
-    """Setup hooks implemented by each AI editor integration."""
-
-    def configure_options(
-        self,
-        console_obj: Any,
-        options: EditorSetupOptions,
-    ) -> EditorSetupOptions:
-        """Let the integration prompt or adjust setup options before writing files."""
-        ...
-
-    def write_project_files(
-        self,
-        console_obj: Any,
-        repo_path: Path,
-        options: EditorSetupOptions,
-    ) -> None:
-        """Write project-local config or instruction files for this editor."""
-        ...
-
-    def register_client(self, console_obj: Any, repo_path: Path) -> None:
-        """Register global or user-level client configuration for this editor."""
-        ...
-
-    def refresh_project_files(
-        self,
-        console_obj: Any,
-        repo_path: Path,
-        options: EditorSetupOptions,
-    ) -> None:
-        """Refresh managed project files after repository content changes."""
-        ...
-
-
 def _resolve_integrations(
-    integrations: tuple[EditorSetupIntegration, ...] | None,
-) -> tuple[EditorSetupIntegration, ...]:
+    integrations: tuple[InstallLifecycle, ...] | None,
+) -> tuple[InstallLifecycle, ...]:
     if integrations is not None:
         return integrations
     from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
@@ -222,7 +197,7 @@ def resolve_editor_setup_options(
     prompt_for_project_files: bool = False,
     project_file_overrides: Mapping[str, bool] | None = None,
     integration_overrides: Mapping[str, bool] | None = None,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+    integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> EditorSetupOptions:
     """Build setup options, allowing integrations to own their prompts."""
 
@@ -243,7 +218,7 @@ def write_editor_project_files(
     *,
     options: EditorSetupOptions | None = None,
     disabled_project_files: Iterable[str] | None = None,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+    integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
     """Write common MCP config and project-local editor files."""
 
@@ -262,7 +237,7 @@ def register_editor_clients(
     repo_path: Path,
     *,
     no_editor_setup: bool = False,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+    integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
     """Register editor clients with repowise MCP and hooks where supported."""
 
@@ -277,7 +252,7 @@ def refresh_editor_project_files(
     repo_path: Path,
     *,
     options: EditorSetupOptions | None = None,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+    integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
     """Refresh editor-managed project files without rewriting common MCP config."""
 

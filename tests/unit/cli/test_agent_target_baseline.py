@@ -97,8 +97,10 @@ def _newline_style(raw: bytes) -> str:
     crlf = raw.count(b"\r\n")
     lf = raw.count(b"\n")
     if crlf == 0:
-        return "lf" if os.linesep == "\n" else "lf"
+        return "lf"
     if crlf == lf:
+        # Every newline is CRLF. That is the platform translation on Windows
+        # and something nothing here produces on POSIX, so on POSIX it is drift.
         return "platform" if os.linesep == "\r\n" else "mixed"
     return "mixed"
 

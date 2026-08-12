@@ -7,14 +7,20 @@ from typing import Any
 
 import click
 
+from repowise.cli.agent_targets.targets import codex as codex_target
 from repowise.cli.editor_setup import EditorSetupOptions
 
 
 class CodexSetup:
-    """Project-local Codex setup integration."""
+    """Project-local Codex setup integration.
 
-    integration_id = "codex"
-    project_file_id = "agents_md"
+    The ``init``/``update`` half of the integration; the descriptor in
+    ``agent_targets.targets.codex`` owns the writes and everything else.
+    """
+
+    #: Read from the descriptor rather than restated, so the ids have one home.
+    integration_id = codex_target.ID
+    project_file_id = codex_target.PROJECT_FILE_ID
 
     def configure_options(
         self,

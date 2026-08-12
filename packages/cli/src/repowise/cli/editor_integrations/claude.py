@@ -7,14 +7,22 @@ from typing import Any
 
 import click
 
+from repowise.cli.agent_targets.targets import claude_code as claude_target
 from repowise.cli.editor_setup import EditorSetupOptions
 from repowise.cli.helpers import get_db_url_for_repo, load_config, run_async
 
 
 class ClaudeCodeSetup:
-    """Claude Code/Desktop setup integration preserving existing init behavior."""
+    """Claude Code/Desktop setup integration preserving existing init behavior.
 
-    project_file_id = "claude_md"
+    The ``init``/``update`` half of the integration. Detection, uninstall,
+    ``print_config`` and ``doctor`` live on the descriptor in
+    ``agent_targets.targets.claude_code``, along with every config write this
+    class drives.
+    """
+
+    #: Read from the descriptor rather than restated, so the id has one home.
+    project_file_id = claude_target.PROJECT_FILE_ID
 
     def configure_options(
         self,

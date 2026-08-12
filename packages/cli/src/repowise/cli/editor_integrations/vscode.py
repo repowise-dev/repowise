@@ -7,6 +7,7 @@ from typing import Any
 
 import click
 
+from repowise.cli.agent_targets.targets import vscode as vscode_target
 from repowise.cli.editor_setup import EditorSetupOptions
 
 
@@ -18,8 +19,9 @@ class VSCodeSetup:
     they use the bare ``repowise`` command like the committed ``.mcp.json``.
     """
 
-    integration_id = "vscode"
-    project_file_id = "vscode_mcp"
+    #: Read from the descriptor rather than restated, so the ids have one home.
+    integration_id = vscode_target.ID
+    project_file_id = vscode_target.PROJECT_FILE_ID
 
     def configure_options(
         self,
