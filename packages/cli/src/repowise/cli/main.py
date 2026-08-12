@@ -76,6 +76,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("corrections", "corrections_cmd:corrections_command"),
     ("export", "export_cmd:export_command"),
     ("hook", "hook_cmd:hook_group"),
+    ("agents", "agents_cmd:agents_group"),
     ("status", "status_cmd:status_command"),
     ("doctor", "doctor_cmd:doctor_command"),
     ("watch", "watch_cmd:watch_command"),

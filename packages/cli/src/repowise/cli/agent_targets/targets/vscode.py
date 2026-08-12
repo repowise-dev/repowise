@@ -168,6 +168,23 @@ class VSCodeTarget:
         """Project scope only — there is no user-level file repowise writes."""
         return scope is Scope.PROJECT
 
+    def is_present(self, repo_path: Path | None = None) -> bool:
+        """``code`` on PATH, a user data directory, or a ``.vscode/`` in the repo.
+
+        The repo-local check earns its place: a workspace with ``.vscode/`` in
+        it is worth configuring even from a machine where the ``code`` shim was
+        never installed, because the file is committed and read by whoever
+        opens the repo next.
+        """
+        import shutil
+
+        if repo_path is not None and (repo_path / ".vscode").is_dir():
+            return True
+        if shutil.which("code") is not None:
+            return True
+        home = Path.home()
+        return any((home / candidate).is_dir() for candidate in (".vscode", ".vscode-server"))
+
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
 

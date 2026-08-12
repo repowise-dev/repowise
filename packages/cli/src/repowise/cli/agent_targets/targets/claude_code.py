@@ -262,6 +262,19 @@ class ClaudeCodeTarget:
     def supports_scope(self, scope: Scope) -> bool:
         return True
 
+    def is_present(self, repo_path: Path | None = None) -> bool:
+        """``~/.claude`` exists, or Claude Desktop's config directory does.
+
+        Claude Code creates ``~/.claude`` on first run and never removes it, so
+        its presence is the cheapest honest signal. Claude Desktop is checked
+        separately because it is a different product with the same brand and a
+        user can have either.
+        """
+        if (Path.home() / ".claude").is_dir():
+            return True
+        desktop = desktop_config_path()
+        return desktop is not None and desktop.parent.is_dir()
+
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
 

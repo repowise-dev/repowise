@@ -157,6 +157,15 @@ class Registration:
     version: str | None = None
     detail: str | None = None
 
+    def as_dict(self) -> dict:
+        return {
+            "method": self.method,
+            "scope": self.scope.value,
+            "config_path": str(self.config_path),
+            "version": self.version,
+            "detail": self.detail,
+        }
+
 
 @dataclass(frozen=True)
 class FileWrite:
@@ -266,6 +275,28 @@ class AgentTarget(Protocol):
 
     def supports_scope(self, scope: Scope) -> bool:
         """Whether this target has a config home at *scope*."""
+        ...
+
+    def is_present(self, repo_path: Path | None = None) -> bool:
+        """Whether this agent looks installed on this machine.
+
+        Distinct from :meth:`detect`, and the distinction is the whole reason
+        this exists: ``detect`` answers "is repowise wired into this agent",
+        which is ``False`` for every agent on a first-time user's machine.
+        "Which agents should we offer to wire up" needs the other question, and
+        it has to be answered by the descriptor — asking it anywhere else
+        rebuilds the per-host ``if agent == "codex"`` chain the seam exists to
+        delete.
+
+        Cheap by contract: a directory probe or a PATH lookup, never a
+        subprocess. This runs on every listing and in the middle of ``init``,
+        and an agent that has to be *launched* to find out it is installed is
+        an agent we report as absent.
+
+        Best-effort in both directions. A false positive costs an unchecked box
+        the user unchecks; a false negative costs a checked box they check.
+        Neither is worth a slow probe.
+        """
         ...
 
     def detect(self, repo_path: Path | None = None) -> list[Registration]:

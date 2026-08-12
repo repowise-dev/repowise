@@ -315,6 +315,20 @@ class CodexTarget:
     def supports_scope(self, scope: Scope) -> bool:
         return True
 
+    def is_present(self, repo_path: Path | None = None) -> bool:
+        """``codex`` on PATH, or a ``~/.codex`` the CLI left behind.
+
+        Deliberately *not* ``is_codex_cli_installed() and is_codex_logged_in()``,
+        which is what init's Codex prompt used to gate on. Those shell out twice
+        with a 5s and a 10s timeout, which is not a probe you run on every
+        listing. Login state is still checked, but where it can act on the
+        answer: the setup path warns when it writes config for a CLI that is
+        installed and signed out.
+        """
+        import shutil
+
+        return shutil.which("codex") is not None or (Path.home() / ".codex").is_dir()
+
     def detect(self, repo_path: Path | None = None) -> list[Registration]:
         return detect(repo_path)
 
