@@ -132,6 +132,19 @@ class InstrumentedGroup(click.Group):
                 status = "interrupted"
             else:
                 status = "error"
+                # Mirror the ``Exit`` branch above and name the class, or this
+                # bucket records a failure with no error type at all. Commands
+                # that raise ``SystemExit`` directly rather than via
+                # ``ctx.exit()`` all land here, so leaving it unset loses the
+                # only diagnostic the event carries. Prefer the chained cause
+                # when there is one: a bare ``SystemExit(1)`` says nothing on
+                # its own, whereas the exception that forced the exit does.
+                # ``from None`` is honoured — a suppressed context is the
+                # author saying it is not the explanation.
+                cause = exc.__cause__
+                if cause is None and not exc.__suppress_context__:
+                    cause = exc.__context__
+                error_type = type(cause).__name__ if cause else "SystemExit"
             raise
         except (KeyboardInterrupt, click.exceptions.Abort):
             # User cancelled (Ctrl-C / declined a prompt). Not a failure — long-
