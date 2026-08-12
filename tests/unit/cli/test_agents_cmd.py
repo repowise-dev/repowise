@@ -384,7 +384,14 @@ def test_doctor_surfaces_a_stale_hook_matcher_rather_than_calling_it_ok(
 
 
 def test_doctor_fails_the_run_only_for_a_damaged_config(repo: Path) -> None:
-    """The other side of that line: broken is a real fault, so it fails."""
+    """The other side of that line: broken is a real fault, so it fails.
+
+    It does **not** drive ``--repair``, and this assertion is the reverse of what
+    it once was. The target's own comment explains why: a file this damaged makes
+    detection find nothing, and refresh only touches what it detects, so the
+    repair pass would skip this target and report success. Failing the run and
+    naming ``agents add`` is the whole of the correct response.
+    """
     from repowise.cli.commands.doctor_cmd.repo_checks import _agent_target_checks
 
     settings = Path.home() / ".claude" / "settings.json"
@@ -395,7 +402,8 @@ def test_doctor_fails_the_run_only_for_a_damaged_config(repo: Path) -> None:
 
     claude = next(c for c in checks if c.name == "Agent: claude-code")
     assert claude.ok is False
-    assert needs_refresh is True
+    assert "repowise agents add --target=claude-code" in claude.detail
+    assert needs_refresh is False
 
 
 def test_doctor_calls_a_damaged_config_broken_not_missing(repo: Path) -> None:

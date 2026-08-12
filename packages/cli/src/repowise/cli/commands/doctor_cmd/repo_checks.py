@@ -766,7 +766,11 @@ def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
             detail = report.issues[0] if report.issues else "wired up"
             checks.append(_check(name, True, detail))
             continue
-        needs_refresh = True
+        # Only conditions the repair pass can actually resolve drive it. A
+        # plugin the CLI cannot rewrite, or a fix that is a different command,
+        # would otherwise buy a global config write that changes nothing and
+        # then report advice for a condition the user does not have.
+        needs_refresh = needs_refresh or report.repairable
         detail = "; ".join(report.issues)
         if report.fix_command:
             detail += f" (run: {report.fix_command})"

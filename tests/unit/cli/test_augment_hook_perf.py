@@ -86,13 +86,7 @@ def test_the_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
 
 
 def test_the_stamped_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
-    """The version stamp sits in front of the migrations, so it is hot-path too.
-
-    It gates on ``is_editor_setup_disabled``, which lives in ``editor_setup`` —
-    a module that imports ``agent_targets.types``. That is stdlib-only today and
-    the whole seam depends on it staying that way; this is what notices when it
-    stops being.
-    """
+    """The version stamp sits in front of the migrations, so it is hot-path too."""
     heavy = _heavy_after(
         "from repowise.cli.self_heal import run_editor_migrations; run_editor_migrations();",
         env=_fake_home(tmp_path),
@@ -100,11 +94,50 @@ def test_the_stamped_self_heal_imports_nothing_heavy(tmp_path: Path) -> None:
     assert heavy == "", f"the stamped self-heal pulled in:\n{heavy}"
 
 
+def test_the_stamped_common_path_imports_nothing_at_all(tmp_path: Path) -> None:
+    """Not "nothing heavy" but *nothing*, on the path that fires per tool call.
+
+    The version of this that only checked the heavy-prefix list could not see the
+    defect it should have caught. Gating the stamp read behind
+    ``is_editor_setup_disabled`` reads better and costs more than the problem it
+    solves: that lives in ``editor_setup``, whose module scope imports
+    ``agent_targets.types``, and the pair measured at ~13ms against the ~19ms the
+    whole self-heal was costing: two thirds of the saving spent on the check.
+    Neither module is on the heavy list, and neither ever will be, because both
+    are stdlib-only by design. Only naming them directly catches it.
+
+    So: warm the stamp, then assert the second call reaches neither.
+    """
+    probe = (
+        "import sys; "
+        "from repowise.cli.self_heal import run_editor_migrations; "
+        "run_editor_migrations(); "
+        "[sys.modules.pop(m) for m in list(sys.modules) "
+        " if m.startswith(('repowise.cli.editor_setup','repowise.cli.agent_targets',"
+        "'repowise.cli.editor_integrations'))]; "
+        "run_editor_migrations(); "
+        "print('\\n'.join(sorted(m for m in sys.modules "
+        " if m.startswith(('repowise.cli.editor_setup','repowise.cli.agent_targets',"
+        "'repowise.cli.editor_integrations')))));"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_fake_home(tmp_path),
+    )
+    assert out.stdout.strip() == "", (
+        "the stamped common path imported these, which the heavy-prefix guard "
+        f"cannot see:\n{out.stdout}"
+    )
+
+
 def test_the_stamp_spares_the_settings_read_on_the_common_path(tmp_path: Path) -> None:
     """The point of the stamp, measured as file access rather than asserted.
 
     Before it, every hook fire opened and parsed ``~/.claude/settings.json`` to
-    discover there was nothing to do — once per matched tool call. The second
+    discover there was nothing to do, once per matched tool call. The second
     run must not open it at all.
     """
     env = _fake_home(tmp_path)

@@ -14,7 +14,7 @@ nothing and is what makes a golden test possible at all:
 
 * fixed slot order (frontmatter, blank line, body),
 * LF newlines regardless of the checkout's line-ending style,
-* and **never** a timestamp, a version or a generator banner in a rendered file —
+* and **never** a timestamp, a version or a generator banner in a rendered file,
   a file that changes when nothing changed cannot be a golden.
 
 Run ``python scripts/gen_plugin_content.py`` to write, ``--check`` to diff without
@@ -36,12 +36,13 @@ The shared source format, one file per item:
 
 Bodies may reference a slash command as ``{{cmd:risk}}``; each host renders it in
 its own syntax. Frontmatter is stored verbatim rather than as parsed keys so a
-rendered file reproduces byte for byte — folded scalars and all.
+rendered file reproduces byte for byte, folded scalars and all.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
 import sys
 from dataclasses import dataclass
@@ -53,8 +54,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SHARED = ROOT / "plugins" / "shared"
 
 #: Codex prompts ship inside the wheel rather than in ``plugins/codex/``. Codex's
-#: plugin manifest has no slot for commands — a plugin may bundle ``skills/``,
-#: ``hooks/``, ``assets/``, ``.mcp.json`` and ``.app.json``, and nothing else — so
+#: plugin manifest has no slot for commands. A plugin may bundle ``skills/``,
+#: ``hooks/``, ``assets/``, ``.mcp.json`` and ``.app.json``, and nothing else, so
 #: the only surface that produces a Codex slash command is ``~/.codex/prompts/``,
 #: which is local-only and written by the CLI. Package data is therefore the one
 #: copy that actually reaches a user, and it follows the precedent already set by
@@ -162,7 +163,7 @@ def select_keys(frontmatter: str, allowed: frozenset[str] | None) -> str:
     """Drop top-level frontmatter keys *allowed* does not name.
 
     Line-based rather than parse-and-redump, because the stored text is verbatim
-    and re-emitting it through a YAML dumper would reflow folded scalars — which
+    and re-emitting it through a YAML dumper would reflow folded scalars, which
     turns every render into a diff and defeats the golden. A continuation line
     (indented, or blank inside a folded scalar) follows whichever key is open, so
     dropping a multi-line value takes its continuations with it.
@@ -203,6 +204,44 @@ def rendered_files() -> dict[Path, str]:
     return out
 
 
+def orphaned_files() -> list[Path]:
+    """Generated files on disk that no shared source produces any more, sorted.
+
+    ``rendered_files`` says what *should* exist and nothing compared it to what
+    *does*, so deleting a shared source left both rendered copies behind and
+    ``--check`` called the tree clean. The consequences are not cosmetic: a
+    retired command keeps shipping in the wheel and keeps being written into
+    ``~/.codex/prompts`` on every install, and renaming a ``dir:`` override
+    leaves the old ``SKILL.md`` for the host to load as a *second* skill with the
+    same name, a small version of the hand-fork this whole file exists to close.
+
+    Scoped by *content*, not by location. Globbing the directory and deleting
+    everything unrecognised reaches a `README.md` a host directory carries, or a
+    command somebody hand-maintains, silently and unprompted, on a plain
+    regenerate. Every file this script writes opens with a `---` frontmatter
+    fence, so requiring one is a cheap ownership test that a README fails and a
+    generated artifact cannot.
+    """
+    expected = set(rendered_files())
+    found: list[Path] = []
+    for host in HOSTS:
+        candidates = [
+            *sorted(host.skills_root.glob("*/SKILL.md")),
+            *sorted(host.commands_root.glob("*.md")),
+        ]
+        for path in candidates:
+            if path in expected:
+                continue
+            try:
+                if path.read_text(encoding="utf-8").startswith("---\n"):
+                    found.append(path)
+            except (OSError, ValueError):
+                # Unreadable or not UTF-8: not something this script wrote, and
+                # certainly not something to delete on a guess.
+                continue
+    return found
+
+
 # ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
@@ -213,7 +252,7 @@ def write_if_changed(path: Path, text: str) -> bool:
 
     The comparison normalises the file's line endings first. This repo is checked
     out with ``core.autocrlf`` on Windows, so an untouched generated file reads
-    back as CRLF — comparing raw bytes would rewrite all thirty of them on every
+    back as CRLF, so comparing raw bytes would rewrite all thirty on every
     run and report a drift that does not exist. Git stores LF either way.
     """
     if path.exists() and path.read_text(encoding="utf-8").replace("\r\n", "\n") == text:
@@ -246,17 +285,34 @@ def main(argv: list[str] | None = None) -> int:
         elif write_if_changed(path, text):
             drifted.append(path)
 
+    orphans = orphaned_files()
+    if not args.check:
+        for path in orphans:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            # Only a *skill* owns its directory. Doing this for every orphan
+            # removed the commands root itself once the last command retired,
+            # including the Codex package-data directory, after which
+            # ``bundled_prompts`` raised FileNotFoundError out of ``install``.
+            # ``rmdir`` refuses a non-empty directory, so a skill that also
+            # carried assets keeps them.
+            if path.name == "SKILL.md":
+                with contextlib.suppress(OSError):
+                    path.parent.rmdir()
+
     verb = "stale" if args.check else "wrote"
     for path in drifted:
         print(f"{verb}: {path.relative_to(ROOT).as_posix()}")
-    if args.check and drifted:
+    for path in orphans:
+        print(f"{'orphaned' if args.check else 'removed'}: {path.relative_to(ROOT).as_posix()}")
+    if args.check and (drifted or orphans):
         print(
-            f"\n{len(drifted)} generated file(s) differ from plugins/shared/. "
-            "Run: python scripts/gen_plugin_content.py",
+            f"\n{len(drifted) + len(orphans)} generated file(s) disagree with "
+            "plugins/shared/. Run: python scripts/gen_plugin_content.py",
             file=sys.stderr,
         )
         return 1
-    if not drifted:
+    if not drifted and not orphans:
         print("up to date" if args.check else "no changes")
     return 0
 

@@ -1,15 +1,15 @@
 """Codex CLI as an agent target.
 
 Full tier by the derived rule — it names both a hook adapter and a transcript
-adapter — but asymmetric with Claude Code in a way worth stating, because it
+adapter. It is asymmetric with Claude Code in a way worth stating, because it
 runs the *opposite* way round for each of the two content surfaces.
 
 Skills reach Claude Code and Codex the same way, through the plugin. Slash
 commands do not, and cannot: a Codex plugin manifest has no slot for them. A
 plugin may bundle ``skills/``, ``hooks/``, ``assets/``, ``.mcp.json`` and
 ``.app.json``, and that is the whole list. The only surface that yields a Codex
-slash command is ``~/.codex/prompts/``, which is local-only — plugins cannot
-write it — so the CLI installs them from package data, off the same shared
+slash command is ``~/.codex/prompts/``, which is local-only (plugins cannot
+write it), so the CLI installs them from package data, off the same shared
 source that renders the plugin's skills. Claude Code gets its commands from the
 plugin and never from ``init``; Codex gets its commands from ``init``'s
 successor commands and never from the plugin.
@@ -66,7 +66,7 @@ METHODS = (
                 Capability.MCP,
                 Capability.HOOKS,
                 Capability.INSTRUCTIONS,
-                # Slash commands come from the direct path, not the plugin —
+                # Slash commands come from the direct path, not the plugin.
                 # see the module docstring. This is the mirror image of Claude
                 # Code, where they come from the plugin and not the direct path.
                 Capability.COMMANDS,
@@ -104,7 +104,7 @@ def instructions_path(repo_path: Path) -> Path:
 def user_prompts_dir() -> Path:
     """Where Codex looks for slash commands.
 
-    Global and flat — it is shared with every other tool the user has installed,
+    Global and flat. It is shared with every other tool the user has installed,
     which is why every file we put there is prefixed ``repowise-``.
     """
     return Path.home() / ".codex" / "prompts"
@@ -292,11 +292,15 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     return FileWrite(path=hooks_path, action=action), enable_hooks_feature(repo_path)
 
 
-#: Every prompt this target owns starts with it. Both the install and the
-#: uninstall read the set from the bundled files rather than a hardcoded list,
-#: so a command added to ``plugins/shared/commands/`` needs no edit here — but
-#: the uninstall also needs to recognise a prompt from a *previous* release
-#: whose shared source has since been deleted, which is what the prefix is for.
+#: Namespace for every prompt this target writes. ``~/.codex/prompts`` is a flat
+#: global directory shared with every other tool the user has installed, so the
+#: prefix is what keeps our filenames from colliding with theirs.
+#:
+#: It is **not** an ownership test. A user writing their own Repowise prompt will
+#: reasonably call it ``repowise-my-team-workflow.md``, and treating the prefix as
+#: proof of ownership would delete it on uninstall. Nothing on disk distinguishes
+#: our file from theirs, so the only safe answer is to touch the names we ship and
+#: no others. See :func:`remove_prompts`.
 PROMPT_PREFIX = "repowise-"
 
 
@@ -307,7 +311,7 @@ def bundled_prompts() -> list[tuple[str, str]]:
     slot for commands (``skills/``, ``hooks/``, ``assets/``, ``.mcp.json`` and
     ``.app.json``, and nothing else), so the only surface that yields a Codex
     slash command is this directory, and the CLI is the only thing that can
-    write it. Generated from ``plugins/shared/commands/`` — see
+    write it. Generated from ``plugins/shared/commands/`` by
     ``scripts/gen_plugin_content.py``.
     """
     from importlib.resources import files
@@ -320,13 +324,37 @@ def bundled_prompts() -> list[tuple[str, str]]:
     )
 
 
+def _current_prompt_text(path: Path) -> str | None:
+    """The prompt's text with line endings normalised, or None if unusable.
+
+    "Unusable" covers absent, a directory, unreadable, and *not valid UTF-8*.
+    that last one is a ``UnicodeDecodeError``, which is a ``ValueError`` and so
+    escapes an ``OSError`` handler. Nothing wraps ``install``: ``agents add``,
+    ``agents refresh`` and ``doctor --repair`` all call it bare, and the last of
+    those would abort part-way through having already written other agents'
+    configs. Every one of these states means the same thing to the caller: the
+    file we would write is not there, so they collapse to None.
+    """
+    try:
+        return path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    except (OSError, ValueError):
+        return None
+
+
 def write_prompts() -> list[FileWrite]:
     """Install the slash commands into ``~/.codex/prompts``, one file each.
 
     LF discipline rather than the platform translation the JSON configs take:
     these are whole files repowise owns end to end, so pinning the endings makes
-    a re-run on a different machine a no-op instead of a rewrite. The comparison
-    reads the file back through the same normalisation for the same reason.
+    a re-run on a different machine a no-op instead of a rewrite.
+
+    One unwritable name (a directory sitting at ``repowise-ask.md``, a
+    permission) does not stop the other seventeen. Raising instead would abort
+    ``install`` after the rewrite hook had already been written and recorded,
+    which is the part-way failure this was supposed to remove, just moved. The
+    refusal is reported as :attr:`~..types.FileAction.KEPT`, the value this
+    codebase already uses for "something is there and we did not touch it", and
+    it reaches the user as a row in the ``agents add`` output.
     """
     from ..formats.json_merge import atomic_write_text
 
@@ -334,43 +362,68 @@ def write_prompts() -> list[FileWrite]:
     writes: list[FileWrite] = []
     for name, text in bundled_prompts():
         path = directory / name
-        current: str | None = None
-        try:
-            current = path.read_text(encoding="utf-8")
-        except OSError:
-            current = None
-        if current is not None and current.replace("\r\n", "\n") == text:
+        current = _current_prompt_text(path)
+        if current == text:
             writes.append(FileWrite(path=path, action=FileAction.UNCHANGED))
             continue
-        directory.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, text, newline="\n")
+        existed = path.exists()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(path, text, newline="\n")
+        except OSError:
+            writes.append(FileWrite(path=path, action=FileAction.KEPT))
+            continue
         writes.append(
-            FileWrite(
-                path=path,
-                action=FileAction.UPDATED if current is not None else FileAction.CREATED,
-            )
+            FileWrite(path=path, action=FileAction.UPDATED if existed else FileAction.CREATED)
         )
     return writes
 
 
 def remove_prompts() -> list[FileWrite]:
-    """Delete every prompt in ``~/.codex/prompts`` that repowise put there.
+    """Delete the prompts repowise ships, and nothing else in that directory.
 
-    Matched on the filename prefix, not on the bundled set: a prompt shipped by
-    an older release whose shared source has since been deleted is still ours,
-    and leaving it behind is how a global directory silently accumulates.
+    Scoped to the **currently bundled names**, deliberately, and not to
+    ``repowise-*.md``. The prefix is a namespace, not a proof of ownership: a
+    user's own ``repowise-my-team-workflow.md`` matches it, and deleting that is
+    unrecoverable.
+
+    The cost of the narrow rule is that a command retired between releases leaves
+    one stale file behind after an uninstall. That is the right way round: losing
+    a file of ours is a wasted kilobyte, losing one of theirs is data loss. That is
+    it is why :data:`PROMPT_PREFIX` documents itself as a namespace.
     """
     directory = user_prompts_dir()
     if not directory.is_dir():
         return []
     removed: list[FileWrite] = []
-    for path in sorted(directory.glob(f"{PROMPT_PREFIX}*.md")):
+    for name, _text in bundled_prompts():
+        path = directory / name
         try:
             path.unlink()
         except OSError:
             continue
         removed.append(FileWrite(path=path, action=FileAction.REMOVED))
     return removed
+
+
+def stale_prompts() -> list[str]:
+    """Bundled prompts that are missing from, or out of date in, ``~/.codex/prompts``.
+
+    The drift this branch exists to close, on the one surface the CLI can
+    actually repair. The Claude Code plugin skew is *reported* because repowise
+    cannot rewrite a plugin; these it can rewrite in one command, so staying
+    silent about them would be strictly worse.
+
+    Empty when nothing is installed at all. An agent nobody wired up is not a
+    stale install, and ``doctor`` already has a ``not-installed`` answer for that.
+    """
+    directory = user_prompts_dir()
+    if not directory.is_dir():
+        return []
+    bundled = bundled_prompts()
+    if not any((directory / name).exists() for name, _ in bundled):
+        return []
+    return [name for name, text in bundled if _current_prompt_text(directory / name) != text]
 
 
 def _combined(first: FileAction, second: FileAction) -> FileAction:
@@ -573,10 +626,19 @@ class CodexTarget:
                 status=DoctorStatus.BROKEN,
                 issues=(f"{hooks} is not valid JSON, so Codex loads none of its hooks.",),
                 fix_command="repowise hook rewrite install",
+                # Not the refresh pass's job: detection cannot see a registration
+                # inside a file it could not parse, so `--repair` would skip this
+                # target and report success. Same reasoning as Claude Code's.
+                repairable=False,
             )
 
+        # Read before the hook checks so a drifted prompt set is still reported
+        # on a machine whose rewrite hook was never installed. The two surfaces
+        # are wired by different commands and go stale independently.
+        stale = stale_prompts()
+
         matcher = codex_rewrite_hook_matcher()
-        if matcher is None:
+        if matcher is None and not stale:
             return DoctorReport(
                 target_id=ID,
                 status=DoctorStatus.NOT_INSTALLED,
@@ -585,12 +647,26 @@ class CodexTarget:
             )
 
         issues: list[str] = []
-        if matcher != SHELL_TOOL_MATCHER:
+        if stale:
+            issues.append(
+                f"{len(stale)} of the {len(bundled_prompts())} Codex slash commands in "
+                f"{user_prompts_dir()} are missing or out of date, so /prompts:repowise-* "
+                "is running an older version than this CLI."
+            )
+        # Every branch below is gated on the hook actually being installed, and
+        # the absent case is stated rather than dropped. Loosening the early
+        # return above to `and not stale` moved this whole block into reach for a
+        # machine with no hook at all, which silently lost a true fact (the hook
+        # is missing) and made a false one sayable (that it "is registered").
+        matcher_stale = matcher is not None and matcher != SHELL_TOOL_MATCHER
+        if matcher is None:
+            issues.append("The distill rewrite hook is not installed for Codex.")
+        elif matcher_stale:
             issues.append(
                 f"The rewrite hook matches {matcher!r}, but Codex now names its shell "
                 f"tools {SHELL_TOOL_MATCHER!r}. The hook is installed and will never fire."
             )
-        if codex_supports_rewrite() is False:
+        if matcher is not None and codex_supports_rewrite() is False:
             issues.append(
                 "This Codex build predates PreToolUse command rewriting, so the hook "
                 "is registered but its rewrite will be rejected at runtime."
@@ -598,11 +674,23 @@ class CodexTarget:
 
         if not issues:
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
+        # Stale prompts win the fix slot: `agents add` rewrites them *and* the
+        # hook, where `hook rewrite install` only does the hook. It is also the
+        # honest command for the case `refresh` cannot reach: a machine with
+        # prompts but no user-scope hook registration has nothing for refresh to
+        # detect, so `--repair` would skip it and report success.
+        #
+        # `repairable` follows the same rule as Claude Code's: it names what the
+        # refresh pass rewrites, which is the hook, and a stale prompt set must
+        # not suppress that repair the way the first cut of this let it.
         return DoctorReport(
             target_id=ID,
             status=DoctorStatus.STALE,
             issues=tuple(issues),
-            fix_command="repowise hook rewrite install",
+            fix_command=(
+                "repowise agents add --target=codex" if stale else "repowise hook rewrite install"
+            ),
+            repairable=matcher_stale,
         )
 
 

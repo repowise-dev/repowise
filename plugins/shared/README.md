@@ -13,8 +13,8 @@ python scripts/gen_plugin_content.py --check  # report drift, write nothing
 ```
 
 `plugins/codex/skills/` used to be a hand-copy of the Claude Code one and had
-already drifted — descriptions rewritten, headings retitled, one directory
-renamed — with nothing detecting it. Two files that say roughly the same thing in
+already drifted: descriptions rewritten, headings retitled, one directory
+renamed, with nothing detecting it. Two files that say roughly the same thing in
 different words look fine from either side alone.
 
 ## Authoring
@@ -32,7 +32,7 @@ claude-code:              # optional per-host block
     name: ...
 ---
 
-<body — shared by every host, and the thing the golden test pins>
+<body, shared by every host, and the thing the golden test pins>
 ```
 
 Skills carry per-host frontmatter because a description is trigger text tuned to
@@ -45,8 +45,8 @@ Write a slash-command reference as `{{cmd:risk}}`. Claude Code renders
 
 ## Where the Codex commands go
 
-Not into `plugins/codex/`. A Codex plugin manifest has no slot for commands — it
+Not into `plugins/codex/`. A Codex plugin manifest has no slot for commands: it
 may bundle `skills/`, `hooks/`, `assets/`, `.mcp.json` and `.app.json`, and
-nothing else — so the only surface that yields a Codex slash command is
+nothing else, so the only surface that yields a Codex slash command is
 `~/.codex/prompts/`, which is local-only and written by the CLI. They ship as
 package data and `repowise agents add --target=codex` installs them.

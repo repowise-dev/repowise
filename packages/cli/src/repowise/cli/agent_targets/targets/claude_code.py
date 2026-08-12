@@ -179,7 +179,7 @@ def plugin_version_skew() -> list[str]:
 
     The plugin is the one artifact the CLI cannot rewrite. ``pip install -U
     repowise`` upgrades the MCP server and every command, and leaves the plugin's
-    skills and slash commands exactly where they were — so the two drift apart
+    skills and slash commands exactly where they were, so the two drift apart
     silently, and silence is the worst of the available behaviours. Measured on a
     real machine: an 0.16.0 plugin installed months earlier against a 0.41.0 CLI,
     which is why five slash commands the CLI had shipped did not exist in the
@@ -188,16 +188,58 @@ def plugin_version_skew() -> list[str]:
     Reads the host's own manifest through :func:`_plugin_installs` rather than a
     second parser. An entry with no ``version`` is skipped: it cannot be compared,
     and a report the user cannot act on is noise.
+
+    Compared through :func:`release_key`, so ``0.41``, ``0.41.0`` and ``v0.41.0``
+    are one release. Spelling drift is not drift, and reporting it produces a row
+    no command can ever clear.
     """
     from repowise.cli import __version__
 
+    current = release_key(__version__)
     return sorted(
         {
             str(entry["version"])
             for entry in _plugin_installs()
-            if entry.get("version") and str(entry["version"]) != __version__
+            if entry.get("version") and not _same_release(str(entry["version"]), current)
         }
     )
+
+
+def release_key(version: str) -> tuple[int, ...] | None:
+    """*version* as a comparable tuple, or None when it is not a plain release.
+
+    Deliberately **not** ``core.upgrade.release.parse_release``, which answers a
+    different question. That one exists to decide "is there a newer release", so
+    it drops everything after the first non-digit: it reads ``0.41.0rc1`` and
+    ``0.41.0.post1`` as plain ``0.41.0``, which is right for an upgrade prompt and
+    wrong here: a release candidate is not the release. It also returns None for
+    a leading ``v``, which is the single most likely way for a plugin manifest to
+    spell a version.
+
+    So: strip one leading ``v``, require every remaining part to be digits, and
+    drop trailing zeros so ``0.41`` and ``0.41.0`` land on the same key. Anything
+    with a suffix returns None and falls back to exact string comparison, which
+    reports it, the conservative direction for a version we cannot reason about.
+    """
+    text = version.strip()
+    if text[:1] in ("v", "V"):
+        text = text[1:]
+    parts = text.split(".")
+    if not text or not all(part.isdigit() for part in parts):
+        return None
+    numbers = [int(part) for part in parts]
+    while numbers and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)
+
+
+def _same_release(version: str, current: tuple[int, ...] | None) -> bool:
+    installed = release_key(version)
+    if installed is None or current is None:
+        from repowise.cli import __version__
+
+        return version == __version__
+    return installed == current
 
 
 def _has_repowise_server(config_path: Path) -> bool:
@@ -405,8 +447,12 @@ class ClaudeCodeTarget:
                 ),
                 # `add`, not `refresh`. A file this damaged makes detection
                 # find nothing, and refresh only touches what it detects — so
-                # it would skip this target entirely and report success.
+                # it would skip this target entirely and report success. Which
+                # is exactly why this is not repairable: `--repair` runs that
+                # same refresh, so letting it try buys the skip and the false
+                # success this comment was written about.
                 fix_command="repowise agents add --target=claude-code",
+                repairable=False,
             )
 
         registrations = detect()
@@ -420,7 +466,12 @@ class ClaudeCodeTarget:
 
         issues: list[str] = []
         matcher = claude_code_rewrite_hook_matcher()
-        if matcher is not None and matcher != SHELL_TOOL_MATCHER:
+        # The one issue here that `agents refresh` genuinely rewrites, so it is
+        # the one that decides `repairable`. Tracked separately from the issue
+        # list because the two questions (what is wrong, and can the repair
+        # pass fix it) have different answers per issue.
+        matcher_stale = matcher is not None and matcher != SHELL_TOOL_MATCHER
+        if matcher_stale:
             issues.append(
                 f"The distill rewrite hook matches {matcher!r}, but Claude Code now "
                 f"names its shell tools {SHELL_TOOL_MATCHER!r}. The hook is installed "
@@ -443,18 +494,30 @@ class ClaudeCodeTarget:
         skew = plugin_version_skew()
         if skew:
             from repowise.cli import __version__
-            from repowise.core.upgrade.release import is_newer_version
 
             versions = ", ".join(skew)
-            behind = any(is_newer_version(__version__, version) for version in skew)
+            current = release_key(__version__)
+            # Ahead of the CLI is the same drift running the other way, and
+            # telling someone to update an already-newer plugin is a dead end.
+            # A version we cannot parse falls to the plugin side: an odd string
+            # in a plugin manifest is far likelier than an odd CLI version.
+            ahead = current is not None and all(
+                (key := release_key(version)) is not None and key > current for version in skew
+            )
             issues.append(
                 f"The Claude Code plugin is at {versions} but this CLI is {__version__}. "
                 "Its skills and slash commands are the plugin's, not the CLI's, and "
                 "`pip install -U repowise` does not touch them."
             )
-            # Ahead of the CLI is the same drift running the other way, and
-            # telling someone to update an already-newer plugin is a dead end.
-            fix_command = PLUGIN_UPDATE_COMMAND if behind else "pip install -U repowise"
+            fix_command = "pip install -U repowise" if ahead else PLUGIN_UPDATE_COMMAND
+
+        # Only the stale matcher. The plugin is host-managed and a duplicate
+        # registration is not something refresh removes, so on either of those
+        # alone `--repair` would write global config for a problem it cannot
+        # touch and then report success. But a *skewed plugin alongside* a stale
+        # matcher must stay repairable: the matcher is still broken, still
+        # rewritable, and the first cut of this let the skew suppress its repair.
+        repairable = matcher_stale
 
         if not issues:
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
@@ -463,6 +526,7 @@ class ClaudeCodeTarget:
             status=DoctorStatus.STALE,
             issues=tuple(issues),
             fix_command=fix_command,
+            repairable=repairable,
         )
 
 

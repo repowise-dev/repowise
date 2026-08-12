@@ -230,6 +230,15 @@ class DoctorReport:
     status: DoctorStatus
     issues: tuple[str, ...] = ()
     fix_command: str | None = None
+    #: Whether ``doctor --repair`` can actually resolve this, i.e. whether
+    #: *fix_command* is something the repair pass performs. False for anything
+    #: whose fix is a host command or a different repowise command.
+    #:
+    #: Without it, ``--repair`` fires a global refresh for a condition refresh
+    #: provably cannot touch, and then prints its "nothing moved" advice, which
+    #: names two conditions the user does not have and omits the one command
+    #: that works. A repair that cannot help should decline, not try.
+    repairable: bool = True
 
     def as_dict(self) -> dict:
         return {
@@ -237,6 +246,7 @@ class DoctorReport:
             "status": self.status.value,
             "issues": list(self.issues),
             "fix_command": self.fix_command,
+            "repairable": self.repairable,
         }
 
 
