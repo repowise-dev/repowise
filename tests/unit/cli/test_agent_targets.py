@@ -9,6 +9,7 @@ it.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -331,6 +332,59 @@ def test_json_deep_equal_separates_int_from_float() -> None:
     assert json.dumps(1) != json.dumps(1.0)
 
 
+def test_write_json_config_reports_created_then_unchanged(tmp_path: Path) -> None:
+    """The deep-equal-before-write pass, from the caller's side."""
+    path = tmp_path / "mcp.json"
+
+    assert json_merge.write_json_config(path, {"a": 1}) is FileAction.CREATED
+    assert json_merge.write_json_config(path, {"a": 1}) is FileAction.UNCHANGED
+    assert json_merge.write_json_config(path, {"a": 2}) is FileAction.UPDATED
+
+
+def test_write_json_config_compares_the_bytes_it_would_land(tmp_path: Path) -> None:
+    """Not the raw rendering, and not a normalised read — the translated bytes.
+
+    This writer takes the platform newline translation. Comparing the
+    untranslated text calls every Windows re-run an update; normalising the
+    file's endings instead leaves a CRLF file un-normalised on POSIX. Only the
+    bytes that would actually land answer both.
+    """
+    path = tmp_path / "mcp.json"
+    json_merge.write_json_config(path, {"a": 1})
+    settled = path.read_bytes()
+
+    assert json_merge.write_json_config(path, {"a": 1}) is FileAction.UNCHANGED
+    assert path.read_bytes() == settled
+
+    # A file whose endings do not match this platform's writer is rewritten.
+    path.write_bytes(settled.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n" if os.linesep == "\n" else b"\n"))
+    assert json_merge.write_json_config(path, {"a": 1}) is FileAction.UPDATED
+    assert path.read_bytes() == settled
+
+
+def test_codex_reinstall_reports_unchanged_and_leaves_config_alone(tmp_path: Path) -> None:
+    """The ``.codex/config.toml`` non-idempotency, closed.
+
+    Two table upserts per install, each of which strips its table and re-appends
+    it, so run 2 used to swap them back and keep the blank line the swap left.
+    The document-level comparison means run 2 writes nothing at all.
+    """
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    first = codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    settled = (repo / ".codex" / "config.toml").read_bytes()
+    assert first.changed
+
+    second = codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert not second.changed
+    assert {f.action for f in second.files} == {FileAction.UNCHANGED}
+    assert (repo / ".codex" / "config.toml").read_bytes() == settled
+
+
 def test_atomic_write_leaves_no_temp_file_behind(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "config.json"
     target.parent.mkdir()
@@ -397,8 +451,44 @@ def test_marker_block_round_trips_user_content_byte_for_byte(tmp_path: Path) -> 
 
 def test_marker_block_upsert_is_idempotent(tmp_path: Path) -> None:
     doc = tmp_path / "AGENTS.md"
-    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is True
-    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is False
+    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.CREATED
+    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.UNCHANGED
+
+
+def test_marker_block_refuses_an_orphaned_marker(tmp_path: Path) -> None:
+    """A start with no end is left strictly alone, and said so.
+
+    Every repair here loses something. Appending a fresh block leaves the stray
+    start above it, so the next run's non-greedy ``start.*?end`` spans from the
+    orphan to *our* end marker and eats whatever the user wrote in between.
+    Before this, upsert reported "unchanged" and wrote nothing — technically
+    safe, but it claimed the block was installed when it was absent.
+    """
+    doc = tmp_path / "AGENTS.md"
+    original = "<!--S-->\nI deleted the end marker\n\nMy own paragraph.\n"
+    doc.write_text(original, encoding="utf-8", newline="\n")
+
+    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.KEPT
+    assert doc.read_text(encoding="utf-8") == original
+
+
+def test_marker_block_collapses_a_duplicated_block(tmp_path: Path) -> None:
+    """Every copy is ours, so collapsing to one loses nothing of the user's."""
+    doc = tmp_path / "AGENTS.md"
+    doc.write_text(
+        "# Notes\n\n<!--S-->old<!--E-->\n\nMine.\n\n<!--S-->older<!--E-->\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.UPDATED
+
+    content = doc.read_text(encoding="utf-8")
+    assert content.count("<!--S-->") == 1
+    assert "body" in content
+    assert "Mine." in content
+    # Settled: a second pass has nothing left to collapse.
+    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.UNCHANGED
 
 
 def test_marker_block_normalizes_a_crlf_file_whose_block_is_current(tmp_path: Path) -> None:
@@ -416,12 +506,12 @@ def test_marker_block_normalizes_a_crlf_file_whose_block_is_current(tmp_path: Pa
     doc.write_bytes(lf_content.encode("utf-8"))
     assert b"\r\n" in doc.read_bytes()
 
-    changed = marker_block.upsert(doc, body, "<!--S-->", "<!--E-->")
+    action = marker_block.upsert(doc, body, "<!--S-->", "<!--E-->")
 
-    assert changed is True
+    assert action is FileAction.UPDATED
     assert b"\r\n" not in doc.read_bytes()
     # A second pass has nothing left to do.
-    assert marker_block.upsert(doc, body, "<!--S-->", "<!--E-->") is False
+    assert marker_block.upsert(doc, body, "<!--S-->", "<!--E-->") is FileAction.UNCHANGED
 
 
 def test_marker_block_uses_lf_regardless_of_platform(tmp_path: Path) -> None:

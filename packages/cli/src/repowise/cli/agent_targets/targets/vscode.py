@@ -28,6 +28,7 @@ from ..types import (
     DoctorReport,
     DoctorStatus,
     FileAction,
+    FileWrite,
     InstallMethod,
     Registration,
     Scope,
@@ -75,7 +76,7 @@ def server_entry(repo_path: Path) -> dict:
     return {"type": "stdio", **entry}
 
 
-def write_mcp_config(repo_path: Path) -> Path:
+def write_mcp_config(repo_path: Path) -> FileWrite:
     """Merge the repowise server into ``.vscode/mcp.json``.
 
     Raises ``ValueError`` when the existing file is not strict JSON or is not
@@ -103,11 +104,10 @@ def write_mcp_config(repo_path: Path) -> Path:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         merged = {"servers": new_entry}
 
-    write_json_config(config_path, merged)
-    return config_path
+    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
-def write_extensions_config(repo_path: Path) -> Path:
+def write_extensions_config(repo_path: Path) -> FileWrite:
     """Recommend the repowise extension, preserving existing entries."""
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
@@ -127,8 +127,7 @@ def write_extensions_config(repo_path: Path) -> Path:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         merged = {"recommendations": [EXTENSION_ID]}
 
-    write_json_config(config_path, merged)
-    return config_path
+    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
 def detect(repo_path: Path | None = None) -> list[Registration]:
@@ -186,7 +185,8 @@ class VSCodeTarget:
             raise ValueError("project-scope install needs a repo_path")
 
         try:
-            result.record(write_mcp_config(repo_path), FileAction.UPDATED)
+            written = write_mcp_config(repo_path)
+            result.record(written.path, written.action)
         except ValueError:
             result.record(mcp_config_path(repo_path), FileAction.KEPT)
             result.note(
@@ -194,7 +194,8 @@ class VSCodeTarget:
                 'comments). Add a "repowise" server under "servers" manually.'
             )
         try:
-            result.record(write_extensions_config(repo_path), FileAction.UPDATED)
+            written = write_extensions_config(repo_path)
+            result.record(written.path, written.action)
         except ValueError:
             result.record(extensions_config_path(repo_path), FileAction.KEPT)
             result.note(

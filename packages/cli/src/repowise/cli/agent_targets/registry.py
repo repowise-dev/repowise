@@ -20,7 +20,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from .types import AgentTarget, Registration, Scope, Tier, derive_tier
+from .types import AgentTarget, InstallMethod, Registration, Tier, derive_tier
 
 #: Every known target, by id. Values are ``module:attribute`` so registration
 #: costs no import.
@@ -80,6 +80,40 @@ def detect_all(repo_path: Path | None = None) -> dict[str, list[Registration]]:
     return found
 
 
+def select_install_method(
+    target: AgentTarget,
+    registrations: list[Registration],
+) -> InstallMethod | None:
+    """The method to install *target* through, or None to stand down.
+
+    This is where the method axis pays for itself. Claude Code is reachable two
+    ways — its host plugin, and repowise writing the config directly — and both
+    register the same MCP server and the same augment hooks. The host merges
+    them without complaint, so the user gets no error, just two process spawns
+    per matched tool call and a duplicate set of tool schemas resident in every
+    session. Measured on a live machine: three repowise MCP servers at once,
+    ~36 tool schemas for one product.
+
+    So: when *registrations* show a host-managed method already in place, return
+    None. There is nothing for us to write, and writing anyway is how the
+    duplicate happens. Otherwise return the method marked ``preferred`` among
+    the ones repowise can actually write, falling back to the first of those.
+
+    Deliberately not applied by ``init``: standing down there would change what
+    a plugin user's ``init`` does today, and this decision is about cost rather
+    than correctness. ``agents add`` and ``agents refresh`` own it.
+    """
+    detected = {r.method for r in registrations}
+    writable = [m for m in target.methods if m.managed_by != "host"]
+    for method in target.methods:
+        if method.managed_by == "host" and method.id in detected:
+            return None
+    for method in writable:
+        if method.preferred:
+            return method
+    return writable[0] if writable else None
+
+
 def resolve_target_flag(value: str, repo_path: Path | None = None) -> list[AgentTarget]:
     """Resolve a ``--target=`` value to targets.
 
@@ -122,8 +156,3 @@ def resolve_target_flag(value: str, repo_path: Path | None = None) -> list[Agent
             f"Known: {known}, plus 'auto' / 'all' / 'none'."
         )
     return resolved
-
-
-def targets_for_scope(scope: Scope) -> list[AgentTarget]:
-    """Every target that has a config home at *scope*."""
-    return [target for target in all_targets() if target.supports_scope(scope)]

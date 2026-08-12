@@ -31,6 +31,7 @@ from ..types import (
     DoctorReport,
     DoctorStatus,
     FileAction,
+    FileWrite,
     InstallMethod,
     Registration,
     Scope,
@@ -135,7 +136,7 @@ def hooks_config() -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def write_server_config(repo_path: Path) -> Path:
+def write_server_config(repo_path: Path) -> FileWrite:
     """Merge the repowise server table into project-local ``.codex/config.toml``."""
     from ..formats.toml_merge import (
         ensure_valid_toml,
@@ -143,6 +144,7 @@ def write_server_config(repo_path: Path) -> Path:
         replace_table,
         require_table,
         table_block,
+        write_if_changed,
     )
 
     config_path = project_config_path(repo_path)
@@ -150,26 +152,26 @@ def write_server_config(repo_path: Path) -> Path:
 
     if config_path.exists():
         existing_text = config_path.read_text(encoding="utf-8")
-        doc = load_toml_document(config_path, existing_text)
+        doc: dict | None = load_toml_document(config_path, existing_text)
     else:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(f"{block}\n", encoding="utf-8")
-        return config_path
+        existing_text = ""
+        doc = None
 
     # Both levels are checked before the regex runs: a scalar where a table
     # belongs means the merge would produce a duplicate key, and refusing is
     # the only answer that leaves the user's file intact.
-    servers = require_table(doc, "mcp_servers", config_path, "mcp_servers")
-    if servers is not None:
-        require_table(servers, "repowise", config_path, "mcp_servers.repowise")
+    if doc is not None:
+        servers = require_table(doc, "mcp_servers", config_path, "mcp_servers")
+        if servers is not None:
+            require_table(servers, "repowise", config_path, "mcp_servers.repowise")
 
     merged_text = replace_table(existing_text, "mcp_servers.repowise", block)
-    ensure_valid_toml(merged_text, config_path)
-    config_path.write_text(merged_text, encoding="utf-8")
-    return config_path
+    merged_doc = ensure_valid_toml(merged_text, config_path)
+    action = write_if_changed(config_path, merged_text, merged_doc, doc)
+    return FileWrite(path=config_path, action=action)
 
 
-def enable_hooks_feature(repo_path: Path) -> Path:
+def enable_hooks_feature(repo_path: Path) -> FileWrite:
     """Switch on ``features.hooks``, without which the hooks file is inert."""
     from ..formats.toml_merge import (
         ensure_valid_toml,
@@ -177,31 +179,35 @@ def enable_hooks_feature(repo_path: Path) -> Path:
         replace_table,
         require_table,
         table_block,
+        write_if_changed,
     )
 
     config_path = project_config_path(repo_path)
 
     if config_path.exists():
         existing_text = config_path.read_text(encoding="utf-8")
-        doc = load_toml_document(config_path, existing_text)
+        doc: dict | None = load_toml_document(config_path, existing_text)
     else:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
         existing_text = ""
-        doc = {}
+        doc = None
 
-    features = dict(require_table(doc, "features", config_path, "features") or {})
+    features = dict(require_table(doc or {}, "features", config_path, "features") or {})
     features["hooks"] = True
     merged_text = replace_table(existing_text, "features", table_block("features", features))
-    ensure_valid_toml(merged_text, config_path)
-    config_path.write_text(merged_text, encoding="utf-8")
-    return config_path
+    merged_doc = ensure_valid_toml(merged_text, config_path)
+    action = write_if_changed(config_path, merged_text, merged_doc, doc)
+    return FileWrite(path=config_path, action=action)
 
 
-def write_hooks_config(repo_path: Path) -> Path:
+def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     """Merge repowise hooks into ``.codex/hooks.json`` and enable the feature.
 
     Additive per matcher group: a matcher that already carries one of our hooks
     is left alone, so a user who narrowed or annotated an entry keeps it.
+
+    Returns both writes — the hooks file *and* ``config.toml``'s feature flag —
+    because they are genuinely two files and reporting only the first would hide
+    a run whose sole effect was switching the feature back on.
     """
     import click
 
@@ -234,9 +240,22 @@ def write_hooks_config(repo_path: Path) -> Path:
             if not _has_augment_hook_for_matcher(event_hooks, entry.get("matcher")):
                 event_hooks.append(entry)
 
-    write_json_config(hooks_path, existing)
-    enable_hooks_feature(repo_path)
-    return hooks_path
+    action = write_json_config(hooks_path, existing)
+    return FileWrite(path=hooks_path, action=action), enable_hooks_feature(repo_path)
+
+
+def _combined(first: FileAction, second: FileAction) -> FileAction:
+    """One action describing two writes to the same file.
+
+    ``config.toml`` is written twice per install — the server table, then the
+    feature flag — and the file's entry in the result has to answer "did this
+    file move", not "did the last of the two writes move it".
+    """
+    if FileAction.CREATED in (first, second):
+        return FileAction.CREATED
+    if FileAction.UPDATED in (first, second):
+        return FileAction.UPDATED
+    return first
 
 
 def _is_augment_hook(hook: dict) -> bool:
@@ -312,8 +331,13 @@ class CodexTarget:
         if scope is Scope.PROJECT:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
-            result.record(write_server_config(repo_path), FileAction.UPDATED)
-            result.record(write_hooks_config(repo_path), FileAction.UPDATED)
+            # Server table first, then the hooks file (which flips the feature
+            # flag in the same config.toml). The order is the one init has
+            # always used and it is what the file's table order records.
+            server = write_server_config(repo_path)
+            hooks, feature = write_hooks_config(repo_path)
+            result.record(server.path, _combined(server.action, feature.action))
+            result.record(hooks.path, hooks.action)
             return result
 
         hooks = install_codex_rewrite_hook()

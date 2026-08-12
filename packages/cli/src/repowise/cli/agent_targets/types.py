@@ -186,10 +186,6 @@ class WriteResult:
     def note(self, message: str) -> None:
         self.notes.append(message)
 
-    def extend(self, other: WriteResult) -> None:
-        self.files.extend(other.files)
-        self.notes.extend(other.notes)
-
     @property
     def changed(self) -> bool:
         """True when anything actually moved on disk."""

@@ -308,7 +308,12 @@ def install_agents_md_distill_section(repo_path: Path) -> Path | None:
     Idempotent: an existing marker block is refreshed in place; a file that
     already teaches distillation elsewhere (e.g. a future indexed-template
     section) is left untouched; otherwise the block is appended. Returns the
-    AGENTS.md path, or None on write failure.
+    AGENTS.md path, or None when nothing was written.
+
+    None covers two cases the caller reports the same way: a write failure, and
+    a file whose markers are unpaired. The marker helper refuses that second one
+    rather than guessing at a repair that could swallow the user's text, so
+    "not written" is the honest answer and the user has to unpick their own edit.
 
     The marker mechanics live in ``agent_targets.formats.marker_block``; what
     stays here is the Codex-specific policy — the section text, and the
@@ -316,6 +321,7 @@ def install_agents_md_distill_section(repo_path: Path) -> Path | None:
     content rather than about managed blocks in general.
     """
     from repowise.cli.agent_targets.formats import marker_block
+    from repowise.cli.agent_targets.types import FileAction
 
     target = _agents_md_path(repo_path)
     try:
@@ -323,14 +329,14 @@ def install_agents_md_distill_section(repo_path: Path) -> Path | None:
             existing = target.read_text(encoding="utf-8")
             if _DISTILL_MARKER_START not in existing and _DISTILL_SECTION_HEADING in existing:
                 return target  # already taught elsewhere in the file
-        marker_block.upsert(
+        action = marker_block.upsert(
             target,
             f"\n{_DISTILL_SECTION}\n",
             _DISTILL_MARKER_START,
             _DISTILL_MARKER_END,
             new_file_prefix=_NEW_FILE_PLACEHOLDER,
         )
-        return target
+        return None if action is FileAction.KEPT else target
     except OSError:
         return None
 

@@ -34,6 +34,7 @@ from ..types import (
     DoctorReport,
     DoctorStatus,
     FileAction,
+    FileWrite,
     InstallMethod,
     Registration,
     Scope,
@@ -108,7 +109,33 @@ def plugin_manifest_path() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def write_project_mcp_config(repo_path: Path) -> Path:
+def _read_bytes(path: Path) -> bytes | None:
+    """The file's current bytes, or None when it is not there."""
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _observed_action(before: bytes | None, after: bytes | None) -> FileAction:
+    """What a write did to a file, from its bytes either side of the call.
+
+    The Claude Code writes go through ``editor_integrations.claude_config``,
+    which owns several years of settings.json hook-shape migrations and returns
+    a path rather than an action. Rather than thread an action back out through
+    all of it — and re-open code whose whole value is that it already handles
+    the legacy shapes — the action is *observed*: read the file before, read it
+    after, compare. It also folds the three separate writes to settings.json
+    (MCP entry, hooks, tool-search) into the single honest answer for that file.
+    """
+    if after is None:
+        return FileAction.NOT_FOUND if before is None else FileAction.REMOVED
+    if before is None:
+        return FileAction.CREATED
+    return FileAction.UNCHANGED if before == after else FileAction.UPDATED
+
+
+def write_project_mcp_config(repo_path: Path) -> FileWrite:
     """Merge the repowise server into the repo-root ``.mcp.json``.
 
     Repo-shared and frequently committed, so it keeps the bare ``repowise``
@@ -135,8 +162,7 @@ def write_project_mcp_config(repo_path: Path) -> Path:
     else:
         merged = {"mcpServers": new_entry}
 
-    write_json_config(config_path, merged)
-    return config_path
+    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
 # ---------------------------------------------------------------------------
@@ -263,22 +289,31 @@ class ClaudeCodeTarget:
         if scope is Scope.PROJECT:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
-            result.record(write_project_mcp_config(repo_path), FileAction.UPDATED)
+            written = write_project_mcp_config(repo_path)
+            result.record(written.path, written.action)
             return result
 
         if repo_path is None:
             raise ValueError("user-scope registration needs a repo_path to point at")
 
-        desktop = register_with_claude_desktop(repo_path)
-        if desktop:
-            result.record(desktop, FileAction.UPDATED)
-        code = register_with_claude_code(repo_path)
-        if code:
-            result.record(code, FileAction.UPDATED)
-        hooks = install_claude_code_hooks()
-        if hooks:
-            result.record(hooks, FileAction.UPDATED)
+        settings = settings_path()
+        desktop_path = desktop_config_path()
+        settings_before = _read_bytes(settings)
+        desktop_before = _read_bytes(desktop_path) if desktop_path is not None else None
+
+        register_with_claude_desktop(repo_path)
+        register_with_claude_code(repo_path)
+        install_claude_code_hooks()
         enable_tool_search_in_claude_code()
+
+        # One entry per file, not one per call: three of the four calls above
+        # write settings.json, and reporting it three times says nothing a
+        # reader can act on.
+        result.record(settings, _observed_action(settings_before, _read_bytes(settings)))
+        if desktop_path is not None:
+            after = _read_bytes(desktop_path)
+            if not (desktop_before is None and after is None):
+                result.record(desktop_path, _observed_action(desktop_before, after))
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:

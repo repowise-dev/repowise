@@ -274,28 +274,21 @@ def test_integration_writes_match_baseline(baseline_env) -> None:
             ), f"{scope}/{rel} changed line-ending discipline"
 
 
-#: The one file today's code does not write idempotently. ``.codex/config.toml``
-#: is rebuilt by two regex table-rewrites in sequence — ``save_codex_mcp_config``
-#: strips and re-appends ``[mcp_servers.repowise]``, then
-#: ``enable_codex_hooks_feature`` does the same for ``[features]``. On a clean
-#: repo the tables are written in that order; on the second run each strip moves
-#: its table to the end, they swap back, and the leading newline the swap leaves
-#: behind is never stripped (``rstrip`` only touches the tail). The result gains
-#: exactly one leading ``\n`` on run 2 and is stable from run 3 onward. It stays
-#: valid TOML and parses identically, so this is cosmetic drift, not corruption
-#: — but it is real, it predates this work, and the seam's deep-equal-before-write
-#: is what fixes it. When it does, this test fails loudly and the exception is
-#: removed on purpose rather than by accident.
-_KNOWN_NON_IDEMPOTENT = {("project", ".codex/config.toml")}
-
-
 def test_writes_are_idempotent(baseline_env) -> None:
-    """Re-running the full write path changes nothing, bar one known file.
+    """Re-running the full write path changes nothing at all.
 
-    Re-running ``init`` is the common case, and the seam's ``WriteResult``
-    contract promises an ``unchanged`` action for it. That promise is only
-    testable against a known starting point, so pin today's stability here —
-    before the rewrite, not after — including the one place it does not hold.
+    Re-running ``init`` is the common case, and the ``WriteResult`` contract
+    promises an ``unchanged`` action for it.
+
+    This test used to carry one named exception. ``.codex/config.toml`` is
+    rebuilt by two regex table-rewrites in sequence — the server table, then
+    ``[features]`` — and each strip moved its table to the end, so run 2 swapped
+    them back and kept the blank line the swap left, gaining exactly one leading
+    ``\\n``. Valid TOML throughout, so it was cosmetic, but it was real and it
+    predated the seam. ``toml_merge.write_if_changed`` closed it by comparing
+    parsed *documents* rather than text, and the exception was removed here on
+    purpose. It was written to keep passing after the fix rather than to fail,
+    so nothing but this paragraph would have reminded anyone.
     """
     home, repo = baseline_env
     console = _silent_console()
@@ -306,23 +299,8 @@ def test_writes_are_idempotent(baseline_env) -> None:
 
     first, second, third = _run(), _run(), _run()
 
-    for scope in ("project", "user"):
-        for rel in sorted(first[scope]):
-            if (scope, rel) in _KNOWN_NON_IDEMPOTENT:
-                continue
-            assert first[scope][rel] == second[scope][rel], (
-                f"{scope}/{rel} is not stable across re-runs"
-            )
-
-    # Whatever the first run leaves unsettled must settle immediately, so an
-    # `init` loop cannot accumulate drift run after run.
+    assert first == second, "a second run changed a file the first run had settled"
     assert second == third
-
-    codex = second["project"][".codex/config.toml"]["content"]
-    assert codex == "\n" + first["project"][".codex/config.toml"]["content"], (
-        "the known .codex/config.toml drift changed shape; re-derive it before "
-        "updating _KNOWN_NON_IDEMPOTENT"
-    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="separator handling is Windows-specific")

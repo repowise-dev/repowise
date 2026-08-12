@@ -12,10 +12,12 @@ and frequently committed, so letting them take the platform translation would
 mean the same command produces a different file on Windows than on macOS and
 the diff churns on every cross-platform edit.
 
-Also reports the two malformed states worth naming rather than silently
-repairing, because both mean a user edited inside the block and one of them
-loses data if you guess: an orphan marker (a start with no end, or the reverse)
-and a duplicated block.
+Both malformed states are named rather than glossed over, because they mean a
+user edited across one of our markers and the two need opposite answers. A
+duplicated block is collapsed to the first copy: every copy is ours, so there is
+nothing of theirs to lose. An orphan marker (a start with no end, or the
+reverse) is refused outright, because every repair for it can eat the text that
+follows. See :func:`upsert`.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from ..types import FileAction
 from .json_merge import atomic_write_text
 
 
@@ -48,10 +51,6 @@ class BlockInspection:
     state: BlockState
     #: Body between the markers for the first block found, markers excluded.
     body: str | None = None
-
-    @property
-    def is_healthy(self) -> bool:
-        return self.state in (BlockState.PRESENT, BlockState.ABSENT, BlockState.ABSENT_FILE)
 
 
 def inspect(path: Path, start: str, end: str) -> BlockInspection:
@@ -85,12 +84,13 @@ def upsert(
     end: str,
     *,
     new_file_prefix: str = "",
-) -> bool:
-    """Ensure *path* carries exactly ``start + body + end``.
+) -> FileAction:
+    """Ensure *path* carries exactly one well-formed ``start + body + end``.
 
-    Replaces an existing block in place, or appends one after existing content.
-    Returns True when the file changed, so a caller can report ``unchanged``
-    for a re-run rather than claiming an update it did not make.
+    Replaces an existing block in place, appends one after existing content, or
+    collapses a duplicated pair down to the first. Returns the action it took,
+    so a caller can report ``unchanged`` for a re-run rather than claiming an
+    update it did not make.
 
     *new_file_prefix* is written above the block when the file did not exist —
     a header telling the reader this file is theirs and only the marked section
@@ -103,27 +103,39 @@ def upsert(
     contain either, and the failure mode is a corrupted managed block or a
     ``bad escape`` crash at install time.
 
-    **Known gap, carried over deliberately.** Against a malformed pair this does
-    the wrong thing quietly: an orphaned start marker matches ``start in
-    existing`` but not the regex, so nothing is written and it reports
-    ``False`` — "unchanged" while the block is in fact absent — and a duplicated
-    block is rewritten in both places rather than collapsed. :func:`inspect`
-    exists to name both states and this function does not yet consult it. The
-    hand-rolled writer this replaced had the identical blind spot, so preserving
-    it keeps the rewrite behaviour-neutral; it should be closed before Phase 5
-    adds targets that inherit this helper.
+    **An orphaned marker returns** :attr:`~..types.FileAction.KEPT` **and writes
+    nothing.** A start with no end means a user deleted or edited across one of
+    our markers, and every available repair loses something: appending a fresh
+    block leaves the stray start above it, so the next run's non-greedy
+    ``start.*?end`` spans from the orphan to *our* end marker and swallows
+    whatever the user wrote in between. Refusing is the only option that cannot
+    eat a paragraph, and the caller surfaces it as something to fix by hand.
+    (Before this, an orphan silently reported "unchanged" while the block was in
+    fact absent — the writer this helper replaced had the same blind spot.)
     """
     wrapped = f"{start}{body}{end}"
-    if not path.exists():
-        atomic_write_text(path, f"{new_file_prefix}\n{wrapped}\n" if new_file_prefix else wrapped + "\n", newline="\n")
-        return True
+    inspection = inspect(path, start, end)
+
+    if inspection.state is BlockState.ORPHANED:
+        return FileAction.KEPT
+
+    if inspection.state is BlockState.ABSENT_FILE:
+        opening = f"{new_file_prefix}\n{wrapped}\n" if new_file_prefix else f"{wrapped}\n"
+        atomic_write_text(path, opening, newline="\n")
+        return FileAction.CREATED
 
     existing = path.read_text(encoding="utf-8")
-    if start in existing:
-        pattern = re.escape(start) + r".*?" + re.escape(end)
-        content = re.sub(pattern, lambda _m: wrapped, existing, flags=re.DOTALL)
-    else:
+    if inspection.state is BlockState.ABSENT:
         content = existing.rstrip() + "\n\n" + wrapped + "\n"
+    else:
+        pattern = re.escape(start) + r".*?" + re.escape(end)
+        content = re.sub(pattern, lambda _m: wrapped, existing, count=1, flags=re.DOTALL)
+        if inspection.state is BlockState.DUPLICATED:
+            # Drop every later copy, taking the blank lines that separated it
+            # with it so collapsing does not leave a run of empty lines behind.
+            # Split on the block just written so the pass cannot touch it.
+            head, marker, tail = content.partition(wrapped)
+            content = head + marker + re.sub(r"\n*" + pattern + r"\n?", "", tail, flags=re.DOTALL)
 
     # Compare *bytes*, not the decoded text. ``read_text`` collapses CRLF to LF
     # in memory, so a CRLF file whose block is already current compares equal to
@@ -131,9 +143,9 @@ def upsert(
     # leave the file CRLF, where an unconditional write normalised it. That is a
     # whole-file diff on any Windows checkout with ``core.autocrlf=true``.
     if content.encode("utf-8") == path.read_bytes():
-        return False
+        return FileAction.UNCHANGED
     atomic_write_text(path, content, newline="\n")
-    return True
+    return FileAction.UPDATED
 
 
 def remove(path: Path, start: str, end: str, *, delete_if_only: str | None = None) -> bool:

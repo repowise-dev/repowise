@@ -230,28 +230,28 @@ def enable_codex_hooks_feature(repo_path: Path) -> Path:
     """Enable Codex hooks in project-local .codex/config.toml."""
     from repowise.cli.agent_targets.targets import codex
 
-    return codex.enable_hooks_feature(repo_path)
+    return codex.enable_hooks_feature(repo_path).path
 
 
 def save_codex_mcp_config(repo_path: Path) -> Path:
     """Merge the repowise MCP server into project-local .codex/config.toml."""
     from repowise.cli.agent_targets.targets import codex
 
-    return codex.write_server_config(repo_path)
+    return codex.write_server_config(repo_path).path
 
 
 def save_codex_hooks_config(repo_path: Path) -> Path:
     """Merge repowise hooks into project-local .codex/hooks.json."""
     from repowise.cli.agent_targets.targets import codex
 
-    return codex.write_hooks_config(repo_path)
+    return codex.write_hooks_config(repo_path)[0].path
 
 
 def save_root_mcp_config(repo_path: Path) -> Path:
     """Write .mcp.json at repo root for MCP clients that support discovery."""
     from repowise.cli.agent_targets.targets import claude_code
 
-    return claude_code.write_project_mcp_config(repo_path)
+    return claude_code.write_project_mcp_config(repo_path).path
 
 
 def generate_vscode_mcp_server_entry(repo_path: Path) -> dict:
@@ -270,7 +270,7 @@ def save_vscode_mcp_config(repo_path: Path) -> Path:
     """
     from repowise.cli.agent_targets.targets import vscode
 
-    return vscode.write_mcp_config(repo_path)
+    return vscode.write_mcp_config(repo_path).path
 
 
 def save_vscode_extensions_config(repo_path: Path) -> Path:
@@ -281,7 +281,7 @@ def save_vscode_extensions_config(repo_path: Path) -> Path:
     """
     from repowise.cli.agent_targets.targets import vscode
 
-    return vscode.write_extensions_config(repo_path)
+    return vscode.write_extensions_config(repo_path).path
 
 
 #: Re-exported for the Codex hooks writer's own use and for callers that used

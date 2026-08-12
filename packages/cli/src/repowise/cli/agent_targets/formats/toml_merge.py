@@ -15,12 +15,11 @@ re-parsed before it is written: a user who spelled the same key differently
 would produce a duplicate-key file. Re-parsing turns each of those into a clean
 abort with the original file untouched.
 
-Known wart, preserved deliberately for now: upserting a table strips it from
-wherever it sat and re-appends it at the end, so two upserts in sequence swap
-the two tables' order and leave a blank line at the top on the second run. It is
-cosmetic, it settles after one run, and the baseline test records it by name.
-Fixing it belongs with the deep-equal-before-write pass, not here, so that the
-byte-level oracle has one thing to compare against at a time.
+Upserting a table strips it from wherever it sat and re-appends it at the end,
+so two upserts in sequence swap the two tables' order and the second run
+produces different bytes for an identical document. :func:`write_if_changed` is
+what stops that from reaching disk: it compares parsed documents rather than
+text, so a re-run that would only reshuffle writes nothing at all.
 """
 
 from __future__ import annotations
@@ -31,6 +30,9 @@ import tomllib
 from pathlib import Path
 
 import click
+
+from ..types import FileAction
+from .json_merge import json_deep_equal
 
 
 def toml_value(value: object) -> str:
@@ -59,10 +61,17 @@ def table_block(table_name: str, values: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def ensure_valid_toml(merged_text: str, config_path: Path) -> None:
-    """Abort before writing if the regex merge produced invalid TOML."""
+def ensure_valid_toml(merged_text: str, config_path: Path) -> dict:
+    """Abort before writing if the regex merge produced invalid TOML.
+
+    Returns the parsed result, because every caller wants it: the parse has to
+    happen anyway to validate, and the document it produces is what
+    :func:`write_if_changed` compares against to decide whether the write is a
+    no-op. Parsing twice to keep the return type ``None`` would be paying for
+    the same work to throw it away.
+    """
     try:
-        tomllib.loads(merged_text)
+        return tomllib.loads(merged_text)
     except tomllib.TOMLDecodeError as exc:
         raise click.ClickException(
             f"Cannot update {config_path}: merging the repowise entry would produce "
@@ -106,3 +115,35 @@ def replace_table(existing_text: str, table_name: str, block: str) -> str:
     )
     merged_text = table_re.sub("", existing_text).rstrip()
     return f"{merged_text}\n\n{block}\n" if merged_text else f"{block}\n"
+
+
+def write_if_changed(
+    config_path: Path,
+    merged_text: str,
+    merged_doc: dict,
+    existing_doc: dict | None,
+) -> FileAction:
+    """Write *merged_text* only when it would change what the file means.
+
+    The comparison is between **documents**, not text, and that is the whole
+    point. :func:`replace_table` strips the table it owns and re-appends it at
+    the end, so upserting two tables in sequence swaps their order and the
+    second run produces different bytes for an identical document. Comparing
+    text would call that an update, write it, and swap them back — which is
+    exactly the drift ``.codex/config.toml`` accumulated on every second
+    ``init`` before this check existed.
+
+    *existing_doc* is ``None`` when the file is new.
+
+    One consequence worth naming: because the check is on meaning rather than
+    bytes, a file that already says the right thing is left exactly as the user
+    has it — including its line endings, which the old unconditional rewrite
+    would have normalised. Leaving a user's config untouched is the better
+    default, and nothing downstream reads this file's newlines.
+    """
+    if existing_doc is not None and json_deep_equal(merged_doc, existing_doc):
+        return FileAction.UNCHANGED
+    action = FileAction.UPDATED if existing_doc is not None else FileAction.CREATED
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(merged_text, encoding="utf-8")
+    return action
