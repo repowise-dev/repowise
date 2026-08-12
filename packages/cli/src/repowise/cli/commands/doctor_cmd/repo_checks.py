@@ -98,11 +98,17 @@ def _run_repo_checks(
                     create_session_factory,
                     get_repository_by_path,
                     get_session,
+                    init_db,
                     list_pages,
                 )
 
                 url = get_db_url_for_repo(repo_path)
                 engine = create_engine(url)
+                # An index built by an older repowise is missing whatever
+                # columns the models have gained since, and this check selects
+                # a full ORM row. Reconciling makes doctor report the store's
+                # real state instead of a `no such column` failure.
+                await init_db(engine)
                 sf = create_session_factory(engine)
                 count = 0
                 async with get_session(sf) as session:
@@ -211,10 +217,12 @@ def _run_repo_checks(
                     get_repository_by_path,
                     get_session,
                     get_stale_pages,
+                    init_db,
                 )
 
                 url = get_db_url_for_repo(repo_path)
                 engine = create_engine(url)
+                await init_db(engine)
                 sf = create_session_factory(engine)
                 async with get_session(sf) as session:
                     repo = await get_repository_by_path(session, str(repo_path))
@@ -246,6 +254,7 @@ def _run_repo_checks(
                     create_session_factory,
                     get_repository_by_path,
                     get_session,
+                    init_db,
                     list_pages,
                 )
                 from repowise.core.persistence.information_floor import (
@@ -258,6 +267,7 @@ def _run_repo_checks(
 
                 url = get_db_url_for_repo(repo_path)
                 engine = create_engine(url)
+                await init_db(engine)
                 sf = create_session_factory(engine)
 
                 # Get all SQL page IDs
@@ -392,6 +402,7 @@ def _run_repo_checks(
                     create_session_factory,
                     get_repository_by_path,
                     get_session,
+                    init_db,
                 )
                 from repowise.core.persistence.coordinator import AtomicStorageCoordinator
                 from repowise.core.persistence.vector_store import LanceDBVectorStore
@@ -399,6 +410,7 @@ def _run_repo_checks(
 
                 url = get_db_url_for_repo(repo_path)
                 engine = create_engine(url)
+                await init_db(engine)
                 sf = create_session_factory(engine)
 
                 vector_store = None
@@ -532,10 +544,12 @@ def _run_repo_checks(
                 create_engine,
                 create_session_factory,
                 get_session,
+                init_db,
             )
 
             url = get_db_url_for_repo(repo_path)
             engine = create_engine(url)
+            await init_db(engine)
             sf = create_session_factory(engine)
             repaired = 0
 

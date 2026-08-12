@@ -44,7 +44,7 @@ async def _acall_tool(
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.core.persistence import FullTextSearch, create_engine
+    from repowise.core.persistence import FullTextSearch, create_engine, init_db
     from repowise.server.chat_tools import init_tool_state
     from repowise.server.mcp_server._failure_shield import _shape_exception
 
@@ -64,6 +64,13 @@ async def _acall_tool(
     # and a failure there is the same condition from the caller's side.
     try:
         engine = create_engine(get_db_url_for_repo(repo_path))
+        # Mirrors the MCP server's lifespan (``_server.py``): an index built by
+        # an older repowise is missing whatever columns the models have gained
+        # since, and every tool's first query is ``select(Repository)``, so
+        # without this the whole CLI tool surface fails on a raw
+        # ``no such column`` before it reads a single page. ``init_db``
+        # back-fills them additively and is idempotent.
+        await init_db(engine)
         session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         store = await _open_vector_store(repo_path)
         init_tool_state(

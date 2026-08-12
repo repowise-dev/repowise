@@ -23,6 +23,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
         create_engine,
         create_session_factory,
         get_session,
+        init_db,
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
@@ -32,6 +33,7 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
     async def _fetch() -> tuple[list[dict], object]:
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
+        await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))

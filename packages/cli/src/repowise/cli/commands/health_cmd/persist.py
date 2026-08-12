@@ -24,6 +24,7 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
         create_engine,
         create_session_factory,
         get_session,
+        init_db,
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
@@ -32,6 +33,10 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
 
     async def _do() -> dict[str, dict]:
         engine = create_engine(get_db_url_for_repo(repo_path))
+        # An index built by an older repowise is missing whatever columns the
+        # models have gained since; without reconciling, the ORM's
+        # `no such column` failure is swallowed and reads as "no coverage".
+        await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))
@@ -74,6 +79,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
         create_engine,
         create_session_factory,
         get_session,
+        init_db,
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
@@ -85,6 +91,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
     async def _do() -> None:
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
+        await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))

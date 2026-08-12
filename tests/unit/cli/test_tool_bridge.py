@@ -18,6 +18,7 @@ from repowise.cli import tool_bridge
 class _FakeEngine:
     def __init__(self) -> None:
         self.disposed = False
+        self.reconciled = False
 
     async def dispose(self) -> None:
         self.disposed = True
@@ -41,6 +42,11 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "repowise.core.persistence.create_engine", lambda url: engine, raising=False
     )
+
+    async def _fake_init_db(eng):
+        engine.reconciled = True
+
+    monkeypatch.setattr("repowise.core.persistence.init_db", _fake_init_db, raising=False)
     monkeypatch.setattr(
         "repowise.core.persistence.FullTextSearch", lambda eng: ("fts", eng), raising=False
     )
@@ -216,6 +222,64 @@ def test_a_repo_whose_embedder_key_went_away_is_recorded_as_degraded(
     assert status["degraded"] is True
     assert status["requested"] == "openai" and status["active"] == "mock"
     assert "openai" in status["reason"]
+
+
+def test_a_store_one_repowise_older_than_the_models_is_still_readable(monkeypatch, tmp_path):
+    """A real store missing a column the models gained must not hard-fail.
+
+    Not a fake engine: this builds an actual SQLite store, drops a column from
+    it, and drives the whole bridge. Every tool's first query is
+    ``select(Repository)``, so before ``init_db`` was paired with
+    ``create_engine`` here the entire CLI tool surface — ask, context, symbol,
+    why, search, risk — came back as a raw ``no such column`` OperationalError
+    whose shaped guidance told the caller to stop using the tool.
+    """
+    import asyncio
+    import sqlite3
+
+    from sqlalchemy import select
+
+    from repowise.core.persistence import create_engine, init_db
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import _state
+
+    db_file = tmp_path / "wiki.db"
+    url = f"sqlite+aiosqlite:///{db_file}"
+
+    async def _build():
+        engine = create_engine(url)
+        await init_db(engine)
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+    # Roll the store back one schema version, the way a store built by an
+    # older repowise is. 17 columns is current, 16 is legacy.
+    conn = sqlite3.connect(db_file)
+    conn.execute("ALTER TABLE repositories DROP COLUMN churn_anchor_sha")
+    conn.commit()
+    stale_cols = {r[1] for r in conn.execute("pragma table_info(repositories)")}
+    conn.close()
+    assert "churn_anchor_sha" not in stale_cols
+
+    monkeypatch.setattr("repowise.cli.helpers.get_db_url_for_repo", lambda p: url)
+
+    async def _fake_open(repo_path):
+        return None
+
+    monkeypatch.setattr(tool_bridge, "_open_vector_store", _fake_open)
+
+    async def _tool():
+        async with _state._session_factory() as session:
+            await session.execute(select(Repository).limit(1))
+        return {"ok": True}
+
+    assert tool_bridge.call_tool(tmp_path, _tool, "get_answer") == {"ok": True}
+
+    conn = sqlite3.connect(db_file)
+    healed = {r[1] for r in conn.execute("pragma table_info(repositories)")}
+    conn.close()
+    assert "churn_anchor_sha" in healed
 
 
 def test_a_repo_that_asked_for_keyless_is_not_reported_as_degraded(
