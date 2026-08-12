@@ -246,23 +246,32 @@ class VSCodeTarget:
         if repo_path is None:
             raise ValueError("project-scope install needs a repo_path")
 
+        # ``OSError`` alongside ``ValueError`` because the read and the parent
+        # ``mkdir`` both live inside these writers, and neither failure is
+        # exotic: ``.vscode`` can be a plain file, and a config in a shared
+        # checkout can be unreadable. Nothing wraps ``install`` — ``agents
+        # add``, ``agents refresh`` and ``doctor --repair`` all call it bare —
+        # so an escape aborts the run after other agents' configs have already
+        # been written, and prints a traceback instead of the summary naming
+        # them.
         try:
             written = write_mcp_config(repo_path)
             result.record(written.path, written.action)
-        except ValueError:
+        except (ValueError, OSError):
             result.record(mcp_config_path(repo_path), FileAction.KEPT)
             result.note(
-                ".vscode/mcp.json left unchanged (not valid JSON; it may contain "
-                'comments). Add a "repowise" server under "servers" manually.'
+                ".vscode/mcp.json left unchanged (unreadable, or not valid JSON; it "
+                'may contain comments). Add a "repowise" server under "servers" manually.'
             )
         try:
             written = write_extensions_config(repo_path)
             result.record(written.path, written.action)
-        except ValueError:
+        except (ValueError, OSError):
             result.record(extensions_config_path(repo_path), FileAction.KEPT)
             result.note(
-                ".vscode/extensions.json left unchanged (not valid JSON; it may "
-                f'contain comments). Add "{EXTENSION_ID}" to "recommendations" manually.'
+                ".vscode/extensions.json left unchanged (unreadable, or not valid JSON; "
+                f'it may contain comments). Add "{EXTENSION_ID}" to "recommendations" '
+                "manually."
             )
         return result
 

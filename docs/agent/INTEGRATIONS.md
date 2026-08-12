@@ -55,12 +55,12 @@ repowise agents print-config claude-code   # prints, writes nothing
 ```
 
 Ask for the target id whose host is closest to yours rather than editing a
-snippet by hand. The shapes genuinely differ: hosts disagree about the
-top-level key (`mcpServers` against `servers`) and about whether each entry
-carries a `type` field, so they are not one text with a different wrapper.
-`claude-code` is the plain `mcpServers` form most hosts read, `cursor` is that
-form with `type`, and `vscode` keys on `servers`. Hosts people ask about most,
-none of which repowise writes config for today:
+snippet by hand. The shapes genuinely differ, and not only in their wrapper:
+hosts disagree about the top-level key, about whether each entry carries a
+`type` field, and about the file format itself, so `codex` prints TOML where
+the others print JSON. `claude-code` is the plain `mcpServers` JSON most hosts
+read and is the right default when yours is not listed below. Hosts people ask
+about most, none of which repowise writes config for today:
 
 Cline, Windsurf, Zed, Continue, Gemini CLI, OpenCode, JetBrains AI Assistant, Amp.
 

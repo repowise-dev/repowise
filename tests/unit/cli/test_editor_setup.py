@@ -47,6 +47,10 @@ def test_register_editor_clients_skipped_when_env_set(monkeypatch) -> None:
     registered: list[Path] = []
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(self, c: Any, p: Path, o: Any) -> None:
             pass
 
@@ -79,6 +83,10 @@ def test_register_editor_clients_skipped_by_flag(monkeypatch) -> None:
     registered: list[Path] = []
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(self, c: Any, p: Path, o: Any) -> None:
             pass
 
@@ -540,6 +548,10 @@ def test_write_editor_project_files_saves_common_mcp_before_integrations(
         return repo_path / ".repowise" / "mcp.json"
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(
             self,
             console_obj: object,
@@ -581,6 +593,10 @@ def test_write_editor_project_files_uses_pre_resolved_options(
         return repo_path / ".repowise" / "mcp.json"
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(
             self,
             console_obj: object,
@@ -646,6 +662,10 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     calls: list[tuple[str, Path, frozenset[str]]] = []
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def refresh_project_files(
             self,
             console_obj: object,

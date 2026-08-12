@@ -104,9 +104,20 @@ class RemoteServerEntryError(ValueError):
 
 
 def _is_remote_entry(entry: dict) -> bool:
-    """Whether a stored server entry describes something other than our stdio server."""
+    """Whether a stored server entry describes a transport repowise did not write.
+
+    The entry's own ``type`` decides, and a bare ``url`` only counts when there
+    is no ``command`` beside it. Reading ``"url" in entry`` on its own, ahead of
+    the declared type, calls ``{"type": "stdio", "command": ..., "url": ...}``
+    remote and contradicts what the entry says about itself. A leftover ``url``
+    on a local entry is exactly the stale state ``agents add`` exists to
+    repoint, and treating it as remote wedged it shut against every command
+    that could have fixed it.
+    """
     declared = entry.get("type")
-    return "url" in entry or (declared is not None and declared != "stdio")
+    if declared is not None:
+        return declared != "stdio"
+    return "url" in entry and "command" not in entry
 
 
 def mcp_config_path(repo_path: Path) -> Path:
@@ -228,8 +239,15 @@ def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
     if not servers:
         existing.pop("mcpServers", None)
     if not existing:
-        with contextlib.suppress(OSError):
+        try:
             config_path.unlink()
+        except OSError:
+            # Suppressing this reported REMOVED for a file still holding our
+            # entry, which is a false success on the destructive verb and one
+            # a read-only bit is enough to cause. Falling through to the
+            # rewrite keeps the loud failure the previous code had, from the
+            # same `os.replace` it used.
+            write_json_config(config_path, existing)
         return config_path, FileAction.REMOVED
 
     write_json_config(config_path, existing)
@@ -272,10 +290,21 @@ def _prune_empty_dirs(repo_path: Path) -> None:
     keep the agent pre-ticked in every later listing and checklist, for a repo
     it had just been removed from.
 
-    ``rmdir`` refuses a non-empty directory, which is exactly the guard wanted:
-    anything else under ``.cursor/`` is somebody else's and stays.
+    **Only called when uninstall actually removed a file**, which is the part
+    that is not optional. "``rmdir`` refuses a non-empty directory, so an empty
+    one must be ours" is the same shape of wrong assumption this module keeps
+    meeting: a user who made ``.cursor/`` by hand and left it empty would have
+    had it deleted by a remove that found nothing of ours to remove.
+
+    The symlink guard is the second half. ``rmdir`` does refuse a non-empty
+    *directory*, and a Windows directory junction is not one: it is a reparse
+    point, so ``rmdir`` unlinks it happily however full the target is. The
+    target survives and the link does not, which is a repo whose ``.cursor``
+    stopped resolving.
     """
     for candidate in (rules_path(repo_path).parent, repo_path / ".cursor"):
+        if candidate.is_symlink():
+            continue
         with contextlib.suppress(OSError):
             candidate.rmdir()
 
@@ -361,7 +390,9 @@ class CursorTarget:
             result.record(mcp_config_path(repo_path), FileAction.KEPT)
             result.note(
                 '.cursor/mcp.json left unchanged: its "repowise" entry names a remote '
-                "server. Remove that entry first if you want the local one instead."
+                "server, and converting it in place would leave an entry that is "
+                "neither. Run 'repowise agents remove --target=cursor' first if you "
+                "want the local server instead."
             )
         # ``OSError`` alongside ``ValueError`` because the read and the parent
         # ``mkdir`` both live in there, and neither is exotic: ``.cursor`` can be
@@ -370,10 +401,16 @@ class CursorTarget:
         # ``doctor --repair`` all call it bare — so an escape here aborts the run
         # after other agents' configs have already been written, and prints a
         # traceback instead of the summary that would have said so.
-        except (ValueError, OSError):
+        except (ValueError, OSError) as exc:
             result.record(mcp_config_path(repo_path), FileAction.KEPT)
+            # The reason is carried rather than asserted. This guard is wide
+            # enough to catch things that are not a bad config file at all: the
+            # generated entry is built inside the guarded call, so an OSError
+            # resolving the repo path lands here too, and a note that flatly
+            # says "not valid JSON" would send the user to inspect a file that
+            # is fine.
             result.note(
-                ".cursor/mcp.json left unchanged (unreadable or not valid JSON). Add a "
+                f".cursor/mcp.json left unchanged ({exc}). Add a "
                 '"repowise" server under "mcpServers" manually.'
             )
 
@@ -402,7 +439,8 @@ class CursorTarget:
             return result
         result.record(*_remove_server_entry(mcp_config_path(repo_path)))
         result.record(*_remove_rules_file(repo_path))
-        _prune_empty_dirs(repo_path)
+        if any(written.action is FileAction.REMOVED for written in result.files):
+            _prune_empty_dirs(repo_path)
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:

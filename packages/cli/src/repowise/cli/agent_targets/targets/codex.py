@@ -577,10 +577,25 @@ class CodexTarget:
 
         if repo_path is None:
             raise ValueError("project-scope uninstall needs a repo_path")
-        removed = remove_agents_md_distill_section(repo_path)
+        instructions = instructions_path(repo_path)
+        if remove_agents_md_distill_section(repo_path):
+            result.record(instructions, FileAction.REMOVED)
+            return result
+
+        # The removal returns False for four different reasons, and reporting
+        # them all as not-found says "there was nothing of ours here" about a
+        # file we deliberately declined to touch. Same distinction the Cursor
+        # rules file draws, and it matters more here: AGENTS.md is a file users
+        # write in, so "left alone" is the common answer.
+        from ..formats.marker_block import BlockState, inspect
+        from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+
+        state = inspect(instructions, DISTILL_MARKER_START, DISTILL_MARKER_END).state
         result.record(
-            instructions_path(repo_path),
-            FileAction.REMOVED if removed else FileAction.NOT_FOUND,
+            instructions,
+            FileAction.NOT_FOUND
+            if state in (BlockState.ABSENT_FILE, BlockState.ABSENT)
+            else FileAction.KEPT,
         )
         return result
 

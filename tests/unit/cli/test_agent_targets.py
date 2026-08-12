@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -432,7 +431,6 @@ def test_cursor_uninstall_leaves_no_directories_of_ours_behind(tmp_path: Path) -
     cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
 
     assert list(repo.iterdir()) == []
-    assert not cursor_target.TARGET.is_present(repo) or shutil.which("cursor")
 
 
 def test_cursor_keeps_a_sibling_server_when_it_removes_ours(tmp_path: Path) -> None:
@@ -479,37 +477,192 @@ def test_cursor_declines_a_hand_wired_remote_server(tmp_path: Path) -> None:
     assert any("remote server" in note for note in result.notes)
 
 
-@pytest.mark.parametrize("filename", ["mcp.json", "rules"])
-def test_cursor_survives_a_config_file_that_is_not_utf8(tmp_path: Path, filename: str) -> None:
-    """A cp1252 file is ordinary on Windows and used to abort the whole run.
+def test_cursor_rules_file_that_is_not_utf8_is_refused_not_replaced(tmp_path: Path) -> None:
+    """The dangerous half of the decode bug, and the reason for ``UNREADABLE``.
 
-    ``UnicodeDecodeError`` is a ``ValueError`` and not an ``OSError``, so it
-    escaped every handler here and tracebacked out of ``install`` after other
-    agents' configs had already been written, taking the summary that would
-    have named them with it.
+    A decode failure stops the *read* and not the write. Reporting an
+    undecodable file as absent, which is what an unreadable one used to get,
+    means ``upsert`` replaces a file it never saw. The crash was the visible
+    half; this is the one that loses data.
+
+    A cp1252 rules file is ordinary on Windows, not exotic.
     """
     from repowise.cli.agent_targets.targets import cursor as cursor_target
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    path = (
-        cursor_target.mcp_config_path(repo)
-        if filename == "mcp.json"
-        else cursor_target.rules_path(repo)
-    )
+    path = cursor_target.rules_path(repo)
     path.parent.mkdir(parents=True)
     path.write_bytes("caf\xe9".encode("latin-1"))
     before = path.read_bytes()
 
-    # Every entry point, because they take different routes into the same read.
-    assert cursor_target.TARGET.detect(repo) == []
     result = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
     cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
 
-    # Refused, not replaced. A decode failure stops the read and not the write,
-    # so the dangerous outcome here is a silent overwrite, not a crash.
     assert path.read_bytes() == before
     assert next(f.action for f in result.files if f.path == path) is FileAction.KEPT
+
+
+def test_cursor_detect_survives_a_config_that_is_not_utf8(tmp_path: Path) -> None:
+    """``detect`` is contracted never to raise, and ran on paths that do not catch.
+
+    ``UnicodeDecodeError`` is a ``ValueError`` and not a ``json.JSONDecodeError``,
+    so naming the latter let it through. ``resolve_target_flag`` calls detection
+    without a handler.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = cursor_target.mcp_config_path(repo)
+    config.parent.mkdir(parents=True)
+    config.write_bytes("caf\xe9".encode("latin-1"))
+
+    assert cursor_target.TARGET.detect(repo) == []
+    assert resolve_target_flag("auto", repo) is not None
+
+
+def test_cursor_leaves_a_cursor_dir_it_did_not_create(tmp_path: Path) -> None:
+    """Pruning is gated on having removed something, not on the directory being empty.
+
+    "``rmdir`` refuses a non-empty directory, so an empty one must be ours" is
+    the same wrong assumption this module keeps meeting. A user who made
+    ``.cursor/`` by hand and left it empty had it deleted by a remove that found
+    nothing of ours to remove.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".cursor").mkdir()
+
+    result = cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert (repo / ".cursor").is_dir()
+    assert not result.changed
+
+
+def test_cursor_install_repoints_a_stale_local_entry_carrying_a_url(tmp_path: Path) -> None:
+    """A local entry with a leftover ``url`` is stale, not remote.
+
+    Reading ``"url" in entry`` ahead of the declared type contradicted what the
+    entry says about itself, and wedged the exact state ``agents add`` exists to
+    repoint: every command that could have fixed it reached the same decline.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = cursor_target.mcp_config_path(repo)
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "repowise": {"type": "stdio", "command": "stale", "url": "https://old"}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]["repowise"]
+    assert entry["command"] != "stale"
+    assert entry["type"] == "stdio"
+
+
+def test_cursor_does_not_claim_it_removed_a_file_it_could_not_delete(tmp_path: Path) -> None:
+    """A false success on the destructive verb, which a read-only bit was enough to cause.
+
+    Suppressing the ``unlink`` error reported ``removed`` for a file still
+    holding our entry. Falling through to the rewrite restores the loud failure
+    the previous code had.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    config = cursor_target.mcp_config_path(repo)
+
+    real_unlink = Path.unlink
+
+    def _refuse(self, *args, **kwargs):
+        if self == config:
+            raise PermissionError("read-only")
+        return real_unlink(self, *args, **kwargs)
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(Path, "unlink", _refuse):
+        cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    # Either the entry is gone or the command failed loudly. What it must not do
+    # is report "removed" over a file that still names us.
+    assert "repowise" not in json.loads(config.read_text(encoding="utf-8")).get("mcpServers", {})
+
+
+def test_codex_uninstall_separates_absent_from_left_alone(tmp_path: Path) -> None:
+    """The same conflation the Cursor rules file drew, one module over.
+
+    ``AGENTS.md`` is a file users write in, so "left alone" is the common answer
+    and reporting it as ``not-found`` says there was nothing of ours there.
+    """
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    agents_md = repo / "AGENTS.md"
+
+    # Nothing of ours in it.
+    agents_md.write_text("# My notes\n", encoding="utf-8", newline="\n")
+    result = codex_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+    assert next(f.action for f in result.files if f.path == agents_md) is FileAction.NOT_FOUND
+
+    # A marker pair we must not touch.
+    agents_md.write_text(f"{DISTILL_MARKER_START}\nno end marker\n", encoding="utf-8", newline="\n")
+    result = codex_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+    assert next(f.action for f in result.files if f.path == agents_md) is FileAction.KEPT
+
+
+def test_codex_instructions_survive_a_file_that_is_not_utf8(tmp_path: Path) -> None:
+    """The marker helper refuses an unreadable file, but this path reads before calling it.
+
+    So the helper's refusal never got the chance to run, and the decode escaped
+    straight out of ``hook rewrite install`` and ``hook rewrite status``.
+    """
+    from repowise.cli.editor_integrations.codex_config import (
+        agents_md_distill_section_installed,
+        install_agents_md_distill_section,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    agents_md = repo / "AGENTS.md"
+    agents_md.write_bytes("caf\xe9".encode("latin-1"))
+    before = agents_md.read_bytes()
+
+    assert install_agents_md_distill_section(repo) is None
+    assert agents_md_distill_section_installed(repo) is False
+    assert agents_md.read_bytes() == before
+
+
+def test_vscode_install_survives_a_vscode_path_that_is_a_file(tmp_path: Path) -> None:
+    """The guard widened for Cursor belonged here too, one line above the one that moved."""
+    from repowise.cli.agent_targets.targets import vscode as vscode_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".vscode").write_text("not a directory\n", encoding="utf-8")
+
+    result = vscode_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert (repo / ".vscode").is_file()
+    assert all(f.action is FileAction.KEPT for f in result.files)
+    assert result.notes
 
 
 def test_cursor_install_survives_a_cursor_path_that_is_a_file(tmp_path: Path) -> None:

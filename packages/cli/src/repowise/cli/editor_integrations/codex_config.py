@@ -338,7 +338,11 @@ def install_agents_md_distill_section(repo_path: Path) -> Path | None:
             new_file_prefix=_NEW_FILE_PLACEHOLDER,
         )
         return None if action is FileAction.KEPT else target
-    except OSError:
+    except (OSError, ValueError):
+        # ``ValueError`` for ``UnicodeDecodeError``: the read three lines above
+        # happens here rather than in the marker helper, so the helper's own
+        # refusal of an unreadable file never gets the chance to run and the
+        # decode escaped straight out of ``hook rewrite install``.
         return None
 
 
@@ -364,5 +368,8 @@ def agents_md_distill_section_installed(repo_path: Path) -> bool:
     target = _agents_md_path(repo_path)
     try:
         return target.exists() and _DISTILL_MARKER_START in target.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
+        # Same reason as the installer above, on the path ``hook rewrite
+        # status`` calls. A file we cannot decode does not carry our section as
+        # far as anyone can tell, and a status probe must not raise.
         return False
