@@ -263,23 +263,49 @@ class AgentTarget(Protocol):
     #: Routes this target can be wired through, in preference order.
     methods: tuple[InstallMethod, ...]
 
+    #: Config key gating this agent's managed instruction file, under
+    #: ``editor_files`` in ``.repowise/config.yaml``. Owned by the descriptor so
+    #: the legacy CLI flag mapping can look it up rather than restate it.
+    project_file_id: str
+
     def supports_scope(self, scope: Scope) -> bool:
         """Whether this target has a config home at *scope*."""
         ...
 
-    def detect(self) -> list[Registration]:
-        """Every place this target is currently wired, across all scopes."""
+    def detect(self, repo_path: Path | None = None) -> list[Registration]:
+        """Every place this target is currently wired.
+
+        *repo_path* is optional because user-scope registrations are knowable
+        without one — ``doctor`` run from anywhere still wants them. Passing it
+        adds the project-scope registrations. Never raises: a probe that cannot
+        read a config reports no registration rather than guessing at one.
+        """
         ...
 
-    def install(self, scope: Scope, options: object = None) -> WriteResult:
-        """Wire this target up at *scope*, idempotently."""
+    def install(
+        self,
+        scope: Scope,
+        options: object = None,
+        *,
+        repo_path: Path | None = None,
+    ) -> WriteResult:
+        """Wire this target up at *scope*, idempotently.
+
+        *repo_path* is keyword-only and required in practice for every scope: a
+        project install writes into it, and a user-scope MCP registration has to
+        record which repo the server should serve.
+        """
         ...
 
-    def uninstall(self, scope: Scope) -> WriteResult:
-        """Remove only what :meth:`install` writes, preserving siblings."""
+    def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
+        """Remove only what :meth:`install` writes, preserving siblings.
+
+        Must be safe to call when nothing was ever installed, reporting
+        ``not-found`` or ``kept`` rather than raising.
+        """
         ...
 
-    def print_config(self, scope: Scope) -> str:
+    def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:
         """The config snippet a user would paste by hand.
 
         MUST NOT touch the filesystem. This is the whole of the Paste-config
@@ -288,8 +314,13 @@ class AgentTarget(Protocol):
         """
         ...
 
-    def describe_paths(self, scope: Scope) -> list[str]:
-        """Files this target would write at *scope*, without writing them."""
+    def describe_paths(self, scope: Scope, *, repo_path: Path | None = None) -> list[str]:
+        """Files this target would write at *scope*, without writing them.
+
+        May predict a superset of what one :meth:`install` call writes — an
+        opt-in surface counts — but never a path install would not touch, since
+        this is what a dry run shows the user.
+        """
         ...
 
     def doctor(self) -> DoctorReport:
