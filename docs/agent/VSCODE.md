@@ -106,6 +106,15 @@ assistants query the index through purpose-built tools instead of guessing from
 open files. For editors that read a config file, run **Repowise: Configure MCP
 for this Workspace** to write `.vscode/mcp.json`.
 
+VS Code sits at the **Good** support tier, and the honest version of that is
+worth knowing before you compare it to the Claude Code or Codex setup. You get
+the MCP tools and the config to reach them. You do not get hook-level
+interception: repowise never sees a tool call before it runs, never rewrites a
+noisy command, and never annotates a result afterwards, and there is no
+transcript mining after the session. What the extension itself surfaces in the
+gutter, on hover and in the dashboards is unaffected. Full comparison:
+[INTEGRATIONS.md](INTEGRATIONS.md).
+
 ## Settings
 
 The fastest way to tune everything is **Repowise: Open Settings**, a panel
