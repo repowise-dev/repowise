@@ -174,7 +174,7 @@ prints the entry to paste instead: `repowise agents print-config hermes`.
 
 `platform_toolsets.cli` is deliberately left alone. Hermes exposes every enabled MCP
 server to the CLI by default, and that list only becomes an allowlist once it already
-names one — so repowise adds itself there **only** when the list is already an
+names one. So repowise adds itself there **only** when the list is already an
 allowlist, and never converts a permissive config into a restrictive one. See
 [Hermes](../agent/HERMES.md).
 </details>

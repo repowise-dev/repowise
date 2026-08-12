@@ -29,13 +29,19 @@ exactly. Declining here would be refusing work we are able to do correctly.
 
 **Why the surgery is safe despite being line-based.** It is not trusted. The
 caller computes the document it *means* to end up with, from the parsed
-original, and :func:`verify` re-parses the spliced text and compares. Any shape
-this module's line matching does not understand -- a flow mapping, an anchor on
-the node, a duplicate key, tabs, an unusual indent -- makes the re-parse differ
-from the intent, and the write is refused with the file untouched. So the
-failure mode of a mis-fired splice is a decline, never a corrupted config. That
-is a stronger guarantee than enumerating the shapes in advance, because the
-enumeration is the part that would be wrong.
+original, and :func:`verify` re-parses the spliced text and compares. A shape
+this module's line matching gets wrong -- a flow mapping, a duplicate top-level
+key, an unusual indent -- lands the edit somewhere that changes the document,
+and the write is refused with the file untouched. So a mis-fired splice fails
+closed. That is a stronger guarantee than enumerating the shapes in advance,
+because the enumeration is the part that would be wrong.
+
+The guarantee is about *meaning*, and it stops there. Comments and blank lines
+do not survive into the parse, so nothing checks them mechanically; they are
+preserved because the edit is confined to one key's own lines, and the tests
+that cover them assert on the text. Inputs that cannot be parsed at all --
+tabs, several documents in one file -- are refused before any of this, by
+:func:`load_mapping`.
 
 Two primitives are enough for every edit a target needs: :func:`set_child` and
 :func:`remove_child`. Adding an item to a nested list is ``set_child`` with the
@@ -299,6 +305,10 @@ def set_child(text: str, parent: str, child: str, value: Any) -> str:
         return prefix + "\n".join(rendered) + "\n"
 
     start, end = found
+
+    if _is_flow_value(lines[start]):
+        return _set_child_in_flow_parent(lines, start, end, parent, child, value)
+
     indent = _child_indent(lines, start, end)
 
     existing = _find_child(lines, start, end, child, indent)
@@ -317,30 +327,95 @@ def set_child(text: str, parent: str, child: str, value: Any) -> str:
     # Append inside the parent's block, above any blank or comment lines that
     # trail it, so a comment introducing the next top-level section keeps its
     # blank line and stays attached to that section rather than to ours.
+    #
+    # Comments count here, not only blanks. The parent's range runs to the next
+    # top-level key, and a heading written above that key sits inside the range,
+    # so stopping at the first blank line inserts our entry *below* the heading:
+    # the user's section title ends up indented inside our block and the section
+    # it introduced loses it. ``_child_end`` walks back over both for the same
+    # reason. The cost when a trailing comment really did belong to the parent
+    # is that our entry lands above it, which loses nothing.
     insert_at = end
-    while insert_at > start + 1 and not lines[insert_at - 1].strip():
+    while insert_at > start + 1 and (
+        not lines[insert_at - 1].strip() or lines[insert_at - 1].lstrip().startswith("#")
+    ):
         insert_at -= 1
     return _join(lines[:insert_at] + rendered + lines[insert_at:])
 
 
-def remove_child(text: str, parent: str, child: str) -> str:
-    """Return *text* with top-level ``parent``'s ``child`` removed.
+def _set_child_in_flow_parent(
+    lines: list[str], start: int, end: int, parent: str, child: str, value: Any
+) -> str:
+    """Rewrite a flow-mapping parent as a block mapping carrying the new child.
 
-    The parent goes too once it holds nothing else, because a bare ``parent:``
-    with no children parses as ``None`` rather than as an empty mapping, and
-    leaving that behind is a different document from the one that existed
-    before the install. A no-op when either is absent.
+    ``mcp_servers: {}`` is an ordinary way to write a section that exists and
+    holds nothing yet, and ``mcp_servers: {github: {...}}`` is legal too. Neither
+    can be spliced into as a block: the child would be indented under a value
+    that is already closed, producing text that does not parse. Before this, both
+    reached :func:`verify`, failed, and surfaced ``not valid YAML`` about a file
+    that is perfectly valid, with no way forward but hand-editing.
+
+    Nothing is lost by re-rendering: a flow mapping is one line, so the only
+    thing to carry across is a comment on it.
+
+    One asymmetry worth stating, because it is the single case that does not
+    round-trip byte for byte. Converting ``parent: {}`` to a block mapping and
+    then removing the child again leaves the key gone rather than empty, since
+    by then there is no flow syntax left to restore. Both spellings mean the
+    same thing to the hosts that read them, and the alternative was declining
+    the install outright and forever.
+    """
+    import yaml
+
+    try:
+        parsed = yaml.safe_load("\n".join(lines[start:end]))
+    except yaml.YAMLError:
+        parsed = None
+    current = parsed.get(parent) if isinstance(parsed, dict) else None
+    if current is not None and not isinstance(current, dict):
+        # A flow *sequence* is not a mapping we can add a child to. Leave the
+        # lines alone and let ``verify`` refuse, which is the honest outcome.
+        return _join(lines)
+
+    merged = {**(current or {}), child: value}
+    rendered = render_child(parent, merged, 0)
+    comment = _trailing_comment(lines[start])
+    if comment:
+        rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
+    return _join(lines[:start] + rendered + lines[end:])
+
+
+def remove_child(text: str, parent: str, child: str) -> tuple[str, bool]:
+    """Remove top-level ``parent``'s ``child``. Returns ``(text, parent_kept)``.
+
+    The parent goes with it once the block holds nothing at all, so an install
+    followed by an uninstall leaves no bare ``parent:`` behind.
+
+    **A block still holding the user's comments is not empty**, and that is why
+    this reports back rather than just returning text. Deleting a parent whose
+    only remaining lines are comments takes those comments with it, and the
+    parse cannot see the difference: comments do not survive into the document,
+    so :func:`verify` would wave it through. A user who commented out a parked
+    server inside ``mcp_servers`` would lose the note explaining why.
+
+    So the comments stay and the bare ``parent:`` stays with them, which parses
+    to ``None`` rather than to an absent key. The caller has to know which of
+    the two happened to state the document it intends, which is what the second
+    element is for. Both hosts this matters for read a null section as empty.
+
+    A no-op returning ``(text, True)`` when either key is absent: nothing was
+    removed, so nothing about the parent changed.
     """
     lines = _split(text)
     found = _find_top_level(lines, parent)
     if found is None:
-        return text
+        return text, True
 
     start, end = found
     indent = _child_indent(lines, start, end)
     existing = _find_child(lines, start, end, child, indent)
     if existing is None:
-        return text
+        return text, True
 
     child_start, child_end = existing
     remaining = lines[:child_start] + lines[child_end:]
@@ -348,16 +423,14 @@ def remove_child(text: str, parent: str, child: str) -> str:
     # Re-locate the parent in the shortened file rather than reusing the old
     # offsets: removing the child moved every line after it.
     refound = _find_top_level(remaining, parent)
-    if refound is not None:
-        new_start, new_end = refound
-        has_content = any(
-            line.strip() and not line.lstrip().startswith("#")
-            for line in remaining[new_start + 1 : new_end]
-        )
-        if not has_content:
-            remaining = remaining[:new_start] + remaining[new_end:]
+    if refound is None:
+        return _join(remaining), False
 
-    return _join(remaining)
+    new_start, new_end = refound
+    body = remaining[new_start + 1 : new_end]
+    if any(line.strip() for line in body):
+        return _join(remaining), True
+    return _join(remaining[:new_start] + remaining[new_end:]), False
 
 
 def verify(merged_text: str, expected: dict) -> None:
@@ -367,6 +440,14 @@ def verify(merged_text: str, expected: dict) -> None:
     *expected* from the parsed original, so any shape the matching above did
     not understand shows up here as a mismatch, and the caller declines with
     the file untouched instead of writing something it did not intend.
+
+    **What it does not cover, stated plainly so nobody leans on it further than
+    it goes.** The comparison is between *documents*, so it proves the file
+    will mean what the caller intended and nothing more. A splice that dropped
+    only a comment or a blank line produces the same document and passes here.
+    Comment preservation is a property of the surgery being minimal, not
+    something this check enforces, and the tests that cover it assert on the
+    text rather than on the parse.
 
     Raises ``ValueError`` on a mismatch, so it lands in the same handler as an
     unreadable file.

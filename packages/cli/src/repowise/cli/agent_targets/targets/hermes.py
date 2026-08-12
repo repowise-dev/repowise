@@ -87,6 +87,10 @@ MCP_KEY = "mcp_servers"
 #: Top-level key holding per-platform toolset lists.
 TOOLSETS_KEY = "platform_toolsets"
 
+#: Byte-order mark, spelled as an escape so it cannot be mistaken for stray
+#: whitespace or lost by an editor that strips invisible characters.
+BOM = "\ufeff"
+
 #: The platform key for interactive ``hermes`` sessions.
 CLI_PLATFORM = "cli"
 
@@ -259,9 +263,19 @@ def _mcp_allowlist(doc: dict) -> list | None:
     MCP off for the platform outright, and a user who wrote it does not want us
     adding ourselves back.
 
-    Membership is tested against the servers this document actually enables,
-    exactly as the host tests it, so a list naming only a server the user has
-    since disabled does not read as an allowlist.
+    Membership is tested against the servers this document actually enables, so
+    a list naming only a server the user has since disabled does not read as an
+    allowlist.
+
+    **That test is close to the host's and not identical to it, deliberately.**
+    Hermes also counts MCP servers contributed in memory by an enabled plugin,
+    which are not in ``config.yaml`` at all and cannot be known without loading
+    Hermes. So a toolset list whose only MCP name comes from a plugin reads as
+    an allowlist to the host and as an ordinary list here, and repowise leaves
+    itself out of a list that is filtering on it. The cost of being wrong that
+    way is that repowise does not appear and the user adds one line; the cost of
+    guessing the other way is silently disabling servers they do have. Between a
+    miss the user can see and a regression they cannot, this takes the miss.
     """
     toolsets = doc.get(TOOLSETS_KEY)
     if not isinstance(toolsets, dict):
@@ -334,9 +348,24 @@ def plan_write(existing_text: str | None) -> tuple[str, dict, dict | None]:
     # ``verify`` after the splice. Anything the line matching misreads shows up
     # as a mismatch there rather than as a damaged config.
     intended = _deep_copy(base_doc)
-    intended.setdefault(MCP_KEY, {})
-    if not isinstance(intended[MCP_KEY], dict):
+    # ``setdefault`` is the obvious call here and it is wrong: it does not
+    # replace a key that is present and null. A section header with nothing
+    # under it yet is ordinary YAML and an ordinary thing to find in a config
+    #
+    #     mcp_servers:
+    #       # servers go here
+    #
+    # and it parses to ``None``, not to ``{}``. Treating that as a bad shape
+    # made install decline permanently, with a note calling the user's valid
+    # file invalid, and doctor then handed back the command that had just
+    # refused. Hermes itself coerces the same key to an empty mapping before
+    # reading it.
+    section = intended.get(MCP_KEY)
+    if section is None:
+        section = {}
+    if not isinstance(section, dict):
         raise ValueError(f"'{MCP_KEY}' must be a YAML mapping")
+    intended[MCP_KEY] = section
     intended[MCP_KEY][SERVER_NAME] = entry
 
     merged_text = yaml_merge.set_child(text, MCP_KEY, SERVER_NAME, entry)
@@ -374,7 +403,7 @@ def write_mcp_config() -> FileWrite:
 
     path = config_path()
     raw = _read_text(path)
-    existing_text = None if raw is None else raw.replace("\r\n", "\n")
+    bom, newline, existing_text = _prepare(raw)
     merged_text, merged_doc, existing_doc = plan_write(existing_text)
 
     if raw is None:
@@ -382,13 +411,41 @@ def write_mcp_config() -> FileWrite:
     return FileWrite(
         path=path,
         action=yaml_merge.write_if_changed(
-            path,
-            merged_text,
-            merged_doc,
-            existing_doc,
-            newline=None if raw is None else yaml_merge.detect_newline(raw),
+            path, bom + merged_text, merged_doc, existing_doc, newline=newline
         ),
     )
+
+
+def _prepare(raw: str | None) -> tuple[str, str | None, str | None]:
+    """Split a file's text into what to put back and what to work on.
+
+    Returns ``(bom, newline, text)``. The text is stripped of a byte-order mark
+    and normalised to ``\\n``, which is the only shape the splice understands;
+    the other two are what the write needs to put the file back the way it was.
+
+    **The byte-order mark is the reason this is a function.** Every line match
+    in the splice is anchored at column zero, so a mark sitting in front of the
+    first key hides that key from the search: the edit appends a second copy of
+    a section that was already there, the duplicate makes the merged text parse
+    to something else, and install declines forever on a file both PyYAML and
+    Hermes read without complaint. Notepad on Windows is the ordinary way to get
+    one, and this target is Windows-facing. It is carried across rather than
+    dropped: reading with ``utf-8-sig`` would be shorter and would silently
+    rewrite the file without its mark, which is a change to someone else's file
+    that nothing asked for.
+
+    One helper rather than the same three lines twice, because the install and
+    the removal both do this and the failure when they drift is invisible. The
+    write path keeping the mark while the removal dropped it would break the
+    round trip on exactly the files this exists for.
+    """
+    from ..formats import yaml_merge
+
+    if raw is None:
+        return "", None, None
+    bom = BOM if raw.startswith(BOM) else ""
+    body = raw[len(bom) :]
+    return bom, yaml_merge.detect_newline(body), body.replace("\r\n", "\n")
 
 
 def _read_text(path: Path) -> str | None:
@@ -434,15 +491,24 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
 
     Both edits again land in one file and one write.
 
-    **The file itself is only deleted when it is unambiguously ours**, meaning
-    the removal emptied the document *and* it is the only thing in the Hermes
-    home directory. ``config.yaml`` is the host's own file -- Hermes creates it
-    during setup and rewrites it on every ``hermes config set`` -- so deleting
-    one that merely looks empty would be destroying something we did not make.
-    The directory test is what makes the answer unambiguous: a real Hermes home
-    also holds ``SOUL.md``, ``auth.json``, ``logs/`` and a session database, so
-    a lone empty ``config.yaml`` is one this install created and nothing else
-    ever used.
+    **The file itself is only deleted when it is unambiguously ours**, which
+    takes two tests, and the first one is the one that is easy to get wrong.
+
+    The **text** left after the removal has to be blank, not the document. An
+    empty document is not an empty file: a ``config.yaml`` holding nothing but
+    the user's comments parses to ``{}``, and so does one holding a commented
+    out server with a note about why it is parked. Deleting either of those on
+    the strength of the parse destroys a file the user wrote, reports it as
+    ``removed``, and says nothing. Comments do not survive into the parse, so no
+    amount of comparing documents can see the difference.
+
+    The directory has to hold nothing else, as a second test rather than the
+    only one. ``config.yaml`` is the host's own file: Hermes creates it during
+    setup and rewrites it on every ``hermes config set``. But a Hermes that has
+    ever loaded its config also seeds ``SOUL.md`` and ten subdirectories beside
+    it, so a config that is alone in its directory did not come from Hermes.
+    Together the two mean the file is empty, we filled it, and nothing else has
+    ever used the directory.
     """
     from ..formats import yaml_merge
 
@@ -453,10 +519,9 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
         return path, FileAction.KEPT
     if raw is None:
         return path, FileAction.NOT_FOUND
-    newline = yaml_merge.detect_newline(raw)
-    existing_text = raw.replace("\r\n", "\n")
+    bom, newline, existing_text = _prepare(raw)
     try:
-        existing_doc = yaml_merge.load_mapping(existing_text)
+        existing_doc = yaml_merge.load_mapping(existing_text or "")
     except (OSError, ValueError):
         # Same reason install declines: rewriting a file we could not read
         # destroys whatever we failed to read.
@@ -466,12 +531,22 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
         return path, FileAction.NOT_FOUND
 
+    merged_text, section_kept = yaml_merge.remove_child(
+        existing_text, MCP_KEY, SERVER_NAME
+    )
+
     intended = _deep_copy(existing_doc)
     del intended[MCP_KEY][SERVER_NAME]
     if not intended[MCP_KEY]:
-        del intended[MCP_KEY]
+        # The helper keeps the section header when the user's comments are
+        # still inside it, and a bare ``mcp_servers:`` parses to ``None`` rather
+        # than to an absent key. Follow what it actually did instead of assuming
+        # the key went, or the comparison below refuses a correct removal.
+        if section_kept:
+            intended[MCP_KEY] = None
+        else:
+            del intended[MCP_KEY]
 
-    merged_text = yaml_merge.remove_child(existing_text, MCP_KEY, SERVER_NAME)
     merged_text = _prune_allowlist(merged_text, intended)
 
     try:
@@ -482,7 +557,8 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
         # "left alone" rather than as a removal that did not happen.
         return path, FileAction.KEPT
 
-    if not intended and _is_sole_occupant(path):
+    merged_text = bom + merged_text
+    if not merged_text.strip() and _is_sole_occupant(path):
         try:
             path.unlink()
         except OSError:
@@ -496,6 +572,8 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
 
     yaml_merge.write_if_changed(path, merged_text, intended, existing_doc, newline=newline)
     return path, FileAction.REMOVED
+
+
 
 
 def _prune_allowlist(text: str, intended: dict) -> str:
@@ -525,9 +603,15 @@ def _prune_allowlist(text: str, intended: dict) -> str:
         return yaml_merge.set_child(text, TOOLSETS_KEY, CLI_PLATFORM, remaining)
 
     del toolsets[CLI_PLATFORM]
+    pruned, section_kept = yaml_merge.remove_child(text, TOOLSETS_KEY, CLI_PLATFORM)
     if not toolsets:
-        del intended[TOOLSETS_KEY]
-    return yaml_merge.remove_child(text, TOOLSETS_KEY, CLI_PLATFORM)
+        # Same contract as the servers section: the helper keeps a header whose
+        # comments are still inside it, and a bare key parses to ``None``.
+        if section_kept:
+            intended[TOOLSETS_KEY] = None
+        else:
+            del intended[TOOLSETS_KEY]
+    return pruned
 
 
 def _is_sole_occupant(path: Path) -> bool:
@@ -655,6 +739,16 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
     can reach repowise, and this repo tells it to. That is also what lets
     ``agents refresh`` rewrite the repo block, since refresh skips a scope it
     was told is unwired.
+
+    **There is no text-probe fallback for a config this cannot parse**, and the
+    difference from ``opencode.py`` is the point rather than an omission. That
+    target probes the raw text of a config it failed to parse, because its host
+    accepts comments in JSON and a file ``json.loads`` rejects is usually a
+    working config; answering "not wired" for one would strip a live agent's
+    instructions. YAML has no such gap. Comments are part of the grammar and
+    parse fine, and Hermes reads this file with the same UTF-8 strictness, so a
+    ``config.yaml`` repowise cannot parse is one Hermes cannot parse either.
+    There is no working agent behind it to protect.
     """
     found: list[Registration] = []
     if not _reads_repowise():

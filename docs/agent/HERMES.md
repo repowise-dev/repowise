@@ -52,7 +52,7 @@ is exposed.** A config with no `platform_toolsets` at all, or with a plain
 
 So on an ordinary config repowise is reachable the moment it is in
 `mcp_servers`, and adding `repowise` to that list would flip the config onto the
-allowlist branch with exactly one entry — silently cutting off every other MCP
+allowlist branch with exactly one entry, silently cutting off every other MCP
 server the user had. Writing the key would not be redundant, it would be a
 regression.
 
@@ -71,8 +71,8 @@ owns are returned untouched, and the file's existing line endings are preserved.
 
 Every edit is checked before it lands: repowise re-parses what it is about to
 write and compares it against the config it intended. If the two differ for any
-reason — an unusual layout, a flow-style mapping, a duplicate key — nothing is
-written and the file is left exactly as it was. If the file cannot be parsed at
+reason, whether an unusual layout, a flow-style mapping or a duplicate key,
+nothing is written and the file is left exactly as it was. If the file cannot be parsed at
 all, repowise says so and prints the entry for you to paste:
 
 ```bash

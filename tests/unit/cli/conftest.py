@@ -20,7 +20,7 @@ itself.
 
 ``HERMES_HOME`` and ``LOCALAPPDATA`` are the same hole, one variable further
 along. The Hermes target reads ``HERMES_HOME`` first and then, on Windows only,
-``%LOCALAPPDATA%\\hermes`` — never ``~/.hermes`` there — so redirecting home
+``%LOCALAPPDATA%\\hermes``, never ``~/.hermes`` there, so redirecting home
 covers neither. ``LOCALAPPDATA`` is *redirected* rather than cleared, because
 unlike the other two it is a variable Windows itself always sets and other code
 legitimately reads; pointing it inside the sandbox keeps it meaningful while
@@ -29,7 +29,7 @@ still making it impossible for a test to reach the developer's real
 
 Every entry here is an absolute-path variable that outranks ``~``. Any new
 target that resolves its config through one belongs in this list, and the check
-is not "does redirecting home cover it" — it does not.
+is not "does redirecting home cover it", because it does not.
 """
 
 from __future__ import annotations
