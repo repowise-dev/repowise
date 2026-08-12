@@ -289,7 +289,7 @@ def test_a_keyless_index_reports_no_semantic_search_in_meta() -> None:
     meta = _meta_for(KeylessEmbedder(), "mock")
 
     assert meta["semantic_search"] is False
-    assert meta.get("embedder_degraded") is not True
+    assert meta["embedder_degraded"] is False
 
 
 def test_a_failed_pinned_embedder_reports_degraded_and_names_itself() -> None:
@@ -305,7 +305,7 @@ def test_a_real_embedder_is_not_flagged() -> None:
     meta = _meta_for(_RealisticEmbedder(), "openai")
 
     assert "semantic_search" not in meta
-    assert "embedder_degraded" not in meta
+    assert meta["embedder_degraded"] is False
 
 
 def test_cli_semantic_search_says_full_text_answered() -> None:

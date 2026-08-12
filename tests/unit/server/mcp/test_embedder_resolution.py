@@ -270,17 +270,24 @@ def test_build_meta_surfaces_degraded_embedder(monkeypatch):
 
 
 def test_build_meta_clean_when_healthy(monkeypatch):
-    """A healthy (or unresolved) embedder leaves _meta clean — no noise fields."""
+    """A healthy embedder adds no prose, only the explicit not-degraded verdict.
+
+    ``embedder_degraded: False`` is the whole point: the check runs on every
+    call, so a key written only when degraded reads as a 100% degradation rate
+    to anything that aggregates it.
+    """
     monkeypatch.setattr(
         _state,
         "_embedder_status",
         {"active": "openai", "requested": "openai", "degraded": False},
     )
     meta = build_meta(timing_ms=1.0)
-    assert "embedder_degraded" not in meta
+    assert meta["embedder_degraded"] is False
     assert "embedder" not in meta
     assert "embedder_warning" not in meta
 
-    # And when nothing has been resolved at all.
+
+def test_build_meta_omits_degraded_when_embedder_unresolved(monkeypatch):
+    """Nothing resolved → the check never ran, so neither value is honest."""
     monkeypatch.setattr(_state, "_embedder_status", None)
     assert "embedder_degraded" not in build_meta(timing_ms=1.0)

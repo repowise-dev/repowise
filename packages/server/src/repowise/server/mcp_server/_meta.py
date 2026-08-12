@@ -211,7 +211,7 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     Pass ``targets`` (the file/symbol/module paths this response actually
     serves) to scope the mismatch signal: when HEAD has moved but none of the
     served targets changed between the indexed commit and live HEAD, the
-    response carries ``index_behind: true`` instead of ``stale_warning``.
+    response carries ``index_behind: true`` on its own, with no ``stale_warning``.
     "Silence means current" only trains trust if the warning fires only when
     the served content is actually affected — a repo-wide warning after every
     unrelated commit teaches the agent to ignore the field. ``targets=None``
@@ -227,11 +227,14 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
       * ``stale_warning``   — only on a real signal (a served target changed,
         HEAD mismatch with real file changes on a repo-level response, OR very
         old with no git)
-      * ``index_behind``    — HEAD moved but nothing the response serves is
-        affected: either no served target changed, or the two commits have
-        identical trees so *no* file changed at all. The second case used to
-        warn on every repo-level response, which is the loudest possible way to
-        be wrong about a repo that is completely current.
+      * ``index_behind``.   The live-vs-indexed comparison ran and reached a
+        definitive answer: ``true`` whenever HEAD has moved (with or without an
+        accompanying ``stale_warning``, which is the sharper, content-scoped
+        signal), ``false`` when the two commits match. Omitted only when the
+        comparison could not run at all (no git, no local path, or no indexed
+        commit), so absence means "not evaluated", never "false". Emitting the
+        false case matters downstream: a field that is only ever present as
+        ``true`` makes every consumer-side rate read 100%.
 
     Defensive throughout: any missing piece is dropped rather than raised so
     an upstream change to the Repository model can never poison a tool result.
@@ -261,6 +264,11 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     if live_full and indexed_full:
         if live_full != indexed_full:
             out["live_head"] = live_full[:12]
+            # HEAD moved, so the index *is* behind, true regardless of which
+            # sub-branch below fires. Emitted unconditionally here (rather than
+            # only on the quiet branches) so consumers can compute a rate:
+            # a key that only ever appears as True makes every aggregate 100%.
+            out["index_behind"] = True
             changed = (
                 _changed_files_between(local_path, indexed_full, live_full) if local_path else None
             )
@@ -273,20 +281,21 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
                 # to stop reading the field. Checked before the targets branch
                 # because it holds for repo-level responses too, which are
                 # exactly the ones that previously always warned.
-                out["index_behind"] = True
+                pass
             elif targets is not None and changed is not None:
                 if targets_hit_by_changes(targets, changed):
                     out["stale_warning"] = (
                         "A file this response serves changed after indexing — "
                         "verify against source or run `repowise update`."
                     )
-                else:
-                    out["index_behind"] = True
             else:
                 # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
                 # don't repeat them in prose. Just the directive.
                 out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
-        # Match: deliberately emit nothing extra. Silence is the signal.
+        else:
+            # Match. No prose, since silence is the signal, but the comparison
+            # did run and its answer is "not behind", so say so explicitly.
+            out["index_behind"] = False
     elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
         # No git signal available and the index is genuinely old.
         out["stale_warning"] = (
@@ -348,8 +357,12 @@ def _embedder_meta() -> dict[str, Any]:
     fell back to mock vectors, every tool response carries ``embedder: "mock"``,
     ``embedder_degraded: True``, and a human-readable ``embedder_warning`` so an
     agent can detect — programmatically — that semantic search is broken instead
-    of trusting empty/garbage retrieval. Emits nothing when the embedder is
-    healthy or unresolved, so healthy responses stay clean.
+    of trusting empty/garbage retrieval. A healthy embedder still carries
+    ``embedder_degraded: False`` and nothing else, so responses stay quiet while
+    the field remains a two-valued signal: telemetry that only ever sees the
+    ``true`` case cannot tell a 100% degradation rate from a write-only key.
+    Absent entirely means the embedder was never initialised: not evaluated,
+    not healthy.
 
     A *keyless* index is a different state and gets a different field. Nothing
     is broken and nothing was misconfigured, so it is not flagged as degraded;
@@ -363,11 +376,13 @@ def _embedder_meta() -> dict[str, Any]:
 
     status = getattr(_state, "_embedder_status", None)
     if not status:
+        # Embedder never initialised, so there is nothing to report either way.
+        # Absence means "not evaluated", distinct from an explicit ``false``.
         return {}
     if not status.get("degraded"):
         if status.get("active") == "mock":
-            return {"embedder": "mock", "semantic_search": False}
-        return {}
+            return {"embedder": "mock", "embedder_degraded": False, "semantic_search": False}
+        return {"embedder_degraded": False}
     out: dict[str, Any] = {
         "embedder": status.get("active", "mock"),
         "embedder_degraded": True,

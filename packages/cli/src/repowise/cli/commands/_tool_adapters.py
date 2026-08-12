@@ -241,6 +241,11 @@ def index_note(payload: dict) -> dict[str, Any]:
     for key in ("indexed_commit", "live_head", "index_behind", "index_age_days"):
         if key in meta:
             note[key] = meta[key]
+    # ``index_behind: false`` exists in ``_meta`` so telemetry can tell "current"
+    # apart from "never checked". A projection is read by an agent, not an
+    # aggregator, and "the index is not behind" is already what silence says.
+    if note.get("index_behind") is False:
+        note.pop("index_behind")
     if meta.get("stale_warning"):
         note["stale_warning"] = meta["stale_warning"]
     return note
