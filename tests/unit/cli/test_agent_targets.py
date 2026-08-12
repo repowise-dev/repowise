@@ -2827,6 +2827,77 @@ def test_yaml_merge_does_not_read_a_hash_inside_an_inline_value_as_a_comment() -
         assert comment in kept
 
 
+def test_yaml_merge_finds_the_comment_boundary_the_way_the_parser_does() -> None:
+    """Three hand-written rules were tried and each was wrong its own way.
+
+    An apostrophe in a plain scalar is the case that defeats a quote tracker:
+    ``note: don't`` leaves it stuck open, every bracket after it is miscounted,
+    and the next hash in the data is returned as a comment. Which way it then
+    goes is a coin toss, so both are pinned here: a fragment of the value must
+    never be copied out into a comment, and a real comment must never be lost.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    def merged(line: str) -> str:
+        return yaml_merge.set_child(
+            line + "\n", "mcp_servers", "repowise", {"command": "R"}
+        )
+
+    # No comment here at all: the hash lives inside a quoted scalar.
+    fragment = merged("mcp_servers: {a: don't, b: 'x}y # z'}")
+    assert "#" not in fragment.replace("# z", "")
+    assert yaml_merge.load_mapping(fragment)["mcp_servers"]["b"] == "x}y # z"
+
+    # A real comment survives an apostrophe, and an escaped quote, before it.
+    for line in (
+        "mcp_servers: {a: {command: gh, args: [don't]}}  # keep me",
+        'mcp_servers: {a: {command: "a\\"b"}}  # keep me',
+    ):
+        assert "# keep me" in merged(line)
+
+
+def test_yaml_merge_refuses_a_wrapped_value_holding_a_comment() -> None:
+    """A wrapped value is re-rendered onto one line, so a comment inside it has
+    nowhere to go. Only the one following the value is recoverable, so rather
+    than eat the rest the value is left alone. The uncommented wrapped case is
+    the common one and still works.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    commented = (
+        "mcp_servers: {github: {command: gh},   # first server\n"
+        "              other: {command: o}}\n"
+        "model: a\n"
+    )
+    assert (
+        yaml_merge.set_child(commented, "mcp_servers", "repowise", {"command": "R"})
+        == commented
+    )
+
+
+def test_yaml_merge_matches_a_quoted_key_at_both_levels() -> None:
+    """Teaching one of the two searches about quoting was worse than neither.
+
+    The child search learned it first, and the parent search left behind sent a
+    quoted section down the append path, where the block it added was a
+    duplicate key and the write then refused for good.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    for spelling in ('"mcp_servers"', "'mcp_servers'"):
+        merged = yaml_merge.set_child(
+            f"{spelling}:\n  github:\n    command: gh\n",
+            "mcp_servers",
+            "repowise",
+            {"command": "R"},
+        )
+        assert merged.count("mcp_servers") == 1
+        assert sorted(yaml_merge.load_mapping(merged)["mcp_servers"]) == [
+            "github",
+            "repowise",
+        ]
+
+
 def test_yaml_merge_handles_an_inline_value_that_wraps_across_lines() -> None:
     """The shortest slice that parses is the value.
 

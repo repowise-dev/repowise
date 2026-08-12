@@ -174,6 +174,21 @@ def _is_top_level_key(line: str) -> bool:
     return not line.startswith((" ", "\t", "#"))
 
 
+def _key_pattern(key: str, indent: str) -> re.Pattern[str]:
+    """Match *key* at *indent*, bare or in either quote.
+
+    Quoting a mapping key is ordinary YAML. Teaching only one of the two
+    searches about it is worse than teaching neither: the child search learned
+    the quoted spellings first, and the parent search left behind then sent a
+    ``"mcp_servers":`` config down the append path, where the second block it
+    added was a duplicate key and the write refused for good.
+    """
+    name = re.escape(key)
+    return re.compile(
+        rf'^{re.escape(indent)}(?:{name}|"{name}"|\'{name}\'):(?=\s|$)'
+    )
+
+
 def _find_top_level(lines: list[str], key: str) -> tuple[int, int] | None:
     """Line range ``[start, end)`` of top-level *key*, or ``None`` when absent.
 
@@ -181,7 +196,7 @@ def _find_top_level(lines: list[str], key: str) -> tuple[int, int] | None:
     the same name nested inside another mapping, or sitting inside a commented
     example block, is not mistaken for this one.
     """
-    pattern = re.compile(r"^" + re.escape(key) + r":(?=\s|$)")
+    pattern = _key_pattern(key, "")
     for index, line in enumerate(lines):
         if pattern.match(line):
             end = index + 1
@@ -214,11 +229,7 @@ def _find_child(lines: list[str], start: int, end: int, child: str, indent: int)
     The replacement is written bare, which changes the quoting of the one key
     repowise owns and nothing else.
     """
-    pad = " " * indent
-    name = re.escape(child)
-    pattern = re.compile(
-        r"^" + re.escape(pad) + r"(?:" + name + r'|"' + name + r"\"|'" + name + r"')" + r":(?=\s|$)"
-    )
+    pattern = _key_pattern(child, " " * indent)
     for index in range(start + 1, end):
         if pattern.match(lines[index]):
             return index, _child_end(lines, index, end, indent)
@@ -265,53 +276,32 @@ def _trailing_comment(line: str) -> str:
     allowlist`` is exactly the shape this module meets. Losing it would be the
     one place a module built to preserve comments silently ate one.
 
-    One scanner serves every line shape this module edits, inline or scalar.
-    Two versions of "where does the comment start" is how the earlier pair went
-    wrong in opposite directions: the quote-only guard here copied a fragment of
-    an inline value out into a comment, and the bracket-only guard written to
-    replace it deleted any comment that mentioned a brace.
+    **The parser decides where the value ends, not a scanner here.** Three
+    hand-written rules were tried and each was wrong in its own direction: one
+    keyed on quoting copied a fragment of an inline value out into a comment,
+    one searching back from the last bracket deleted any comment that mentioned
+    a brace, and one tracking quotes and bracket depth left to right desynced on
+    an apostrophe in a plain scalar (``note: don't``) and did both. Knowing
+    where a YAML value stops means implementing YAML, so this asks the library
+    that already has: the value node's end mark is the answer, and anything
+    after it on the line is the comment.
+
+    *text* may span several lines, which is what the inline path needs; the
+    value ends on the last of them. Anything that will not compose as a single
+    ``key: value`` pair has no comment this can safely identify, so it reports
+    none.
     """
-    _, separator, rest = line.partition(":")
-    if not separator:
+    import yaml
+
+    try:
+        node = yaml.compose(line)
+    except yaml.YAMLError:
         return ""
-    marker = _comment_start(rest)
-    return rest[marker:].rstrip() if marker != -1 else ""
-
-
-def _comment_start(text: str) -> int:
-    """Index of the comment in *text*, or ``-1``.
-
-    A ``#`` only opens a comment when it is outside every quote and bracket and
-    is preceded by whitespace or begins the text. Both of those matter, and
-    both were got wrong by simpler rules before this:
-
-    * inside a quoted scalar or a flow collection it is data, so
-      ``{args: [-c, foo#bar]}`` has no comment at all;
-    * a ``#`` glued to the preceding character is part of a plain scalar, which
-      is the same rule the YAML parser applies.
-
-    Scanning left to right is what makes a comment containing ``}`` or ``]``
-    safe. Searching backwards from the last bracket looks equivalent and is
-    not: it reads the brace in ``# e.g. {a: b}`` as the end of the value and
-    throws the comment away.
-    """
-    depth = 0
-    quote = ""
-    previous = " "
-    for index, char in enumerate(text):
-        if quote:
-            if char == quote:
-                quote = ""
-        elif char in "\"'":
-            quote = char
-        elif char in "[{":
-            depth += 1
-        elif char in "]}":
-            depth -= 1
-        elif char == "#" and depth <= 0 and previous in " \t":
-            return index
-        previous = char
-    return -1
+    if not isinstance(node, yaml.MappingNode) or len(node.value) != 1:
+        return ""
+    tail = line[node.value[0][1].end_mark.index :]
+    marker = tail.find("#")
+    return tail[marker:].rstrip() if marker != -1 else ""
 
 
 def _is_flow_value(line: str) -> bool:
@@ -439,7 +429,7 @@ def _set_child_in_flow_parent(
 
     merged = {**(current or {}), child: value}
     rendered = render_child(parent, merged, 0, flow=True)
-    comment = _trailing_comment(lines[stop - 1])
+    comment = _trailing_comment("\n".join(lines[start:stop]))
     if comment:
         rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
     return _join(lines[:start] + rendered + lines[stop:])
@@ -476,6 +466,15 @@ def _flow_span(
         if not isinstance(parsed, dict) or parent not in parsed:
             return None
         if _has_anchors(text):
+            return None
+        if stop > start + 1 and "#" in text:
+            # A wrapped value is re-rendered onto one line, so a comment living
+            # *inside* it has nowhere to go. Only the one following the value is
+            # recoverable. Rather than eat the rest, refuse the value: a hash
+            # anywhere in a wrapped inline collection is either a comment worth
+            # keeping or data that says the shape is fussier than this module
+            # should be editing. The single-line case is unaffected, and it is
+            # the common one.
             return None
         return stop, parsed.get(parent)
     return None
@@ -607,7 +606,7 @@ def _remove_child_from_flow_parent(
 
     remaining = {key: item for key, item in current.items() if key != child}
     rendered = render_child(parent, remaining, 0, flow=True)
-    comment = _trailing_comment(lines[stop - 1])
+    comment = _trailing_comment("\n".join(lines[start:stop]))
     if comment:
         rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
     return _join(lines[:start] + rendered + lines[stop:]), remaining
