@@ -127,6 +127,12 @@ def test_add_stands_down_when_the_host_plugin_already_provides_it(
     A machine with the Claude Code plugin installed already has the MCP server
     and the augment hooks. Writing them again costs a second process spawn per
     matched tool call and a second copy of every tool schema, for no benefit.
+
+    Scoped to the *user* config, which is the only thing the plugin covers. The
+    repo-shared ``.mcp.json`` is a committed file other contributors' checkouts
+    read and the plugin does not write it, so standing down for the whole
+    target — as this did at first — meant a plugin user's ``agents add`` wrote
+    nothing at all.
     """
     from repowise.cli.agent_targets.targets import claude_code as target_mod
 
@@ -145,9 +151,12 @@ def test_add_stands_down_when_the_host_plugin_already_provides_it(
     payload = _json(["agents", "add", str(repo), "--target", "claude-code", "-y"])
 
     agent = payload["agents"][0]
-    assert agent["writes"] == {}
-    assert "host-managed" in agent["skipped"]
-    assert not (repo / ".mcp.json").exists()
+    assert "host-managed" in agent["skips"]["user"]
+    assert "user" not in agent["writes"]
+    assert not (Path.home() / ".claude" / "settings.json").exists()
+    # ...but the committed repo file is still written.
+    assert agent["writes"]["project"]["files"][0]["action"] == "created"
+    assert (repo / ".mcp.json").exists()
 
 
 def test_add_honours_the_skip_env_var_for_user_scope(repo: Path, monkeypatch) -> None:
@@ -225,6 +234,38 @@ def test_refresh_repoints_a_stale_entry(repo: Path) -> None:
     assert "/gone" not in refreshed["servers"]["repowise"]["args"]
 
 
+def test_refresh_does_not_create_a_scope_that_was_not_wired(repo: Path) -> None:
+    """"Adds nothing" has to mean it per scope, not per agent.
+
+    Codex wired project-only must not have its per-machine hooks file written
+    as a side effect of a refresh — otherwise ``doctor --repair`` buys a global
+    config write with a repo-local detection.
+    """
+    _run(["agents", "add", str(repo), "--target", "codex", "--scope", "project", "-y"])
+    user_hooks = Path.home() / ".codex" / "hooks.json"
+    assert not user_hooks.exists()
+
+    payload = _json(["agents", "refresh", str(repo)])
+
+    agent = next(a for a in payload["agents"] if a["id"] == "codex")
+    assert "user" not in agent["writes"]
+    assert "refresh adds nothing" in agent["skips"]["user"]
+    assert not user_hooks.exists()
+
+
+def test_remove_takes_the_extension_recommendation_with_it(repo: Path) -> None:
+    """install writes both .vscode files, so remove has to account for both."""
+    _run(["agents", "add", str(repo), "--target", "vscode", "-y"])
+    extensions = repo / ".vscode" / "extensions.json"
+    assert "repowise-dev.repowise" in extensions.read_text(encoding="utf-8")
+
+    payload = _json(["agents", "remove", str(repo), "--target", "vscode"])
+
+    written = {f["path"]: f["action"] for f in payload["agents"][0]["writes"]["project"]["files"]}
+    assert written[str(extensions)] == "removed"
+    assert json.loads(extensions.read_text(encoding="utf-8"))["recommendations"] == []
+
+
 def test_refresh_on_a_clean_repo_says_nothing_is_wired(repo: Path) -> None:
     output = _run(["agents", "refresh", str(repo)]).output
     assert "No agent is wired up yet" in output
@@ -287,6 +328,11 @@ def test_doctor_surfaces_a_stale_hook_matcher_rather_than_calling_it_ok(
     parses, and will never fire. Someone who exports REPOWISE_SKIP_EDITOR_SETUP
     permanently never gets the migration that would fix it, so this row is the
     only place the staleness becomes visible.
+
+    Visible, but advisory: it is printed and it drives ``--repair``, and it does
+    not fail the run. Opt-in surfaces go stale routinely, and failing on it
+    would turn ``repowise doctor`` non-zero in CI for a condition nobody asked
+    the tool to guarantee. Only ``broken`` fails.
     """
     from repowise.cli.commands.doctor_cmd.repo_checks import _agent_target_checks
     from repowise.cli.editor_integrations import codex_config
@@ -296,9 +342,24 @@ def test_doctor_surfaces_a_stale_hook_matcher_rather_than_calling_it_ok(
     checks, needs_refresh = _agent_target_checks()
 
     codex = next(c for c in checks if c.name == "Agent: codex")
-    assert codex.ok is False
     assert "will never fire" in codex.detail
     assert "run:" in codex.detail
+    assert needs_refresh is True
+    assert codex.ok is True
+
+
+def test_doctor_fails_the_run_only_for_a_damaged_config(repo: Path) -> None:
+    """The other side of that line: broken is a real fault, so it fails."""
+    from repowise.cli.commands.doctor_cmd.repo_checks import _agent_target_checks
+
+    settings = Path.home() / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"mcpServers": {,}', encoding="utf-8")
+
+    checks, needs_refresh = _agent_target_checks()
+
+    claude = next(c for c in checks if c.name == "Agent: claude-code")
+    assert claude.ok is False
     assert needs_refresh is True
 
 

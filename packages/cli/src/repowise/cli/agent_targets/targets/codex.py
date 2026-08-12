@@ -148,7 +148,6 @@ def write_server_config(repo_path: Path) -> FileWrite:
     )
 
     config_path = project_config_path(repo_path)
-    block = table_block("mcp_servers.repowise", server_table(repo_path))
 
     if config_path.exists():
         existing_text = config_path.read_text(encoding="utf-8")
@@ -160,11 +159,19 @@ def write_server_config(repo_path: Path) -> FileWrite:
     # Both levels are checked before the regex runs: a scalar where a table
     # belongs means the merge would produce a duplicate key, and refusing is
     # the only answer that leaves the user's file intact.
+    stored: dict[str, object] = {}
     if doc is not None:
         servers = require_table(doc, "mcp_servers", config_path, "mcp_servers")
         if servers is not None:
-            require_table(servers, "repowise", config_path, "mcp_servers.repowise")
+            stored = dict(require_table(servers, "repowise", config_path, "mcp_servers.repowise") or {})
 
+    # Generated keys overwrite stored ones so a moved repo repoints, but any
+    # key the user added to the table survives. ``replace_table`` rewrites the
+    # whole table, so without this every extra key is dropped on every write —
+    # the same failure the JSON path fixed for ``env`` blocks in issue #307,
+    # which this path never had a guard for.
+    merged = {**stored, **server_table(repo_path)}
+    block = table_block("mcp_servers.repowise", merged)
     merged_text = replace_table(existing_text, "mcp_servers.repowise", block)
     merged_doc = ensure_valid_toml(merged_text, config_path)
     action = write_if_changed(config_path, merged_text, merged_doc, doc)
@@ -341,6 +348,8 @@ class CodexTarget:
     ) -> WriteResult:
         from repowise.cli.editor_integrations.codex_config import install_codex_rewrite_hook
 
+        from ..formats.observe import observed_action, read_bytes
+
         result = WriteResult()
         if scope is Scope.PROJECT:
             if repo_path is None:
@@ -354,11 +363,18 @@ class CodexTarget:
             result.record(hooks.path, hooks.action)
             return result
 
-        hooks = install_codex_rewrite_hook()
-        result.record(
-            hooks or user_hooks_path(),
-            FileAction.UPDATED if hooks else FileAction.NOT_FOUND,
-        )
+        # Observed rather than assumed, for the same reason Claude Code's is:
+        # ``install_codex_rewrite_hook`` returns a path, not an action. Hard-
+        # coding UPDATED here made every re-run and every ``agents refresh``
+        # report a change, which also made the "nothing moved" branch of
+        # ``doctor --repair`` unreachable for any codex-wired repo.
+        hooks_path = user_hooks_path()
+        before = read_bytes(hooks_path)
+        installed = install_codex_rewrite_hook()
+        if not installed:
+            result.record(hooks_path, FileAction.NOT_FOUND)
+            return result
+        result.record(hooks_path, observed_action(before, read_bytes(hooks_path)))
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:

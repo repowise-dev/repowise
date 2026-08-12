@@ -130,6 +130,46 @@ def write_extensions_config(repo_path: Path) -> FileWrite:
     return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
+def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
+    """Drop ``servers.repowise``, preserving sibling servers."""
+    from ..formats.json_merge import load_json_object_or_value_error, write_json_config
+
+    if not config_path.exists():
+        return config_path, FileAction.NOT_FOUND
+    try:
+        existing = load_json_object_or_value_error(config_path, "mcp.json")
+    except ValueError:
+        # Same reason install declines: it is far more likely to be JSONC than
+        # damaged, and rewriting it would silently delete the user's comments.
+        return config_path, FileAction.KEPT
+
+    servers = existing.get("servers")
+    if not isinstance(servers, dict) or "repowise" not in servers:
+        return config_path, FileAction.NOT_FOUND
+    servers.pop("repowise")
+    write_json_config(config_path, existing)
+    return config_path, FileAction.REMOVED
+
+
+def _remove_extension_recommendation(config_path: Path) -> tuple[Path, FileAction]:
+    """Drop our id from ``recommendations``, preserving everyone else's."""
+    from ..formats.json_merge import load_json_object_or_value_error, write_json_config
+
+    if not config_path.exists():
+        return config_path, FileAction.NOT_FOUND
+    try:
+        existing = load_json_object_or_value_error(config_path, "extensions.json")
+    except ValueError:
+        return config_path, FileAction.KEPT
+
+    recommendations = existing.get("recommendations")
+    if not isinstance(recommendations, list) or EXTENSION_ID not in recommendations:
+        return config_path, FileAction.NOT_FOUND
+    existing["recommendations"] = [r for r in recommendations if r != EXTENSION_ID]
+    write_json_config(config_path, existing)
+    return config_path, FileAction.REMOVED
+
+
 def detect(repo_path: Path | None = None) -> list[Registration]:
     """Whether the workspace MCP config names repowise.
 
@@ -222,33 +262,19 @@ class VSCodeTarget:
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
-        """Remove the repowise server entry, preserving sibling servers."""
-        from ..formats.json_merge import (
-            load_json_object_or_value_error,
-            write_json_config,
-        )
+        """Remove the server entry and the extension recommendation.
 
+        Both files, because :meth:`install` writes both and
+        :meth:`describe_paths` names both. Leaving the recommendation behind
+        meant ``agents remove --target=vscode`` still had the editor prompting
+        every contributor to install an extension for an integration that was
+        just removed — and said nothing about the file it had skipped.
+        """
         result = WriteResult()
         if scope is not Scope.PROJECT or repo_path is None:
             return result
-
-        config_path = mcp_config_path(repo_path)
-        if not config_path.exists():
-            result.record(config_path, FileAction.NOT_FOUND)
-            return result
-        try:
-            existing = load_json_object_or_value_error(config_path, "mcp.json")
-        except ValueError:
-            result.record(config_path, FileAction.KEPT)
-            return result
-
-        servers = existing.get("servers")
-        if not isinstance(servers, dict) or "repowise" not in servers:
-            result.record(config_path, FileAction.NOT_FOUND)
-            return result
-        servers.pop("repowise")
-        write_json_config(config_path, existing)
-        result.record(config_path, FileAction.REMOVED)
+        result.record(*_remove_server_entry(mcp_config_path(repo_path)))
+        result.record(*_remove_extension_recommendation(extensions_config_path(repo_path)))
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:

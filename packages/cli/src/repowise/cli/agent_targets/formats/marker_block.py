@@ -12,12 +12,11 @@ and frequently committed, so letting them take the platform translation would
 mean the same command produces a different file on Windows than on macOS and
 the diff churns on every cross-platform edit.
 
-Both malformed states are named rather than glossed over, because they mean a
-user edited across one of our markers and the two need opposite answers. A
-duplicated block is collapsed to the first copy: every copy is ours, so there is
-nothing of theirs to lose. An orphan marker (a start with no end, or the
-reverse) is refused outright, because every repair for it can eat the text that
-follows. See :func:`upsert`.
+Both malformed states — an orphan marker, and a duplicated block — are named
+rather than guessed at, and both are refused rather than repaired. They mean a
+user edited across one of our markers, and no repair for either is safe. See
+:func:`upsert` for why, including why collapsing a duplicate is not the easy
+win it looks like.
 """
 
 from __future__ import annotations
@@ -103,20 +102,30 @@ def upsert(
     contain either, and the failure mode is a corrupted managed block or a
     ``bad escape`` crash at install time.
 
-    **An orphaned marker returns** :attr:`~..types.FileAction.KEPT` **and writes
-    nothing.** A start with no end means a user deleted or edited across one of
-    our markers, and every available repair loses something: appending a fresh
-    block leaves the stray start above it, so the next run's non-greedy
-    ``start.*?end`` spans from the orphan to *our* end marker and swallows
-    whatever the user wrote in between. Refusing is the only option that cannot
-    eat a paragraph, and the caller surfaces it as something to fix by hand.
-    (Before this, an orphan silently reported "unchanged" while the block was in
-    fact absent — the writer this helper replaced had the same blind spot.)
+    **A malformed marker pair returns** :attr:`~..types.FileAction.KEPT` **and
+    writes nothing.** Both malformed states mean a user edited across one of our
+    markers, and for both, every available repair can destroy text:
+
+    * An **orphan** — a start with no end. Appending a fresh block leaves the
+      stray start above it, so the next run's non-greedy ``start.*?end`` spans
+      from the orphan to *our* end marker and swallows whatever the user wrote
+      in between.
+    * A **duplicate**. It is tempting to collapse to the first copy on the
+      grounds that every copy is ours, and that is exactly the assumption that
+      does not hold: :func:`inspect` counts marker occurrences, so a file
+      containing one real block *plus a sentence that quotes both markers*
+      reads as duplicated. Collapsing deletes the sentence. Rewriting each
+      match in place — what the hand-rolled writer this replaced did — mangles
+      it instead. Neither is a repair.
+
+    So both are refused, and the caller surfaces it as something to unpick by
+    hand. What this fixes relative to that hand-rolled writer is the *silence*:
+    an orphan used to report "unchanged" while the block was in fact absent.
     """
     wrapped = f"{start}{body}{end}"
     inspection = inspect(path, start, end)
 
-    if inspection.state is BlockState.ORPHANED:
+    if inspection.state in (BlockState.ORPHANED, BlockState.DUPLICATED):
         return FileAction.KEPT
 
     if inspection.state is BlockState.ABSENT_FILE:
@@ -130,12 +139,6 @@ def upsert(
     else:
         pattern = re.escape(start) + r".*?" + re.escape(end)
         content = re.sub(pattern, lambda _m: wrapped, existing, count=1, flags=re.DOTALL)
-        if inspection.state is BlockState.DUPLICATED:
-            # Drop every later copy, taking the blank lines that separated it
-            # with it so collapsing does not leave a run of empty lines behind.
-            # Split on the block just written so the pass cannot touch it.
-            head, marker, tail = content.partition(wrapped)
-            content = head + marker + re.sub(r"\n*" + pattern + r"\n?", "", tail, flags=re.DOTALL)
 
     # Compare *bytes*, not the decoded text. ``read_text`` collapses CRLF to LF
     # in memory, so a CRLF file whose block is already current compares equal to

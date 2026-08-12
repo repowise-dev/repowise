@@ -58,12 +58,22 @@ def interactive_agent_select(
     selected = {choice.id for choice in choices if choice.enabled}
 
     console_obj.print()
-    console_obj.print("[bold]Agent integrations:[/bold] which of these should repowise set up?")
+    # Says "project files" rather than "set up" because that is the honest
+    # scope: it is what the three per-agent prompts it replaced controlled.
+    # The global MCP registration is a separate step and unticking a box here
+    # does not withdraw it, so the question must not imply that it does.
+    console_obj.print(
+        "[bold]Agent integrations:[/bold] write project config and instruction files for?"
+    )
     for index, choice in enumerate(choices, 1):
-        box = "x" if choice.id in selected else " "
+        # ``\[`` escapes the bracket for rich. Unescaped, ``[x]`` is valid
+        # markup and gets eaten as a style tag while ``[ ]`` is not and
+        # survives — so every ticked box rendered blank and every unticked one
+        # rendered as a box, which reads as the exact inverse of the truth.
+        box = r"\[x]" if choice.id in selected else r"\[ ]"
         detail = f"  [dim]{choice.detail}[/dim]" if choice.detail else ""
         console_obj.print(
-            f"  [{box}] [{BRAND_STYLE}][{index}][/] {choice.display_name}{detail}"
+            f"  {box} [{BRAND_STYLE}][{index}][/] {choice.display_name}{detail}"
         )
     console_obj.print("  [dim]Enter to accept, or numbers to toggle (1,3), 'all', 'none'.[/dim]")
 

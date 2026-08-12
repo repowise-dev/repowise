@@ -104,13 +104,27 @@ def _write_payload(
     scope: str,
     *,
     remove: bool,
+    refresh_only: bool = False,
 ) -> dict:
     """Run the installs (or uninstalls) and return the record of what happened.
 
     Built here, at the site that holds the ``WriteResult``, rather than
-    re-derived by a renderer. ``skipped`` carries the one case where nothing was
-    written on purpose: a host-managed method already in place, which is the
-    duplicate-registration stand-down.
+    re-derived by a renderer.
+
+    ``skips`` records every scope that was deliberately left alone and why —
+    per scope, not per agent, because all three reasons are scope-shaped:
+
+    * A **host-managed install already present**. The duplicate this prevents is
+      the *user-scope* one: the plugin registers an MCP server and hooks for the
+      whole machine. It says nothing about the repo-shared ``.mcp.json``, which
+      is a committed file other contributors' checkouts read and which the
+      plugin does not write. Standing down for the whole target suppressed that
+      file too, so a plugin user's ``agents add`` wrote nothing at all.
+    * ``REPOWISE_SKIP_EDITOR_SETUP``, which is about the global config only.
+    * ``refresh``, which must not create a registration that did not exist. A
+      target wired project-scope only must not have its user-scope config
+      written, or ``doctor --repair`` buys a global config write with a local
+      detection.
     """
     from repowise.cli.agent_targets.registry import select_install_method
     from repowise.cli.agent_targets.types import Scope
@@ -121,29 +135,30 @@ def _write_payload(
     agents: list[dict] = []
     for target in targets:
         registrations = list(target.detect(repo_path))
+        wired_scopes = {r.scope for r in registrations}
+        host_managed = select_install_method(target, registrations) is None
+        method = None if remove or host_managed else select_install_method(target, [])
+
         entry: dict = {
             "id": target.id,
             "display_name": target.display_name,
-            "method": None,
-            "skipped": None,
+            "method": method.id if method is not None else None,
+            "skips": {},
             "writes": {},
         }
 
-        method = None
-        if not remove:
-            method = select_install_method(target, registrations)
-            if method is None:
-                entry["skipped"] = "host-managed install already present"
-                agents.append(entry)
-                continue
-            entry["method"] = method.id
-
         for target_scope in _scopes_for(target, scope):
+            reason = None
             if target_scope is Scope.USER and user_scope_disabled:
-                # REPOWISE_SKIP_EDITOR_SETUP means "do not touch my global
-                # config", and it means it here as much as in init.
-                entry["skipped"] = "user scope skipped (REPOWISE_SKIP_EDITOR_SETUP)"
+                reason = "REPOWISE_SKIP_EDITOR_SETUP is set"
+            elif not remove and host_managed and target_scope is Scope.USER:
+                reason = "a host-managed install already covers this scope"
+            elif refresh_only and target_scope not in wired_scopes:
+                reason = "nothing wired here, and refresh adds nothing"
+            if reason is not None:
+                entry["skips"][target_scope.value] = reason
                 continue
+
             if remove:
                 result = target.uninstall(target_scope, repo_path=repo_path)
             else:
@@ -213,12 +228,16 @@ def _render_writes(payload: dict) -> None:
     table.add_column("File")
 
     for agent in payload["agents"]:
-        if agent["skipped"] and not agent["writes"]:
-            table.add_row(agent["id"], "-", "[dim]skipped[/dim]", agent["skipped"])
-            continue
         for scope, write in agent["writes"].items():
             for entry in write["files"]:
                 table.add_row(agent["id"], scope, entry["action"], entry["path"])
+        # Every skip gets its own row. Folding them into one "skipped" line
+        # per agent hid the reason whenever a second scope had written
+        # something, which is the common case rather than the edge one.
+        for scope, reason in agent["skips"].items():
+            table.add_row(agent["id"], scope, "[dim]skipped[/dim]", f"[dim]{reason}[/dim]")
+        if not agent["writes"] and not agent["skips"]:
+            table.add_row(agent["id"], "-", "[dim]nothing to do[/dim]", "no config at this scope")
 
     console.print(table)
     for agent in payload["agents"]:
@@ -403,9 +422,9 @@ def refresh_wired_agents(repo_path: Path, *, scope: str = "both") -> dict:
     """Rewrite every already-wired agent's config. The body of ``agents refresh``.
 
     Public because ``doctor --repair`` routes here rather than reimplementing
-    it or shelling out to the CLI. Adds nothing: a target with no detected
-    registration is left alone, so a repair can never wire up an agent the user
-    never asked for.
+    it or shelling out to the CLI. Adds nothing, and means it at the *scope*
+    level: a target wired only in the repo does not get its per-machine config
+    written as a side effect of being refreshed.
     """
     from repowise.cli.agent_targets.registry import get_target
 
@@ -414,7 +433,7 @@ def refresh_wired_agents(repo_path: Path, *, scope: str = "both") -> dict:
         for row in describe_agents(repo_path)
         if row["registrations"] and (target := get_target(row["id"])) is not None
     ]
-    return _write_payload("refresh", repo_path, wired, scope, remove=False)
+    return _write_payload("refresh", repo_path, wired, scope, remove=False, refresh_only=True)
 
 
 @agents_group.command("print-config")

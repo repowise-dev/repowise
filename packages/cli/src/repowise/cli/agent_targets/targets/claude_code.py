@@ -109,32 +109,6 @@ def plugin_manifest_path() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _read_bytes(path: Path) -> bytes | None:
-    """The file's current bytes, or None when it is not there."""
-    try:
-        return path.read_bytes()
-    except OSError:
-        return None
-
-
-def _observed_action(before: bytes | None, after: bytes | None) -> FileAction:
-    """What a write did to a file, from its bytes either side of the call.
-
-    The Claude Code writes go through ``editor_integrations.claude_config``,
-    which owns several years of settings.json hook-shape migrations and returns
-    a path rather than an action. Rather than thread an action back out through
-    all of it — and re-open code whose whole value is that it already handles
-    the legacy shapes — the action is *observed*: read the file before, read it
-    after, compare. It also folds the three separate writes to settings.json
-    (MCP entry, hooks, tool-search) into the single honest answer for that file.
-    """
-    if after is None:
-        return FileAction.NOT_FOUND if before is None else FileAction.REMOVED
-    if before is None:
-        return FileAction.CREATED
-    return FileAction.UNCHANGED if before == after else FileAction.UPDATED
-
-
 def write_project_mcp_config(repo_path: Path) -> FileWrite:
     """Merge the repowise server into the repo-root ``.mcp.json``.
 
@@ -309,10 +283,12 @@ class ClaudeCodeTarget:
         if repo_path is None:
             raise ValueError("user-scope registration needs a repo_path to point at")
 
+        from ..formats.observe import observed_action, read_bytes
+
         settings = settings_path()
         desktop_path = desktop_config_path()
-        settings_before = _read_bytes(settings)
-        desktop_before = _read_bytes(desktop_path) if desktop_path is not None else None
+        settings_before = read_bytes(settings)
+        desktop_before = read_bytes(desktop_path) if desktop_path is not None else None
 
         register_with_claude_desktop(repo_path)
         register_with_claude_code(repo_path)
@@ -322,11 +298,11 @@ class ClaudeCodeTarget:
         # One entry per file, not one per call: three of the four calls above
         # write settings.json, and reporting it three times says nothing a
         # reader can act on.
-        result.record(settings, _observed_action(settings_before, _read_bytes(settings)))
+        result.record(settings, observed_action(settings_before, read_bytes(settings)))
         if desktop_path is not None:
-            after = _read_bytes(desktop_path)
+            after = read_bytes(desktop_path)
             if not (desktop_before is None and after is None):
-                result.record(desktop_path, _observed_action(desktop_before, after))
+                result.record(desktop_path, observed_action(desktop_before, after))
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
@@ -393,8 +369,14 @@ class ClaudeCodeTarget:
             return DoctorReport(
                 target_id=ID,
                 status=DoctorStatus.BROKEN,
-                issues=(f"{settings} is not valid JSON, so Claude Code ignores all of it.",),
-                fix_command="repowise agents refresh",
+                issues=(
+                    f"{settings} is not valid JSON, so Claude Code ignores all of it. "
+                    "Fix or remove it, then re-register.",
+                ),
+                # `add`, not `refresh`. A file this damaged makes detection
+                # find nothing, and refresh only touches what it detects — so
+                # it would skip this target entirely and report success.
+                fix_command="repowise agents add --target=claude-code",
             )
 
         registrations = detect()

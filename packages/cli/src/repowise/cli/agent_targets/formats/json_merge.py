@@ -192,11 +192,12 @@ def write_json_config(path: Path, data: dict) -> FileAction:
     unconditional write used to normalise it. Same trap as the marker block's,
     and the same answer: compare the bytes that would actually land.
 
-    Skipping also means a file whose *content* matches but whose *formatting*
-    does not (someone reindented it) is left alone. That is the right trade: we
-    own the data, not the whitespace, and rewriting a hand-formatted config to
-    prove a point is exactly the behaviour that makes users stop trusting a
-    managed file.
+    Byte-exact, so this is a narrower promise than "the data is already right":
+    a file someone reindented, or whose top-level keys sit in another order,
+    holds the same data and is still rewritten. That matches what the
+    unconditional write did before and is the conservative direction — the
+    action stays truthful either way, and the alternative is deciding that a
+    file we would rewrite is "unchanged".
     """
     rendered = dumps_config(data)
     action = FileAction.CREATED

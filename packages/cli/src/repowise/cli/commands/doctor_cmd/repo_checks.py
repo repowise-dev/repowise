@@ -726,18 +726,23 @@ def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
     ``AgentTarget`` answers for itself, so a fourth agent gets a doctor row by
     being registered rather than by someone adding a branch to this function.
 
-    ``not-installed`` is not a failure, matching the convention the rest of
-    this file already follows — an agent you do not use is not a problem with
-    your setup. ``stale`` and ``broken`` are, and both earn a row that says
-    which and what to run.
+    Only ``broken`` fails the run, and the line is drawn there on purpose.
+    ``not-installed`` is not a failure — an agent you do not use is not a
+    problem with your setup — and neither is ``stale``, which is advisory in
+    the same way the "Distill rewrite hook" row above it already is. A stale
+    matcher is common, opt-in surfaces go stale routinely, and making it fail
+    would turn ``repowise doctor`` non-zero in CI for a condition nobody asked
+    the tool to guarantee. ``broken`` means a config file is damaged, which is
+    a real fault in the setup being checked.
 
-    The stale case is the one that matters most and the reason this is here at
-    all: a hook whose matcher names a tool the host has since renamed is
-    installed, parses, and will never fire. That is indistinguishable from
-    working unless something says so out loud, and it is the agreed mitigation
+    Advisory does not mean quiet. The stale row is the reason this function
+    exists: a hook whose matcher names a tool the host has since renamed is
+    installed, parses, and will never fire, which is indistinguishable from
+    working unless something says so out loud. It is also the agreed mitigation
     for gating the self-heal migrations on ``REPOWISE_SKIP_EDITOR_SETUP`` —
     someone who exports that permanently never gets the migration, so the
-    staleness has to be visible somewhere.
+    staleness has to be visible somewhere. It is printed, and it drives
+    ``--repair``; it just does not change the exit code.
 
     Returns ``(checks, needs_refresh)``; ``needs_refresh`` drives ``--repair``.
     """
@@ -765,7 +770,7 @@ def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
         detail = "; ".join(report.issues)
         if report.fix_command:
             detail += f" (run: {report.fix_command})"
-        checks.append(_check(name, False, detail))
+        checks.append(_check(name, report.status.value != "broken", detail))
     return checks, needs_refresh
 
 

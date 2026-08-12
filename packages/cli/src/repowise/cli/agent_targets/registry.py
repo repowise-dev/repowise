@@ -122,15 +122,21 @@ def describe_agents(repo_path: Path | None = None) -> list[dict]:
 def default_selection(rows: list[dict], repo_path: Path | None = None) -> set[str]:
     """Which agents to pre-tick, given :func:`describe_agents` rows.
 
-    Wired agents and installed agents. When neither turns anything up — a fresh
-    machine, which is precisely who runs ``init`` — this defers to the same
-    fallback ``--target=auto`` uses, rather than presenting an empty checklist
-    and setting nothing up. One policy, not two that disagree.
+    Wired agents, installed agents, **and** the fallback ``--target=auto``
+    resolves to, unioned rather than used only as a last resort.
+
+    The union is the part that matters and it was a bug before. Leaving an
+    agent unticked is not neutral: for the agent that owns the instruction
+    file, the setup path persists the opt-out into ``.repowise/config.yaml``,
+    so ``update`` never generates it either. A machine with VS Code and Codex
+    but no ``~/.claude`` produced a non-empty selection, which meant the
+    fallback never fired, which meant Claude Code arrived unticked and one
+    Enter permanently turned off a file that used to default to on.
+
+    Detection decides what to *offer*; it must not silently withdraw a default.
     """
     chosen = {row["id"] for row in rows if row["registrations"] or row["present"]}
-    if chosen:
-        return chosen
-    return {target.id for target in resolve_target_flag("auto", repo_path)}
+    return chosen | {target.id for target in resolve_target_flag("auto", repo_path)}
 
 
 def select_install_method(

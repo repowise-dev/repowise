@@ -385,6 +385,36 @@ def test_codex_reinstall_reports_unchanged_and_leaves_config_alone(tmp_path: Pat
     assert (repo / ".codex" / "config.toml").read_bytes() == settled
 
 
+def test_codex_keeps_user_keys_added_to_its_server_table(tmp_path: Path) -> None:
+    """The TOML twin of the ``env``-block fix (#307) the JSON path already had.
+
+    ``replace_table`` rewrites the whole table, so without a merge every key a
+    user added to ``[mcp_servers.repowise]`` was dropped on every single write.
+    """
+    import tomllib
+
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    config_path = repo / ".codex" / "config.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "startup_timeout_sec = 20", 'startup_timeout_sec = 20\nenv_key = "mine"'
+        ),
+        encoding="utf-8",
+    )
+
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    table = tomllib.loads(config_path.read_text(encoding="utf-8"))["mcp_servers"]["repowise"]
+    assert table["env_key"] == "mine"
+    # ...while a generated key still wins, so a moved repo repoints.
+    assert table["cwd"] == str(repo.resolve())
+
+
 def test_atomic_write_leaves_no_temp_file_behind(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "config.json"
     target.parent.mkdir()
@@ -472,23 +502,38 @@ def test_marker_block_refuses_an_orphaned_marker(tmp_path: Path) -> None:
     assert doc.read_text(encoding="utf-8") == original
 
 
-def test_marker_block_collapses_a_duplicated_block(tmp_path: Path) -> None:
-    """Every copy is ours, so collapsing to one loses nothing of the user's."""
+def test_marker_block_refuses_a_duplicated_block(tmp_path: Path) -> None:
+    """Collapsing to the first copy is the trap, not the fix.
+
+    It reads as safe — every copy is ours, so there is nothing of theirs to
+    lose. But ``inspect`` counts marker occurrences, so it cannot tell two
+    blocks from one block plus a sentence quoting both markers, and collapsing
+    deletes the sentence.
+    """
     doc = tmp_path / "AGENTS.md"
-    doc.write_text(
-        "# Notes\n\n<!--S-->old<!--E-->\n\nMine.\n\n<!--S-->older<!--E-->\n",
-        encoding="utf-8",
-        newline="\n",
+    original = (
+        "# Notes\n\n<!--S-->managed<!--E-->\n\n"
+        "Repowise owns the text between <!--S--> and <!--E-->, so leave it alone.\n"
     )
+    doc.write_text(original, encoding="utf-8", newline="\n")
 
-    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.UPDATED
+    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.KEPT
+    assert doc.read_text(encoding="utf-8") == original
 
-    content = doc.read_text(encoding="utf-8")
-    assert content.count("<!--S-->") == 1
-    assert "body" in content
-    assert "Mine." in content
-    # Settled: a second pass has nothing left to collapse.
-    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.UNCHANGED
+
+def test_marker_block_never_wedges_itself_on_a_nested_pair(tmp_path: Path) -> None:
+    """A repair that leaves the file worse than it found it is not a repair.
+
+    Rewriting the first match of ``S A S B E text E`` leaves a stray trailing
+    end marker, which reads as orphaned forever after — so the managed block
+    could never be updated again, by any command.
+    """
+    doc = tmp_path / "AGENTS.md"
+    original = "<!--S-->a<!--S-->b<!--E-->keep me<!--E-->\n"
+    doc.write_text(original, encoding="utf-8", newline="\n")
+
+    assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is FileAction.KEPT
+    assert doc.read_text(encoding="utf-8") == original
 
 
 def test_marker_block_normalizes_a_crlf_file_whose_block_is_current(tmp_path: Path) -> None:

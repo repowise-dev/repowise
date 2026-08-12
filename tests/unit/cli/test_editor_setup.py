@@ -455,6 +455,26 @@ def test_checklist_pre_ticks_an_agent_an_explicit_flag_asked_for(monkeypatch, tm
     assert codex.enabled is True
 
 
+def test_checklist_never_silently_withdraws_the_instruction_file_default(
+    monkeypatch, tmp_path
+) -> None:
+    """Leaving a box unticked is not neutral, so detection must not do it alone.
+
+    On a machine with Codex but no ``~/.claude``, detection returned a
+    non-empty selection, so the auto fallback never fired and Claude Code
+    arrived unticked. One Enter then persisted ``claude_md: false`` into
+    ``.repowise/config.yaml``, so ``update`` never generated it either — where
+    the prompt this replaced defaulted to yes.
+    """
+    from repowise.cli.agent_targets.registry import default_selection, describe_agents
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "empty-home"))
+    rows = describe_agents(tmp_path)
+    assert not any(row["present"] for row in rows if row["id"] == "claude-code")
+
+    assert "claude-code" in default_selection(rows, tmp_path)
+
+
 def test_checklist_that_cannot_be_answered_leaves_the_options_alone(monkeypatch, tmp_path) -> None:
     """isatty lies. A prompt returning None must not disable everything."""
     options, _ = _select(monkeypatch, tmp_path, None)
