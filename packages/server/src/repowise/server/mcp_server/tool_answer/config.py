@@ -368,7 +368,14 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # contains. Cached pre-v12 rows carry the bare {path, lines} shape, which is the
 # named-but-not-carried payload this version exists to replace, so they must
 # bypass rather than serve the old block back.
-_ANSWER_SCHEMA_VERSION = 12
+# v13: withheld-body calibration — a truncated symbol_bodies entry now carries
+# `withheld_symbols`, confidence is capped when the response depends on one of
+# them (and on the homonym-union path whenever any cited body was truncated),
+# and the high/union notes no longer tell the caller to skip re-reading a
+# payload that admits it withheld part of a cited body. Cached pre-v13 rows
+# carry both the old `high` and the old "do not re-read the source" note, which
+# is precisely what this version exists to stop serving, so they must bypass.
+_ANSWER_SCHEMA_VERSION = 13
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
