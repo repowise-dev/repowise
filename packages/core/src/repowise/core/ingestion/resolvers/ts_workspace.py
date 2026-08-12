@@ -246,6 +246,75 @@ def build_workspace_map(repo_path: Path | None) -> dict[str, str]:
     return {name: info["dir"] for name, info in build_workspace_info(repo_path).items()}
 
 
+@dataclass(frozen=True)
+class _WorkspaceDeclaration:
+    """Which globs govern a repo's workspace, and whether the root is a member."""
+
+    includes: tuple[str, ...]
+    excludes: tuple[str, ...]
+    include_root: bool
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.includes and not self.include_root
+
+
+def _read_workspace_declaration(repo_path: Path) -> _WorkspaceDeclaration:
+    """Resolve the governing manifest into member globs.
+
+    pnpm keeps its member globs in ``pnpm-workspace.yaml`` and does not read
+    ``package.json``'s ``workspaces`` field at all, so the two manifests are
+    not interchangeable and must not be merged: unioning them would register a
+    member pnpm never installs, turning a registry dependency into a fake
+    intra-repo edge. When the pnpm manifest is present it is authoritative.
+    """
+    pnpm = read_pnpm_workspace_patterns(repo_path)
+    if pnpm is not None:
+        includes, excludes = pnpm
+        # "The root package is always included, even when custom location
+        # wildcards are used" — pnpm's ``packages`` setting. So a root-only
+        # workspace (no ``packages`` key) still has exactly one member.
+        return _WorkspaceDeclaration(tuple(includes), tuple(excludes), include_root=True)
+
+    root_pkg = repo_path / "package.json"
+    if not root_pkg.is_file():
+        return _WorkspaceDeclaration((), (), include_root=False)
+    try:
+        data = json.loads(root_pkg.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return _WorkspaceDeclaration((), (), include_root=False)
+    if not isinstance(data, dict):
+        return _WorkspaceDeclaration((), (), include_root=False)
+    return _WorkspaceDeclaration(
+        tuple(_read_workspaces_field(data)), (), include_root=False
+    )
+
+
+def _expand_member_dirs(repo_path: Path, declared: _WorkspaceDeclaration) -> list[Path]:
+    """Expand member globs to directories, minus the negated ones.
+
+    Negated entries are expanded with the SAME globber as the includes and
+    subtracted, rather than matched with a second pattern language. ``pathspec``
+    was the obvious candidate and is wrong here: it implements git-ignore
+    semantics, under which a slashless ``foo`` matches at any depth and a
+    directory match swallows its descendants, so ``!foo`` and ``!packages/*``
+    would silently drop members pnpm keeps. ``Path.glob`` anchors at the repo
+    root and honours single-segment ``*``, which is what fast-glob (pnpm's
+    matcher) does for these forms.
+
+    The root, when it is a member, is never subject to the negated patterns.
+    """
+    excluded: set[Path] = set()
+    for pattern in declared.excludes:
+        excluded.update(p for p in repo_path.glob(pattern) if p.is_dir())
+
+    dirs: list[Path] = [repo_path] if declared.include_root else []
+    for pattern in declared.includes:
+        globbed = [repo_path] if pattern == "." else repo_path.glob(pattern)
+        dirs.extend(p for p in globbed if p.is_dir() and p not in excluded)
+    return dirs
+
+
 def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
     """Return ``{pkg_name: {"dir": <posix>, "exports": {...}, "main": str|None}}``.
 
@@ -257,58 +326,12 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
     """
     if repo_path is None or not repo_path.is_dir():
         return {}
-
-    # pnpm keeps its member globs in ``pnpm-workspace.yaml`` and does not read
-    # ``package.json``'s ``workspaces`` field at all, so the two manifests are
-    # not interchangeable and must not be merged: unioning them would register
-    # a member pnpm never installs, turning a registry dependency into a fake
-    # intra-repo edge. When the pnpm manifest is present it is authoritative.
-    pnpm = read_pnpm_workspace_patterns(repo_path)
-    exclude_patterns: list[str] = []
-    include_root = False
-    if pnpm is not None:
-        patterns, exclude_patterns = pnpm
-        # "The root package is always included, even when custom location
-        # wildcards are used" — pnpm's ``packages`` setting. So a root-only
-        # workspace (no ``packages`` key) still has exactly one member, and
-        # the root is never subject to the negated patterns.
-        include_root = True
-    else:
-        patterns = []
-        root_pkg = repo_path / "package.json"
-        if root_pkg.is_file():
-            try:
-                data = json.loads(root_pkg.read_text(encoding="utf-8", errors="ignore"))
-            except Exception:
-                data = None
-            if isinstance(data, dict):
-                patterns = _read_workspaces_field(data)
-    if not patterns and not include_root:
+    declared = _read_workspace_declaration(repo_path)
+    if declared.is_empty:
         return {}
 
-    # Negated entries are expanded with the SAME globber as the includes and
-    # subtracted, rather than matched with a second pattern language. pathspec
-    # was the obvious candidate and is wrong here: it implements git-ignore
-    # semantics, under which a slashless ``foo`` matches at any depth and a
-    # directory match swallows its descendants, so ``!foo`` and ``!packages/*``
-    # would silently drop members pnpm keeps. ``Path.glob`` anchors at the
-    # repo root and honours single-segment ``*``, which is what fast-glob
-    # (pnpm's matcher) does for these forms.
-    excluded: set[Path] = set()
-    for pattern in exclude_patterns:
-        for path in repo_path.glob(pattern):
-            if path.is_dir():
-                excluded.add(path)
-
-    candidates: list[Path] = [repo_path] if include_root else []
-    for pattern in patterns:
-        globbed = [repo_path] if pattern == "." else repo_path.glob(pattern)
-        candidates.extend(p for p in globbed if p.is_dir() and p not in excluded)
-
     result: dict[str, dict[str, Any]] = {}
-    for ws_dir in candidates:
-        if not ws_dir.is_dir():
-            continue
+    for ws_dir in _expand_member_dirs(repo_path, declared):
         try:
             rel = ws_dir.relative_to(repo_path).as_posix()
         except ValueError:
