@@ -335,87 +335,138 @@ def set_child(text: str, parent: str, child: str, value: Any) -> str:
     # it introduced loses it. ``_child_end`` walks back over both for the same
     # reason. The cost when a trailing comment really did belong to the parent
     # is that our entry lands above it, which loses nothing.
+    # A comment counts only when it is written at the children's own indent or
+    # further left. One indented deeper belongs to the child above it -- a note
+    # under ``github``'s last key, say -- and stepping over that would move it
+    # inside our block, where it reads as documenting our entry instead. The
+    # same rule keeps a ``#`` line that is *content* rather than a comment, a
+    # literal line inside a ``key: |`` block scalar, from being stepped over at
+    # all, which would otherwise truncate the scalar.
     insert_at = end
-    while insert_at > start + 1 and (
-        not lines[insert_at - 1].strip() or lines[insert_at - 1].lstrip().startswith("#")
-    ):
-        insert_at -= 1
+    while insert_at > start + 1:
+        candidate = lines[insert_at - 1]
+        if not candidate.strip():
+            insert_at -= 1
+            continue
+        stripped = candidate.lstrip()
+        if stripped.startswith("#") and len(candidate) - len(stripped) <= indent:
+            insert_at -= 1
+            continue
+        break
     return _join(lines[:insert_at] + rendered + lines[insert_at:])
 
 
 def _set_child_in_flow_parent(
     lines: list[str], start: int, end: int, parent: str, child: str, value: Any
 ) -> str:
-    """Rewrite a flow-mapping parent as a block mapping carrying the new child.
+    """Add a child to a parent whose value is written inline, keeping it inline.
 
     ``mcp_servers: {}`` is an ordinary way to write a section that exists and
     holds nothing yet, and ``mcp_servers: {github: {...}}`` is legal too. Neither
     can be spliced into as a block: the child would be indented under a value
-    that is already closed, producing text that does not parse. Before this, both
-    reached :func:`verify`, failed, and surfaced ``not valid YAML`` about a file
-    that is perfectly valid, with no way forward but hand-editing.
+    that is already closed, producing text that does not parse. Both used to
+    reach :func:`verify`, fail, and surface ``not valid YAML`` about a file that
+    is perfectly valid, with no way forward but hand-editing.
 
-    Nothing is lost by re-rendering: a flow mapping is one line, so the only
-    thing to carry across is a comment on it.
+    **Exactly one line is replaced**, not the parent's whole range. The range
+    runs to the next top-level key, so it carries every blank line and comment
+    between the inline value and the next section, and replacing all of it
+    deleted them. That is the same mistake :func:`set_child`'s walk-back exists
+    to avoid, met again on a path that did not inherit the rule, and the parse
+    cannot see it because the document is identical either way.
 
-    One asymmetry worth stating, because it is the single case that does not
-    round-trip byte for byte. Converting ``parent: {}`` to a block mapping and
-    then removing the child again leaves the key gone rather than empty, since
-    by then there is no flow syntax left to restore. Both spellings mean the
-    same thing to the hosts that read them, and the alternative was declining
-    the install outright and forever.
+    The value is re-rendered **inline**, so a parent written as one line stays
+    one line and the round trip is byte exact. Only a genuinely single-line flow
+    value is handled: a multi-line one is left for :func:`verify` to refuse
+    rather than guessed at.
     """
     import yaml
 
     try:
-        parsed = yaml.safe_load("\n".join(lines[start:end]))
+        parsed = yaml.safe_load(lines[start])
     except yaml.YAMLError:
-        parsed = None
+        # Unbalanced on this line alone, so the value spans several. Leave it
+        # and let ``verify`` refuse, which is the honest outcome.
+        return _join(lines)
     current = parsed.get(parent) if isinstance(parsed, dict) else None
     if current is not None and not isinstance(current, dict):
-        # A flow *sequence* is not a mapping we can add a child to. Leave the
-        # lines alone and let ``verify`` refuse, which is the honest outcome.
+        # A flow *sequence* is not a mapping we can add a child to.
         return _join(lines)
 
     merged = {**(current or {}), child: value}
-    rendered = render_child(parent, merged, 0)
-    comment = _trailing_comment(lines[start])
+    rendered = render_child(parent, merged, 0, flow=True)
+    comment = _flow_trailing_comment(lines[start])
     if comment:
         rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
-    return _join(lines[:start] + rendered + lines[end:])
+    return _join(lines[:start] + rendered + lines[start + 1 :])
 
 
-def remove_child(text: str, parent: str, child: str) -> tuple[str, bool]:
-    """Remove top-level ``parent``'s ``child``. Returns ``(text, parent_kept)``.
+def _flow_trailing_comment(line: str) -> str:
+    """A comment following an inline value, or ``""``.
 
-    The parent goes with it once the block holds nothing at all, so an install
-    followed by an uninstall leaves no bare ``parent:`` behind.
+    Not :func:`_trailing_comment`, which is the "nearby but different question"
+    trap in its purest form. That one was written for a line holding a scalar,
+    and its only guard is that nothing after the colon is quoted. An inline
+    mapping routinely carries an unquoted ``#`` **inside** a nested plain
+    scalar, where it is data and not a comment: given
+    ``{a: {args: [-c, foo#bar]}}`` it returned ``#bar]}}`` and wrote that
+    fragment of the user's own config into their file as a comment.
 
-    **A block still holding the user's comments is not empty**, and that is why
-    this reports back rather than just returning text. Deleting a parent whose
-    only remaining lines are comments takes those comments with it, and the
-    parse cannot see the difference: comments do not survive into the document,
-    so :func:`verify` would wave it through. A user who commented out a parked
-    server inside ``mcp_servers`` would lose the note explaining why.
+    A comment can only follow the value, so the search starts after the last
+    bracket that closes it. Anything before that is inside the value.
+    """
+    close = max(line.rfind("}"), line.rfind("]"))
+    if close == -1:
+        return ""
+    marker = line.find("#", close)
+    return line[marker:].rstrip() if marker != -1 else ""
 
-    So the comments stay and the bare ``parent:`` stays with them, which parses
-    to ``None`` rather than to an absent key. The caller has to know which of
-    the two happened to state the document it intends, which is what the second
-    element is for. Both hosts this matters for read a null section as empty.
 
-    A no-op returning ``(text, True)`` when either key is absent: nothing was
-    removed, so nothing about the parent changed.
+#: Returned by :func:`remove_child` when the parent key is gone from the file.
+#: A sentinel rather than ``None``, because ``None`` is a value the key can
+#: legitimately hold: a bare ``parent:`` parses to it. Conflating the two makes
+#: the caller state the wrong document and its own :func:`verify` reject a
+#: removal that was correct.
+ABSENT = object()
+
+
+def remove_child(text: str, parent: str, child: str) -> tuple[str, object]:
+    """Remove top-level ``parent``'s ``child``.
+
+    Returns ``(text, value)``, where *value* is what the parent key holds
+    afterwards, or :data:`ABSENT` when the key is gone. The caller cannot work
+    that out from the text and has to state it to describe the document it
+    means to write, so it is reported rather than left to be guessed.
+
+    Three outcomes, and each is the only safe answer for its case:
+
+    * The block is left with nothing at all, so the parent goes too and an
+      install followed by an uninstall leaves no bare ``parent:`` behind.
+    * **The block still holds the user's comments, which is not empty.**
+      Deleting a parent whose only remaining lines are comments takes those
+      comments with it, and the parse cannot see the difference, so
+      :func:`verify` would wave it through. A user who commented out a parked
+      server inside ``mcp_servers`` would lose the note explaining why. The
+      comments stay, the header stays with them, and the key now holds ``None``.
+    * The value was written inline, in which case the child is taken out of it
+      and the line stays inline. An emptied one comes back as ``parent: {}``,
+      which is exactly what it was before the install.
+
+    A no-op returning the parent untouched when either key is absent.
     """
     lines = _split(text)
     found = _find_top_level(lines, parent)
     if found is None:
-        return text, True
+        return text, ABSENT
 
     start, end = found
+    if _is_flow_value(lines[start]):
+        return _remove_child_from_flow_parent(lines, start, parent, child)
+
     indent = _child_indent(lines, start, end)
     existing = _find_child(lines, start, end, child, indent)
     if existing is None:
-        return text, True
+        return text, _parent_value(text, parent)
 
     child_start, child_end = existing
     remaining = lines[:child_start] + lines[child_end:]
@@ -424,13 +475,52 @@ def remove_child(text: str, parent: str, child: str) -> tuple[str, bool]:
     # offsets: removing the child moved every line after it.
     refound = _find_top_level(remaining, parent)
     if refound is None:
-        return _join(remaining), False
+        return _join(remaining), ABSENT
 
     new_start, new_end = refound
     body = remaining[new_start + 1 : new_end]
     if any(line.strip() for line in body):
-        return _join(remaining), True
-    return _join(remaining[:new_start] + remaining[new_end:]), False
+        return _join(remaining), _parent_value(_join(remaining), parent)
+    return _join(remaining[:new_start] + remaining[new_end:]), ABSENT
+
+
+def _remove_child_from_flow_parent(
+    lines: list[str], start: int, parent: str, child: str
+) -> tuple[str, object]:
+    """Take a child out of an inline parent, leaving it inline.
+
+    The mirror of :func:`_set_child_in_flow_parent`, and it has to exist for the
+    same reason that one does. Teaching the write path about inline parents and
+    leaving this one behind meant ``_find_child`` looked for a ``child:`` line
+    that is not on a line of its own, found nothing, and reported the parent
+    unchanged: uninstall then failed its own consistency check and left the
+    entry in place, on exactly the configs the write path had just learned to
+    support.
+    """
+    import yaml
+
+    try:
+        parsed = yaml.safe_load(lines[start])
+    except yaml.YAMLError:
+        return _join(lines), ABSENT
+    current = parsed.get(parent) if isinstance(parsed, dict) else None
+    if not isinstance(current, dict) or child not in current:
+        return _join(lines), current
+
+    remaining = {key: item for key, item in current.items() if key != child}
+    rendered = render_child(parent, remaining, 0, flow=True)
+    comment = _flow_trailing_comment(lines[start])
+    if comment:
+        rendered = [f"{rendered[0]}  {comment}", *rendered[1:]]
+    return _join(lines[:start] + rendered + lines[start + 1 :]), remaining
+
+
+def _parent_value(text: str, parent: str) -> object:
+    """What top-level *parent* holds in *text*, or :data:`ABSENT`."""
+    try:
+        return load_mapping(text).get(parent, ABSENT)
+    except ValueError:
+        return ABSENT
 
 
 def verify(merged_text: str, expected: dict) -> None:

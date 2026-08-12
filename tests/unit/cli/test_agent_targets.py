@@ -2553,16 +2553,30 @@ def test_hermes_installs_into_a_section_header_with_nothing_under_it(
 
 
 def test_hermes_installs_into_a_flow_style_section(hermes_home: Path) -> None:
-    """``mcp_servers: {}`` is legal and used to be an unfixable decline."""
+    """``mcp_servers: {}`` is legal and used to be an unfixable decline.
+
+    The whole cycle, because keeping the inline style on write and not teaching
+    removal about it left uninstall reporting ``kept`` and doing nothing.
+    """
     import yaml
 
-    config = _seed(hermes_home, "model: gpt\nmcp_servers: {}\n")
-    result = get_target("hermes").install(Scope.USER)
+    original = "model: gpt\nmcp_servers: {}\n"
+    config = _seed(hermes_home, original)
+    target = get_target("hermes")
 
+    result = target.install(Scope.USER)
     assert [written.action for written in result.files] == [FileAction.UPDATED]
     doc = yaml.safe_load(config.read_text(encoding="utf-8"))
     assert "repowise" in doc["mcp_servers"]
     assert doc["model"] == "gpt"
+
+    assert [written.action for written in target.install(Scope.USER).files] == [
+        FileAction.UNCHANGED
+    ]
+
+    removed = target.uninstall(Scope.USER)
+    assert [written.action for written in removed.files] == [FileAction.REMOVED]
+    assert config.read_bytes() == original.encode("utf-8")
 
 
 def test_hermes_survives_a_byte_order_mark(hermes_home: Path) -> None:
@@ -2680,9 +2694,9 @@ def test_yaml_merge_removes_the_parent_once_it_is_empty() -> None:
     from repowise.cli.agent_targets.formats import yaml_merge
 
     text = "mcp_servers:\n  repowise:\n    command: x\nmodel: gpt\n"
-    merged, section_kept = yaml_merge.remove_child(text, "mcp_servers", "repowise")
+    merged, section = yaml_merge.remove_child(text, "mcp_servers", "repowise")
 
-    assert section_kept is False
+    assert section is yaml_merge.ABSENT
     assert yaml_merge.load_mapping(merged) == {"model": "gpt"}
     assert "mcp_servers" not in merged
 
@@ -2706,9 +2720,12 @@ def test_yaml_merge_keeps_a_section_that_still_holds_the_users_comments() -> Non
         "  repowise:\n"
         "    command: x\n"
     )
-    merged, section_kept = yaml_merge.remove_child(text, "mcp_servers", "repowise")
+    merged, section = yaml_merge.remove_child(text, "mcp_servers", "repowise")
 
-    assert section_kept is True
+    # The header stays with the comments, so the key holds ``None`` rather than
+    # being gone. ``ABSENT`` is a sentinel precisely so those two stay distinct.
+    assert section is None
+    assert section is not yaml_merge.ABSENT
     assert "token rotates" in merged
     assert "#   command: gh" in merged
     assert yaml_merge.load_mapping(merged) == {"mcp_servers": None}
@@ -2741,6 +2758,120 @@ def test_yaml_merge_can_add_a_child_to_a_flow_mapping_parent() -> None:
     assert yaml_merge.load_mapping(populated) == {
         "mcp_servers": {"github": {"command": "gh"}, "repowise": {"command": "x"}}
     }
+
+
+def test_yaml_merge_flow_parent_edits_only_its_own_line() -> None:
+    """The parent's range runs to the next top-level key, so replacing it is wrong.
+
+    Everything between the inline value and the next section is blank lines and
+    the user's comments, and splicing over the whole range deleted them. Same
+    mistake the block path's walk-back exists to avoid, on a path that did not
+    inherit the rule, and invisible to ``verify`` because the document is
+    identical either way.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    merged = yaml_merge.set_child(
+        "mcp_servers: {}\n\n# ---- model settings, do not remove ----\nmodel: a\n",
+        "mcp_servers",
+        "repowise",
+        {"command": "x"},
+    )
+
+    assert "# ---- model settings, do not remove ----" in merged
+    assert yaml_merge.load_mapping(merged) == {
+        "mcp_servers": {"repowise": {"command": "x"}},
+        "model": "a",
+    }
+
+
+def test_yaml_merge_does_not_read_a_hash_inside_an_inline_value_as_a_comment() -> None:
+    """``#`` inside a plain scalar is data, and a nearby helper cannot tell.
+
+    The scalar-line helper guards only against quoting, so given
+    ``{a: {args: [-c, foo#bar]}}`` it returned ``#bar]}}`` and wrote that
+    fragment of the user's own config into their file as a comment on the
+    section header. The document is unchanged, so nothing downstream noticed.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    merged = yaml_merge.set_child(
+        "mcp_servers: {a: {command: sh, args: [-c, foo#bar]}}\n",
+        "mcp_servers",
+        "repowise",
+        {"command": "x"},
+    )
+
+    # Exactly one hash survives, the one that is part of the user's argument.
+    # A second means a fragment of their value was copied out into a comment.
+    assert merged.count("#") == 1
+    assert "#bar]}}" not in merged.replace("foo#bar", "")
+    assert yaml_merge.load_mapping(merged) == {
+        "mcp_servers": {
+            "a": {"command": "sh", "args": ["-c", "foo#bar"]},
+            "repowise": {"command": "x"},
+        }
+    }
+
+    # A real trailing comment still survives.
+    kept = yaml_merge.set_child(
+        "mcp_servers: {}  # my servers\n", "mcp_servers", "repowise", {"command": "x"}
+    )
+    assert "# my servers" in kept
+
+
+def test_yaml_merge_removes_a_child_from_an_inline_parent() -> None:
+    """The mirror of the inline write, and it has to exist for the same reason.
+
+    Teaching the write path about inline parents and leaving removal behind
+    meant the child search looked for a line that is not on a line of its own,
+    found nothing, reported the parent unchanged, and uninstall then failed its
+    own consistency check and left the entry in place. An emptied inline parent
+    comes back as ``{}``, which is what it was before the install.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    text, section = yaml_merge.remove_child(
+        "mcp_servers: {github: {command: gh}, repowise: {command: x}}\n",
+        "mcp_servers",
+        "repowise",
+    )
+    assert text == "mcp_servers: {github: {command: gh}}\n"
+    assert section == {"github": {"command": "gh"}}
+
+    emptied, section = yaml_merge.remove_child(
+        "mcp_servers: {repowise: {command: x}}\n", "mcp_servers", "repowise"
+    )
+    assert emptied == "mcp_servers: {}\n"
+    assert section == {}
+
+
+def test_yaml_merge_leaves_a_deeper_comment_with_the_child_it_documents() -> None:
+    """A comment indented past the children belongs to the one above it.
+
+    Stepping over it moves the user's note inside our block, where it reads as
+    documenting our entry. The same indent rule keeps a ``#`` line that is
+    *content* rather than a comment, a literal inside a ``key: |`` block
+    scalar, from being stepped over at all, which truncated the scalar.
+    """
+    from repowise.cli.agent_targets.formats import yaml_merge
+
+    kept = yaml_merge.set_child(
+        "mcp_servers:\n  github:\n    command: gh\n    # note about github\nmodel: a\n",
+        "mcp_servers",
+        "repowise",
+        {"command": "x"},
+    )
+    lines = kept.splitlines()
+    assert lines.index("    # note about github") < lines.index("  repowise:")
+
+    scalar = yaml_merge.set_child(
+        "mcp_servers:\n  desc: |\n    # literal text\nmodel: a\n",
+        "mcp_servers",
+        "repowise",
+        {"command": "x"},
+    )
+    assert yaml_merge.load_mapping(scalar)["mcp_servers"]["desc"] == "# literal text\n"
 
 
 def test_yaml_merge_appends_above_a_comment_introducing_the_next_section() -> None:

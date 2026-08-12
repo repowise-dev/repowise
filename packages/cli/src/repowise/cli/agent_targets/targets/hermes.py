@@ -308,7 +308,7 @@ def _merge_entry(stored: object, generated: dict) -> dict:
     return merged
 
 
-def plan_write(existing_text: str | None) -> tuple[str, dict, dict | None]:
+def _plan_write(existing_text: str | None) -> tuple[str, dict, dict | None]:
     """Compute the whole file this install would write, in one pass.
 
     Returns ``(merged_text, merged_doc, existing_doc)``. Both edits this target
@@ -404,7 +404,7 @@ def write_mcp_config() -> FileWrite:
     path = config_path()
     raw = _read_text(path)
     bom, newline, existing_text = _prepare(raw)
-    merged_text, merged_doc, existing_doc = plan_write(existing_text)
+    merged_text, merged_doc, existing_doc = _plan_write(existing_text)
 
     if raw is None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,21 +531,20 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
         return path, FileAction.NOT_FOUND
 
-    merged_text, section_kept = yaml_merge.remove_child(
-        existing_text, MCP_KEY, SERVER_NAME
-    )
+    merged_text, section = yaml_merge.remove_child(existing_text, MCP_KEY, SERVER_NAME)
 
     intended = _deep_copy(existing_doc)
     del intended[MCP_KEY][SERVER_NAME]
     if not intended[MCP_KEY]:
-        # The helper keeps the section header when the user's comments are
-        # still inside it, and a bare ``mcp_servers:`` parses to ``None`` rather
-        # than to an absent key. Follow what it actually did instead of assuming
-        # the key went, or the comparison below refuses a correct removal.
-        if section_kept:
-            intended[MCP_KEY] = None
-        else:
+        # What an emptied section leaves behind depends on how it was written:
+        # the header stays when the user's comments are still inside it and
+        # parses to ``None``, an inline one comes back as ``{}``, and otherwise
+        # the key goes. Follow what the helper reports instead of assuming, or
+        # the check below refuses a removal that was correct.
+        if section is yaml_merge.ABSENT:
             del intended[MCP_KEY]
+        else:
+            intended[MCP_KEY] = section
 
     merged_text = _prune_allowlist(merged_text, intended)
 
@@ -572,8 +571,6 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
 
     yaml_merge.write_if_changed(path, merged_text, intended, existing_doc, newline=newline)
     return path, FileAction.REMOVED
-
-
 
 
 def _prune_allowlist(text: str, intended: dict) -> str:
@@ -603,14 +600,13 @@ def _prune_allowlist(text: str, intended: dict) -> str:
         return yaml_merge.set_child(text, TOOLSETS_KEY, CLI_PLATFORM, remaining)
 
     del toolsets[CLI_PLATFORM]
-    pruned, section_kept = yaml_merge.remove_child(text, TOOLSETS_KEY, CLI_PLATFORM)
+    pruned, section = yaml_merge.remove_child(text, TOOLSETS_KEY, CLI_PLATFORM)
     if not toolsets:
-        # Same contract as the servers section: the helper keeps a header whose
-        # comments are still inside it, and a bare key parses to ``None``.
-        if section_kept:
-            intended[TOOLSETS_KEY] = None
-        else:
+        # Same contract as the servers section above.
+        if section is yaml_merge.ABSENT:
             del intended[TOOLSETS_KEY]
+        else:
+            intended[TOOLSETS_KEY] = section
     return pruned
 
 
