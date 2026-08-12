@@ -33,7 +33,8 @@
   <a href="#see-all-of-it">Dashboard</a> ·
   <a href="#past-one-repo">Workspaces</a> ·
   <a href="#quickstart-under-5-minutes-no-api-key">Quickstart</a> ·
-  <a href="#the-ten-mcp-tools">MCP tools</a> ·
+  <a href="#supported-agents">Agents</a> ·
+  <a href="#the-eleven-mcp-tools">MCP tools</a> ·
   <a href="#measured-against-the-field">Benchmarks</a> ·
   <a href="#how-it-compares-on-capability">Comparison</a> ·
   <a href="#for-teams--enterprises">Teams</a>
@@ -86,7 +87,7 @@ for all of it. One `pip install`, no cloud, your code never leaves your machine.
 
 ## Your agent stops guessing
 
-repowise exposes **ten task-shaped MCP tools** to Claude Code, Codex, Cursor, VS Code
+repowise exposes **eleven task-shaped MCP tools** to Claude Code, Codex, Cursor, VS Code
 and anything else that speaks MCP. Most tools are built around data entities (one
 file, one symbol), which forces agents into long chains of sequential calls. These are
 built around **tasks**: pass several targets in one call, get complete context back.
@@ -362,6 +363,39 @@ leaves your machine.
 
 Install from the Marketplace (search **Repowise**) or Open VSX, then run **Repowise:
 Set Up This Repository**. Guide: **[docs/agent/VSCODE.md →](docs/agent/VSCODE.md)**
+
+---
+
+## Supported agents
+
+**Three agents wired end to end · two at the Full tier · every other MCP host one
+paste away.**
+
+<p>
+  <strong>Full tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=claude&logoColor=white" alt="Claude Code" />
+  <img src="https://img.shields.io/badge/Codex_CLI-000000?style=flat-square&logo=openai&logoColor=white" alt="Codex CLI" />
+</p>
+<p>
+  <strong>Good tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/VS_Code-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white" alt="VS Code" />
+</p>
+
+**Full** is every surface repowise has: MCP tools, skills, slash commands, a managed
+instructions file, hook-level interception of tool calls, and transcript mining after
+the session. **Good** is the honest half of that: MCP tools and the config to reach
+them, but no hook-level interception and no transcript mining. A Good-tier agent can
+ask repowise anything; repowise never sees the tool calls in between. The tier is
+computed from what each integration actually wires, so this list cannot claim a depth
+the code does not have.
+
+Everything else that speaks MCP is one snippet away. `repowise agents print-config`
+prints a stdio server entry to paste into Cursor, Cline, Windsurf, Zed, Gemini CLI or
+any other host, and repowise writes nothing.
+
+Adding an agent takes **one descriptor file and one registry line**, with no changes to
+the orchestrators. Full matrix and the contributor recipe:
+**[docs/agent/INTEGRATIONS.md →](docs/agent/INTEGRATIONS.md)**
 
 ---
 

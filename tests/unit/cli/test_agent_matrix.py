@@ -1,0 +1,235 @@
+"""The agent support matrix and every published tool count stay true to the code.
+
+Two guards, and they cover different failure modes.
+
+The first is the ordinary golden: ``docs/agent/INTEGRATIONS.md`` on disk must equal
+what ``scripts/gen_agent_matrix.py`` renders. Asserted against the **file**, never
+against the generator's return value, for the reason the plugin-content golden
+already writes down: a renderer can be perfectly correct about text nobody ever
+wrote to disk.
+
+The second is the one this whole exercise exists for. A generated doc protects
+itself and nothing else, and the tool count was never wrong in one place. It was
+wrong in six, including twice in the README two hundred lines apart, because every
+mention was hand-typed and no two were checked against each other. So the counts
+are computed from the live MCP registry and asserted **as exact phrases** in every
+artifact that publishes one. Add a tool and this test names each file to edit.
+
+Phrases rather than a regex on purpose: several artifacts correctly say "the ten
+flagship tools", which is a deliberate subset of the eleven-tool default surface
+and not a stale count. A pattern loose enough to catch drift is loose enough to
+condemn those, and a test that cries wolf gets its assertion deleted.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _generator():
+    """Load the generator by path; ``scripts/`` is not an importable package."""
+    path = ROOT / "scripts" / "gen_agent_matrix.py"
+    spec = importlib.util.spec_from_file_location("gen_agent_matrix", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["gen_agent_matrix"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+GEN = _generator()
+COUNTS = GEN.tool_counts()
+
+
+def _on_disk(path: Path) -> str:
+    """Read *path* with line endings normalised.
+
+    The repo is checked out with ``core.autocrlf`` on Windows, so a generated
+    file reads back as CRLF while the generator renders LF. Git stores LF.
+    """
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+# ---------------------------------------------------------------------------
+# The generated matrix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path", sorted(GEN.rendered_files()), ids=lambda p: p.relative_to(ROOT).as_posix()
+)
+def test_the_generated_matrix_matches_the_registry(path: Path) -> None:
+    expected = GEN.rendered_files()[path]
+    assert path.exists(), (
+        f"{path.relative_to(ROOT).as_posix()} is missing. "
+        "Run: python scripts/gen_agent_matrix.py"
+    )
+    assert _on_disk(path) == expected, (
+        f"{path.relative_to(ROOT).as_posix()} has drifted from the agent registry. "
+        "Run: python scripts/gen_agent_matrix.py"
+    )
+
+
+def test_rendering_is_idempotent() -> None:
+    """``--check`` against a clean tree, which is what a contributor runs."""
+    assert GEN.main(["--check"]) == 0
+
+
+def test_every_registered_target_has_a_row() -> None:
+    """The table is the registry, not a subset of it."""
+    from repowise.cli.agent_targets import registry
+
+    text = _on_disk(GEN.OUTPUT)
+    for target in registry.all_targets():
+        assert f"| {target.display_name} |" in text or f"[{target.display_name}](" in text, (
+            f"{target.id} is registered but has no row in the matrix"
+        )
+        assert f"`{target.id}`" in text, f"{target.id} is missing from the target id list"
+
+
+def test_no_paste_config_host_is_secretly_a_registered_target() -> None:
+    """A host promoted to a real integration must leave the Paste-config list.
+
+    The Paste-config names are hand-authored, because a host we write no code
+    for has no descriptor to derive them from. This is the one way that list can
+    go stale: Phase 5 adds Cursor as a target and the doc keeps advertising it as
+    something we do not wire.
+    """
+    from repowise.cli.agent_targets import registry
+
+    known = {t.display_name.casefold() for t in registry.all_targets()}
+    known |= {t.id.casefold() for t in registry.all_targets()}
+    collisions = [name for name in GEN.PASTE_CONFIG_HOSTS if name.casefold() in known]
+    assert not collisions, (
+        f"{collisions} are registered targets and must be removed from "
+        "PASTE_CONFIG_HOSTS in scripts/gen_agent_matrix.py"
+    )
+
+
+def test_the_hooks_column_cannot_lie() -> None:
+    """A target's declared HOOKS capability agrees with its hook adapter.
+
+    The matrix reads the capability; ``derive_tier`` reads the adapter name.
+    Nothing forced those two to agree, so a descriptor could publish a Hooks
+    column of `Yes` at Good tier, or Full tier with an empty Hooks column, and
+    both would render without complaint.
+    """
+    from repowise.cli.agent_targets import registry
+    from repowise.cli.agent_targets.types import Capability, capabilities_of
+
+    for target in registry.all_targets():
+        declares = Capability.HOOKS in capabilities_of(target)
+        assert declares == bool(target.hook_adapter), (
+            f"{target.id}: HOOKS capability is {declares} but hook_adapter is "
+            f"{target.hook_adapter!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Published tool counts
+# ---------------------------------------------------------------------------
+
+#: Every artifact that publishes an MCP tool count, and the exact phrase it must
+#: carry. ``{n}`` is the count as digits, ``{w}`` spelled out, ``{W}``
+#: capitalised. Keys name the count from :func:`gen_agent_matrix.tool_counts`.
+#:
+#: Deliberately not exhaustive over the repo: release changelogs record what was
+#: true at the time and must not be retro-edited, and the several artifacts that
+#: say "the ten flagship tools" are describing a documented subset rather than
+#: the default surface.
+COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
+    ("README.md", "single_repo", "**{w} task-shaped MCP tools**"),
+    ("README.md", "single_repo", "## The {w} MCP tools"),
+    ("README.md", "single_repo", "#the-{w}-mcp-tools"),
+    ("README.md", "single_repo", "decisions, and {w} MCP tools"),
+    ("docs/README.md", "single_repo", "decisions, and {w} MCP tools"),
+    ("docs/README.md", "single_repo", "The {w} task-shaped tools,"),
+    ("docs/agent/MCP_TOOLS.md", "total", "{n} tools are registered in total"),
+    ("docs/agent/MCP_TOOLS.md", "single_repo", "advertises {n} by default"),
+    ("docs/business/COMMERCIAL.md", "single_repo", "the {w} MCP tools,"),
+    ("docs/business/COMMERCIAL.md", "single_repo", "| {W} MCP tools |"),
+    ("docs/start/USER_GUIDE.md", "single_repo", "**{W} tools, task-shaped.**"),
+    ("docs/architecture/pluggable-storage.md", "single_repo", "{w} MCP tools still expose"),
+    ("website/mcp-server.md", "total", "It registers {n} tools:"),
+    ("website/mcp-server.md", "single_repo", "a curated {n}-tool default surface"),
+    ("packages/server/README.md", "total", "registers {n} MCP tools"),
+    ("packages/server/README.md", "single_repo", "advertises **{n} by default**"),
+    (".claude-plugin/marketplace.json", "single_repo", "{w} task-shaped MCP tools"),
+    (
+        "plugins/claude-code/.claude-plugin/plugin.json",
+        "single_repo",
+        "{w} task-shaped MCP tools",
+    ),
+    ("scripts/gen_readme_hero.py", "single_repo", '"{n} MCP tools"'),
+    ("scripts/gen_readme_hero.py", "single_repo", "decisions, and {w} MCP tools"),
+    (".github/assets/one-index.svg", "single_repo", "{n} MCP tools"),
+    (".github/assets/one-index.svg", "single_repo", "decisions, and {w} MCP tools"),
+    (".github/assets/one-index-dark.svg", "single_repo", "{n} MCP tools"),
+    (".github/assets/one-index-dark.svg", "single_repo", "decisions, and {w} MCP tools"),
+)
+
+
+def _phrase(template: str, count: int) -> str:
+    word = GEN.spell(count)
+    return template.format(n=count, w=word, W=word.capitalize())
+
+
+def _appears(phrase: str, text: str) -> bool:
+    """Whether *phrase* occurs in *text* as a whole token, not as a tail.
+
+    A plain substring test reports "7 tools are registered in total" inside "17
+    tools are registered in total", which condemns the correct sentence for
+    containing the digits of a wrong one.
+    """
+    return re.search(r"(?<![0-9A-Za-z])" + re.escape(phrase), text) is not None
+
+
+@pytest.mark.parametrize(
+    ("relpath", "key", "template"),
+    COUNT_CLAIMS,
+    ids=[f"{rel}:{tmpl}" for rel, _, tmpl in COUNT_CLAIMS],
+)
+def test_a_published_tool_count_matches_the_registry(
+    relpath: str, key: str, template: str
+) -> None:
+    path = ROOT / relpath
+    assert path.exists(), f"{relpath} is named in COUNT_CLAIMS but does not exist"
+    expected = _phrase(template, COUNTS[key])
+    assert expected in _on_disk(path), (
+        f"{relpath} does not say {expected!r}. The live MCP surface is "
+        f"{COUNTS['total']} tools registered, {COUNTS['single_repo']} advertised in "
+        f"single-repo mode, {COUNTS['workspace']} in workspace mode. Update the file, "
+        "then regenerate docs/agent/INTEGRATIONS.md and the README hero SVGs."
+    )
+
+
+@pytest.mark.parametrize(
+    ("relpath", "key", "template"),
+    COUNT_CLAIMS,
+    ids=[f"{rel}:{tmpl}" for rel, _, tmpl in COUNT_CLAIMS],
+)
+def test_no_artifact_still_carries_a_superseded_tool_count(
+    relpath: str, key: str, template: str
+) -> None:
+    """The same sentence with a different number must not survive alongside it.
+
+    The README held both "ten task-shaped MCP tools" and "The eleven MCP tools"
+    at once, so asserting the right phrase is present would have passed on it.
+    A stale count is usually a second copy of a sentence, not a missing one.
+    """
+    text = _on_disk(ROOT / relpath)
+    stale = [
+        _phrase(template, other)
+        # Every count the generator can spell, which is the set a hand-edit
+        # could plausibly have left behind.
+        for other in sorted(GEN._WORDS)
+        if other != COUNTS[key] and _appears(_phrase(template, other), text)
+    ]
+    assert not stale, f"{relpath} still carries a superseded count: {stale}"

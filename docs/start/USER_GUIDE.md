@@ -208,7 +208,7 @@ for Codex, `repowise init --codex` writes project-local config. Setup per client
 is in [Quickstart](QUICKSTART.md#3-connect-your-agent), and
 [Codex](../agent/CODEX.md) / [opencode](../agent/OPENCODE.md) have their own guides.
 
-**Ten tools, task-shaped.** Your agent gets architecture summaries, per-file
+**Eleven tools, task-shaped.** Your agent gets architecture summaries, per-file
 triage cards with callers and ownership, symbol source with exact bounds, risk
 assessment for a set of changed files, decision lookups and health scores, each in
 one call rather than a chain. What each one answers, and worked multi-tool

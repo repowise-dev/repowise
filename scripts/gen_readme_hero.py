@@ -253,7 +253,7 @@ add(f'<text x="{ex+22}" y="{ey+RH-25}" class="outsub">Captured nowhere else.</te
 # F: Agent surface
 fx0, fy0 = ex + ew + GAP, ROW2
 fw = W - PAD - fx0
-card(fx0, fy0, fw, RH, "SERVED TO YOUR AGENT", "10 MCP tools")
+card(fx0, fy0, fw, RH, "SERVED TO YOUR AGENT", "11 MCP tools")
 tools = ["get_overview", "get_answer", "get_context", "get_symbol", "search_codebase",
          "get_risk", "get_change_risk", "get_why", "get_dead_code", "get_health"]
 tx, ty = fx0 + 20, fy0 + 54
@@ -294,7 +294,7 @@ style = f"""
   .mono {{ font-size: 11.5px; fill: {T_SEC}; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }}
 """
 svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
-       f'role="img" aria-label="repowise: one index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools">'
+       f'role="img" aria-label="repowise: one index producing code health, a dependency graph, git history, generated docs, architectural decisions, and eleven MCP tools">'
        f'<style>{style}</style>' + "".join(out) + '</svg>')
 
 suffix = "" if THEME == "light" else "-dark"
