@@ -119,24 +119,29 @@ def describe_agents(repo_path: Path | None = None) -> list[dict]:
     return rows
 
 
-def default_selection(rows: list[dict], repo_path: Path | None = None) -> set[str]:
+def default_selection(rows: list[dict]) -> set[str]:
     """Which agents to pre-tick, given :func:`describe_agents` rows.
 
-    Wired agents, installed agents, **and** the fallback ``--target=auto``
-    resolves to, unioned rather than used only as a last resort.
+    Wired agents, installed agents, and :data:`_AUTO_FALLBACK` — always, not as
+    a last resort.
 
-    The union is the part that matters and it was a bug before. Leaving an
-    agent unticked is not neutral: for the agent that owns the instruction
-    file, the setup path persists the opt-out into ``.repowise/config.yaml``,
-    so ``update`` never generates it either. A machine with VS Code and Codex
-    but no ``~/.claude`` produced a non-empty selection, which meant the
-    fallback never fired, which meant Claude Code arrived unticked and one
-    Enter permanently turned off a file that used to default to on.
+    That "always" is the whole point and it is easy to get wrong: unioning in
+    ``resolve_target_flag("auto")`` instead *looks* equivalent and is a no-op,
+    because ``auto`` resolves to the detected targets and only reaches the
+    fallback when detection is empty — which is exactly the case the union was
+    already handling. A repo with a committed ``.codex/config.toml`` on a
+    machine with no ``~/.claude`` still produced a non-empty selection with
+    Claude Code missing from it.
 
-    Detection decides what to *offer*; it must not silently withdraw a default.
+    Why it matters that the fallback is unconditional: leaving an agent
+    unticked is not neutral. For the agent that owns the instruction file the
+    setup path persists the opt-out into ``.repowise/config.yaml``, so one
+    Enter turns off a file that used to default to on and ``update`` never
+    generates it again. **Detection decides what to offer; it must not silently
+    withdraw a default.**
     """
     chosen = {row["id"] for row in rows if row["registrations"] or row["present"]}
-    return chosen | {target.id for target in resolve_target_flag("auto", repo_path)}
+    return chosen | {_AUTO_FALLBACK}
 
 
 def select_install_method(

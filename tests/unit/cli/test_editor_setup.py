@@ -465,14 +465,22 @@ def test_checklist_never_silently_withdraws_the_instruction_file_default(
     arrived unticked. One Enter then persisted ``claude_md: false`` into
     ``.repowise/config.yaml``, so ``update`` never generated it either — where
     the prompt this replaced defaulted to yes.
+
+    The first fix for this unioned in ``resolve_target_flag("auto")``, which
+    *looks* equivalent and is a no-op: ``auto`` resolves to the detected
+    targets and only reaches the fallback when detection is empty — the case
+    the union already covered. So the moment anything else was wired, Claude
+    Code went missing again. Hence the wired row below.
     """
-    from repowise.cli.agent_targets.registry import default_selection, describe_agents
+    from repowise.cli.agent_targets.registry import default_selection
 
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "empty-home"))
-    rows = describe_agents(tmp_path)
-    assert not any(row["present"] for row in rows if row["id"] == "claude-code")
+    rows = [
+        {"id": "claude-code", "registrations": [], "present": False},
+        {"id": "codex", "registrations": [{"method": "direct"}], "present": True},
+        {"id": "vscode", "registrations": [], "present": True},
+    ]
 
-    assert "claude-code" in default_selection(rows, tmp_path)
+    assert default_selection(rows) == {"claude-code", "codex", "vscode"}
 
 
 def test_checklist_that_cannot_be_answered_leaves_the_options_alone(monkeypatch, tmp_path) -> None:

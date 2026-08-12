@@ -138,6 +138,8 @@ def hooks_config() -> dict[str, object]:
 
 def write_server_config(repo_path: Path) -> FileWrite:
     """Merge the repowise server table into project-local ``.codex/config.toml``."""
+    import click
+
     from ..formats.toml_merge import (
         ensure_valid_toml,
         load_toml_document,
@@ -170,8 +172,20 @@ def write_server_config(repo_path: Path) -> FileWrite:
     # whole table, so without this every extra key is dropped on every write —
     # the same failure the JSON path fixed for ``env`` blocks in issue #307,
     # which this path never had a guard for.
+    #
+    # Preserving a key means re-rendering it, so a value the narrow serializer
+    # cannot encode has to stop the write rather than escape as a bare
+    # TypeError. This function is on init's path with no try around it, so the
+    # difference is a ClickException naming the file against a traceback
+    # mid-run.
     merged = {**stored, **server_table(repo_path)}
-    block = table_block("mcp_servers.repowise", merged)
+    try:
+        block = table_block("mcp_servers.repowise", merged)
+    except TypeError as exc:
+        raise click.ClickException(
+            f"Cannot update {config_path}: [mcp_servers.repowise] holds a value repowise "
+            f"cannot rewrite ({exc}). Remove that key and retry; no changes were written."
+        ) from exc
     merged_text = replace_table(existing_text, "mcp_servers.repowise", block)
     merged_doc = ensure_valid_toml(merged_text, config_path)
     action = write_if_changed(config_path, merged_text, merged_doc, doc)

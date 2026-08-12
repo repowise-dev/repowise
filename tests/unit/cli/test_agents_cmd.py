@@ -154,9 +154,44 @@ def test_add_stands_down_when_the_host_plugin_already_provides_it(
     assert "host-managed" in agent["skips"]["user"]
     assert "user" not in agent["writes"]
     assert not (Path.home() / ".claude" / "settings.json").exists()
-    # ...but the committed repo file is still written.
-    assert agent["writes"]["project"]["files"][0]["action"] == "created"
+    # ...but the committed repo file is still written, with a note, because
+    # this machine now does load repowise from both.
+    project = agent["writes"]["project"]
+    assert project["files"][0]["action"] == "created"
     assert (repo / ".mcp.json").exists()
+    assert any("load repowise from both" in note for note in project["notes"])
+
+
+def test_the_stand_down_follows_the_scope_the_host_actually_covers(
+    repo: Path, monkeypatch
+) -> None:
+    """Hard-coding it to user scope is wrong in both directions.
+
+    Claude Code's detection genuinely models a project-scoped plugin. Against
+    one, a constant put the duplicate write on the scope the plugin covers and
+    the skip — with a false reason — on the scope it does not.
+    """
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {target_mod.PLUGIN_KEY: [{"scope": "project", "version": "0.41.0"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _json(["agents", "add", str(repo), "--target", "claude-code", "-y"])
+
+    agent = payload["agents"][0]
+    assert "host-managed" in agent["skips"]["project"]
+    assert not (repo / ".mcp.json").exists()
+    # The user scope is not covered by a project-scoped plugin, so it is wired.
+    assert "user" in agent["writes"]
 
 
 def test_add_honours_the_skip_env_var_for_user_scope(repo: Path, monkeypatch) -> None:

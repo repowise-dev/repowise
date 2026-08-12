@@ -415,6 +415,83 @@ def test_codex_keeps_user_keys_added_to_its_server_table(tmp_path: Path) -> None
     assert table["cwd"] == str(repo.resolve())
 
 
+def test_codex_preserves_an_env_table_rather_than_choking_on_it(tmp_path: Path) -> None:
+    """``env`` is the key most likely to be there, and it is a table.
+
+    Preserving a user's keys means re-rendering them, so the narrow serializer
+    meets a dict the first time anyone has an env block — the standard case,
+    not an exotic one. It renders as an inline table.
+    """
+    import tomllib
+
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    config_path = repo / ".codex" / "config.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "startup_timeout_sec = 20",
+            'startup_timeout_sec = 20\nenv = { RUST_LOG = "debug" }\ntimeout = 1.5',
+        ),
+        encoding="utf-8",
+    )
+
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    table = tomllib.loads(config_path.read_text(encoding="utf-8"))["mcp_servers"]["repowise"]
+    assert table["env"] == {"RUST_LOG": "debug"}
+    assert table["timeout"] == 1.5
+
+
+def test_codex_refuses_a_value_it_cannot_rewrite_without_a_traceback(tmp_path: Path) -> None:
+    """This runs inside ``init`` with no try around it, so it must not raise raw.
+
+    Every other refusal in this writer is a ClickException naming the file and
+    saying nothing was written; a bare TypeError mid-``init`` is neither.
+    """
+    import click
+
+    from repowise.cli.agent_targets.targets import codex as codex_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    config_path = repo / ".codex" / "config.toml"
+    before = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        before.replace("startup_timeout_sec = 20", "startup_timeout_sec = 20\nports = [1, 2]"),
+        encoding="utf-8",
+    )
+    poisoned = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(click.ClickException) as excinfo:
+        codex_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert "no changes were written" in str(excinfo.value)
+    assert config_path.read_text(encoding="utf-8") == poisoned
+
+
+def test_marker_block_remove_refuses_what_upsert_refuses(tmp_path: Path) -> None:
+    """Guarding only the write half still lets uninstall eat the sentence.
+
+    ``remove`` strips *every* matched span, so on one real block plus a
+    sentence quoting both markers it deletes the middle of the sentence — the
+    exact file shape ``upsert`` refuses.
+    """
+    doc = tmp_path / "AGENTS.md"
+    original = (
+        "Docs: we manage the text between <!--S--> and <!--E-->.\n\n<!--S-->\nBODY\n<!--E-->\n"
+    )
+    doc.write_text(original, encoding="utf-8", newline="\n")
+
+    assert marker_block.remove(doc, "<!--S-->", "<!--E-->") is False
+    assert doc.read_text(encoding="utf-8") == original
+
+
 def test_atomic_write_leaves_no_temp_file_behind(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "config.json"
     target.parent.mkdir()

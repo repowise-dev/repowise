@@ -36,12 +36,22 @@ from .json_merge import json_deep_equal
 
 
 def toml_value(value: object) -> str:
-    """Encode a scalar or string list as TOML.
+    """Encode a scalar, list or inline table as TOML.
 
     Strings go through ``json.dumps``, whose escaping for basic strings is
-    TOML-compatible. Anything outside the handful of types our tables hold
-    raises, because a silent wrong encoding in a config file is far more
-    expensive to diagnose than a crash here.
+    TOML-compatible. Anything outside the types handled here raises, because a
+    silent wrong encoding in a config file is far more expensive to diagnose
+    than a crash.
+
+    Dicts render as **inline tables**, which is what makes preserving a user's
+    keys possible at all: the one key a Codex MCP server entry is most likely
+    to carry beyond ours is ``env``, and ``env`` is a table. Writing a whole
+    generated table means re-rendering everything already in it, so a type this
+    cannot encode is not a hypothetical — it is the standard case. Nested
+    inline tables are legal TOML and the recursion produces them.
+
+    Floats are handled for the same reason: they cost one line, and a timeout
+    someone wrote as ``1.5`` is not an exotic thing to find in a config file.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -49,6 +59,11 @@ def toml_value(value: object) -> str:
         return json.dumps(value)
     if isinstance(value, int):
         return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        rendered = ", ".join(f"{key} = {toml_value(item)}" for key, item in value.items())
+        return f"{{ {rendered} }}" if rendered else "{}"
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return f"[{', '.join(json.dumps(item) for item in value)}]"
     raise TypeError(f"Unsupported TOML value: {value!r}")

@@ -159,15 +159,23 @@ def remove(path: Path, start: str, end: str, *, delete_if_only: str | None = Non
     deleted, so install then uninstall round-trips back to "no file" rather
     than leaving a stub nobody asked for.
 
+    Refuses a malformed pair for exactly the reasons :func:`upsert` does, and
+    it has to: this strips *every* ``start.*?end`` span, so against one real
+    block plus a sentence quoting both markers it deletes the middle of the
+    sentence. That is the same file shape ``upsert`` refuses, so guarding only
+    the write half would have left ``hook rewrite uninstall`` and
+    ``agents remove`` eating the user's words.
+
     Returns True when something was removed.
     """
-    if not path.exists():
+    inspection = inspect(path, start, end)
+    if inspection.state in (BlockState.ORPHANED, BlockState.DUPLICATED):
+        return False
+    if inspection.state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
         return False
     try:
         existing = path.read_text(encoding="utf-8")
     except OSError:
-        return False
-    if start not in existing:
         return False
 
     pattern = r"\n*" + re.escape(start) + r".*?" + re.escape(end) + r"\n?"

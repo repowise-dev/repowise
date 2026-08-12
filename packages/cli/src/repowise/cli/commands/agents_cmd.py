@@ -136,8 +136,19 @@ def _write_payload(
     for target in targets:
         registrations = list(target.detect(repo_path))
         wired_scopes = {r.scope for r in registrations}
-        host_managed = select_install_method(target, registrations) is None
-        method = None if remove or host_managed else select_install_method(target, [])
+        # Which scopes a host already covers, read off the registrations rather
+        # than assumed to be the user one. Claude Code's detection genuinely
+        # models a project-scoped plugin, and hard-coding USER put the skip on
+        # the wrong scope in both directions for that machine: a duplicate
+        # write where the plugin does cover, and a skip with a false reason
+        # where it does not.
+        host_scopes = {
+            r.scope
+            for r in registrations
+            for method in target.methods
+            if method.id == r.method and method.managed_by == "host"
+        }
+        method = None if remove else select_install_method(target, [])
 
         entry: dict = {
             "id": target.id,
@@ -151,7 +162,7 @@ def _write_payload(
             reason = None
             if target_scope is Scope.USER and user_scope_disabled:
                 reason = "REPOWISE_SKIP_EDITOR_SETUP is set"
-            elif not remove and host_managed and target_scope is Scope.USER:
+            elif not remove and target_scope in host_scopes:
                 reason = "a host-managed install already covers this scope"
             elif refresh_only and target_scope not in wired_scopes:
                 reason = "nothing wired here, and refresh adds nothing"
@@ -163,6 +174,16 @@ def _write_payload(
                 result = target.uninstall(target_scope, repo_path=repo_path)
             else:
                 result = target.install(target_scope, repo_path=repo_path)
+                if host_scopes and result.changed:
+                    # Writing a scope the host does not cover is right — the
+                    # repo file is for other contributors' checkouts — but this
+                    # machine now loads repowise from both, so say so instead of
+                    # quietly handing them the duplicate the skip above avoids.
+                    result.note(
+                        f"{target.display_name} also has a host-managed install, so this "
+                        "machine will load repowise from both. The file is written for "
+                        "contributors who do not have the plugin."
+                    )
             entry["writes"][target_scope.value] = result.as_dict()
         agents.append(entry)
 
@@ -330,7 +351,7 @@ def _select_targets_for_add(
         return _resolve_targets(target_flag, repo_path)
 
     rows = describe_agents(repo_path)
-    chosen = default_selection(rows, repo_path)
+    chosen = default_selection(rows)
 
     if _can_prompt(target_flag, yes) and fmt != "json":
         answered = _prompt_for_agents(rows, chosen)

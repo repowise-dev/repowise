@@ -225,7 +225,7 @@ def select_agents_interactively(
     from repowise.cli.ui.agent_selection import AgentChoice, interactive_agent_select
 
     rows = describe_agents(repo_path)
-    ticked = default_selection(rows, repo_path)
+    ticked = default_selection(rows)
     for row in rows:
         flagged = options.integration_overrides.get(row["id"])
         if flagged is not None:

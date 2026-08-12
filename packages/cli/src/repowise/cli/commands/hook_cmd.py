@@ -326,7 +326,8 @@ def _install_codex_surfaces(target) -> None:
         else:
             console.print(
                 f"  [yellow]AGENTS.md distill section not written ({repo_path}); "
-                "check for an unpaired REPOWISE_DISTILL marker[/yellow]"
+                "check its REPOWISE_DISTILL markers — one unpaired, or more than "
+                "one pair, and repowise will not guess at the repair[/yellow]"
             )
 
 
