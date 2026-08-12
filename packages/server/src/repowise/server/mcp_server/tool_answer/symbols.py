@@ -106,6 +106,23 @@ def union_defers_to_synthesis(
     return _prose_dominates(question, list(question_ids))
 
 
+def is_symbol_lookup_question(question: str, question_ids: set[str]) -> bool:
+    """True when the question is a lookup of named symbols, not prose about them.
+
+    The same test ``union_defers_to_synthesis`` uses, lifted out under a name,
+    because the confidence gates need it for a case the union path never sees.
+    ``ModelAdmin`` is a lookup; "how does ModelAdmin dispatch a request" is
+    prose that merely names one. The distinction matters wherever the question
+    is whether a served BODY is the answer: for a lookup it is, so truncating
+    it is a loss on its own; for prose the body is evidence for a claim, and
+    truncation alone says little (22% of truncations withhold nothing the
+    response leans on).
+    """
+    if not question_ids:
+        return False
+    return not _prose_dominates(question, list(question_ids))
+
+
 def _read_repo_text(repo_root: Path | None, file_path: str) -> str | None:
     """Read a repo file's live text, refusing paths outside the root.
 
