@@ -558,6 +558,37 @@ def create_mcp_server(
     return mcp
 
 
+#: Depth bound when unwrapping nested task-group failures. Groups nest one or
+#: two deep in practice; the cap only stops a pathological cycle from hanging.
+_MAX_GROUP_DEPTH = 10
+
+
+def _run_transport(transport: str) -> None:
+    """Run the server, raising the cause of a task-group failure rather than the group.
+
+    ``mcp.run`` drives an anyio event loop, and anyio reports a child task's
+    failure as an ``ExceptionGroup`` wrapping the real exception. Anything that
+    reads the outermost class then learns only that *a* task failed: the CLI
+    records the wrapper's name as the error type, so a missing dependency, a
+    permission problem and a closed pipe are indistinguishable after the fact.
+    Unwrap to the first leaf and raise that, so the layers above name the real
+    error. A group holding several distinct failures loses the siblings, which
+    is worth it to stop losing the cause entirely.
+    """
+    try:
+        mcp.run(transport=transport)
+    except BaseExceptionGroup as group:
+        leaf: BaseException = group
+        for _ in range(_MAX_GROUP_DEPTH):
+            if not isinstance(leaf, BaseExceptionGroup) or not leaf.exceptions:
+                break
+            leaf = leaf.exceptions[0]
+        # A cancelled run is how a client-initiated shutdown looks, not a fault.
+        if isinstance(leaf, Exception):
+            _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
+        raise leaf from group
+
+
 def run_mcp(
     transport: str = "stdio",
     repo_path: str | None = None,
@@ -588,7 +619,7 @@ def run_mcp(
                 "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
                 host,
             )
-        mcp.run(transport="sse")
+        _run_transport("sse")
     elif transport == "streamable-http":
         mcp.settings.host = host
         mcp.settings.port = port
@@ -599,7 +630,7 @@ def run_mcp(
                 "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
                 host,
             )
-        mcp.run(transport="streamable-http")
+        _run_transport("streamable-http")
     else:
         # stdout is the JSON-RPC channel on stdio, so every log line written
         # there arrives at the client as a malformed protocol frame. Move the
@@ -614,4 +645,4 @@ def run_mcp(
         from repowise.server.mcp_server._watchdog import start_parent_watchdog
 
         start_parent_watchdog()
-        mcp.run(transport="stdio")
+        _run_transport("stdio")

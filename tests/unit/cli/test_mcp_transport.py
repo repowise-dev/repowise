@@ -287,3 +287,53 @@ def test_run_mcp_sets_host_on_settings(monkeypatch) -> None:
     assert _server.mcp.settings.host == "0.0.0.0"
     assert _server.mcp.settings.port == 7343
     assert calls == [{"transport": "streamable-http"}]
+
+
+def test_task_group_failure_surfaces_the_real_error(monkeypatch) -> None:
+    """anyio wraps a child task's error; the wrapper must not be what escapes.
+
+    The event loop reports a failed task as an ExceptionGroup, so callers that
+    read the outermost class learn only that something failed. Every start-up
+    failure then looks identical from the outside.
+    """
+    import pytest
+
+    from repowise.server.mcp_server import _server
+
+    def boom(**_kw):
+        raise ExceptionGroup("task failed", [PermissionError("wiki.db is locked")])
+
+    monkeypatch.setattr(_server.mcp, "run", boom)
+
+    with pytest.raises(PermissionError):
+        _server.run_mcp(transport="stdio")
+
+
+def test_nested_task_groups_unwrap_to_the_leaf(monkeypatch) -> None:
+    import pytest
+
+    from repowise.server.mcp_server import _server
+
+    def boom(**_kw):
+        inner = ExceptionGroup("inner", [ModuleNotFoundError("no mcp")])
+        raise ExceptionGroup("outer", [inner])
+
+    monkeypatch.setattr(_server.mcp, "run", boom)
+
+    with pytest.raises(ModuleNotFoundError):
+        _server.run_mcp(transport="stdio")
+
+
+def test_a_plain_error_is_left_alone(monkeypatch) -> None:
+    """Only grouped failures are unwrapped; an ungrouped one already names itself."""
+    import pytest
+
+    from repowise.server.mcp_server import _server
+
+    def boom(**_kw):
+        raise OSError("address in use")
+
+    monkeypatch.setattr(_server.mcp, "run", boom)
+
+    with pytest.raises(OSError):
+        _server.run_mcp(transport="stdio")
