@@ -326,6 +326,16 @@ export interface HealthFilesQuery {
   only_hotspots?: boolean;
   only_untested?: boolean;
   only_failing?: boolean;
+  /**
+   * `"summary"` returns rows without the optional keys only the file table and
+   * drawer read — `duplication_pct`, `defect_score`, and the
+   * `primary_biomarker` / `primary_reason` / `total_deduction` lead — and lets
+   * the server skip the repo-wide finding read that produces the lead. Measured
+   * on the code-health map's 2,000-row request: 1,060,095 B -> 628,014 B.
+   * Every omitted key is optional on {@link HealthFileMetric}, so a `summary`
+   * row parses as one; ask for `"full"` (the default) if you print any of them.
+   */
+  fields?: "full" | "summary";
 }
 
 /* ------------------------------------------------------------------ *

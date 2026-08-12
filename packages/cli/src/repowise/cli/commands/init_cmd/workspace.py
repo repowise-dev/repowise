@@ -731,8 +731,11 @@ def _workspace_init(
     # never has to guess why the web UI is missing pages for some repos.
     # Maps alias -> (generated_count, skip_reason | None)
     docs_outcomes: dict[str, tuple[int, str | None]] = {}
+    # No agent checklist in workspace mode: the question is per repo and this
+    # path indexes many, so asking once would apply one answer everywhere and
+    # asking per repo would be a prompt per repo. Workspace init takes the
+    # defaults and the flags; `repowise agents add` covers the rest.
     editor_options = resolve_editor_setup_options(
-        console,
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
         ),

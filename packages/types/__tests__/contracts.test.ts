@@ -24,6 +24,7 @@ import type {
   GraphPathArtifact,
   DeadCodeArtifact,
   DiagramArtifact,
+  RiskReportArtifact,
   GenericArtifact,
 } from "../src/chat.js";
 import type { GraphLink } from "../src/graph.js";
@@ -49,10 +50,12 @@ import {
 
 describe("ChatArtifact discriminated union", () => {
   it("narrows on .type to the per-variant data shape", () => {
-    // Mirrors backend reality (`backend/app/routers/chat.py:_tool_*`):
-    // - get_dependency_path → { type: "graph", data: { path, distance, explanation } }
-    // - get_dead_code       → { type: "dead_code", data: { high_confidence, ... } }
-    // - get_architecture_diagram → { type: "diagram", data: { mermaid_syntax, ... } }
+    // Live chat registry (packages/server/.../chat_tools.py): get_overview,
+    // get_context, get_risk, get_change_risk, get_why, search_codebase,
+    // get_dead_code — risk_report covers get_risk + get_change_risk.
+    // Legacy wire variants still narrow for stored SSE history:
+    // - graph   ← removed chat tool get_dependency_path (MCP opt-in remains)
+    // - diagram ← removed chat tool get_architecture_diagram
     const narrow = (a: KnownChatArtifact) => {
       if (a.type === "graph") {
         expectTypeOf(a).toEqualTypeOf<GraphPathArtifact>();
@@ -64,6 +67,8 @@ describe("ChatArtifact discriminated union", () => {
       } else if (a.type === "diagram") {
         expectTypeOf(a).toEqualTypeOf<DiagramArtifact>();
         expectTypeOf(a.data.mermaid_syntax).toEqualTypeOf<string>();
+      } else if (a.type === "risk_report") {
+        expectTypeOf(a).toEqualTypeOf<RiskReportArtifact>();
       }
     };
     expectTypeOf(narrow).toBeFunction();

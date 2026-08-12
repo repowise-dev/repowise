@@ -11,6 +11,23 @@ verified, continuation, directive, sources) stay named, because a row that
 drops them costs the agent a round trip to discover them. Reference detail
 lives in docs/agent/MCP_TOOLS.md, not here.
 
+**A row is an advertisement, and a granular tool advertised as a peer gets
+used granularly.** Where a short capability list named ``get_symbol`` beside
+``get_answer``, agents spent the large majority of their retrieval calls on it
+and finished having made *more* tool calls than an agent with no tools at all:
+a per-symbol tool supplements navigation instead of replacing it, one symbol
+per call. It is also the one tool whose payload cannot be trimmed — a trimmed
+``get_symbol`` is 99% of a full one — so its calls are the ones no size work
+can reach. Given the same surface with no such list, agents reached for
+``get_answer`` instead and called ``get_symbol`` not at all.
+
+So the ``get_symbol`` row leads by saying what it is NOT, and the
+``get_answer`` and ``get_context`` rows say where bodies do come from. **This
+is about naming, not about count**: harnesses that defer tool schemas read
+this table and nothing else until they search, so serving fewer tools changes
+nothing an agent sees. Do not "fix" it by shortening the row back to a neutral
+capability description, and do not "fix" it by dropping the tool.
+
 **Length is the constraint, not the feature list.** This table is resident in
 the prompt prefix of every session in every repo repowise has indexed, so it is
 re-read on every API call: measured at 50.4x on one corpus, which makes a
@@ -40,15 +57,15 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     ),
     "get_context": (
         "get_context(targets=[...])",
-        "Triage card for files/modules/symbols, serving a `verified` skeleton for "
-        'file targets. Batch targets; `include=["callers"|"callees"|"decisions"|'
-        '"metrics"]` for depth.',
+        "Triage card for files/modules/symbols: docs, signatures, hotspot, fix "
+        'history. No source bytes — `include=["skeleton"]` for the whole file '
+        'verified, `["callers"|"decisions"]` for depth. Batch targets.',
     ),
     "get_symbol": (
         "get_symbol(id)",
-        "One verified body: `path.py::Name`, `path.py:140-180`, or `repowise#<hex>`. "
-        "Arrives in Read's numbered format; a `truncated` response carries a "
-        "`continuation`.",
+        "**Follow-up, not an entry point** — one verified body for an id a prior "
+        "response named (`path.py::Name`, `path.py:140-180`, `repowise#<hex>`). Never "
+        "walk a file symbol by symbol; Read it.",
     ),
     "search_codebase": (
         "search_codebase(query)",

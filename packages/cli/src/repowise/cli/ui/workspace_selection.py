@@ -79,7 +79,7 @@ def interactive_repo_select(
         if raw == "none":
             return []
 
-        selected = _parse_selection(raw, len(repos))
+        selected = parse_selection(raw, len(repos))
         if selected is not None:
             return [repos[i] for i in selected]
 
@@ -88,11 +88,15 @@ def interactive_repo_select(
         )
 
 
-def _parse_selection(raw: str, count: int) -> list[int] | None:
+def parse_selection(raw: str, count: int) -> list[int] | None:
     """Parse a comma-separated selection string into zero-based indices.
 
     Supports: ``"1,2,3"``, ``"1-3"``, ``"1,3-5"``, ``"1-3,5"``.
     Returns ``None`` on invalid input.
+
+    Shared with the agent multiselect, which uses the same numbers-and-ranges
+    grammar. One parser means one set of accepted spellings across the CLI's
+    list prompts rather than two that drift.
     """
     indices: list[int] = []
     for part in raw.split(","):

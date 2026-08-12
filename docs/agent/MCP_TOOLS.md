@@ -115,7 +115,7 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | `index_age_days` | Days since the last `repowise update` |
 | `indexed_commit` | Short (12-char) SHA the index was built against |
 | `live_head` | Only when it differs from `indexed_commit` |
-| `stale_warning` | Only on a real signal: HEAD mismatch, or age over ~90 days when git is unreachable |
+| `stale_warning` | Only on a real signal: HEAD mismatch **that actually changed files**, or age over ~90 days when git is unreachable. Two commits with identical trees (an empty commit, a no-op merge) report `index_behind` instead |
 | `embedder`, `embedder_degraded`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
 
 Silence on these fields means the index is current; don't infer staleness from their absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all.
@@ -188,12 +188,22 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. |
+| `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. Symbol ids take the same `"path/to/file.py::Name"` form `get_symbol` accepts, with the same `::` / `.` / `/` separator normalisation, so an id from either tool works in the other. |
 | `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this, symbol targets), `"callees"` (what this calls, symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only; the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens) |
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
 
 **Returns per target:** Documentation summary, symbols defined, ownership percentages, freshness score, co-change partners, architectural decisions governing the file. With `include` options: source code, call graph, graph metrics, community membership.
+
+A file with no indexed symbols (README, config, plain data) gets a
+`docs.file_preview` instead of an empty symbol list: line and character counts,
+plus the heading spine for markdown or the first non-blank lines otherwise.
+Counts and verbatim excerpts only, nothing inferred.
+
+When the symbol half of a `path::Name` target does not resolve but the file
+half does, the reply is that file's card with `resolved_to` naming the file and
+a `note` saying which symbol was not found. The file's symbol list is where the
+correct id is, so this is a partial answer rather than a dead end.
 
 **When to use:** Before reading or modifying code. Pass all relevant targets in one call to minimize round-trips. In workspace mode, enriched with cross-repo co-change and contract data.
 
@@ -229,6 +239,7 @@ Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
 | `symbol_id` | string | Yes | One of three forms: `"path/to/file.py::SymbolName"` (canonical, from `get_context`'s symbol list; normalises `::` / `.` / `/` separators across languages), `"path/to/file.py:140-180"` (a live range read, 200 lines max), or an omission ref `"repowise#<12-hex>"` / a pasted whole `[repowise#...]` marker. |
 | `query` | string | No | Omission refs only: return just the stored lines matching this regex (or substring). Ignored for symbol ids and range reads. |
 | `context_lines` | int | No | Extra source lines before/after the symbol (0-50, default 0) |
+| `depth` | int | No | Follow the call graph outward from this symbol and include what it calls, with bodies (1-3, default 1 = this symbol only). Out-of-range values clamp. |
 | `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
 
 **Returns:** For a symbol id or range: the source (bounded at ~600 lines,
@@ -242,17 +253,30 @@ budget appear in `not_rendered` with a `fetch_with` range read. For an
 omission ref: the stored content plus provenance (`source`, `created_at`,
 `original_tokens`).
 
+With `depth` above 1 the response also carries `callee_bodies`: the symbols
+this one calls, transitively, each with its `depth` (hops from the root), its
+source, and a `verified` flag. Every symbol appears once, at the shallowest
+depth it was reached from. Callees past the response budget are listed in
+`not_rendered` with the `fetch_with` range that retrieves them, so a bounded
+walk never looks like a complete one.
+
 **When to use:** When you need the body of one function or class: pipe the
 `symbol_id` straight from `get_context`'s symbol list. Use the line-range form
 for anything that falls between symbols. Or when a response's `_meta.omitted`
 lists refs you want back and you have no shell for `repowise expand` (e.g.
 Claude Desktop).
 
+Reach for `depth=2` when you are following a call chain: reading a body,
+finding the next name in it, then fetching that one. The graph already holds
+those edges before the first call, so one `depth=2` call replaces the whole
+sequence of round trips.
+
 **Example calls:**
 
 ```
 get_symbol(symbol_id="src/auth/service.py::AuthService")
 get_symbol(symbol_id="src/auth/service.py::login", context_lines=10)
+get_symbol(symbol_id="src/auth/service.py::login", depth=2)
 get_symbol(symbol_id="src/auth/service.py:140-180")
 get_symbol(symbol_id="repowise#a1b2c3d4e5f6")
 get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
@@ -507,7 +531,7 @@ code-health merge-gate judges it on.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
 | `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
-| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta` and each kept list's `*_total` sibling always survive. The `include` block names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. `signals` has no top-level key (it merges into `metrics[].signals`), so it is reported in `unknown_only_keys` — in targeted mode, where `signals` applies, name `metrics` instead. |
+| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 
@@ -530,9 +554,28 @@ named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `known_modules`), so an empty `findings` list means healthy and nothing else. A
 target set that resolves to nothing still answers in targeted mode rather than
 falling back to the repo dashboard. Every capped list carries a `*_total`
-sibling — including under `only`, which retains it automatically — and
+sibling — including under `only`, which retains it automatically. `unresolved`
+and `known_modules` survive any `only` projection too, for the same reason
+`mode` does: a caller who has to ask for the error report in order to see it
+does not have an error report.
+
 `_meta.health_analyzed_at` dates the health pass, which is separate from
-indexing and can lag it.
+indexing and can lag it, and `_meta.health_analyzed_commit` says which commit
+those scores were computed against. The incremental update path rescores only
+the files that changed, so the metrics table can hold rows from several passes
+at once; when it does, `_meta.health_analyzed_commits_distinct` says how many
+and the reported commit is the newest pass's. Both fields are omitted rather
+than guessed when no row records a commit.
+
+**The response is bounded.** `include` only *adds* blocks, and the dashboard's
+five ranked lists compose: `include=['refactoring']` on a mid-size repo lands
+near the host's tool-result cap, past which the host rejects the whole result
+and you get nothing. Pair `include` with `only` —
+`get_health(include=['refactoring'], only=['refactoring_plans'])` is the call
+`directive.plan_via` names. Anything that would still overflow is trimmed
+longest-ranked-list-first and reported in `_meta.truncated_to_fit`
+(`{block: rows_dropped}`), never silently; the `*_total` siblings still describe
+what was there, and re-requesting one block with `only` recovers it.
 
 **Test material is bucketed, not hidden.** Every metric row carries `is_test`
 (distinct from `has_test_file`: "is this file a test" vs "is this file tested").
@@ -562,6 +605,32 @@ make that actionable rather than a mystery:
   (dashboard mode) is the top-N ranked by it, distinct from `worst_files`, which
   sorts by raw score and ranks a 30-line file at 1.0 equal to a 1,200-line file at
   1.0 that moves the average ~40x more.
+- `weighted_deficit`, `directive.recovers_points` and
+  `gap_analysis.weighted_gap_points` share one unit — *score-points x NLOC* —
+  which compares against itself and nothing else. Every `high_leverage_files`
+  row and the `directive` also carry `share_of_repo_gap_pct`, the same quantity
+  with a denominator; that plus `gap_analysis.files_to_reach_target` is what
+  answers "is this worth doing".
+- `kpis.non_code_files` and `kpis.average_health_code_only` say how much of the
+  headline is markdown/JSON/YAML. No biomarker walks those files, so they score
+  a mechanical 10.0 meaning "nothing looked at this" — on this repo, 233 of
+  3,314 rows, lifting `average_health` from 7.31 to 7.47. `average_health`
+  itself deliberately still counts them, so the tool, the badge, the snapshots
+  and the web UI all report the same number.
+
+**One score, not two.** A metric row carries `score` (the defect dimension and
+the headline), `maintainability_score` and `performance_score`. There is no
+`defect_score` in the response: it was set from the same value as `score` on
+every row, and two names for one number cost a reader a source dive to pick
+between them. The field to rank on is neither — it is `weighted_deficit`.
+
+**`primary_biomarker` names a discrete cause.** It prefers the strongest
+*discrete* finding over a continuous one. `coverage_gradient` fires on every
+file that has coverage data at all, so on a well-covered repo it used to win the
+max-impact tiebreak nearly everywhere and headline the list with "N% of lines
+uncovered" — true, and equally true of every other file. The gradient still
+counts in full toward `total_deduction` and the score, and still leads a file
+that has no discrete finding.
 
 The opt-in enrichments:
 
@@ -588,6 +657,30 @@ The opt-in enrichments:
   `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
 - **dimension filter** narrows the returned findings to one pillar, e.g.
   `include=["biomarkers", "performance"]`.
+
+**Performance findings rank on `perf_rank`, not on `health_impact`.** Every
+performance finding carries `health_impact: 0` — the pillar is deliberately
+never blended into the score — so ranking them by impact ordered them by nothing
+and the cap kept whichever the tie broke to. Each performance row now carries an
+integer `perf_rank` (absent on defect and maintainability rows, which rank on
+`weighted_deficit`), and the returned list is ordered by it *within* each impact
+tier, so the defect ordering is untouched. It is an ordering key, not a score:
+nothing is blended into `score` / `performance_score`. It adds three signals the
+row already carries, so you can re-rank on your own weights from the same
+payload:
+
+| signal | reads | why |
+|---|---|---|
+| the marker | `biomarker_type` | superlinear (`nested_loop_quadratic` 5) > N×M or lock-serialized (4) > one crossing per iteration, or one crossing proven on a hot path (3) > in-loop CPU/allocation (2) > cheap in-loop idioms (1) |
+| the boundary | `details.boundary_kind` | `subprocess` 4 > `network` 3 > `db`/`lock` 2 > `filesystem` 1 — a process spawn in a loop is not a stat in a loop |
+| the call shape | `details.cross_function` | +1. An intra-function loop is usually visibly bounded at the call site; a cross-function N+1 is the one nobody sees by reading the loop |
+
+Request-reachability is read off the marker rather than a column:
+`hot_path_sync_io` and `nested_loop_quadratic` are only ever emitted for a
+function the perf ranker called hot (top-quintile call-graph in-degree, or a
+churny/hotspot file), so their presence is already the proof. Deliberately not
+`severity` — that column grades `hot_path_sync_io` below `io_in_loop` and takes
+only two values across a whole repo's perf findings.
 - **`refactoring`** also emits `suggestion_legend`: `biomarker_type` → the prose
   suggestion for that type, once per response rather than per finding. Join on
   `biomarker_type`. It is keyed off the ranked finding head and does not vary

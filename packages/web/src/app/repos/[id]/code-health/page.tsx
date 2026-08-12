@@ -156,10 +156,18 @@ export default function CodeHealthPage() {
     );
 
   // Every file (NLOC-first) for the map — one big pull, shared across overlays
-  // so switching the lens never refetches.
+  // so switching the lens never refetches. `fields: "summary"` because the map
+  // and the spotlight read none of the lead/detail keys: at 2,000 rows the full
+  // shape was 1.06 MB, about 432 KB of it keys nobody here touches.
   const { data: mapFiles } = useSWR<HealthFilesResponse>(
     `code-health-map-files:${repoId}`,
-    () => listHealthFiles(repoId, { limit: MAP_FILE_LIMIT, sort: "nloc", order: "desc" }),
+    () =>
+      listHealthFiles(repoId, {
+        limit: MAP_FILE_LIMIT,
+        sort: "nloc",
+        order: "desc",
+        fields: "summary",
+      }),
     { revalidateOnFocus: false },
   );
 

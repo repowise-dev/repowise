@@ -55,8 +55,12 @@ def _under_test() -> bool:
     events under a freshly minted install. Only delivery is suppressed:
     consent resolution stays real, so its own tests still exercise the actual
     precedence rules.
+
+    Shares the env-var check with :func:`environment.under_pytest` so the two
+    cannot drift. The ``sys.modules`` fallback is kept because this guard is
+    only consulted in-process, where an import is evidence enough.
     """
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+    return environment.under_pytest() or "pytest" in sys.modules
 
 
 def build_envelope(event: TelemetryEvent) -> dict[str, object]:

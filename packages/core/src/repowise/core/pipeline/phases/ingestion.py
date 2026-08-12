@@ -129,6 +129,32 @@ def _emit_traversal_summary(
     if skipped:
         progress.on_message("info", f"  Excluded: {', '.join(skipped)}")
 
+    # Name the skipped *source* files. The aggregate line above cannot carry
+    # this: "39 oversized" reads as images and lockfiles, so a dropped entry
+    # point looks like nothing at all. That silence is what let a repo index
+    # with its CLI, gateway and web server missing and nothing saying so
+    # (#1237). Blobs stay in the aggregate — only files with a real parser
+    # earn a name here.
+    skipped_sources = getattr(stats, "skipped_source_files", [])
+    if skipped_sources:
+        # Local import: this module defers its ingestion imports so the phase
+        # can be loaded without building the language registry.
+        from repowise.core.ingestion.traverser import _SOURCE_MAX_FILE_SIZE_BYTES
+
+        ceiling_kb = _SOURCE_MAX_FILE_SIZE_BYTES // 1024
+        for skipped_source in skipped_sources:
+            detail = {
+                "minified": "looks minified",
+                "unreadable": "could not be read",
+            }.get(skipped_source.reason, f"over the {ceiling_kb:,} KB limit")
+            progress.on_message(
+                "warning",
+                f"  Not indexed: {skipped_source.path} "
+                f"({skipped_source.size_kb:,} KB, {detail})",
+            )
+        if getattr(stats, "skipped_source_files_truncated", False):
+            progress.on_message("warning", "  ...and more source files skipped on size")
+
     if stats.lang_counts:
         ranked = sorted(stats.lang_counts.items(), key=lambda item: -item[1])
         lang_str = ", ".join(f"{lang} {count:,}" for lang, count in ranked[:_TOP_LANGUAGES_SHOWN])

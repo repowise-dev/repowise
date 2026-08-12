@@ -240,7 +240,18 @@ class GraphNode(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
-    __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),)
+    __table_args__ = (
+        UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),
+        # ``node_type == "file"`` is the most-issued predicate on this table and
+        # nothing covered it: ``uq_graph_node`` is keyed ``(repository_id,
+        # node_id)``, so every "all the file nodes" read seeked on the repo and
+        # then filtered ~36k rows in memory to return ~3.4k. Measured on the
+        # repowise index, the two reads ``get_health`` issues per dashboard call
+        # (language map, test-path set): 29.0ms -> 9.2ms and 27.2ms -> 8.4ms.
+        # Audited for the LIMIT-without-ORDER-BY hazard 0046 records — every
+        # ``node_type``-filtered query in the tree that limits also orders.
+        Index("ix_graph_nodes_repo_type", "repository_id", "node_type"),
+    )
 
 
 class ExternalSystem(Base):
@@ -1231,6 +1242,13 @@ class HealthFileMetric(Base):
     defect_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     maintainability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     performance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Commit this row was scored against. Health is a separate pass from indexing
+    # and can lag it, so ``Repository.head_commit`` does not answer "how old is
+    # this score". Per-row rather than per-repo because the incremental path
+    # (``upsert_health_metrics``) rewrites only the files that changed, so the
+    # table legitimately holds rows from several passes at once. NULL on every
+    # row written before this column existed.
+    analyzed_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )

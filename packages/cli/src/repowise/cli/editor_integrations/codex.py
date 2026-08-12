@@ -5,48 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import click
-
+from repowise.cli.agent_targets.targets import codex as codex_target
 from repowise.cli.editor_setup import EditorSetupOptions
 
 
 class CodexSetup:
-    """Project-local Codex setup integration."""
+    """Project-local Codex setup integration.
 
-    integration_id = "codex"
-    project_file_id = "agents_md"
+    The ``init``/``update`` half of the integration; the descriptor in
+    ``agent_targets.targets.codex`` owns the writes and everything else.
+    """
 
-    def configure_options(
-        self,
-        console_obj: Any,
-        options: EditorSetupOptions,
-    ) -> EditorSetupOptions:
-        if self.integration_id in options.integration_overrides:
-            return options
-        if not options.prompt_for_project_files:
-            return options
-
-        from repowise.cli.mcp_config import is_codex_cli_installed, is_codex_logged_in
-
-        if not (is_codex_cli_installed() and is_codex_logged_in()):
-            return options
-
-        console_obj.print()
-        console_obj.print("[bold]Codex:[/bold] Generate project-local .codex config and hooks?")
-        # Its two neighbours default to yes; say why this one does not, rather
-        # than silently inverting Enter-through in the middle of three prompts.
-        console_obj.print(
-            "  [dim]Off by default: only useful if you drive this repo with the Codex CLI.[/dim]"
-        )
-        enabled = click.confirm(
-            "  Write .codex/config.toml and .codex/hooks.json?",
-            default=False,
-        )
-        if not enabled:
-            console_obj.print(
-                "  [dim]Skipped. Run 'repowise init --codex' later to set up Codex.[/dim]"
-            )
-        return options.with_integration_override(self.integration_id, enabled)
+    #: Read from the descriptor rather than restated, so the ids have one home.
+    integration_id = codex_target.ID
+    project_file_id = codex_target.PROJECT_FILE_ID
 
     def write_project_files(
         self,

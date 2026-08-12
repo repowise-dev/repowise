@@ -324,7 +324,11 @@ def _install_codex_surfaces(target) -> None:
         if agents_path:
             console.print(f"  [green]✓[/green] AGENTS.md distill section ({agents_path})")
         else:
-            console.print(f"  [yellow]AGENTS.md distill section failed ({repo_path})[/yellow]")
+            console.print(
+                f"  [yellow]AGENTS.md distill section not written ({repo_path}); "
+                "check its REPOWISE_DISTILL markers — one unpaired, or more than "
+                "one pair, and repowise will not guess at the repair[/yellow]"
+            )
 
 
 @rewrite_group.command("uninstall")

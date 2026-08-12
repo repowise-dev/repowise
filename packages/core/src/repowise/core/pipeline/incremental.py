@@ -124,6 +124,10 @@ def build_repo_graph(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
+    # Carry the walk's skip record to the dead-code analyzer. This report is
+    # persisted repo-wide, so an update that could not see the skipped source
+    # files would re-derive and write back the verdicts init had clamped.
+    graph_builder.traversal_stats = traverser.stats
 
     # Parse the misses in process and serially: on the update path they are
     # change-sized. (Ceiling: a wiped/stale cache re-parses everything on one
@@ -451,11 +455,22 @@ def run_partial_analysis(
         # files they cover; the stored rows carry every other file, which is
         # what init's analyzer had and this path did not.
         _dead_code_git_meta = {**(stored_git_meta or {}), **git_meta_map}
+        # Source files the walk dropped on size. This report is persisted
+        # repo-wide (see below), so without them an update would re-derive the
+        # verdicts init had clamped and write them back unclamped — the #1237
+        # cascade would return, looking like the fix had regressed.
         _dead_code_analyzer = DeadCodeAnalyzer(
             graph_builder.graph(),
             _dead_code_git_meta,
             parsed_files=graph_builder._parsed_files,
             source_map=source_map,
+            repo_root=repo_path,
+            unindexed_source_files=[
+                (skipped.path, skipped.reason)
+                for skipped in getattr(
+                    getattr(graph_builder, "traversal_stats", None), "skipped_source_files", []
+                )
+            ],
         )
         # Repo-wide, and persisted repo-wide. The detectors were always
         # repo-wide — the update path just discarded everything outside the
@@ -632,6 +647,26 @@ def _carry_forward_kg_enrichment(kg: Any, prior_kg: Any) -> None:
         kg.tour = prior_kg.tour
 
 
+async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
+    """Live HEAD of the repo being updated, for stamping health rows.
+
+    Read off disk rather than from ``Repository.head_commit``: the health pass
+    just scored the working tree, and the stored column is written by a
+    different step whose ordering relative to this one is not guaranteed.
+    ``None`` on any failure — an unstamped row reads as "not recorded", which
+    is honest, while a wrong sha would not be.
+    """
+    from repowise.core.persistence.models import Repository
+    from repowise.core.workspace.update import get_head_commit
+
+    try:
+        repo = await session.get(Repository, repo_id)
+        local_path = getattr(repo, "local_path", None) if repo else None
+        return get_head_commit(Path(local_path)) if local_path else None
+    except Exception:
+        return None
+
+
 async def persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
@@ -649,7 +684,12 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     changed_paths = sorted({m.file_path for m in report.metrics or []})
     if not changed_paths:
         return
-    await upsert_health_metrics(session, repo_id, report.metrics or [])
+    await upsert_health_metrics(
+        session,
+        repo_id,
+        report.metrics or [],
+        analyzed_commit=await _analyzed_commit(session, repo_id),
+    )
     await upsert_health_findings(
         session, repo_id, list(report.findings or []), file_paths=changed_paths
     )

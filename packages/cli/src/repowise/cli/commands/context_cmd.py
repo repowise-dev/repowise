@@ -41,7 +41,7 @@ _REPLACED_KEYS = frozenset(
         # Folded into flatter keys.
         "architectural_layer",
         "freshness",
-        # Replaced by its shape, without its ~10K-char text.
+        # Placed by hand below, whole: opt-in, so it was asked for.
         "skeleton",
         # A breadcrumb to the wiki page the card came from, not a signal.
         "parent_page",
@@ -103,18 +103,13 @@ def _project_one(card: dict) -> dict:
             out[key] = value
     skeleton = card.get("skeleton") or {}
     if skeleton:
-        # The skeleton *text* is the bulk of get_context's payload — 10K chars
-        # for one file — and it is source a caller can also get from `symbol`
-        # or a plain Read. The card keeps its shape and size so a caller can
-        # decide whether to pay for it; --full carries the text.
-        out["skeleton"] = {
-            "mode": skeleton.get("mode", ""),
-            "tokens": skeleton.get("tokens"),
-            "full_tokens": skeleton.get("full_tokens"),
-            "pct_of_full": skeleton.get("pct_of_full"),
-            "verified": skeleton.get("verified"),
-            "bodies_kept": skeleton.get("bodies_kept") or [],
-        }
+        # The skeleton is opt-in on the tool now (``--include skeleton``), so a
+        # card that carries one carries it because this caller asked by name.
+        # Trimming its ``text`` away here would make the flag inert — the
+        # failure mode the ``--include`` passthrough above exists to avoid — so
+        # the block passes through whole. It is still summarised rather than
+        # printed on the table path.
+        out["skeleton"] = skeleton
     return out
 
 
@@ -127,16 +122,13 @@ def project(payload: dict, targets: tuple[str, ...]) -> dict:
     kept                target, type, docs.title -> title,
                         docs.summary -> summary,
                         architectural_layer.name -> layer,
-                        freshness.is_stale -> stale, the skeleton's
-                        shape without its ``text``, and **every other
+                        freshness.is_stale -> stale, and **every other
                         key the card carries** — hotspot, fix_history,
-                        episodes, and each ``--include`` block under
-                        its own name
-    dropped             skeleton.text (~10K chars per file, the bulk
-                        of the payload), skeleton.opt_out_hint /
-                        auto, parent_page,
-                        freshness.confidence_score, ``_meta`` minus
-                        its freshness keys
+                        episodes, the skeleton when ``--include
+                        skeleton`` asked for one, and each other
+                        ``--include`` block under its own name
+    dropped             parent_page, freshness.confidence_score,
+                        ``_meta`` minus its freshness keys
     ==================  ===========================================
 
     A target the tool could not resolve gets a card carrying only ``error``,
@@ -199,8 +191,8 @@ def context_command(
 
     TARGETS are file paths, module paths, or "path/to/file.py::Symbol" ids.
     Batch them in one call. Relationships and risk signals, not source bytes:
-    pass --full for the verified skeleton, or use 'repowise symbol' for one
-    body.
+    pass --include skeleton for the whole file body-elided and line-verified,
+    or just read the file.
     """
     fmt = _ta.resolve_format_for(fmt, full)
     repo_path = _ta.resolve_indexed_repo(
@@ -286,11 +278,14 @@ def _render(projected: dict) -> None:
             table.add_row("Signals", ", ".join(signals))
         skeleton = card.get("skeleton") or {}
         if skeleton:
+            # Summarised, never printed: the text is the reason the caller
+            # passed --include skeleton, and a terminal table is not where a
+            # few thousand lines of source belong. --format json carries it.
             table.add_row(
                 "Skeleton",
                 f"{skeleton.get('mode', '?')}, {skeleton.get('tokens', '?')} of "
                 f"{skeleton.get('full_tokens', '?')} tokens "
-                f"({skeleton.get('pct_of_full', '?')}% of full) — pass --full for the text",
+                f"({skeleton.get('pct_of_full', '?')}% of full) — --format json for the text",
             )
         if card.get("decision_records"):
             table.add_row(

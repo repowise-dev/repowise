@@ -27,6 +27,11 @@ Guarantees:
     Detection is free: ``.git`` appears in ``os.walk``'s own listings.
   - Symlinks are never followed; junction/hard-link cycles are detected via
     realpath tracking (Windows ``os.walk`` can't see them via inodes).
+  - A link (symlink or junction) whose target is **inside** the walk root is
+    pruned, so the target's subtree is walked exactly once and under its own
+    name. Recording the target as visited instead let whichever of the pair
+    sorted first win, and a link sorted ahead of its target silently removed
+    the target from the walk.
   - Depth is capped as a final safety net.
 """
 
@@ -103,6 +108,24 @@ PRUNED_DIRS_DERIVED: frozenset[str] = PRUNED_DIRS | frozenset({"dist", "build", 
 _MAX_WALK_DEPTH = 64
 
 
+def _normcase(p: str) -> str:
+    """Path in the filesystem's own case convention (a no-op off Windows)."""
+    return os.path.normcase(p)
+
+
+def _is_within(candidate: str, root_real: str) -> bool:
+    """True when *candidate* is *root_real* or sits underneath it.
+
+    String-prefixed on purpose: both sides are already ``realpath`` output, so
+    there is nothing left to resolve, and ``commonpath`` raises across drives
+    (a junction to ``D:\\`` from a walk rooted on ``C:\\`` is the normal case
+    this has to answer ``False`` for, not raise on).
+    """
+    root = _normcase(root_real.rstrip(os.sep))
+    cand = _normcase(candidate.rstrip(os.sep))
+    return cand == root or cand.startswith(root + os.sep)
+
+
 def walk_repo(
     root: Path | str,
     *,
@@ -154,11 +177,49 @@ def walk_repo(
         # Windows junctions and other cycles ``os.walk`` can't detect via
         # inode (Windows doesn't expose real inodes outside NTFS proper).
         cycle_pruned: list[str] = []
+        # The resolved form of *this* directory, so "is the child itself a link"
+        # can be asked without the answer depending on the path the caller
+        # happened to pass in. Comparing ``realpath(child)`` against
+        # ``abspath(child)`` looks equivalent and is not: ``abspath`` resolves
+        # nothing, so a symlink anywhere in the *root's own prefix* makes every
+        # child at every depth compare unequal, and the walk prunes the entire
+        # tree. That is not exotic — macOS ``/tmp`` is a symlink to
+        # ``/private/tmp``, container bind mounts and mapped drives do the same,
+        # and a repo checked out under one would have indexed as empty.
+        # Resolving the parent once per directory keeps both sides of the
+        # comparison resolved to the same depth, so only a genuine reparse point
+        # differs.
+        try:
+            parent_real = os.path.realpath(dirpath)
+        except OSError:
+            parent_real = str(dirpath)
         for d in dirnames:
             child = os.path.join(dirpath, d)
             try:
                 child_real = os.path.realpath(child)
             except OSError:
+                cycle_pruned.append(d)
+                continue
+            # A reparse point — symlink, junction, bind mount — resolving
+            # somewhere else. Its target is NOT territory this entry owns, and
+            # recording it as visited is what let a link *delete* its target's
+            # subtree from the walk: whichever of the two sorted first won, and
+            # a link sorted ahead of its target removed the target entirely
+            # (measured on a synthetic tree: ``linked -> svc`` took ``svc`` and
+            # ``svc/api`` out of the result, 6 directories down to 4).
+            #
+            # In-tree targets are pruned instead: the walk reaches them under
+            # their real name, and descending the link as well would either
+            # duplicate the subtree or — for a junction, which ``followlinks``
+            # does not suppress because Windows tags it a mount point rather
+            # than a symlink — report every file under the *link's* path
+            # instead of its own. Out-of-tree targets keep the old behaviour;
+            # they are a genuine external tree, and cycle protection still
+            # needs their realpath because ``os.walk`` will descend a junction
+            # into one.
+            if _normcase(child_real) != _normcase(
+                os.path.join(parent_real, d)
+            ) and _is_within(child_real, root_real):
                 cycle_pruned.append(d)
                 continue
             if child_real in visited_real:

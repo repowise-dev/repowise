@@ -497,11 +497,14 @@ call.
 ```bash
 repowise context src/api/routes.py src/api/auth.py
 repowise context src/api/routes.py::login --include callers --include metrics
-repowise context src/api/routes.py --full        # includes the skeleton source
+repowise context src/api/routes.py --include skeleton   # + the file's source
 ```
 
-The skeleton's *text* is the bulk of the underlying payload, so the default
-reports its size and coverage and `--full` carries the source.
+**No source bytes by default.** A card is relationships and risk signals:
+title, summary, signatures with line numbers, hotspot, fix history. Pass
+`--include skeleton` for the whole file body-elided and line-verified in one
+call, or just read the file. `--full` returns the raw tool dict, which carries
+a skeleton only when one was asked for.
 
 ---
 

@@ -96,6 +96,38 @@ Claude will ask for your query and search mode (fulltext, semantic, or symbol), 
 
 ---
 
+### `/repowise:ask`
+
+Ask a codebase question and get a cited, synthesised answer (`repowise ask`).
+This is the CLI adapter over the `get_answer` MCP tool — hybrid retrieval plus
+an LLM answer — so it costs a model call where `/repowise:search` does not.
+
+Use it when you want an answer with confidence and citations, not a hit list.
+`--scope` restricts retrieval to a path prefix; `--format json` / `--full`
+match the other tool-adapter commands.
+
+---
+
+### `/repowise:context`
+
+Triage card for files, modules, or symbols (`repowise context`). CLI adapter
+over `get_context`: architectural layer, hotspot / fix history, doc freshness,
+and optional relationship blocks (`--include callers`, `skeleton`, …). Batch
+targets in one call. No source bytes by default — use `/repowise:symbol` for
+exact bodies.
+
+---
+
+### `/repowise:symbol`
+
+Read one symbol body with live-verified line bounds (`repowise symbol`). CLI
+adapter over `get_symbol`. Accepts `path/to/file.py::Name`, a live range
+(`path:start-end`), or a `repowise#<hex>` distill omission ref.
+`--context-lines` adds surrounding lines; a truncated body returns a
+`continuation` you can pass straight back.
+
+---
+
 ### `/repowise:reindex`
 
 Rebuild the vector search index without making LLM calls.
@@ -146,9 +178,29 @@ Unreachable files, unused exports, and zombie packages by confidence.
 
 ---
 
+### `/repowise:export`
+
+Export wiki pages or the architecture model (`repowise export`). Formats:
+`markdown` (default), `html`, `json`, and `structurizr`. JSON `--full` keeps
+tombstones and adds decisions / dead code / hotspots. Structurizr can emit a
+model fragment or a `--standalone` workspace (`--components`,
+`--no-externals`, `--force`).
+
+---
+
 ### `/repowise:decision`
 
 List, inspect, add, or confirm architectural decisions.
+
+---
+
+### `/repowise:why`
+
+Why the code is shaped this way (`repowise why`). CLI adapter over `get_why`:
+decision search by question, governing decisions + origin story for a path,
+target-anchored search (`--target`), or the decision-health dashboard with no
+args. Falls back to git archaeology when no decision is recorded.
+`/repowise:decision` manages records; this command queries them.
 
 ---
 

@@ -169,6 +169,8 @@ async def save_health_metrics(
     session: AsyncSession,
     repository_id: str,
     metrics: list[Any],
+    *,
+    analyzed_commit: str | None = None,
 ) -> None:
     """Replace per-file health metrics for *repository_id*.
 
@@ -176,6 +178,12 @@ async def save_health_metrics(
     constraint on (repository_id, file_path) means we cannot leave
     stale rows around without an upsert dance — delete-and-insert keeps
     it simple and aligns with how dead-code findings are written.
+
+    ``analyzed_commit`` stamps every written row with the commit these scores
+    were computed against — the same pattern as ``save_coverage_files``'
+    ``ingested_commit_sha``. Health runs as its own pass and can lag the index,
+    so ``Repository.head_commit`` cannot answer "how old is this score". Omitted
+    → NULL, which reads as "not recorded" rather than "current".
     """
     existing = await session.execute(
         select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
@@ -205,6 +213,10 @@ async def save_health_metrics(
                 }
             else:
                 data = dict(m)
+            # After the dict-passthrough branch so an explicit per-row value in a
+            # raw dict still wins; the sha is a property of the pass, not the row.
+            if analyzed_commit is not None:
+                data.setdefault("analyzed_commit", analyzed_commit)
 
             session.add(
                 HealthFileMetric(
@@ -923,12 +935,19 @@ async def upsert_health_metrics(
     session: AsyncSession,
     repository_id: str,
     metrics: list[Any],
+    *,
+    analyzed_commit: str | None = None,
 ) -> None:
     """Upsert per-file metrics; unchanged files in the table stay put.
 
     Sibling of ``save_health_metrics`` (which delete-then-inserts the
     whole repo). Used by the incremental analysis path so a partial
     re-index never wipes metric rows for files that weren't touched.
+
+    ``analyzed_commit`` stamps only the rows this call rewrites, which is the
+    point of recording it per row: after a partial pass the table honestly
+    reports two commits, and ``get_health``'s ``_meta`` says so rather than
+    claiming one scoring commit for the whole repo.
     """
     if not metrics:
         return
@@ -960,6 +979,11 @@ async def upsert_health_metrics(
             }
         else:
             data = dict(m)
+        # Only when the caller knows the sha. An unconditional set would push a
+        # None over a sha already on the row, so a caller that simply does not
+        # track the commit would erase the stamp a caller that does had written.
+        if analyzed_commit is not None:
+            data.setdefault("analyzed_commit", analyzed_commit)
 
         row = by_path.get(data["file_path"])
         if row is not None:

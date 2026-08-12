@@ -41,11 +41,12 @@ _MAX_AGENTIC_LOOPS = 10
 
 _SYSTEM_PROMPT_TEMPLATE = """You are a codebase intelligence assistant for the repository "{repo_name}" located at {repo_path}.
 
-You have access to 8 specialized tools for querying the codebase wiki, dependency graph, git history, and architectural decisions. Use them proactively — do NOT answer from memory when a tool gives more accurate answers.
+You have access to 7 specialized tools for querying the codebase wiki, dependency graph, git history, and architectural decisions. Use them proactively — do NOT answer from memory when a tool gives more accurate answers.
 
 Guidelines:
 - Call get_overview first if the user asks about the codebase generally and no prior context exists
 - Pass all relevant targets to get_context and get_risk in a single call — never call the same tool twice for different targets when they can be batched
+- Call get_change_risk for commit / PR-range defect scoring (revspec)
 - Call get_why for any "why was this built this way" question
 - Call search_codebase for broad questions about where something is implemented
 - Cite specific file paths, function names, and line numbers from tool results — be concrete, not general
@@ -538,6 +539,17 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
             parts.append(f"{bug_prone} bug-prone")
         return ", ".join(parts)
 
+    if tool_name == "get_change_risk":
+        ref = result.get("ref", "change")
+        priority = result.get("review_priority") or result.get("classification") or "unknown"
+        pct = result.get("risk_percentile")
+        if pct is not None:
+            return f"Change risk for {ref}: {priority} (p{pct})"
+        score = result.get("score")
+        if score is not None:
+            return f"Change risk for {ref}: {priority} (score {score})"
+        return f"Change risk for {ref}: {priority}"
+
     if tool_name == "get_why":
         mode = result.get("mode", "")
         if mode == "health":
@@ -564,18 +576,6 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
         results = result.get("results", [])
         return f"Found {len(results)} result(s)"
 
-    if tool_name == "get_dependency_path":
-        dist = result.get("distance", -1)
-        if dist >= 0:
-            return f"Path found (distance: {dist})"
-        ctx = result.get("visual_context", {})
-        ancestors = ctx.get("nearest_common_ancestors", [])
-        if ancestors:
-            return f"No direct path — nearest bridge: {ancestors[0]['node']}"
-        if ctx.get("disconnected"):
-            return "No path — nodes are in separate dependency clusters"
-        return "No direct path found"
-
     if tool_name == "get_dead_code":
         summary = result.get("summary", {})
         tiers = result.get("tiers", {})
@@ -583,8 +583,5 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
         total = summary.get("total_findings", 0)
         lines = summary.get("deletable_lines", 0)
         return f"{total} findings ({high_count} high-confidence), {lines} deletable lines"
-
-    if tool_name == "get_architecture_diagram":
-        return f"Generated {result.get('diagram_type', 'diagram')}"
 
     return "Completed"

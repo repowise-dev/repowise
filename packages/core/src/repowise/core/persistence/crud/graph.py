@@ -7,6 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -613,6 +614,7 @@ async def get_graph_nodes_by_ids(
 async def get_test_file_paths(
     session: AsyncSession,
     repository_id: str,
+    paths: Sequence[str] | None = None,
 ) -> set[str]:
     """Relative paths of every file the ingester classified as test material.
 
@@ -626,9 +628,18 @@ async def get_test_file_paths(
     ``is_test`` too and their ``node_id`` is a ``"<path>::<name>"`` composite,
     which would never match a file path but would inflate the read.
 
-    Narrow in columns, not in rows — no index covers ``node_type`` or
-    ``is_test``, so this scans the repo's nodes (~55 ms on a 35k-node index).
-    A caller serializing no file row and no finding should skip it.
+    *paths* narrows the read to "which of **these** are tests". A caller that
+    only ever asks ``path in result`` for a known path set — ``get_health`` in
+    targeted mode, where the caller named the files — pays for a keyed seek on
+    ``uq_graph_node`` instead of the repo-wide read. ``None`` keeps the
+    repo-wide answer, which is what the dashboard's production/test *split*
+    needs (it partitions a finding list whose paths are not known up front).
+    Passing an empty sequence means "no paths asked about" and returns an empty
+    set without a query — not the same thing as ``None``.
+
+    Narrow in columns, and now optionally in rows. The repo-wide form seeks on
+    ``ix_graph_nodes_repo_type`` (0051); before that index it scanned every node
+    the repo has (~27 ms on this 36k-node index, ~8 ms after).
 
     Degrades to "nothing is test material" when the graph is missing or lags
     the health pass. That is the safe direction: a caller sees the unsplit
@@ -636,13 +647,25 @@ async def get_test_file_paths(
     Censused on this repo's index — 1,030 test file nodes, none of them absent
     from ``health_file_metrics``.
     """
-    result = await session.execute(
-        select(GraphNode.node_id).where(
-            GraphNode.repository_id == repository_id,
-            GraphNode.node_type == "file",
-            GraphNode.is_test.is_(True),
-        )
+    if paths is not None and not paths:
+        return set()
+    q = select(GraphNode.node_id).where(
+        GraphNode.repository_id == repository_id,
+        GraphNode.node_type == "file",
+        GraphNode.is_test.is_(True),
     )
+    if paths is not None:
+        # Chunked like ``get_graph_nodes_bulk`` above — a ``module:`` target
+        # expands to every file in the module, which on a monorepo is more
+        # bind parameters than SQLite's limit allows in one statement.
+        out: set[str] = set()
+        ordered = list(paths)
+        for i in range(0, len(ordered), _BATCH_SIZE):
+            batch = ordered[i : i + _BATCH_SIZE]
+            rows = await session.execute(q.where(GraphNode.node_id.in_(batch)))
+            out |= {row[0] for row in rows.all()}
+        return out
+    result = await session.execute(q)
     return {row[0] for row in result.all()}
 
 

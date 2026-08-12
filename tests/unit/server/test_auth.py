@@ -120,3 +120,70 @@ async def test_health_bypasses_auth(client: AsyncClient) -> None:
         assert resp.status_code == 200
     finally:
         deps_mod._API_KEY = original
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for fix/coordinator-health-auth (#1399)
+# Verify that /api/repos/{id}/health/coordinator is protected by verify_api_key.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_coordinator_health_requires_api_key(
+    remote_client: AsyncClient,
+) -> None:
+    """GET /api/repos/{id}/health/coordinator returns 401 when no token is sent.
+
+    Regression guard for #1399: _repo_health_router must carry
+    Depends(verify_api_key) so that this route shares the same auth posture as
+    every other /api/ route and cannot be read anonymously from the network.
+
+    A fake repo_id is intentional: verify_api_key is a router-level dependency
+    that runs before the route handler, so the auth rejection happens before the
+    DB is ever consulted. The repo does not need to exist.
+    """
+    import repowise.server.deps as deps_mod
+
+    original = deps_mod._API_KEY
+    deps_mod._API_KEY = "test-secret-key"
+    try:
+        resp = await remote_client.get("/api/repos/nonexistent-repo/health/coordinator")
+        assert resp.status_code == 401, resp.text
+        assert "Missing API key" in resp.json()["detail"]
+    finally:
+        deps_mod._API_KEY = original
+
+
+@pytest.mark.asyncio
+async def test_coordinator_health_accepts_correct_key(
+    app,
+    remote_client: AsyncClient,
+    tmp_path,
+) -> None:
+    """GET /api/repos/{id}/health/coordinator returns 200 with the correct bearer token.
+
+    Companion to test_coordinator_health_requires_api_key: ensures the route is
+    usable once a valid key is presented, so the auth guard does not
+    inadvertently break legitimate callers.
+    """
+    import repowise.server.deps as deps_mod
+    from tests.unit.server.conftest import create_test_repo
+
+    original = deps_mod._API_KEY
+    deps_mod._API_KEY = "test-secret-key"
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": "Bearer test-secret-key"},
+        ) as local:
+            repo = await create_test_repo(local, tmp_path)
+        repo_id = repo["id"]
+
+        resp = await remote_client.get(
+            f"/api/repos/{repo_id}/health/coordinator",
+            headers={"Authorization": "Bearer test-secret-key"},
+        )
+        assert resp.status_code == 200, resp.text
+    finally:
+        deps_mod._API_KEY = original

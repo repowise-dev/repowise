@@ -27,6 +27,7 @@ from repowise.cli.editor_integrations.defaults import (
 from repowise.cli.editor_setup import (
     register_editor_clients,
     resolve_editor_setup_options,
+    select_agents_interactively,
     write_editor_project_files,
 )
 from repowise.cli.helpers import (
@@ -45,6 +46,7 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
+from repowise.cli.platform import telemetry
 from repowise.cli.providers import resolve_embedder
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
@@ -769,6 +771,7 @@ def init_command(
     repo_path = resolve_repo_path(path)
 
     if not repo_path.is_dir():
+        telemetry.add_command_outcome(failure_reason="invalid_path")
         raise click.ClickException(f"Not a directory: {repo_path}")
 
     # ---- Workspace detection ----
@@ -794,6 +797,7 @@ def init_command(
     if seed_from:
         seed_base = Path(seed_from).resolve()
         if seed_base == repo_path.resolve():
+            telemetry.add_command_outcome(failure_reason="seed_from_is_target")
             raise click.ClickException("--seed-from cannot be the same as the target directory.")
     elif not no_seed and not (repo_path / ".repowise" / "state.json").exists():
         detected = detect_worktree_base(repo_path)
@@ -1043,7 +1047,6 @@ def init_command(
     wiki_style = resolve_style(wiki_style).name
 
     editor_options = resolve_editor_setup_options(
-        console,
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
         ),
@@ -1053,11 +1056,13 @@ def init_command(
         integration_overrides=get_default_integration_overrides(
             codex_setup=codex_setup,
         ),
-        # Prompt for CLAUDE.md / AGENTS.md / Codex setup whenever the user is
-        # engaging interactively — either generating docs or customizing an
-        # index-only run (the latter previously got no say).
-        prompt_for_project_files=is_interactive and (generate_docs or customize),
     )
+    # Ask which agents to wire up whenever the user is engaging interactively —
+    # either generating docs or customizing an index-only run (the latter
+    # previously got no say). One checklist, pre-ticked from detection, in
+    # place of the three sequential yes/no prompts each integration used to own.
+    if is_interactive and (generate_docs or customize):
+        editor_options = select_agents_interactively(console, repo_path, editor_options)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
@@ -1105,6 +1110,7 @@ def init_command(
             "written versions stay in page history."
         )
         if not sys.stdin.isatty():
+            telemetry.add_command_outcome(failure_reason="wiki_overwrite_unconfirmed")
             raise click.ClickException(
                 "Refusing to replace a model-written wiki with template pages. "
                 "Re-run with --yes to confirm, or drop --index-only."
@@ -1218,6 +1224,7 @@ def init_command(
                         )
                     )
                 except ProviderError as exc:
+                    telemetry.add_command_outcome(failure_reason="provider_validation_failed")
                     raise click.ClickException(f"Provider validation failed: {exc}") from exc
             console.print("  [green]✓[/green] Provider connection verified")
 

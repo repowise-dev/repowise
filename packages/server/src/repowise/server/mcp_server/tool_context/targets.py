@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -35,7 +36,9 @@ from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     filter_path_list,
     is_excluded,
+    read_repo_file_text,
 )
+from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows
 from repowise.server.mcp_server.tool_context.enrichment import (
     _resolve_call_graph,
     _resolve_community,
@@ -50,13 +53,27 @@ from repowise.server.mcp_server.tool_context.kg import (
 )
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
-# Skeleton-by-default threshold for file targets. Measured on this repo: a
-# 1,400-line file's default card costs ~2.5k tokens for 16 bare signatures,
-# while the smart skeleton costs ~1.7k and carries every signature plus
-# docstrings and the highest-PageRank bodies — strictly better per token.
-# Small files skeletonize poorly (pct_of_full approaches a plain Read), so
-# the card remains the default below this line count.
-_SKELETON_AUTO_MIN_LINES = 80
+# Skeleton-by-default is GONE; ``include=["skeleton"]`` still serves it in full.
+#
+# It was introduced on the claim that "a 1,400-line file's default card costs
+# ~2.5k tokens for 16 bare signatures, while the smart skeleton costs ~1.7k" —
+# strictly better per token. Re-measured 2026-08-11 on pinned Textualize/rich,
+# whole serialised cards in characters, auto-upgrade suppressed for the
+# comparison:
+#
+#   target          auto card   symbol-list card   skeleton text alone
+#   rich/ansi.py        6,585              2,171                 5,295
+#   rich/text.py       13,365              8,562                12,247
+#   rich/color.py       8,591              4,818                 7,405
+#
+# The symbol list is 1,321 chars on ansi.py where the skeleton text is 5,295.
+# The original claim is inverted on this corpus, and the auto card was 73-91%
+# source text on every sample — text the agent can Read for ~1/5 the marginal
+# cost of a mid-session tool result, which is what the block's own
+# ``mostly_full`` note ("a direct Read costs little more") was already saying
+# at the agent's expense. So the default card is the symbol list again and the
+# skeleton is opt-in. If you restore an auto-upgrade, re-run the measurement
+# first: the numbers above are the bar.
 
 
 def _synthesize_structural_summary(file_path: str, classes: list[str], functions: list[str]) -> str:
@@ -77,8 +94,90 @@ def _synthesize_structural_summary(file_path: str, classes: list[str], functions
         more = f" (+{len(functions) - 3} more)" if len(functions) > 3 else ""
         parts.append(f"function{'s' if len(functions) > 1 else ''} {head}{more}")
     if not parts:
-        return f"{name}: empty or non-symbol file"
+        return f"{name}: {_NO_SYMBOL_SUMMARY_SUFFIX}"
     return f"{name}: " + "; ".join(parts) + "."
+
+
+# The summary a file with no indexed symbols falls back to. Named so the
+# preview block below can recognise its own stub and correct it rather than
+# string-matching the sentence in two places.
+_NO_SYMBOL_SUMMARY_SUFFIX = "empty or non-symbol file"
+
+
+def _preview_summary(file_path: str, preview: dict[str, Any]) -> str:
+    """One truthful line about a symbol-less file, built from its own counts."""
+    name = file_path.rsplit("/", 1)[-1]
+    lines = preview.get("lines", 0)
+    if not lines:
+        return f"{name}: empty file"
+    headings = preview.get("headings")
+    if headings:
+        return f"{name}: {lines}-line document, {len(headings)} headings, no indexed symbols."
+    return f"{name}: {lines} lines, no indexed symbols."
+
+
+# A file with no indexed symbols (README, YAML config, SQL, plain text) used to
+# get a card whose entire content was "<name>: empty or non-symbol file", a
+# reply that restates the filename and answers nothing, so the next move was
+# always a Read or a grep the tool could have saved. These bounds keep the
+# replacement preview cheap enough to stay on by default.
+_PREVIEW_MAX_LINES = 15
+_PREVIEW_MAX_LINE_CHARS = 120
+# Beyond this the file is big enough that a preview would misrepresent it; the
+# counts and the "go Read it" note are the honest reply.
+_PREVIEW_MAX_BYTES = 2_000_000
+
+_MARKDOWN_EXTS = (".md", ".markdown", ".mdx", ".rst")
+
+
+def _outline_lines(text: str, file_path: str) -> tuple[str, list[str]]:
+    """Pick the most informative ~15 lines of a symbol-less file.
+
+    Markdown-ish files get their heading spine, which is a genuine table of
+    contents. Everything else gets its first non-blank, non-comment lines,
+    which for config and data files is where the keys live. Returns the kind of
+    excerpt chosen so the caller can label it truthfully.
+    """
+    lines = text.splitlines()
+    if file_path.lower().endswith(_MARKDOWN_EXTS):
+        headings = [ln.strip() for ln in lines if ln.lstrip().startswith("#")]
+        # An .rst or heading-less .md falls through to the head-lines form
+        # rather than reporting an empty outline.
+        if headings:
+            return "headings", headings[:_PREVIEW_MAX_LINES]
+    head = [ln.rstrip() for ln in lines if ln.strip()]
+    return "head", head[:_PREVIEW_MAX_LINES]
+
+
+def _file_preview(repo_root: Any, file_path: str) -> dict[str, Any] | None:
+    """Cheap, true facts about a file the symbol index has nothing to say about.
+
+    Only counts and verbatim excerpts, nothing inferred. Returns None when the
+    file cannot be read, so the caller keeps its existing behaviour rather than
+    reporting an empty preview as if the file were empty.
+    """
+    text = read_repo_file_text(repo_root, file_path)
+    if text is None:
+        return None
+
+    lines = text.splitlines()
+    preview: dict[str, Any] = {"lines": len(lines), "chars": len(text)}
+    if not text.strip():
+        preview["note"] = "File is empty."
+        return preview
+    if len(text) > _PREVIEW_MAX_BYTES:
+        preview["note"] = "File is too large to preview; Read it directly."
+        return preview
+
+    kind, excerpt = _outline_lines(text, file_path)
+    if excerpt:
+        preview[kind] = [ln[:_PREVIEW_MAX_LINE_CHARS] for ln in excerpt]
+    preview["note"] = (
+        "This file has no indexed symbols, so there is no structural card for "
+        "it. The fields above are counts and verbatim excerpts. Read the file "
+        "for its full content."
+    )
+    return preview
 
 
 def _clean_signature(signature: str | None) -> str:
@@ -89,6 +188,40 @@ def _clean_signature(signature: str | None) -> str:
     runs collapse to single spaces; the text is unchanged otherwise.
     """
     return " ".join((signature or "").split())
+
+
+def _size_exclusion_note(repo_root: Any, target: str) -> str | None:
+    """Explain a missing file that ingestion dropped on size, else None.
+
+    Computed live from the file on disk rather than read from the index,
+    because a file excluded from ingestion leaves no row to read. Delegates the
+    actual rule to ``size_verdict`` so this answer cannot drift from the code
+    that produced the exclusion.
+    """
+    if repo_root is None:
+        return None
+    try:
+        from repowise.core.ingestion.traverser import size_verdict
+
+        root = Path(str(repo_root))
+        abs_path = (root / target).resolve()
+        # An index row is not a trust boundary; refuse anything outside the repo.
+        abs_path.relative_to(root.resolve())
+        size_bytes = abs_path.stat().st_size
+        verdict = size_verdict(abs_path, size_bytes)
+    except (OSError, ValueError):
+        return None
+    if verdict is None or not verdict.is_source:
+        return None
+    detail = {
+        "minified": "it looks minified (machine-packed, not hand-written)",
+        "unreadable": "it could not be read",
+    }.get(verdict.reason, "it exceeds the maximum size for an indexed source file")
+    return (
+        f"'{target}' is not indexed: {detail} "
+        f"({size_bytes // 1024:,} KB). It has no page and no symbols, and "
+        "`repowise update` will not create them. Read the file directly."
+    )
 
 
 async def _resolve_one_target(
@@ -120,6 +253,9 @@ async def _resolve_one_target(
     page = await session.get(Page, page_id)
     target_type = None
     file_path_for_git: str | None = None
+    # Set only when a symbol target resolved through the call graph rather than
+    # the symbol index (index-only mode); carries the fields the node has.
+    graph_symbol: GraphNode | None = None
 
     if page and page.repository_id == repo_id:
         target_type = "file"
@@ -188,24 +324,36 @@ async def _resolve_one_target(
         if page:
             target_type = "module"
         else:
-            # 3. Try symbol (exact then fuzzy)
-            res = await session.execute(
-                select(WikiSymbol).where(
-                    WikiSymbol.repository_id == repo_id,
-                    WikiSymbol.name == target,
-                )
-            )
-            sym_matches = list(res.scalars().all())
-            if not sym_matches:
+            # 3. Try symbol.
+            #
+            # A "{path}::{Name}" target goes through the shared symbol lookup,
+            # the same ladder get_symbol uses, so an id lifted from one tool's
+            # response resolves in the other, in whichever separator style the
+            # caller wrote the qualified part. Matching such a target verbatim
+            # against WikiSymbol.name can only ever miss (a stored name is one
+            # segment, never a path-qualified id), and the ilike below would
+            # then scan for a "%path::Class.method%" substring that no name
+            # column contains. Both rungs are skipped for qualified ids.
+            if "::" in target:
+                sym_matches = await resolve_symbol_rows(session, repo_id, target)
+            else:
                 res = await session.execute(
-                    select(WikiSymbol)
-                    .where(
+                    select(WikiSymbol).where(
                         WikiSymbol.repository_id == repo_id,
-                        WikiSymbol.name.ilike(f"%{escape_like(target)}%", escape=LIKE_ESCAPE),
+                        WikiSymbol.name == target,
                     )
-                    .limit(10)
                 )
                 sym_matches = list(res.scalars().all())
+                if not sym_matches:
+                    res = await session.execute(
+                        select(WikiSymbol)
+                        .where(
+                            WikiSymbol.repository_id == repo_id,
+                            WikiSymbol.name.ilike(f"%{escape_like(target)}%", escape=LIKE_ESCAPE),
+                        )
+                        .limit(10)
+                    )
+                    sym_matches = list(res.scalars().all())
             if sym_matches:
                 target_type = "symbol"
                 file_path_for_git = sym_matches[0].file_path
@@ -224,7 +372,14 @@ async def _resolve_one_target(
                     file_path_for_git = target
 
     if target_type is None:
-        # Fallback 1: index-only mode (no wiki pages) — return graph node + symbols if present
+        # Fallback 1: index-only mode (no wiki pages). Return the graph node.
+        #
+        # The call graph keys its symbol nodes as "{path}::{Class}::{method}",
+        # so a symbol target with no WikiSymbol row matches here, and used to
+        # be typed as a *file*. The card then looked up symbols whose file_path
+        # was the whole id, found none, and reported the symbol as an "empty or
+        # non-symbol file". Type the node by what it is instead: a symbol node
+        # is a symbol target, and its file is the node's file, not its id.
         res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
@@ -232,7 +387,12 @@ async def _resolve_one_target(
             )
         )
         gnode = res.scalar_one_or_none()
-        if gnode is not None:
+        if gnode is not None and gnode.node_type == "symbol":
+            target_type = "symbol"
+            graph_symbol = gnode
+            file_path_for_git = gnode.file_path
+            page = None
+        elif gnode is not None:
             target_type = "file"
             file_path_for_git = target
             page = None  # no wiki page; subsequent blocks must guard for this
@@ -247,9 +407,17 @@ async def _resolve_one_target(
             )
             meta = res.scalar_one_or_none()
             if meta:
+                # Say so when the file was excluded on size. The generic answer
+                # below ("too few symbols or below the PageRank threshold")
+                # sends the reader to regenerate docs, which cannot help: the
+                # file was never read, so no amount of updating will produce a
+                # page. Computed from the same function that made the decision,
+                # so the two cannot drift (#1237).
+                size_note = _size_exclusion_note(repo_root, target)
                 return {
                     "target": target,
-                    "error": (
+                    "error": size_note
+                    or (
                         f"'{target}' exists in the repository but has no wiki page. "
                         "This usually means the file has too few symbols or is below "
                         "the PageRank threshold. Run `repowise update` to regenerate docs."
@@ -285,6 +453,36 @@ async def _resolve_one_target(
                 ),
                 "suggestions": module_paths,
             }
+
+        # Fallback 2c: a "{path}::{Name}" target whose symbol half did not
+        # resolve, but whose file half is a real indexed file. The caller asked
+        # about something *in* that file, so the file's card is a partial answer
+        # and a strictly better reply than "not found": it carries the symbol
+        # list, which is where the correct id was going to come from anyway.
+        # Reported as ``resolved_to`` so the degrade is legible rather than
+        # looking like the symbol was found.
+        if target_type is None and "::" in target:
+            file_part = target.split("::", 1)[0]
+            if file_part and file_part != target and not is_excluded(file_part, exclude_spec):
+                # file_part contains no "::", so this recursion is depth-1.
+                card = await _resolve_one_target(
+                    session,
+                    repository,
+                    file_part,
+                    include,
+                    compact,
+                    exclude_spec=exclude_spec,
+                    repo_root=repo_root,
+                )
+                if "error" not in card:
+                    card["target"] = target
+                    card["resolved_to"] = file_part
+                    card["note"] = (
+                        f"No symbol matched {target.split('::', 1)[1]!r} in this file; "
+                        f"showing the card for {file_part!r} instead. Pick the symbol "
+                        "you meant from the symbol list."
+                    )
+                    return card
 
         # Fallback 3: fuzzy path suggestions — match by filename or partial path.
         # Only runs if the prior fallbacks didn't resolve the target.
@@ -364,7 +562,6 @@ async def _resolve_one_target(
             }
 
     want_skeleton = bool(include and "skeleton" in include)
-    auto_skeleton = False
 
     # --- Docs ---
     # "full_doc" implies "docs" — entering the docs block whenever either is requested.
@@ -389,24 +586,11 @@ async def _resolve_one_target(
             symbols = res.scalars().all()
             classes = [s.name for s in symbols if s.kind == "class"]
             functions = [s.name for s in symbols if s.kind in ("function", "method")]
-            # Skeleton-by-default: for file targets of meaningful size the
-            # smart skeleton dominates the bare signature list per token, so
-            # the default card upgrades itself. compact=False (the rich
-            # symbol card) and full_doc both opt out.
-            if not want_skeleton and compact and not want_full_doc:
-                total_loc = max((s.end_line or 0 for s in symbols), default=0)
-                if total_loc > _SKELETON_AUTO_MIN_LINES:
-                    want_skeleton = auto_skeleton = True
-            # Explicitly requested skeleton suppresses the symbol list up
-            # front; the auto default still builds the card and only swaps
-            # it out once the skeleton actually resolved (see bottom), so a
-            # moved/unreadable source file degrades to the card, not to an
-            # error-only response.
-            if want_skeleton and not auto_skeleton:
-                # The skeleton block already renders every signature with
-                # line bounds — repeating the symbol list in docs would
-                # roughly double the response for zero information. Keep
-                # the cheap title/summary card only.
+            if want_skeleton:
+                # A requested skeleton suppresses the symbol list: it already
+                # renders every signature with line bounds, so repeating the
+                # list in docs would roughly double the response for zero
+                # information. Keep the cheap title/summary card only.
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(target, classes, functions)
             elif compact:
@@ -498,6 +682,22 @@ async def _resolve_one_target(
                         "label": _cmeta.get("label", ""),
                     }
 
+            # A file the symbol index has nothing for still exists and still has
+            # content. Serving counts and a verbatim excerpt costs one read and
+            # answers the "what is in here" the caller was asking; the card
+            # without it restates the filename. Applies to all three shapes
+            # above; none of them has anything to say about a symbol-less file.
+            if not symbols:
+                preview = _file_preview(repo_root, target)
+                if preview is not None:
+                    docs["file_preview"] = preview
+                    # "empty or non-symbol file" is the only summary a
+                    # symbol-less file could get, and next to a preview showing
+                    # 800 lines of headings it is simply false. Restate it from
+                    # what the preview actually counted.
+                    if docs.get("summary", "").endswith(_NO_SYMBOL_SUMMARY_SUFFIX):
+                        docs["summary"] = _preview_summary(target, preview)
+
         elif target_type == "module":
             docs["title"] = page.title
             docs["summary"] = page.summary or ""
@@ -560,13 +760,21 @@ async def _resolve_one_target(
             )
 
         elif target_type == "symbol":
-            sym = sym_matches[0]  # type: ignore[possibly-undefined]
+            # In index-only mode the symbol may exist as a graph node with no
+            # WikiSymbol row, so the node carries the fields it has and the
+            # rest are simply absent rather than faked.
+            sym = sym_matches[0] if sym_matches else graph_symbol  # type: ignore[possibly-undefined]
             docs["name"] = sym.name
-            docs["qualified_name"] = sym.qualified_name
             docs["kind"] = sym.kind
-            docs["signature"] = _clean_signature(sym.signature)
             docs["file_path"] = sym.file_path
-            docs["docstring"] = sym.docstring or ""
+            for attr, key in (
+                ("qualified_name", "qualified_name"),
+                ("signature", "signature"),
+                ("docstring", "docstring"),
+            ):
+                value = getattr(sym, attr, None)
+                if value:
+                    docs[key] = _clean_signature(value) if attr == "signature" else value
             # File page summary (full content gated behind include=["full_doc"])
             sym_page_id = f"file_page:{sym.file_path}"
             sym_page = await session.get(Page, sym_page_id)
@@ -881,31 +1089,10 @@ async def _resolve_one_target(
     if include and "health" in include:
         await _resolve_health(session, repository, target, target_type, result_data)
 
-    # --- Skeleton (distill) — explicit include or the file-target default ---
+    # --- Skeleton (distill) — opt-in only, see the module note ---
     if want_skeleton:
         await _resolve_skeleton(
             session, repository, target, target_type, result_data, repo_root=repo_root
         )
-        skeleton = result_data.get("skeleton")
-        if auto_skeleton and isinstance(skeleton, dict):
-            if "error" in skeleton:
-                # Auto-upgrade failed (source moved/unreadable) — keep the
-                # symbol card the docs block already built and drop the
-                # failed block so the default response stays usable.
-                result_data.pop("skeleton", None)
-            else:
-                skeleton["auto"] = True
-                skeleton["opt_out_hint"] = (
-                    "Skeleton is the default for file targets above "
-                    f"{_SKELETON_AUTO_MIN_LINES} lines. Pass compact=False "
-                    "for the symbol-list card instead."
-                )
-                docs_block = result_data.get("docs")
-                if isinstance(docs_block, dict):
-                    # The skeleton renders every signature with line bounds —
-                    # the symbol list would double the response for zero
-                    # information.
-                    docs_block.pop("symbols", None)
-                    docs_block.pop("symbols_truncated", None)
 
     return result_data

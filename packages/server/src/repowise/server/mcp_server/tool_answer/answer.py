@@ -117,6 +117,7 @@ from repowise.server.mcp_server._neighbor_rerank import (
 from repowise.server.mcp_server.tool_answer.confidence import (
     _answer_is_hedged,
     _frame_term_grounding,
+    _has_unqualified_exclusivity_over_truncated,
     _is_value_question,
     _ungrounded_numbers,
 )
@@ -145,6 +146,7 @@ from repowise.server.mcp_server.tool_answer.episodes import (
     attach_episode as _attach_episode,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
+    _CANDIDATE_LIMIT,
     _apply_domain_penalty,
     _attach_page_excerpts,
     _candidate_justification,
@@ -401,12 +403,76 @@ def _build_best_guesses(hits: list[dict]) -> list[dict]:
             "file": h.get("target_path"),
             "why_relevant": _candidate_justification(h),
             "score": round(h.get("score", 0.0), 3),
-            "domain_penalty": h.get("_domain_penalty"),
+            # Absent rather than null. It was `null` in all six wire samples
+            # measured 2026-08-11 — a penalty applies to a minority of hits, so
+            # the common row paid 22 characters to say nothing happened.
+            **({"domain_penalty": h["_domain_penalty"]} if h.get("_domain_penalty") else {}),
             **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
         }
         for h in hits[:_GATED_RETURN_HITS]
         if h.get("target_path")
     ]
+
+
+def _trim_served_payload(payload: dict) -> dict:
+    """Every size cut that runs on the way OUT, on both the fresh and cache paths.
+
+    Serve-time rather than build-time, and that is the whole point. A cut
+    applied where the payload is assembled reaches only fresh answers: a cache
+    row written by an older build keeps the old shape until
+    ``_ANSWER_SCHEMA_VERSION`` moves, and bumping that invalidates every user's
+    answer cache — re-synthesis, i.e. real provider spend — to change the size
+    of a block. Measured: after capping ``candidates`` at build time only, a
+    re-measured ``get_answer`` came back byte-identical, because the tree's
+    cache answered. Trimming on the way out fixes old and new rows alike and
+    costs nobody a re-synthesis.
+
+    Anything that only REMOVES redundancy belongs here. Anything that changes
+    what an answer says does not, and still owes a schema bump.
+    """
+    _cap_candidates(payload)
+    _drop_duplicated_guess_excerpts(payload)
+    return payload
+
+
+def _cap_candidates(payload: dict) -> dict:
+    """Hold ``candidates`` to :data:`_CANDIDATE_LIMIT` rows on the way out."""
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list) and len(candidates) > _CANDIDATE_LIMIT:
+        payload["candidates"] = candidates[:_CANDIDATE_LIMIT]
+    return payload
+
+
+def _drop_duplicated_guess_excerpts(payload: dict) -> dict:
+    """Drop ``best_guesses[].excerpt`` where ``retrieval[]`` already carries it.
+
+    Both blocks slice the same 1,500-character page excerpt for the same file,
+    and when both are present the guess copy is byte-for-byte redundant —
+    measured at 4,714 characters, 21.3% of one low-confidence payload, 3 of 3
+    guesses duplicated.
+
+    **Conditional, and the condition matters.** ``retrieval`` is
+    confidence-gated and shrinks to nothing as the prose gets more
+    trustworthy; the legacy abstain path ships ``retrieval: []`` outright. On
+    those responses the guess excerpt is the only content in the payload, not a
+    duplicate of anything, and a sample measured here carried 4,667 characters
+    of it. So the drop is keyed on the duplicate actually being present, which
+    makes it lossless rather than merely cheap — and keeps every ``excerpt``
+    mentioned by ``note`` / ``next_action_hint`` on the paths that mention it.
+    """
+    guesses = payload.get("best_guesses")
+    if not guesses:
+        return payload
+    # Substring, not equality: the two blocks cut their slabs independently and
+    # the retrieval one is the longer of the two where they differ.
+    carried = [r["excerpt"] for r in (payload.get("retrieval") or []) if r.get("excerpt")]
+    if not carried:
+        return payload
+    for guess in guesses:
+        excerpt = guess.get("excerpt")
+        if excerpt and any(excerpt in c for c in carried):
+            del guess["excerpt"]
+    return payload
 
 
 def _json_default(obj):
@@ -704,10 +770,36 @@ def _degraded_payload(
     read freshness and health signals from there. The failure path used to
     set only the top-level key, so a caller watching ``_meta`` saw a normal
     empty answer.
+
+    ``answer`` states what the payload IS rather than being left empty. Only
+    the synthesis step is missing here. Retrieval ran, ranked the corpus and
+    succeeded, and its result is the most useful part of a normal reply. An
+    empty ``answer`` beside it reads as a failed call rather than a partial
+    one, and a reader who takes it at face value discards a working result and
+    starts over. The sentence is assembled from what the payload actually
+    carries, so it can never claim more than it has, and no prose about the
+    question itself is invented, that being precisely the part that needs a
+    provider.
     """
+    served = len(hits)
+    if served:
+        summary = (
+            f"No synthesized prose ({reason}), but retrieval succeeded and this "
+            f"payload is usable: {served} ranked "
+            f"{'hit' if served == 1 else 'hits'} in `retrieval`, the files to open "
+            "in `fallback_targets`, and the wider ranked shortlist in `candidates`. "
+            "Read those rather than starting a fresh search."
+        )
+    else:
+        summary = (
+            f"No synthesized prose ({reason}), and retrieval matched nothing for "
+            "this question. Rephrase with an identifier or path from the codebase, "
+            "or search directly."
+        )
+
     return _with_candidates(
         {
-            "answer": "",
+            "answer": summary,
             "citations": [],
             "confidence": "low",
             "degraded": reason,
@@ -890,6 +982,7 @@ async def get_answer(
                     targets=[p for p in cached_paths if isinstance(p, str) and p],
                 )
                 _apply_lean_high(payload, question)
+                _trim_served_payload(payload)
                 # Serve-time, on this path as well as the fresh one: the
                 # episode is read on every call and never cached into an
                 # answer, so a disagreement cannot be frozen into a row and
@@ -1637,6 +1730,20 @@ async def get_answer(
         else:
             frame_unsupported = []
 
+    # Seventh gate — completeness scope over truncated bodies: when prose asserts
+    # an unqualified exclusivity claim ("entirely", "the sole", "the only") while
+    # any cited symbol body arrived truncated: true, the answer asserts a global
+    # property from a sample it knows is incomplete (#1444).
+    # Guard: only fires at high (like gates 3 / 5 / 6) so it cannot stack with
+    # other downgrades and push a single response two levels for one problem.
+    exclusivity_over_truncated = False
+    if confidence == "high" and not hedged:
+        exclusivity_over_truncated = _has_unqualified_exclusivity_over_truncated(
+            answer_text, symbol_bodies
+        )
+        if exclusivity_over_truncated:
+            confidence = "medium"
+
     # Non-dominant ceiling: ambiguous retrieval is the calibration cost of
     # always synthesizing — the answer may be right, but with no single dominant
     # page it must never read "high" (cite without verifying). Cap at medium even
@@ -1781,6 +1888,22 @@ async def get_answer(
                 f"Verify the mechanism before citing: the asserted term(s) "
                 f"{frame_unsupported} are not in the retrieved material."
             )
+        elif exclusivity_over_truncated:
+            # Note names the axis of doubt (what to be uncertain about), not the
+            # check that triggered it — so a reader can tell which kind of doubt
+            # this is without consulting the source code.
+            payload["note"] = (
+                "Answer may not cover every relevant site: a cited symbol's body "
+                "was truncated and the answer makes an unqualified causal claim. "
+                "Other functions may also participate; call get_symbol for the "
+                "full body or verify against "
+                f"{fallback_targets[0] if fallback_targets else 'the cited source'}."
+            )
+            if fallback_targets:
+                payload["next_action_hint"] = (
+                    f"Read {fallback_targets[0]} to verify whether other functions "
+                    "participate beyond what the truncated symbol body shows."
+                )
         elif confidence == "high":
             payload["note"] = (
                 "High confidence: top retrieval result clearly dominates "
@@ -1895,6 +2018,10 @@ async def get_answer(
     if degraded := _degraded_legs(_retrieval_legs()):
         payload["_meta"]["retrieval_degraded"] = degraded
     _apply_lean_high(payload, question)
+    # After the cache write above and after lean-high (which can remove
+    # ``best_guesses`` outright), so the cut sees the finished payload and the
+    # cached row keeps the shape its schema version promises.
+    _trim_served_payload(payload)
     # After the cache write above, deliberately. ``cache_payload`` is a shallow
     # copy taken before this point, so the episode reaches the caller and never
     # the cache row — which is why adding it needs no _ANSWER_SCHEMA_VERSION

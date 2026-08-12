@@ -166,7 +166,13 @@ def _compute_impact_surface(
                 "is_entry_point": meta.is_entry_point if meta else False,
             }
         )
-    ranked.sort(key=lambda x: -x["pagerank"])
+    # Path breaks the tie, or the answer is not the same twice. ``visited`` is
+    # a set, so ``ranked`` starts in hash order, and a stable sort keeps that
+    # order wherever pagerank ties — which it does constantly, since most
+    # dependents sit at 0.0. Two identical get_risk calls were returning
+    # different "top 3 most critical modules" (measured: tests/test_progress.py
+    # vs examples/fullscreen.py in the same slot, same tree, minutes apart).
+    ranked.sort(key=lambda x: (-x["pagerank"], x["file_path"]))
     ranked = filter_dicts_by_key(ranked, "file_path", exclude_spec)
     return ranked[:3]
 

@@ -16,25 +16,95 @@ from repowise.core.persistence.models import GenerationJob, Repository
 
 
 @pytest.mark.asyncio
-async def test_github_webhook_no_secret(client: AsyncClient) -> None:
-    """Without a secret configured, any payload is accepted."""
+async def test_github_webhook_no_secret_local_accepted(client: AsyncClient) -> None:
+    """Without a secret, local callers (loopback) are accepted — dev convenience."""
     payload = {
         "ref": "refs/heads/main",
         "repository": {"clone_url": "https://github.com/example/test-repo.git"},
     }
-    resp = await client.post(
-        "/api/webhooks/github",
-        content=json.dumps(payload),
-        headers={
-            "X-GitHub-Event": "push",
-            "X-GitHub-Delivery": "test-delivery-1",
-            "Content-Type": "application/json",
-        },
-    )
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REPOWISE_GITHUB_WEBHOOK_SECRET", None)
+        # auth_is_open() is True in unit tests (no API key, loopback host)
+        resp = await client.post(
+            "/api/webhooks/github",
+            content=json.dumps(payload),
+            headers={
+                "X-GitHub-Event": "push",
+                "X-GitHub-Delivery": "test-delivery-1",
+                "Content-Type": "application/json",
+            },
+        )
     assert resp.status_code == 200
     data = resp.json()
     assert "event_id" in data
     assert data["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_github_webhook_no_secret_non_local_rejected(client: AsyncClient) -> None:
+    """Without a secret, non-local callers are rejected with 403 (fail-closed)."""
+    payload = {
+        "ref": "refs/heads/main",
+        "repository": {"clone_url": "https://github.com/example/test-repo.git"},
+    }
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REPOWISE_GITHUB_WEBHOOK_SECRET", None)
+        with patch("repowise.server.routers.webhooks.auth_is_open", return_value=False):
+            resp = await client.post(
+                "/api/webhooks/github",
+                content=json.dumps(payload),
+                headers={
+                    "X-GitHub-Event": "push",
+                    "X-GitHub-Delivery": "test-delivery-1",
+                    "Content-Type": "application/json",
+                },
+            )
+    assert resp.status_code == 403
+    assert "REPOWISE_GITHUB_WEBHOOK_SECRET" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_gitlab_webhook_no_token_local_accepted(client: AsyncClient) -> None:
+    """Without a token, local callers are accepted — dev convenience."""
+    payload = {
+        "ref": "refs/heads/main",
+        "project": {"web_url": "https://gitlab.com/example/test-repo"},
+    }
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REPOWISE_GITLAB_WEBHOOK_TOKEN", None)
+        resp = await client.post(
+            "/api/webhooks/gitlab",
+            content=json.dumps(payload),
+            headers={
+                "X-Gitlab-Event": "Push Hook",
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "event_id" in data
+
+
+@pytest.mark.asyncio
+async def test_gitlab_webhook_no_token_non_local_rejected(client: AsyncClient) -> None:
+    """Without a token, non-local callers are rejected with 403 (fail-closed)."""
+    payload = {
+        "ref": "refs/heads/main",
+        "project": {"web_url": "https://gitlab.com/example/test-repo"},
+    }
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REPOWISE_GITLAB_WEBHOOK_TOKEN", None)
+        with patch("repowise.server.routers.webhooks.auth_is_open", return_value=False):
+            resp = await client.post(
+                "/api/webhooks/gitlab",
+                content=json.dumps(payload),
+                headers={
+                    "X-Gitlab-Event": "Push Hook",
+                    "Content-Type": "application/json",
+                },
+            )
+    assert resp.status_code == 403
+    assert "REPOWISE_GITLAB_WEBHOOK_TOKEN" in resp.json()["detail"]
 
 
 @pytest.mark.parametrize(
@@ -101,40 +171,28 @@ async def test_push_webhook_enqueues_sync_job(
 
 @pytest.mark.asyncio
 async def test_github_webhook_valid_signature(client: AsyncClient) -> None:
-    """With a secret configured, a valid signature passes."""
+    """With a secret set in the environment, a valid signature passes."""
     secret = "test-webhook-secret"
     payload = json.dumps({"ref": "refs/heads/main", "repository": {}})
     sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
-    with patch.dict(os.environ, {"REPOWISE_GITHUB_WEBHOOK_SECRET": ""}):
-        # Patch the module-level variable
-        import repowise.server.routers.webhooks as wh_mod
-
-        original_secret = wh_mod._GITHUB_SECRET
-        wh_mod._GITHUB_SECRET = secret
-        try:
-            resp = await client.post(
-                "/api/webhooks/github",
-                content=payload,
-                headers={
-                    "X-GitHub-Event": "push",
-                    "X-Hub-Signature-256": sig,
-                    "Content-Type": "application/json",
-                },
-            )
-            assert resp.status_code == 200
-        finally:
-            wh_mod._GITHUB_SECRET = original_secret
+    with patch.dict(os.environ, {"REPOWISE_GITHUB_WEBHOOK_SECRET": secret}):
+        resp = await client.post(
+            "/api/webhooks/github",
+            content=payload,
+            headers={
+                "X-GitHub-Event": "push",
+                "X-Hub-Signature-256": sig,
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_github_webhook_invalid_signature(client: AsyncClient) -> None:
-    """With a secret configured, an invalid signature is rejected."""
-    import repowise.server.routers.webhooks as wh_mod
-
-    original_secret = wh_mod._GITHUB_SECRET
-    wh_mod._GITHUB_SECRET = "real-secret"
-    try:
+    """With a secret set, an invalid signature is rejected."""
+    with patch.dict(os.environ, {"REPOWISE_GITHUB_WEBHOOK_SECRET": "real-secret"}):
         resp = await client.post(
             "/api/webhooks/github",
             content=json.dumps({"ref": "refs/heads/main"}),
@@ -144,39 +202,34 @@ async def test_github_webhook_invalid_signature(client: AsyncClient) -> None:
                 "Content-Type": "application/json",
             },
         )
-        assert resp.status_code == 401
-    finally:
-        wh_mod._GITHUB_SECRET = original_secret
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_gitlab_webhook_no_token(client: AsyncClient) -> None:
-    """Without a token configured, any payload is accepted."""
-    payload = {
-        "ref": "refs/heads/main",
-        "project": {"web_url": "https://gitlab.com/example/test-repo"},
-    }
-    resp = await client.post(
-        "/api/webhooks/gitlab",
-        content=json.dumps(payload),
-        headers={
-            "X-Gitlab-Event": "Push Hook",
-            "Content-Type": "application/json",
-        },
-    )
+async def test_github_webhook_secret_read_per_request(client: AsyncClient) -> None:
+    """Secret is read from env per request, not cached at import time."""
+    secret = "per-request-secret"
+    payload = json.dumps({"ref": "refs/heads/main", "repository": {}})
+    sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+    # Set the env var after module import — must still work
+    with patch.dict(os.environ, {"REPOWISE_GITHUB_WEBHOOK_SECRET": secret}):
+        resp = await client.post(
+            "/api/webhooks/github",
+            content=payload,
+            headers={
+                "X-GitHub-Event": "push",
+                "X-Hub-Signature-256": sig,
+                "Content-Type": "application/json",
+            },
+        )
     assert resp.status_code == 200
-    data = resp.json()
-    assert "event_id" in data
 
 
 @pytest.mark.asyncio
 async def test_gitlab_webhook_invalid_token(client: AsyncClient) -> None:
-    """With a token configured, wrong token is rejected."""
-    import repowise.server.routers.webhooks as wh_mod
-
-    original_token = wh_mod._GITLAB_TOKEN
-    wh_mod._GITLAB_TOKEN = "correct-token"
-    try:
+    """With a token set, wrong token is rejected."""
+    with patch.dict(os.environ, {"REPOWISE_GITLAB_WEBHOOK_TOKEN": "correct-token"}):
         resp = await client.post(
             "/api/webhooks/gitlab",
             content=json.dumps({"ref": "refs/heads/main"}),
@@ -186,6 +239,22 @@ async def test_gitlab_webhook_invalid_token(client: AsyncClient) -> None:
                 "Content-Type": "application/json",
             },
         )
-        assert resp.status_code == 401
-    finally:
-        wh_mod._GITLAB_TOKEN = original_token
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_gitlab_webhook_token_read_per_request(client: AsyncClient) -> None:
+    """Token is read from env per request, not cached at import time."""
+    token = "per-request-token"
+
+    with patch.dict(os.environ, {"REPOWISE_GITLAB_WEBHOOK_TOKEN": token}):
+        resp = await client.post(
+            "/api/webhooks/gitlab",
+            content=json.dumps({"ref": "refs/heads/main", "project": {}}),
+            headers={
+                "X-Gitlab-Event": "Push Hook",
+                "X-Gitlab-Token": token,
+                "Content-Type": "application/json",
+            },
+        )
+    assert resp.status_code == 200

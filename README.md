@@ -65,7 +65,7 @@ Free and self-hosted, runs on your machine, and the first index needs no API key
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/one-index-dark.svg" />
-  <img src=".github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
+  <img src=".github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and eleven MCP tools" width="100%" />
 </picture>
 
 </div>
@@ -509,7 +509,7 @@ Full walkthrough: **[docs/start/QUICKSTART.md →](docs/start/QUICKSTART.md)**
 
 ---
 
-## The ten MCP tools
+## The eleven MCP tools
 
 Every response carries an `_meta` envelope with `index_age_days`, `indexed_commit`, and
 a `stale_warning` that fires only when the indexed HEAD diverges from live `.git/HEAD`,
@@ -527,8 +527,9 @@ so your agent always knows how much to trust what it just read.
 | `get_why(query?, targets?)` | Architectural decisions and their verbatim evidence spans, stamped exact / fuzzy / unverified. Falls back to git archaeology when no decisions exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates, and cross-repo consumer detection in workspace mode. |
 | `get_health(targets?, include?)` | Per-file marker scores across all three signals. `include` opens coverage, trends, per-file signals, the accuracy self-check, and structured refactoring plans. |
+| `list_repos()` | Repo aliases this server is serving. Discover `repo=` targets (especially in a workspace). |
 
-Ten is a deliberate ceiling rather than a limit we ran into: a small, task-shaped
+Eleven is a deliberate ceiling rather than a limit we ran into: a small, task-shaped
 surface is easier for an agent to choose from than a large one. Worked example (*"add
 rate limiting to all API endpoints"* in 5 calls instead of ~30 greps and reads), the
 opt-in tools, and the full reference: **[docs/agent/MCP_TOOLS.md →](docs/agent/MCP_TOOLS.md)**
@@ -585,7 +586,7 @@ agent over MCP.
 |---|---|---|---|---|
 | Self-hostable, open source | ✅ AGPL-3.0 | ✅ | ✅ | ❌ cloud only |
 | Private repo, no cloud | ✅ | ✅ | ✅ | ❌ OSS forks only |
-| MCP tools served | 10 | 1 | 29 | 3 |
+| MCP tools served | 11 | 1 | 29 | 3 |
 | **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.876** | 0.610 | not in this run | not measured |
 | **Output tokens vs a bare agent** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=43)* | ✅ **-31.6%** | -24.4% | -14.8% | not measured |
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |

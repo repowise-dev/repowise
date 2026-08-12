@@ -798,6 +798,11 @@ def resolve_provider(
             # as a raw traceback that escaped every caller's handler —
             # OLLAMA_BASE_URL=http://localhost:abc makes httpx raise
             # InvalidURL, which killed `init` outright.
+            # Imported here, not at module scope: the telemetry spool imports
+            # this module back for the global config dir.
+            from repowise.cli.platform import telemetry
+
+            telemetry.add_command_outcome(failure_reason="provider_setup_failed")
             raise click.ClickException(
                 f"Could not set up the {name} provider: {exc}. Check its "
                 "settings in your environment and .repowise/config.yaml."
@@ -822,6 +827,9 @@ def resolve_provider(
         if provider_credentials_present(candidate):
             return _build(candidate)
 
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(failure_reason="no_provider_configured")
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "

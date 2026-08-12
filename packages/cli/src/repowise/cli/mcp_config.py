@@ -1,19 +1,29 @@
-"""Generic MCP config helpers for repowise."""
+"""Generic MCP config helpers, plus the compatibility surface for the savers.
+
+What lives here now is only what is genuinely agent-independent: how a
+registration spells the repowise command, the standard ``mcpServers`` payload,
+the ``.repowise/mcp.json`` write, and the Codex CLI process probes.
+
+The per-editor ``save_*`` functions that used to hold 531 lines of flat
+per-agent knowledge are now **delegators**. Their bodies live with the agent
+they belong to, in ``repowise.cli.agent_targets.targets``, alongside that
+agent's detection, uninstall and doctor logic. They are kept as names here for
+one reason: they are a long-standing public surface with direct callers and
+direct test coverage, and breaking that would be a second change riding along
+with a rewrite whose whole value is that it changes nothing observable.
+
+The property that matters is not that these names are gone — it is that a *new*
+agent adds nothing to this module. Everything a fourth agent needs is a
+descriptor file and a registry line.
+"""
 
 from __future__ import annotations
 
-import json
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
-
-import click
-
-from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
 
 
 def _looks_transient(path: Path) -> bool:
@@ -86,6 +96,15 @@ def generate_mcp_config(repo_path: Path, *, command: str | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Codex CLI process probes
+#
+# Not writers, so they stay here: they answer "is this agent usable on this
+# machine" for the UI and for init's prompts, and both callers want them
+# without importing the target.
+# ---------------------------------------------------------------------------
+
+
 def resolve_codex_executable() -> str | None:
     """Return the executable path used to launch Codex, or None if unavailable."""
 
@@ -128,342 +147,23 @@ def is_codex_logged_in() -> bool:
     return result.returncode == 0
 
 
-def generate_codex_mcp_server_config(repo_path: Path) -> dict[str, object]:
-    """Generate the Codex config.toml server table for repowise."""
-
-    return {
-        "command": "repowise",
-        "args": ["mcp"],
-        "cwd": str(repo_path.resolve()),
-        "startup_timeout_sec": 20,
-    }
-
-
-def generate_codex_hooks_config() -> dict[str, object]:
-    """Generate project-local Codex hooks for repowise context and freshness checks.
-
-    The shell matcher is derived from the adapter rather than spelled here.
-    Codex names its shell tool ``shell_command`` on current releases and
-    ``Bash`` on older ones, and this function hardcoded ``"Bash"`` alone, so an
-    install written by ``repowise init --codex`` registered a matcher that
-    selects nothing on a current Codex. A hook whose matcher matches nothing is
-    silent in exactly the way a working one is, which is why this survived the
-    pass that fixed the same defect in the rewrite hook and the Codex plugin.
-    """
-
-    context_hook = {
-        "type": "command",
-        "command": "repowise-augment --client codex",
-        "timeout": 30,
-        "statusMessage": "Loading repowise context...",
-    }
-    freshness_hook = {
-        "type": "command",
-        "command": "repowise-augment --client codex",
-        "timeout": 30,
-        "statusMessage": "Checking repowise freshness...",
-    }
-    return {
-        "hooks": {
-            "SessionStart": [{"matcher": "startup|resume|clear", "hooks": [context_hook]}],
-            "UserPromptSubmit": [{"hooks": [context_hook]}],
-            "PostToolUse": [
-                {"matcher": SHELL_TOOL_MATCHER, "hooks": [freshness_hook]},
-                {"matcher": "apply_patch|Edit|Write", "hooks": [freshness_hook]},
-            ],
-        }
-    }
-
-
-def _toml_value(value: object) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return f"[{', '.join(json.dumps(item) for item in value)}]"
-    raise TypeError(f"Unsupported TOML value: {value!r}")
-
-
-def _codex_mcp_server_toml(repo_path: Path) -> str:
-    lines = ["[mcp_servers.repowise]"]
-    lines.extend(
-        f"{key} = {_toml_value(value)}"
-        for key, value in generate_codex_mcp_server_config(repo_path).items()
-    )
-    return "\n".join(lines)
-
-
-def _toml_table_block(table_name: str, values: dict[str, object]) -> str:
-    lines = [f"[{table_name}]"]
-    lines.extend(f"{key} = {_toml_value(value)}" for key, value in values.items())
-    return "\n".join(lines)
+# ---------------------------------------------------------------------------
+# Generic writes
+# ---------------------------------------------------------------------------
 
 
 def save_mcp_config(repo_path: Path) -> Path:
-    """Save MCP config to .repowise/mcp.json and return the path."""
+    """Save MCP config to .repowise/mcp.json and return the path.
+
+    Agent-independent: this is repowise's own copy of the payload, not any
+    particular host's config, so it stays here rather than moving to a target.
+    """
+    from repowise.cli.agent_targets.formats.json_merge import write_json_config
+
     repowise_dir = repo_path / ".repowise"
     repowise_dir.mkdir(parents=True, exist_ok=True)
     config_path = repowise_dir / "mcp.json"
-    config = generate_mcp_config(repo_path)
-    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    return config_path
-
-
-def _merge_server_entries(servers: dict, new_entry: dict) -> dict:
-    """Deep-merge *new_entry* server definitions into *servers* in place.
-
-    For each server key, the generated ``command``/``args``/``description``
-    overwrite the stored values (so path/command changes take effect), but any
-    other keys the user added to the entry — most importantly an ``env`` block
-    carrying BYOK provider keys — are preserved. A shallow ``servers.update()``
-    would replace the whole entry and silently wipe ``env`` on every
-    re-registration (``repowise init`` / ``update``). See issue #307.
-    """
-    for name, entry in new_entry.items():
-        current = servers.get(name)
-        if isinstance(current, dict) and isinstance(entry, dict):
-            merged_entry = dict(current)
-            merged_entry.update(entry)
-            servers[name] = merged_entry
-        else:
-            servers[name] = entry
-    return servers
-
-
-def _ensure_valid_toml(merged_text: str, config_path: Path) -> None:
-    """Abort before writing if the regex merge produced invalid TOML.
-
-    The merge validates the *existing* file, but the table-rewrite regex only
-    matches the bare ``[mcp_servers.repowise]`` / ``[features]`` spellings. A user
-    who expressed the same key differently (quoted ``["features"]`` or inline under
-    a parent table) would slip past the regex, and appending our block would yield a
-    duplicate-key file. Re-parsing the merged result turns every such case into a
-    clean abort with the original file untouched.
-    """
-
-    try:
-        tomllib.loads(merged_text)
-    except tomllib.TOMLDecodeError as exc:
-        raise click.ClickException(
-            f"Cannot update {config_path}: merging the repowise entry would produce "
-            "invalid TOML (an existing entry may use a different key spelling). "
-            "No changes were written."
-        ) from exc
-
-
-def enable_codex_hooks_feature(repo_path: Path) -> Path:
-    """Enable Codex hooks in project-local .codex/config.toml."""
-
-    config_path = repo_path / ".codex" / "config.toml"
-
-    try:
-        if config_path.exists():
-            existing_text = config_path.read_text(encoding="utf-8")
-            doc = tomllib.loads(existing_text)
-        else:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            existing_text = ""
-            doc = {}
-    except tomllib.TOMLDecodeError as exc:
-        raise click.ClickException(
-            f"Cannot update {config_path}: existing file is not valid TOML. "
-            "Fix or remove it and retry; no changes were written."
-        ) from exc
-
-    existing_features = doc.get("features", {})
-    if not isinstance(existing_features, dict):
-        raise click.ClickException(
-            f"Cannot update {config_path}: [features] must be a TOML table. "
-            "Fix or remove it and retry; no changes were written."
-        )
-
-    features = dict(existing_features)
-    features["hooks"] = True
-    feature_block = _toml_table_block("features", features)
-    table_re = re.compile(r"(?ms)^\s*\[features\]\s*\n.*?(?=^\s*\[|\Z)")
-    merged_text = table_re.sub("", existing_text).rstrip()
-    merged_text = f"{merged_text}\n\n{feature_block}\n" if merged_text else f"{feature_block}\n"
-    _ensure_valid_toml(merged_text, config_path)
-    config_path.write_text(merged_text, encoding="utf-8")
-    return config_path
-
-
-def save_codex_mcp_config(repo_path: Path) -> Path:
-    """Merge the repowise MCP server into project-local .codex/config.toml."""
-
-    config_path = repo_path / ".codex" / "config.toml"
-    server_block = _codex_mcp_server_toml(repo_path)
-
-    try:
-        if config_path.exists():
-            existing_text = config_path.read_text(encoding="utf-8")
-            doc = tomllib.loads(existing_text)
-        else:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(f"{server_block}\n", encoding="utf-8")
-            return config_path
-    except tomllib.TOMLDecodeError as exc:
-        raise click.ClickException(
-            f"Cannot update {config_path}: existing file is not valid TOML. "
-            "Fix or remove it and retry; no changes were written."
-        ) from exc
-
-    servers = doc.get("mcp_servers")
-    if servers is not None and not isinstance(servers, dict):
-        raise click.ClickException(
-            f"Cannot update {config_path}: [mcp_servers] must be a TOML table. "
-            "Fix or remove it and retry; no changes were written."
-        )
-    if isinstance(servers, dict):
-        repowise = servers.get("repowise")
-        if repowise is not None and not isinstance(repowise, dict):
-            raise click.ClickException(
-                f"Cannot update {config_path}: [mcp_servers.repowise] must be a TOML table. "
-                "Fix or remove it and retry; no changes were written."
-            )
-
-    table_re = re.compile(r"(?ms)^\s*\[mcp_servers\.repowise\]\s*\n.*?(?=^\s*\[|\Z)")
-    merged_text = table_re.sub("", existing_text).rstrip()
-    merged_text = f"{merged_text}\n\n{server_block}\n" if merged_text else f"{server_block}\n"
-    _ensure_valid_toml(merged_text, config_path)
-    config_path.write_text(merged_text, encoding="utf-8")
-    return config_path
-
-
-def save_codex_hooks_config(repo_path: Path) -> Path:
-    """Merge repowise hooks into project-local .codex/hooks.json."""
-
-    hooks_path = repo_path / ".codex" / "hooks.json"
-    new_config = generate_codex_hooks_config()
-
-    if hooks_path.exists():
-        existing = load_existing_config(hooks_path)
-    else:
-        hooks_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = {}
-
-    hooks = existing.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        raise click.ClickException(
-            f"Cannot update {hooks_path}: hooks must contain a JSON object. "
-            "Fix or remove it and retry; no changes were written."
-        )
-
-    for event, entries in new_config["hooks"].items():
-        event_hooks = hooks.setdefault(event, [])
-        if not isinstance(event_hooks, list):
-            raise click.ClickException(
-                f"Cannot update {hooks_path}: hooks.{event} must contain a JSON array. "
-                "Fix or remove it and retry; no changes were written."
-            )
-        for entry in entries:
-            if not _has_repowise_hook_for_matcher(event_hooks, entry.get("matcher")):
-                event_hooks.append(entry)
-
-    hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-    enable_codex_hooks_feature(repo_path)
-    return hooks_path
-
-
-def save_root_mcp_config(repo_path: Path) -> Path:
-    """Write .mcp.json at repo root for MCP clients that support discovery.
-
-    Merges the repowise server entry into any existing mcpServers block
-    so other MCP servers configured by the user are preserved.
-    """
-    config_path = repo_path / ".mcp.json"
-    new_entry = generate_mcp_config(repo_path)["mcpServers"]
-
-    if config_path.exists():
-        existing = load_existing_config(config_path)
-        servers = dict(existing.get("mcpServers", {}))
-        _merge_server_entries(servers, new_entry)
-        existing["mcpServers"] = servers
-        merged = existing
-    else:
-        merged = {"mcpServers": new_entry}
-
-    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
-    return config_path
-
-
-def generate_vscode_mcp_server_entry(repo_path: Path) -> dict:
-    """Generate the VS Code ``.vscode/mcp.json`` server entry for repowise.
-
-    VS Code keys stdio servers under a top-level ``servers`` map and expects a
-    ``type`` field. The command and path convention mirror the repo-shared
-    ``.mcp.json`` exactly (bare ``repowise`` command, absolute repo path,
-    ``--transport stdio``) so a committed workspace config resolves the same
-    server on every contributor's checkout.
-    """
-    entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
-    return {"type": "stdio", **entry}
-
-
-def save_vscode_mcp_config(repo_path: Path) -> Path:
-    """Merge the repowise server into ``.vscode/mcp.json`` and return the path.
-
-    Only the ``repowise`` entry under ``servers`` is added or refreshed; other
-    servers and unknown keys are preserved, and user-added per-server keys (an
-    ``env`` block carrying provider keys) survive re-registration. Raises
-    ``ValueError`` when an existing file is not strict JSON (VS Code allows
-    JSONC comments) or is not shaped as expected, so callers can skip the merge
-    without destroying the file.
-    """
-    config_path = repo_path / ".vscode" / "mcp.json"
-    new_entry = {"repowise": generate_vscode_mcp_server_entry(repo_path)}
-
-    if config_path.exists():
-        existing = json.loads(config_path.read_text(encoding="utf-8"))
-        if not isinstance(existing, dict):
-            raise ValueError("mcp.json must contain a JSON object")
-        servers = existing.get("servers", {})
-        if not isinstance(servers, dict):
-            raise ValueError("mcp.json 'servers' must be a JSON object")
-        servers = dict(servers)
-        _merge_server_entries(servers, new_entry)
-        existing["servers"] = servers
-        merged = existing
-    else:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        merged = {"servers": new_entry}
-
-    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
-    return config_path
-
-
-def save_vscode_extensions_config(repo_path: Path) -> Path:
-    """Recommend the repowise extension in ``.vscode/extensions.json``.
-
-    Appends ``repowise-dev.repowise`` to ``recommendations`` if absent,
-    preserving existing entries and unknown keys; running twice changes
-    nothing. Raises ``ValueError`` when an existing file is not strict JSON
-    (VS Code allows JSONC comments) or is not shaped as expected, so callers
-    can skip the merge without destroying the file.
-    """
-    config_path = repo_path / ".vscode" / "extensions.json"
-    extension_id = "repowise-dev.repowise"
-
-    if config_path.exists():
-        existing = json.loads(config_path.read_text(encoding="utf-8"))
-        if not isinstance(existing, dict):
-            raise ValueError("extensions.json must contain a JSON object")
-        recommendations = existing.get("recommendations", [])
-        if not isinstance(recommendations, list):
-            raise ValueError("extensions.json 'recommendations' must be a JSON array")
-        recommendations = list(recommendations)
-        if extension_id not in recommendations:
-            recommendations.append(extension_id)
-        existing["recommendations"] = recommendations
-        merged = existing
-    else:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        merged = {"recommendations": [extension_id]}
-
-    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    write_json_config(config_path, generate_mcp_config(repo_path))
     return config_path
 
 
@@ -474,8 +174,13 @@ def merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
 
     The per-server merge is deep: generated fields overwrite stored ones, but
     user-added keys such as an ``env`` block are preserved across
-    re-registration (see :func:`_merge_server_entries`).
+    re-registration (see ``formats.json_merge.merge_server_entries``).
     """
+    from repowise.cli.agent_targets.formats.json_merge import (
+        merge_server_entries,
+        write_json_config,
+    )
+
     try:
         if config_path.exists():
             existing = load_existing_config(config_path)
@@ -484,9 +189,9 @@ def merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
             existing = {}
 
         servers = dict(existing.get("mcpServers", {}))
-        _merge_server_entries(servers, new_entry)
+        merge_server_entries(servers, new_entry)
         existing["mcpServers"] = servers
-        config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        write_json_config(config_path, existing)
         return True
     except OSError:
         return False
@@ -494,38 +199,122 @@ def merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
 
 def load_existing_config(config_path: Path) -> dict:
     """Load an existing JSON config without silently replacing bad content."""
-    try:
-        existing = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise click.ClickException(
-            f"Cannot update {config_path}: existing file is not valid JSON. "
-            "Fix or remove it and retry; no changes were written."
-        ) from exc
-    except OSError as exc:
-        raise click.ClickException(
-            f"Cannot update {config_path}: existing file could not be read. "
-            "Fix the file permissions and retry; no changes were written."
-        ) from exc
-    if not isinstance(existing, dict):
-        raise click.ClickException(
-            f"Cannot update {config_path}: existing file must contain a JSON object. "
-            "Fix or remove it and retry; no changes were written."
-        )
-    return existing
+    from repowise.cli.agent_targets.formats.json_merge import load_json_object
+
+    return load_json_object(config_path)
 
 
+# ---------------------------------------------------------------------------
+# Per-agent delegators
+#
+# Each forwards to the target that owns the format. See the module docstring
+# for why the names survive the move.
+# ---------------------------------------------------------------------------
+
+
+def generate_codex_mcp_server_config(repo_path: Path) -> dict[str, object]:
+    """Generate the Codex config.toml server table for repowise."""
+    from repowise.cli.agent_targets.targets import codex
+
+    return codex.server_table(repo_path)
+
+
+def generate_codex_hooks_config() -> dict[str, object]:
+    """Generate project-local Codex hooks for repowise context and freshness checks."""
+    from repowise.cli.agent_targets.targets import codex
+
+    return codex.hooks_config()
+
+
+def enable_codex_hooks_feature(repo_path: Path) -> Path:
+    """Enable Codex hooks in project-local .codex/config.toml."""
+    from repowise.cli.agent_targets.targets import codex
+
+    return codex.enable_hooks_feature(repo_path).path
+
+
+def save_codex_mcp_config(repo_path: Path) -> Path:
+    """Merge the repowise MCP server into project-local .codex/config.toml."""
+    from repowise.cli.agent_targets.targets import codex
+
+    return codex.write_server_config(repo_path).path
+
+
+def save_codex_hooks_config(repo_path: Path) -> Path:
+    """Merge repowise hooks into project-local .codex/hooks.json."""
+    from repowise.cli.agent_targets.targets import codex
+
+    return codex.write_hooks_config(repo_path)[0].path
+
+
+def save_root_mcp_config(repo_path: Path) -> Path:
+    """Write .mcp.json at repo root for MCP clients that support discovery."""
+    from repowise.cli.agent_targets.targets import claude_code
+
+    return claude_code.write_project_mcp_config(repo_path).path
+
+
+def generate_vscode_mcp_server_entry(repo_path: Path) -> dict:
+    """Generate the VS Code ``.vscode/mcp.json`` server entry for repowise."""
+    from repowise.cli.agent_targets.targets import vscode
+
+    return vscode.server_entry(repo_path)
+
+
+def save_vscode_mcp_config(repo_path: Path) -> Path:
+    """Merge the repowise server into ``.vscode/mcp.json`` and return the path.
+
+    Raises ``ValueError`` when an existing file is not strict JSON (VS Code
+    allows JSONC comments) or is not shaped as expected, so callers can skip the
+    merge without destroying the file.
+    """
+    from repowise.cli.agent_targets.targets import vscode
+
+    return vscode.write_mcp_config(repo_path).path
+
+
+def save_vscode_extensions_config(repo_path: Path) -> Path:
+    """Recommend the repowise extension in ``.vscode/extensions.json``.
+
+    Raises ``ValueError`` on a file that is not strict JSON, for the same reason
+    as :func:`save_vscode_mcp_config`.
+    """
+    from repowise.cli.agent_targets.targets import vscode
+
+    return vscode.write_extensions_config(repo_path).path
+
+
+#: Re-exported for the Codex hooks writer's own use and for callers that used
+#: to reach it through this module.
 def _is_repowise_hook(hook: dict) -> bool:
-    cmd = hook.get("command", "")
-    return "repowise-augment" in cmd or "repowise augment" in cmd
+    from repowise.cli.agent_targets.targets.codex import _is_augment_hook
+
+    return _is_augment_hook(hook)
 
 
 def _has_repowise_hook_for_matcher(hook_list: list, matcher: object) -> bool:
     """Check if a repowise augment hook is registered for a matcher group."""
+    from repowise.cli.agent_targets.targets.codex import _has_augment_hook_for_matcher
 
-    for entry in hook_list:
-        if entry.get("matcher") != matcher:
-            continue
-        for hook in entry.get("hooks", []):
-            if _is_repowise_hook(hook):
-                return True
-    return False
+    return _has_augment_hook_for_matcher(hook_list, matcher)
+
+
+__all__ = [
+    "enable_codex_hooks_feature",
+    "generate_codex_hooks_config",
+    "generate_codex_mcp_server_config",
+    "generate_mcp_config",
+    "generate_vscode_mcp_server_entry",
+    "is_codex_cli_installed",
+    "is_codex_logged_in",
+    "load_existing_config",
+    "merge_mcp_entry",
+    "resolve_codex_executable",
+    "resolve_repowise_command",
+    "save_codex_hooks_config",
+    "save_codex_mcp_config",
+    "save_mcp_config",
+    "save_root_mcp_config",
+    "save_vscode_extensions_config",
+    "save_vscode_mcp_config",
+]

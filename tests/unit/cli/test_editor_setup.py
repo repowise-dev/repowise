@@ -47,9 +47,6 @@ def test_register_editor_clients_skipped_when_env_set(monkeypatch) -> None:
     registered: list[Path] = []
 
     class FakeIntegration:
-        def configure_options(self, c: Any, o: Any) -> Any:
-            return o
-
         def write_project_files(self, c: Any, p: Path, o: Any) -> None:
             pass
 
@@ -82,9 +79,6 @@ def test_register_editor_clients_skipped_by_flag(monkeypatch) -> None:
     registered: list[Path] = []
 
     class FakeIntegration:
-        def configure_options(self, c: Any, o: Any) -> Any:
-            return o
-
         def write_project_files(self, c: Any, p: Path, o: Any) -> None:
             pass
 
@@ -386,34 +380,115 @@ def test_detect_editor_setup_outcome_skip_env_reports_disconnected(
     assert outcome.claude_code_connected is False
 
 
-def test_resolve_editor_setup_options_delegates_to_integrations() -> None:
-    calls: list[tuple[str, frozenset[str], bool]] = []
+def test_resolve_editor_setup_options_carries_the_cli_flags_through() -> None:
+    """Just the flags now.
 
-    class FakeIntegration:
-        def configure_options(
-            self,
-            console_obj: object,
-            options: EditorSetupOptions,
-        ) -> EditorSetupOptions:
-            calls.append(
-                (
-                    "configure",
-                    options.disabled_project_files,
-                    options.prompt_for_project_files,
-                )
-            )
-            return options.with_disabled_project_file("fake_instructions")
-
+    This used to give every integration a ``configure_options`` hook to prompt
+    from. The prompting is one registry-built checklist
+    (:func:`select_agents_interactively`), so the hook had no implementation
+    left that did anything and all three were deleted with it.
+    """
     options = resolve_editor_setup_options(
-        _silent_console(),
         disabled_project_files={"cli_disabled"},
-        prompt_for_project_files=True,
-        integrations=(FakeIntegration(),),  # type: ignore[arg-type]
+        project_file_overrides={"agents_md": False},
+        integration_overrides={"codex": True},
     )
 
-    assert calls == [("configure", frozenset({"cli_disabled"}), True)]
-    assert options.disabled_project_files == frozenset({"cli_disabled", "fake_instructions"})
-    assert options.prompt_for_project_files is True
+    assert options.disabled_project_files == frozenset({"cli_disabled"})
+    assert options.project_file_overrides == {"agents_md": False}
+    assert options.integration_overrides == {"codex": True}
+
+
+# ---------------------------------------------------------------------------
+# The agent checklist that replaced the three per-integration prompts
+# ---------------------------------------------------------------------------
+
+
+def _select(monkeypatch, tmp_path: Path, answer, **kwargs):
+    """Run the checklist with *answer* standing in for the user's reply."""
+    from repowise.cli.editor_setup import select_agents_interactively
+    from repowise.cli.ui import agent_selection
+
+    seen: list[list] = []
+
+    def _fake(console_obj, choices):
+        seen.append(choices)
+        return answer(choices) if callable(answer) else answer
+
+    monkeypatch.setattr(agent_selection, "interactive_agent_select", _fake)
+    options = select_agents_interactively(
+        _silent_console(), tmp_path, EditorSetupOptions(**kwargs)
+    )
+    return options, seen[0]
+
+
+def test_checklist_unticking_an_agent_disables_its_project_file(monkeypatch, tmp_path) -> None:
+    """What the three deleted yes/no prompts each did, now in one place."""
+    options, _ = _select(monkeypatch, tmp_path, {"codex"})
+
+    assert "claude_md" in options.disabled_project_files
+    assert "vscode_mcp" in options.disabled_project_files
+    assert "agents_md" not in options.disabled_project_files
+    assert options.integration_overrides["codex"] is True
+
+
+def test_checklist_ticking_everything_disables_nothing(monkeypatch, tmp_path) -> None:
+    options, _ = _select(
+        monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices}
+    )
+
+    assert options.disabled_project_files == frozenset()
+    assert options.integration_overrides == {"claude-code": True, "codex": True, "vscode": True}
+
+
+def test_checklist_pre_ticks_an_agent_an_explicit_flag_asked_for(monkeypatch, tmp_path) -> None:
+    """``--codex`` is already an answer, so the box it controls starts ticked.
+
+    Otherwise accepting the checklist would silently undo the flag the user
+    passed on the same command line.
+    """
+    _, choices = _select(
+        monkeypatch, tmp_path, set(), integration_overrides={"codex": True}
+    )
+
+    codex = next(choice for choice in choices if choice.id == "codex")
+    assert codex.enabled is True
+
+
+def test_checklist_never_silently_withdraws_the_instruction_file_default(
+    monkeypatch, tmp_path
+) -> None:
+    """Leaving a box unticked is not neutral, so detection must not do it alone.
+
+    On a machine with Codex but no ``~/.claude``, detection returned a
+    non-empty selection, so the auto fallback never fired and Claude Code
+    arrived unticked. One Enter then persisted ``claude_md: false`` into
+    ``.repowise/config.yaml``, so ``update`` never generated it either — where
+    the prompt this replaced defaulted to yes.
+
+    The first fix for this unioned in ``resolve_target_flag("auto")``, which
+    *looks* equivalent and is a no-op: ``auto`` resolves to the detected
+    targets and only reaches the fallback when detection is empty — the case
+    the union already covered. So the moment anything else was wired, Claude
+    Code went missing again. Hence the wired row below.
+    """
+    from repowise.cli.agent_targets.registry import default_selection
+
+    rows = [
+        {"id": "claude-code", "registrations": [], "present": False},
+        {"id": "codex", "registrations": [{"method": "direct"}], "present": True},
+        {"id": "vscode", "registrations": [], "present": True},
+    ]
+
+    assert default_selection(rows) == {"claude-code", "codex", "vscode"}
+
+
+def test_checklist_that_cannot_be_answered_leaves_the_options_alone(monkeypatch, tmp_path) -> None:
+    """isatty lies. A prompt returning None must not disable everything."""
+    options, _ = _select(monkeypatch, tmp_path, None)
+
+    assert options.disabled_project_files == frozenset()
+    assert options.integration_overrides == {}
 
 
 def test_default_disabled_project_files_maps_legacy_no_claude_flag() -> None:
@@ -472,7 +547,7 @@ def test_write_editor_project_files_uses_pre_resolved_options(
     calls: list[tuple[str, Path, EditorSetupOptions]] = []
     options = EditorSetupOptions(
         disabled_project_files=frozenset({"resolved"}),
-        prompt_for_project_files=True,
+        integration_overrides={"codex": True},
     )
 
     def fake_save_mcp_config(repo_path: Path) -> Path:

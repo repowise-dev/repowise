@@ -61,6 +61,15 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
+        # ``TraversalStats`` for the walk that produced this graph, stashed by
+        # the caller. Carried here rather than widened into the return tuples
+        # of ``build_repo_graph``/``rebuild_graph_and_git`` (ten unpack sites
+        # across the CLI, workspace and tests) because the only consumer is the
+        # dead-code analyzer, which already receives this object. It needs to
+        # know which source files the walk dropped on size: without that,
+        # "nothing imports this" cannot be told apart from "the importer was
+        # never read" (#1237).
+        self.traversal_stats: Any | None = None
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         # Mirrors the traverser flags: when submodules or nested repos are
         # indexed, resolver filesystem scans must not prune them (both are

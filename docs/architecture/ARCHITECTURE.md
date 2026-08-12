@@ -78,7 +78,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (10 tools)   (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (11 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
@@ -172,7 +172,7 @@ repowise/
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
 │   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
-│   │       ├── mcp_server/      # MCP server package (10 tools, split into focused modules)
+│   │       ├── mcp_server/      # MCP server package (11 default tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       ├── job_executor.py  # Background pipeline executor — bridges REST endpoints to core pipeline
 │   │       └── scheduler.py     # APScheduler background jobs
@@ -310,7 +310,7 @@ The graph is used for:
   as dashed purple lines. They do NOT affect PageRank.
 - **Dead code detection** — files with `in_degree == 0` (no importers) are
   candidates for unreachable file detection
-- **MCP `get_dependency_path` tool** — answers "how is module A connected to module B?"
+- **MCP `get_dependency_path` tool** *(opt-in)* — answers "how is module A connected to module B?"
 - **D3 graph visualization** in the web UI
 
 If you delete the graph, repowise loses change propagation and generation ordering.
@@ -1048,19 +1048,27 @@ and supports two transports:
 - **stdio** — for Claude Code, Cursor, Cline (add to their MCP config)
 - **SSE** — for web-based MCP clients (served on port 7338)
 
-### Tools (9 total)
+### Tools (11 default in single-repo mode)
+
+Canonical reference: [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md).
+A single-repo server advertises **11** tools by default (ten flagship +
+`list_repos`). Workspace mode adds `get_architecture` and `get_blast_radius`.
+Four more are registered but opt-in (`get_dependency_path`,
+`get_execution_flows`, `generate_refactoring_code`, `get_conformance`).
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
 | `get_overview` | Architecture summary, module map, entry points. | First call when exploring an unfamiliar codebase. |
-| `get_context(targets, include?)` | Docs, ownership, history, decisions, freshness for files/modules/symbols. Pass multiple targets in one call. | When you need to understand specific code before reading or modifying it. |
-| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. Also returns top 5 global hotspots. | Before modifying files — assess what could break. |
-| `get_why(query?)` | Three modes: NL search over decisions, path-based decisions for a file, no-arg health dashboard. | Before making architectural changes — understand existing intent. |
-| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When you don't know where something lives. |
-| `get_dependency_path(from, to)` | Connection path between two files/modules in the dependency graph. | When you need to understand how two things are connected. |
-| `get_dead_code` | Dead/unused code findings sorted by confidence and cleanup impact. | Before cleanup tasks. |
-| `get_answer` | One-call RAG: confidence-gated synthesis with cited answers and question cache. | First call on any code question — collapses search → read → reason. |
+| `get_answer` | One-call RAG: confidence-gated synthesis with cited answers. | First call on any code question. |
+| `get_context(targets, include?)` | Docs, ownership, history, decisions, freshness for files/modules/symbols. | Before reading or modifying specific code. |
 | `get_symbol` | Resolve a qualified symbol id to source body, signature, and docstring. | When the question names a specific class, function, or method. |
+| `search_codebase(query)` | Hybrid symbol / path / wiki search. | When you don't know where something lives. |
+| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. | Before modifying indexed files. |
+| `get_change_risk(revspec?)` | Live commit / range defect score from the diff itself. | Before merging a commit or PR range. |
+| `get_why(query?)` | Architectural decisions and git archaeology. | Before making architectural changes. |
+| `get_dead_code` | Dead/unused code findings sorted by confidence. | Before cleanup tasks. |
+| `get_health` | Code-health marker scores (defect / maintainability / performance). | Self-check before a PR or refactor. |
+| `list_repos` | Repo aliases this server is serving. | Discover `repo=` targets (especially in a workspace). |
 
 ### Auto-generated Config
 
@@ -1154,9 +1162,10 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to all 11 MCP tools.
+the user has configured and has access to **7 tools** from the MCP surface
+(see [`chat.md`](chat.md) — not the full 11-tool MCP default).
 
-See [`docs/CHAT.md`](CHAT.md) for the full technical reference covering the
+See [`docs/architecture/chat.md`](chat.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
 database schema, frontend component architecture, and artifact rendering system.
 
@@ -1165,7 +1174,7 @@ database schema, frontend component architecture, and artifact rendering system.
 - **Provider-agnostic** — the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse** — the 11 MCP tools are called directly as Python functions (no
+- **Tool reuse** — the 7 chat tools are called directly as Python functions (no
   subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
   fed to both the LLM and the executor.
 - **SSE streaming** — `POST /api/repos/{repo_id}/chat/messages` runs the agentic

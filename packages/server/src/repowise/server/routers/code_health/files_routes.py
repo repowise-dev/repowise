@@ -48,6 +48,16 @@ async def list_health_files(
     only_hotspots: bool = Query(False),
     only_untested: bool = Query(False),
     only_failing: bool = Query(False, description="score < 7"),
+    fields: str = Query(
+        "full",
+        pattern="^(full|summary)$",
+        description=(
+            "'summary' omits the optional per-row keys only the file table and "
+            "drawer read (duplication_pct, defect_score, and the "
+            "primary_biomarker / primary_reason / total_deduction lead), and "
+            "narrows the finding read that produces them."
+        ),
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if sort not in _SORT_FIELDS:
@@ -86,11 +96,23 @@ async def list_health_files(
 
     total = len(filtered)
     page = filtered[offset : offset + limit]
-    # Leads only for the page's files — enough to carry the top-reason chip and
-    # the magnitude tiebreak without loading every finding for every row.
-    page_paths = {m.file_path for m in page}
-    findings = await crud.get_health_findings(session, repo_id)
-    leads = _leads_by_file([f for f in findings if f.file_path in page_paths])
+    summary = fields == "summary"
+    # Two reads, and ``summary`` needs only the narrow one. The full row's
+    # dominant-cause lead is reduced from *every* open finding (this repo: 10,740
+    # rows, 1.66 MB of ``details_json`` hydrated to reach four attributes), while
+    # the performance lens needs only the perf dimension (697 rows). A caller
+    # that does not print the lead should not pay for the wide read to compute
+    # it — the map is exactly that caller, and it is the biggest request the
+    # page makes.
+    leads: dict[str, dict] = {}
+    if summary:
+        findings = await crud.get_health_findings(session, repo_id, dimension="performance")
+    else:
+        findings = await crud.get_health_findings(session, repo_id)
+        # Leads only for the page's files — enough to carry the top-reason chip
+        # and the magnitude tiebreak without loading every finding for every row.
+        page_paths = {m.file_path for m in page}
+        leads = _leads_by_file([f for f in findings if f.file_path in page_paths])
     # Per-file performance signal for the map's performance lens: open perf-
     # finding counts + whether a perf detector ran on the file's language. Colors
     # the lens by findings/coverage instead of the narrow-band [8,10] score.
@@ -110,6 +132,7 @@ async def list_health_files(
                 leads.get(m.file_path),
                 perf_findings=perf_counts.get(m.file_path, 0),
                 perf_analyzed=lang_by_path.get(m.file_path) in perf_langs,
+                summary=summary,
             )
             for m in page
         ],

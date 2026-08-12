@@ -94,7 +94,7 @@ server, which triggers an incremental update.
 ### Prerequisites
 
 - repowise server running and reachable from the internet (or GitHub's network)
-- A webhook secret (recommended for production)
+- A webhook secret (**required** — unsigned requests are rejected)
 
 ### Start the server
 
@@ -132,12 +132,12 @@ Recent Deliveries). You should see a `200` response with:
 
 ### Security
 
-When `REPOWISE_GITHUB_WEBHOOK_SECRET` is set, every incoming request is
-verified using HMAC-SHA256 against the `X-Hub-Signature-256` header. Requests
-with invalid or missing signatures are rejected with `401 Unauthorized`.
-
-If the secret is **not** set, signature verification is skipped (convenient for
-local development, but not recommended for production).
+`REPOWISE_GITHUB_WEBHOOK_SECRET` is **required**. Every incoming request must
+carry a valid HMAC-SHA256 signature in the `X-Hub-Signature-256` header.
+Requests with an invalid signature are rejected with `401 Unauthorized`.
+Requests with **no** signature — including those sent without a secret
+configured on your server — are rejected with `403 Forbidden`. There is no
+unsigned mode.
 
 ---
 
@@ -274,6 +274,12 @@ Nothing to do.
 
 **Webhook returns 401** -- Check that the secret/token matches between your
 git hosting provider and the environment variable on the server.
+
+**Webhook returns 403** -- The server received a request with no signature at
+all. This usually means `REPOWISE_GITHUB_WEBHOOK_SECRET` (or
+`REPOWISE_GITLAB_WEBHOOK_TOKEN`) is not set on the server. Set the environment
+variable, restart the server, and re-deliver the payload from your provider's
+webhook settings page. Unsigned requests are never accepted.
 
 **Update is slow** -- If you're catching up on many commits, the first update
 may take longer. Subsequent single-commit updates are fast (~30-60s).

@@ -225,12 +225,81 @@ class TestFileTraverser:
         assert not any("app_ok.py" in p for p in paths)
         assert not any("debug.log" in p for p in paths)
 
-    def test_skips_oversized_files(self, tmp_path: Path) -> None:
+    def test_skips_oversized_files_without_a_parser(self, tmp_path: Path) -> None:
+        # No AST parser, so size is the only signal and the default cap holds.
+        big = tmp_path / "fixture.json"
+        big.write_bytes(b'{"k": 1}\n' * 200_000)  # ~1.7 MB
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("fixture.json" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        # Blobs stay in the aggregate — naming them would drown the signal.
+        assert traverser.stats.skipped_source_files == []
+
+    def test_indexes_source_past_the_default_cap(self, tmp_path: Path) -> None:
+        # The #1237 regression: a repo's biggest hand-written module was
+        # dropped before any language check ran.
         big = tmp_path / "big.py"
         big.write_bytes(b"x = 1\n" * 200_000)  # ~1.2 MB
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         paths = [f.path for f in traverser.traverse()]
-        assert not any("big.py" in p for p in paths)
+        assert any("big.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 0
+
+    def test_skips_source_past_the_source_ceiling(self, tmp_path: Path) -> None:
+        # The ceiling is a memory budget: tree-sitter peaks at ~95 MB of RSS
+        # per MB of source and the parse pool runs 8 workers.
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("huge.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        # ...and it is named, because a silently dropped module is the bug.
+        assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
+        assert traverser.stats.skipped_source_files[0].reason == "over_max_size"
+
+    def test_skips_minified_bundle_under_the_ceiling(self, tmp_path: Path) -> None:
+        # Real parser, source extension, under the ceiling — only the line
+        # shape distinguishes it from hand-written code.
+        bundle = tmp_path / "vendor.js"
+        bundle.write_bytes(b"!function(){" + b";".join(b"var a=1" for _ in range(90_000)) + b"}();")
+        assert bundle.stat().st_size > 500 * 1024
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("vendor.js" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        assert traverser.stats.skipped_source_files[0].reason == "minified"
+
+    def test_source_ceiling_cannot_be_raised_by_max_file_size_kb(self, tmp_path: Path) -> None:
+        # The source ceiling is a memory budget (~95 MB RSS per MB of source,
+        # times an 8-worker pool), not a preference. Raising the caller-facing
+        # knob must not be able to lift it, or the OOM guard is optional.
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        traverser = FileTraverser(tmp_path, max_file_size_kb=100_000)  # 100 MB
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("huge.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+
+    def test_max_file_size_kb_still_governs_parserless_files(self, tmp_path: Path) -> None:
+        # ...but it remains the knob for everything with no parser.
+        blob = tmp_path / "fixture.json"
+        blob.write_bytes(b'{"k": 1}\n' * 200_000)  # ~1.7 MB
+        traverser = FileTraverser(tmp_path, max_file_size_kb=100_000)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("fixture.json" in p for p in paths)
+
+    def test_normal_source_is_not_mistaken_for_minified(self, tmp_path: Path) -> None:
+        # Long-ish but ordinary lines must survive the guard: the threshold is
+        # 200 bytes/line and real source measured 25-60.
+        wide = tmp_path / "wide.py"
+        line = b"result = compute(" + b"argument_name, " * 8 + b"final)\n"  # ~140 bytes
+        wide.write_bytes(line * 5_000)
+        assert wide.stat().st_size > 500 * 1024
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("wide.py" in p for p in paths)
 
     def test_deterministic_ordering(self, simple_repo: Path) -> None:
         traverser = FileTraverser(simple_repo)
@@ -508,8 +577,10 @@ class TestTraversalStats:
         assert traverser.stats.included >= 1
 
     def test_stats_counts_oversized_skips(self, tmp_path: Path) -> None:
-        big = tmp_path / "big.py"
-        big.write_bytes(b"x = 1\n" * 200_000)
+        # A parserless blob past the cap: the counter must still fire, or the
+        # size guard has been removed rather than narrowed.
+        big = tmp_path / "big.json"
+        big.write_bytes(b'{"k": 1}\n' * 200_000)
         (tmp_path / "small.py").write_text("pass")
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         list(traverser.traverse())

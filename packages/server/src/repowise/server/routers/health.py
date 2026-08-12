@@ -14,7 +14,7 @@ from repowise.core.persistence.coordinator import AtomicStorageCoordinator
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob, Page
 from repowise.server import __version__
-from repowise.server.deps import get_db_session, get_vector_store
+from repowise.server.deps import get_db_session, get_vector_store, verify_api_key
 from repowise.server.schemas import CoordinatorHealthResponse, HealthResponse
 
 router = APIRouter(tags=["health"])
@@ -79,7 +79,9 @@ async def metrics(request: Request) -> str:
     return Response(content="\n".join(lines) + "\n", media_type="text/plain")
 
 
-_repo_health_router = APIRouter(prefix="/api/repos", tags=["health"])
+_repo_health_router = APIRouter(
+    prefix="/api/repos", tags=["health"], dependencies=[Depends(verify_api_key)]
+)
 
 
 @_repo_health_router.get("/{repo_id}/health/coordinator", response_model=CoordinatorHealthResponse)

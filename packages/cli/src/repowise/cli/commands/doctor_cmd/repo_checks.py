@@ -484,6 +484,10 @@ def _run_repo_checks(
     registration_check, registration_wedged = _claude_registration_check()
     checks.append(registration_check)
 
+    # 13. Per-agent health, reported by each agent's own descriptor
+    agent_checks, agents_need_refresh = _agent_target_checks()
+    checks.extend(agent_checks)
+
     all_ok = all(c.ok for c in checks)
 
     if fmt != "table":
@@ -679,8 +683,24 @@ def _run_repo_checks(
 
         repaired_count = run_async(_repair())
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
-    elif repair and not has_mismatches and not registration_wedged:
+    elif repair and not has_mismatches and not registration_wedged and not agents_need_refresh:
         console.print("[green]Nothing to repair.[/green]")
+
+    if repair and agents_need_refresh:
+        from repowise.cli.commands.agents_cmd import refresh_wired_agents
+
+        console.print("\n[bold]Refreshing agent integrations...[/bold]")
+        payload = refresh_wired_agents(repo_path)
+        for agent in payload["agents"]:
+            for scope, write in agent["writes"].items():
+                for entry in write["files"]:
+                    console.print(f"  {agent['id']} [{scope}]: {entry['action']} {entry['path']}")
+        if not payload["changed"]:
+            console.print(
+                "[yellow]Nothing moved. A hook whose matcher is stale needs "
+                "[bold]repowise hook rewrite install[/bold]; a damaged config file "
+                "has to be fixed or removed by hand.[/yellow]"
+            )
 
     if repair and registration_wedged:
         from repowise.cli.editor_integrations.claude_config import register_with_claude_code
@@ -697,6 +717,61 @@ def _run_repo_checks(
             )
 
     return all_ok, checks
+
+
+def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
+    """One row per agent, reported by that agent's own descriptor.
+
+    Nothing here knows what any particular agent's health means: each
+    ``AgentTarget`` answers for itself, so a fourth agent gets a doctor row by
+    being registered rather than by someone adding a branch to this function.
+
+    Only ``broken`` fails the run, and the line is drawn there on purpose.
+    ``not-installed`` is not a failure — an agent you do not use is not a
+    problem with your setup — and neither is ``stale``, which is advisory in
+    the same way the "Distill rewrite hook" row above it already is. A stale
+    matcher is common, opt-in surfaces go stale routinely, and making it fail
+    would turn ``repowise doctor`` non-zero in CI for a condition nobody asked
+    the tool to guarantee. ``broken`` means a config file is damaged, which is
+    a real fault in the setup being checked.
+
+    Advisory does not mean quiet. The stale row is the reason this function
+    exists: a hook whose matcher names a tool the host has since renamed is
+    installed, parses, and will never fire, which is indistinguishable from
+    working unless something says so out loud. It is also the agreed mitigation
+    for gating the self-heal migrations on ``REPOWISE_SKIP_EDITOR_SETUP`` —
+    someone who exports that permanently never gets the migration, so the
+    staleness has to be visible somewhere. It is printed, and it drives
+    ``--repair``; it just does not change the exit code.
+
+    Returns ``(checks, needs_refresh)``; ``needs_refresh`` drives ``--repair``.
+    """
+    from repowise.cli.agent_targets.registry import all_targets
+
+    checks: list[DoctorCheck] = []
+    needs_refresh = False
+    try:
+        targets = all_targets()
+    except Exception as exc:  # pragma: no cover - a broken registry is a crash elsewhere
+        return [_check("Agent integrations", True, f"Could not check: {exc}")], False
+
+    for target in targets:
+        name = f"Agent: {target.id}"
+        try:
+            report = target.doctor()
+        except Exception as exc:
+            checks.append(_check(name, True, f"Could not check: {exc}"))
+            continue
+        if report.status.value in ("ok", "not-installed"):
+            detail = report.issues[0] if report.issues else "wired up"
+            checks.append(_check(name, True, detail))
+            continue
+        needs_refresh = True
+        detail = "; ".join(report.issues)
+        if report.fix_command:
+            detail += f" (run: {report.fix_command})"
+        checks.append(_check(name, report.status.value != "broken", detail))
+    return checks, needs_refresh
 
 
 def _claude_registration_check() -> tuple[DoctorCheck, bool]:

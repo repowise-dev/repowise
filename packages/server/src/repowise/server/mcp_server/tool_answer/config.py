@@ -429,9 +429,15 @@ _SYSTEM_PROMPT = (
     "Aim for 150–400 words — enough to cover the asked aspects without "
     "padding. If a [question-match] symbol's source body is provided, "
     "you have enough material to answer — ground in that body. Only "
-    "hedge (say 'inspect the source' / 'the excerpts do not contain…') "
-    "when there is genuinely no relevant signature, docstring, or source "
-    "body in the excerpts. Never invent file paths."
+    "hedge about having enough material (say 'inspect the source' / "
+    "'the excerpts do not contain…') when there is genuinely no relevant "
+    "signature, docstring, or source body in the excerpts. Never assert "
+    "exhaustiveness: state what the retrieved excerpts show, not that "
+    "they are the complete set of sites. Unattributed exclusivity "
+    "language ('entirely', 'the sole', 'the only place', 'depends only on') "
+    "is not justified from a top-k slice — omit it unless the retrieved "
+    "material itself (an assertion, a type constraint, or an explicit "
+    "comment) says so. Never invent file paths."
 )
 
 _USER_TEMPLATE = """\
@@ -444,6 +450,8 @@ Project wiki excerpts (top {n} retrieval hits):
 Answer thoroughly (150–400 words). Cite file paths inline and line
 numbers when the excerpt provides them. Prefer a structured layout
 (headings, bullets, short code block from the source body) on
-mechanism / architecture questions. Only hedge if no signature,
-docstring, or source body in the excerpts is relevant.
+mechanism / architecture questions. Only hedge about having enough
+material if no signature, docstring, or source body in the excerpts is
+relevant. Do not assert that what you were shown is the complete set
+of sites; qualify causal claims when a symbol's body was truncated.
 """

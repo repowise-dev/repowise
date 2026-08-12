@@ -170,7 +170,7 @@ def export_command(
                     {
                         "file_path": f.file_path,
                         "symbol_name": f.symbol_name,
-                        "finding_type": f.finding_type,
+                        "kind": f.kind,
                         "confidence": f.confidence,
                         "safe_to_delete": f.safe_to_delete,
                     }

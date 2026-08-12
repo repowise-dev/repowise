@@ -186,3 +186,44 @@ def _frame_term_grounding(
         else:
             ungrounded.append(t)
     return sorted(ungrounded), grounded
+
+
+# Unattributed exclusivity tokens. Words like "entirely" / "the sole" assert
+# a global property ("I have seen every relevant site") that get_answer cannot
+# observe from a top-k slice. They are only valid when the retrieved material
+# itself makes the claim (a type constraint, an assertion, an explicit comment).
+# "always" / "never" are intentionally excluded — those are temporal, not
+# spatial exhaustiveness claims, and are legitimate when quoting a constraint.
+_EXCLUSIVITY_TOKENS = (
+    "entirely",
+    "solely",
+    "the only",
+    "the sole",
+    "only cause",
+    "only place",
+    "depends only on",
+    "only reason",
+)
+
+
+def _has_unqualified_exclusivity_over_truncated(
+    answer_text: str,
+    symbol_bodies: list[dict],
+) -> bool:
+    """True when the prose makes an exclusivity claim over a truncated body.
+
+    The co-occurrence of (1) an unattributed exclusivity token in the prose
+    and (2) truncated: true on any symbol_bodies entry is the structural bug
+    from issue #1444: exhaustiveness is asserted from a sample the pipeline
+    knows is incomplete.
+
+    Does not fire when no symbol body was truncated — the check gates on the
+    structured flag already present in the response, so it is a no-op on the
+    common case where all bodies were served whole.
+    """
+    if not any(b.get("truncated") for b in (symbol_bodies or [])):
+        return False
+    low = (answer_text or "").lower()
+    low = low.replace("\u2019", "'").replace("\u02bc", "'")
+    return any(tok in low for tok in _EXCLUSIVITY_TOKENS)
+

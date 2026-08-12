@@ -1463,13 +1463,16 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     # ---- Health findings + per-file metrics ---------------------------------
     if getattr(result, "health_report", None):
         hr = result.health_report
-        await save_health_metrics(session, repo_id, hr.metrics or [])
+        # Hoisted out of the coverage branch below: the same sha now stamps the
+        # metric rows, so a reader can tell how far the health pass lags the
+        # index instead of assuming the two moved together.
+        head_sha = getattr(result, "head_commit", None) or getattr(result, "commit_sha", None)
+        await save_health_metrics(session, repo_id, hr.metrics or [], analyzed_commit=head_sha)
         if hr.findings:
             await save_health_findings(session, repo_id, hr.findings)
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)
         if coverage_files:
-            head_sha = getattr(result, "head_commit", None) or getattr(result, "commit_sha", None)
             await save_coverage_files(
                 session,
                 repo_id,
