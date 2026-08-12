@@ -160,7 +160,9 @@ def save_mcp_config(repo_path: Path) -> Path:
     """
     from repowise.cli.agent_targets.formats.json_merge import write_json_config
 
-    config_path = repo_path / ".repowise" / "mcp.json"
+    repowise_dir = repo_path / ".repowise"
+    repowise_dir.mkdir(parents=True, exist_ok=True)
+    config_path = repowise_dir / "mcp.json"
     write_json_config(config_path, generate_mcp_config(repo_path))
     return config_path
 
@@ -295,16 +297,6 @@ def _has_repowise_hook_for_matcher(hook_list: list, matcher: object) -> bool:
     from repowise.cli.agent_targets.targets.codex import _has_augment_hook_for_matcher
 
     return _has_augment_hook_for_matcher(hook_list, matcher)
-
-
-# The Codex hook matcher used to be imported from here by callers that wanted
-# the installed matcher without importing the adapter. Kept as a lazy accessor
-# rather than a module-scope import: this module is reachable from the CLI
-# startup path and the adapter package is stdlib-only by design.
-def _shell_tool_matcher() -> str:
-    from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
-
-    return SHELL_TOOL_MATCHER
 
 
 __all__ = [

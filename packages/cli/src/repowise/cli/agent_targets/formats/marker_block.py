@@ -102,6 +102,16 @@ def upsert(
     replacement *string*. Instruction bodies are prose that can legitimately
     contain either, and the failure mode is a corrupted managed block or a
     ``bad escape`` crash at install time.
+
+    **Known gap, carried over deliberately.** Against a malformed pair this does
+    the wrong thing quietly: an orphaned start marker matches ``start in
+    existing`` but not the regex, so nothing is written and it reports
+    ``False`` — "unchanged" while the block is in fact absent — and a duplicated
+    block is rewritten in both places rather than collapsed. :func:`inspect`
+    exists to name both states and this function does not yet consult it. The
+    hand-rolled writer this replaced had the identical blind spot, so preserving
+    it keeps the rewrite behaviour-neutral; it should be closed before Phase 5
+    adds targets that inherit this helper.
     """
     wrapped = f"{start}{body}{end}"
     if not path.exists():
@@ -115,7 +125,12 @@ def upsert(
     else:
         content = existing.rstrip() + "\n\n" + wrapped + "\n"
 
-    if content == existing:
+    # Compare *bytes*, not the decoded text. ``read_text`` collapses CRLF to LF
+    # in memory, so a CRLF file whose block is already current compares equal to
+    # the LF content we are about to write — and short-circuiting there would
+    # leave the file CRLF, where an unconditional write normalised it. That is a
+    # whole-file diff on any Windows checkout with ``core.autocrlf=true``.
+    if content.encode("utf-8") == path.read_bytes():
         return False
     atomic_write_text(path, content, newline="\n")
     return True

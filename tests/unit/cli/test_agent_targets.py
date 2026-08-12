@@ -321,12 +321,47 @@ def test_json_deep_equal_does_not_confuse_bool_and_int() -> None:
     assert not json_merge.json_deep_equal({"hooks": True}, {"hooks": 1})
 
 
+def test_json_deep_equal_separates_int_from_float() -> None:
+    """The contract is "the bytes would not move", and 1 and 1.0 serialize differently.
+
+    Treating them as equal would report ``unchanged`` for a write that does
+    change the file.
+    """
+    assert not json_merge.json_deep_equal({"timeout": 1}, {"timeout": 1.0})
+    assert json.dumps(1) != json.dumps(1.0)
+
+
 def test_atomic_write_leaves_no_temp_file_behind(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "config.json"
+    target.parent.mkdir()
     json_merge.atomic_write_text(target, '{"a": 1}\n')
 
     assert target.read_text(encoding="utf-8").startswith("{")
     assert [p.name for p in target.parent.iterdir()] == ["config.json"]
+
+
+def test_atomic_write_does_not_create_parent_directories(tmp_path: Path) -> None:
+    """A missing parent stays a loud failure rather than a silently-created tree.
+
+    ``.mcp.json`` is the one writer that never created its parent, so a
+    nonexistent repo path raised. Creating it here would turn that into a
+    success that writes config into a directory nobody asked for.
+    """
+    missing = tmp_path / "no-such-repo" / "config.json"
+    with pytest.raises(OSError):
+        json_merge.atomic_write_text(missing, "{}\n")
+    assert not missing.parent.exists()
+
+
+def test_atomic_write_preserves_an_existing_files_permissions(tmp_path: Path) -> None:
+    """A temp-file rename installs the temp's umask-derived mode; restore the original."""
+    target = tmp_path / "config.json"
+    target.write_text("{}\n", encoding="utf-8")
+    before = target.stat().st_mode
+
+    json_merge.atomic_write_text(target, '{"a": 1}\n')
+
+    assert target.stat().st_mode == before
 
 
 def test_atomic_write_preserves_the_original_when_the_write_fails(
@@ -364,6 +399,29 @@ def test_marker_block_upsert_is_idempotent(tmp_path: Path) -> None:
     doc = tmp_path / "AGENTS.md"
     assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is True
     assert marker_block.upsert(doc, "\nbody\n", "<!--S-->", "<!--E-->") is False
+
+
+def test_marker_block_normalizes_a_crlf_file_whose_block_is_current(tmp_path: Path) -> None:
+    """A CRLF file with an already-current block still gets normalized to LF.
+
+    The subtle one. ``read_text`` collapses CRLF to LF in memory, so comparing
+    decoded text says "identical" while the bytes on disk are not — and the
+    upsert would return early, leaving the file CRLF where an unconditional
+    write normalized it. That is a whole-file diff on any Windows checkout with
+    ``core.autocrlf=true`` running ``repowise update``.
+    """
+    doc = tmp_path / "AGENTS.md"
+    body = "\nmanaged\n"
+    lf_content = f"# Notes\r\n\r\n<!--S-->{body}<!--E-->\n".replace("\n", "\r\n")
+    doc.write_bytes(lf_content.encode("utf-8"))
+    assert b"\r\n" in doc.read_bytes()
+
+    changed = marker_block.upsert(doc, body, "<!--S-->", "<!--E-->")
+
+    assert changed is True
+    assert b"\r\n" not in doc.read_bytes()
+    # A second pass has nothing left to do.
+    assert marker_block.upsert(doc, body, "<!--S-->", "<!--E-->") is False
 
 
 def test_marker_block_uses_lf_regardless_of_platform(tmp_path: Path) -> None:

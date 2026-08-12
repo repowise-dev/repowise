@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -80,12 +81,11 @@ def json_deep_equal(left: Any, right: Any) -> bool:
     :attr:`~..types.FileAction.UNCHANGED` instead of rewriting a file whose
     bytes would not move.
     """
-    if type(left) is not type(right) and not (
-        isinstance(left, (int, float))
-        and isinstance(right, (int, float))
-        and not isinstance(left, bool)
-        and not isinstance(right, bool)
-    ):
+    # Strict on type, including across the numeric tower. The contract is "the
+    # bytes would not move", and ``json.dumps`` renders 1 and 1.0 differently,
+    # so treating them as equal would report ``unchanged`` for a write that
+    # changes the file. ``True == 1`` in Python makes bool-vs-int the same trap.
+    if type(left) is not type(right):
         return False
     if isinstance(left, dict):
         if set(left) != set(right):
@@ -118,10 +118,23 @@ def backup_unparseable(config_path: Path) -> Path | None:
 
 
 def atomic_write_text(path: Path, content: str, *, newline: str | None = None) -> None:
-    """Write *content* via ``<path>.tmp.<pid>`` then rename.
+    """Write *content* atomically, preserving what a plain write would preserve.
 
-    A crash or a full disk mid-write leaves the original file intact instead of
-    truncated. ``os.replace`` is the atomic rename on both POSIX and Windows.
+    The atomic mechanics are ``core.fsutils.atomic_write_text`` — temp file in
+    the destination directory, then rename — rather than a second copy of the
+    same eight lines. What this wrapper adds is the two things a temp-file
+    rename silently loses that a plain ``write_text`` kept:
+
+    * **Symlinks.** ``os.replace`` replaces the *link*; a plain write follows
+      it. Dotfile setups do symlink ``.mcp.json``, so the link is resolved
+      first and the write lands on its target.
+    * **Permissions.** The temp file's mode is umask-derived, so replacing an
+      existing file would quietly reset its bits. The prior mode is restored.
+
+    Parent directories are **not** created. Every caller that needs one already
+    creates it at the point where it knows the directory is legitimately
+    absent; creating them here turned a missing repo path from a loud
+    ``FileNotFoundError`` into a silently-created tree.
 
     *newline* is passed through rather than defaulted, because the two
     disciplines in this codebase are both deliberate: config files take the
@@ -129,15 +142,20 @@ def atomic_write_text(path: Path, content: str, *, newline: str | None = None) -
     ``"\\n"`` explicitly so a repo-shared file does not change line endings
     depending on who ran the command. Getting this wrong is a whole-file diff.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    try:
-        tmp.write_text(content, encoding="utf-8", newline=newline)
-        os.replace(tmp, path)
-    except BaseException:
+    from repowise.core.fsutils import atomic_write_text as _atomic_write_text
+
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+
+    mode: int | None = None
+    with contextlib.suppress(OSError):
+        if target.exists():
+            mode = stat.S_IMODE(target.stat().st_mode)
+
+    _atomic_write_text(target, content, newline=newline)
+
+    if mode is not None:
         with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
+            os.chmod(target, mode)
 
 
 def write_json_config(path: Path, data: dict) -> None:
