@@ -114,6 +114,11 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
     expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
 )
+from repowise.server.mcp_server._symbol_lookup import (
+    bare_name,
+    parse_symbol_id,
+    resolve_symbol_rows,
+)
 from repowise.server.mcp_server.tool_answer.confidence import (
     _answer_is_hedged,
     _frame_term_grounding,
@@ -167,6 +172,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_value_answer,
     _hydrate_candidate_defines,
     _hydrate_symbols_for_hits,
+    _read_repo_text,
     _read_symbol_source,
     build_homonym_union_bodies,
     is_symbol_lookup_question,
@@ -519,6 +525,48 @@ def _is_readable_path(target: str) -> bool:
     dot = t.rfind(".")
     ext = t[dot + 1 :] if dot != -1 else ""
     return bool(ext) and ext.isalnum() and len(ext) <= 6
+
+
+async def _first_resolvable_id(
+    ids: list[str], ctx, repository, exclude_spec
+) -> str | None:
+    """The first id ``get_symbol`` would actually answer, or None if none would.
+
+    The note and ``next_action_hint`` below interpolate a ``symbol_id`` straight
+    out of the scanner. The scanner is a regex over source lines, so it can name
+    something that is not a symbol, and an answer must never advertise a next
+    action that dead-ends.
+
+    ``get_symbol`` has THREE outcomes and only one of them is a failure: an
+    indexed row, a live-grep fallback when the name is in the file but not the
+    index, and nothing at all. Treating the live-grep case as unresolvable is a
+    mistake already made once while measuring this — it read mui as "90%
+    unresolvable" when the truth was "90% no index row, all still usable" — so
+    the live-grep outcome counts as resolved here too.
+
+    Deliberately conservative in the other direction: an id whose file cannot be
+    read is KEPT, because an unreadable file is absence of evidence, not
+    evidence the id is fabricated. Only a positive read that does not contain
+    the name, with no index row either, disqualifies one.
+    """
+    repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+    for sid in ids:
+        file_part, name_part = parse_symbol_id(sid)
+        if not file_part or not name_part:
+            continue
+        if is_excluded(file_part, exclude_spec):
+            # get_symbol refuses excluded paths outright, index row or not.
+            continue
+        text = _read_repo_text(repo_root, file_part)
+        if text is None or bare_name(name_part) in text:
+            return sid
+        # The name is provably absent from the live file, so the live-grep leg
+        # cannot fire. An indexed row is the only way get_symbol still answers.
+        with contextlib.suppress(Exception):
+            async with get_session(ctx.session_factory) as session:
+                if await resolve_symbol_rows(session, repository.id, sid):
+                    return sid
+    return None
 
 
 def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], question: str):
@@ -2033,12 +2081,23 @@ async def get_answer(
             ]
             _continuing_names = {b["name"] for b in _continuing}
             _absent = [n for n in withheld_implicated if n not in _continuing_names]
-            _ids = [
-                s["symbol_id"]
-                for b in symbol_bodies
-                for s in (b.get("withheld_symbols") or [])
-                if s.get("name") in set(_absent)
-            ]
+            # Only advertise an id get_symbol can actually answer. The scanner
+            # that produced these is a regex over source lines, so it can name
+            # something that is not a symbol, and the id does not stay in a list
+            # of eight — it becomes the next action the payload tells the agent
+            # to take. When none resolves the names are still reported; only the
+            # dead pointer is withheld.
+            _hint_id = await _first_resolvable_id(
+                [
+                    s["symbol_id"]
+                    for b in symbol_bodies
+                    for s in (b.get("withheld_symbols") or [])
+                    if s.get("name") in set(_absent)
+                ],
+                ctx,
+                repository,
+                exclude_spec,
+            )
             _parts = []
             if _absent:
                 _parts.append(
@@ -2046,8 +2105,8 @@ async def get_answer(
                     f"{', '.join(_absent)}."
                     + (
                         " Continue in this tool with "
-                        f"get_symbol id='{_ids[0]}' before relying on the mechanism."
-                        if _ids
+                        f"get_symbol id='{_hint_id}' before relying on the mechanism."
+                        if _hint_id
                         else ""
                     )
                 )
@@ -2063,8 +2122,8 @@ async def get_answer(
                 )
             payload["note"] = " ".join(_parts)
             payload["next_action_hint"] = (
-                f"call get_symbol id='{_ids[0]}' for the withheld body"
-                if _ids
+                f"call get_symbol id='{_hint_id}' for the withheld body"
+                if _hint_id
                 else (
                     f"call get_symbol id='{_continuing[0]['continuation']}' for the rest "
                     f"of {_continuing[0]['name']}"
