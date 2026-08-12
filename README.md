@@ -34,7 +34,7 @@
   <a href="#past-one-repo">Workspaces</a> ·
   <a href="#quickstart-under-5-minutes-no-api-key">Quickstart</a> ·
   <a href="#supported-agents">Agents</a> ·
-  <a href="#the-eleven-mcp-tools">MCP tools</a> ·
+  <a href="#the-ten-mcp-tools">MCP tools</a> ·
   <a href="#measured-against-the-field">Benchmarks</a> ·
   <a href="#how-it-compares-on-capability">Comparison</a> ·
   <a href="#for-teams--enterprises">Teams</a>
@@ -66,7 +66,7 @@ Free and self-hosted, runs on your machine, and the first index needs no API key
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/one-index-dark.svg" />
-  <img src=".github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and eleven MCP tools" width="100%" />
+  <img src=".github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
 </picture>
 
 </div>
@@ -87,7 +87,7 @@ for all of it. One `pip install`, no cloud, your code never leaves your machine.
 
 ## Your agent stops guessing
 
-repowise exposes **eleven task-shaped MCP tools** to Claude Code, Codex, Cursor, VS Code
+repowise exposes **ten task-shaped MCP tools** to Claude Code, Codex, Cursor, VS Code
 and anything else that speaks MCP. Most tools are built around data entities (one
 file, one symbol), which forces agents into long chains of sequential calls. These are
 built around **tasks**: pass several targets in one call, get complete context back.
@@ -543,7 +543,7 @@ Full walkthrough: **[docs/start/QUICKSTART.md →](docs/start/QUICKSTART.md)**
 
 ---
 
-## The eleven MCP tools
+## The ten MCP tools
 
 Every response carries an `_meta` envelope with `index_age_days`, `indexed_commit`, and
 a `stale_warning` that fires only when the indexed HEAD diverges from live `.git/HEAD`,
@@ -561,9 +561,8 @@ so your agent always knows how much to trust what it just read.
 | `get_why(query?, targets?)` | Architectural decisions and their verbatim evidence spans, stamped exact / fuzzy / unverified. Falls back to git archaeology when no decisions exist. |
 | `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates, and cross-repo consumer detection in workspace mode. |
 | `get_health(targets?, include?)` | Per-file marker scores across all three signals. `include` opens coverage, trends, per-file signals, the accuracy self-check, and structured refactoring plans. |
-| `list_repos()` | Repo aliases this server is serving. Discover `repo=` targets (especially in a workspace). |
 
-Eleven is a deliberate ceiling rather than a limit we ran into: a small, task-shaped
+Ten is a deliberate ceiling rather than a limit we ran into: a small, task-shaped
 surface is easier for an agent to choose from than a large one. Worked example (*"add
 rate limiting to all API endpoints"* in 5 calls instead of ~30 greps and reads), the
 opt-in tools, and the full reference: **[docs/agent/MCP_TOOLS.md →](docs/agent/MCP_TOOLS.md)**

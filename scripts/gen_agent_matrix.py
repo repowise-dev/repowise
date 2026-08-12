@@ -66,6 +66,13 @@ PASTE_CONFIG_HOSTS: tuple[str, ...] = (
     "Amp",
 )
 
+#: Default-surface tools the README's curated list leaves out. ``list_repos``
+#: answers "which repos is this server serving", which is discovery rather than
+#: one of the task-shaped tools the README is selling, and a reader counting
+#: capabilities should not have it padding the number. Everything downstream of
+#: the README states the real surface instead.
+NON_FLAGSHIP_TOOLS: frozenset[str] = frozenset({"list_repos"})
+
 TIER_BLURBS: dict[str, tuple[str, str]] = {
     "full": (
         "Full",
@@ -143,16 +150,23 @@ def tool_counts() -> dict[str, int]:
 
     ensure_full_surface()
     entries = mcp_tool_registry.entries()
+    default_names = resolve_enabled_tools(entries, is_workspace=False)
     # Every count goes through the resolver the server itself uses, including
     # the lean ones. Counting ``LEAN_TOOLS`` directly looks equivalent and is
     # not: the resolver drops a lean name the registry no longer carries, so a
     # renamed tool would leave the published "six tools" claiming a surface the
     # server had quietly trimmed to five.
-    single_repo = len(resolve_enabled_tools(entries, is_workspace=False))
+    single_repo = len(default_names)
     workspace = len(resolve_enabled_tools(entries, is_workspace=True))
     return {
         "total": len(entries),
         "single_repo": single_repo,
+        # The README and the hero image count the *flagship* tools, which is a
+        # narrower and deliberate claim: the task-shaped ones the pitch is
+        # about. It is the default surface minus the discovery utilities, and
+        # it is derived here rather than typed, so a twelfth default tool moves
+        # the README too. Docs keep the precise surface numbers.
+        "flagship": len(default_names - NON_FLAGSHIP_TOOLS),
         "workspace": workspace,
         # The delta is published in its own right ("adds two more"), so it is
         # derived rather than written as a literal next to a derived total.

@@ -223,12 +223,15 @@ def test_the_hooks_column_cannot_lie() -> None:
 #: say "the ten flagship tools" are describing a documented subset rather than
 #: the default surface.
 COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
-    ("README.md", "single_repo", "**{w} task-shaped MCP tools**"),
-    ("README.md", "single_repo", "## The {w} MCP tools"),
-    ("README.md", "single_repo", "#the-{w}-mcp-tools"),
-    ("README.md", "single_repo", "decisions, and {w} MCP tools"),
-    ("docs/README.md", "single_repo", "decisions, and {w} MCP tools"),
-    ("docs/README.md", "single_repo", "The {w} task-shaped tools,"),
+    # The README and the image at the top of it count the flagship tools, a
+    # narrower claim than the advertised surface. See NON_FLAGSHIP_TOOLS.
+    ("README.md", "flagship", "**{w} task-shaped MCP tools**"),
+    ("README.md", "flagship", "## The {w} MCP tools"),
+    ("README.md", "flagship", "#the-{w}-mcp-tools"),
+    ("README.md", "flagship", "decisions, and {w} MCP tools"),
+    ("README.md", "flagship", "{W} is a deliberate ceiling"),
+    ("docs/README.md", "flagship", "decisions, and {w} MCP tools"),
+    ("docs/README.md", "flagship", "The {w} task-shaped tools,"),
     ("docs/agent/MCP_TOOLS.md", "total", "{n} tools are registered in total"),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "advertises {n} by default"),
     ("docs/business/COMMERCIAL.md", "single_repo", "the {w} MCP tools,"),
@@ -277,13 +280,76 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "lean",
         "--tools lean        # {w}-tool agent-lean profile",
     ),
-    ("scripts/gen_readme_hero.py", "single_repo", '"{n} MCP tools"'),
-    ("scripts/gen_readme_hero.py", "single_repo", "decisions, and {w} MCP tools"),
-    (".github/assets/one-index.svg", "single_repo", "{n} MCP tools"),
-    (".github/assets/one-index.svg", "single_repo", "decisions, and {w} MCP tools"),
-    (".github/assets/one-index-dark.svg", "single_repo", "{n} MCP tools"),
-    (".github/assets/one-index-dark.svg", "single_repo", "decisions, and {w} MCP tools"),
+    ("scripts/gen_readme_hero.py", "flagship", '"{n} MCP tools"'),
+    ("scripts/gen_readme_hero.py", "flagship", "decisions, and {w} MCP tools"),
+    (".github/assets/one-index.svg", "flagship", "{n} MCP tools"),
+    (".github/assets/one-index.svg", "flagship", "decisions, and {w} MCP tools"),
+    (".github/assets/one-index-dark.svg", "flagship", "{n} MCP tools"),
+    (".github/assets/one-index-dark.svg", "flagship", "decisions, and {w} MCP tools"),
 )
+
+
+def test_the_flagship_set_is_a_real_subset_of_the_default_surface() -> None:
+    """Removing a name that is not there would silently do nothing.
+
+    ``flagship`` is the default surface minus :data:`NON_FLAGSHIP_TOOLS`. If a
+    tool in that set is renamed or made opt-in, the subtraction stops removing
+    anything and the README's ten quietly becomes the surface's eleven, which
+    is precisely the drift this file exists to catch.
+    """
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import ensure_full_surface
+    from repowise.server.mcp_server._tool_selection import resolve_enabled_tools
+
+    ensure_full_surface()
+    default = resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=False)
+    absent = GEN.NON_FLAGSHIP_TOOLS - default
+    assert not absent, (
+        f"{sorted(absent)} are excluded from the flagship count but are not in the "
+        "default surface, so excluding them does nothing. Update NON_FLAGSHIP_TOOLS "
+        "in scripts/gen_agent_matrix.py."
+    )
+    assert COUNTS["flagship"] == COUNTS["single_repo"] - len(GEN.NON_FLAGSHIP_TOOLS)
+
+
+def test_the_readme_tool_table_lists_exactly_the_flagship_tools() -> None:
+    """The count above the table and the rows in it are one claim, not two.
+
+    This is how the README drifted: a row was added for `list_repos` and the
+    heading followed it to eleven while the pitch above stayed at ten. A phrase
+    guard on the heading alone would have called that consistent.
+    """
+    readme = _on_disk(ROOT / "README.md")
+    heading = f"## The {GEN.spell(COUNTS['flagship'])} MCP tools"
+    start = readme.index(heading)
+    section = readme[start : readme.index("\n## ", start + 1)]
+    listed = re.findall(r"^\| `([a-z_]+)\(", section, re.M)
+    assert len(listed) == COUNTS["flagship"], (
+        f"README.md's tool table lists {len(listed)} tools ({listed}) but the "
+        f"flagship count is {COUNTS['flagship']}."
+    )
+    excluded = sorted(set(listed) & GEN.NON_FLAGSHIP_TOOLS)
+    assert not excluded, (
+        f"{excluded} is excluded from the README's count but has a row in its table."
+    )
+
+
+@pytest.mark.parametrize(
+    "relpath", [".github/assets/one-index.svg", ".github/assets/one-index-dark.svg"]
+)
+def test_the_hero_image_draws_as_many_tools_as_it_claims(relpath: str) -> None:
+    """The card headline and the chips under it are the same claim.
+
+    They came apart once already: the headline moved and the chip list did not,
+    so the first image in the README said eleven over ten chips.
+    """
+    svg = _on_disk(ROOT / relpath)
+    chips = re.findall(r'<text[^>]*class="mono"[^>]*>([^<]+)</text>', svg)
+    assert len(chips) == COUNTS["flagship"], (
+        f"{relpath} draws {len(chips)} tool chips ({chips}) against a headline of "
+        f"{COUNTS['flagship']}. Fix the list in scripts/gen_readme_hero.py and "
+        "regenerate both themes."
+    )
 
 
 def _phrase(template: str, count: int) -> str:

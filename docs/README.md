@@ -4,7 +4,7 @@ Index your codebase once. Your agent stops greping, your team stops guessing
 which PR is dangerous, and both get their answers from the same place.
 
 <div align="center">
-  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and eleven MCP tools" width="100%" />
+  <img src="../.github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
 </div>
 
 New here? **[Quickstart](start/QUICKSTART.md)** gets you indexed and connected to
@@ -38,7 +38,7 @@ your agent in under five minutes, with no API key.
 | Doc | What it covers |
 |-----|----------------|
 | [agent/INTEGRATIONS.md](agent/INTEGRATIONS.md) | Which agents are supported at what depth, generated from the code, plus the recipe for adding one |
-| [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The eleven task-shaped tools, what each answers, and worked multi-tool examples |
+| [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and worked multi-tool examples |
 | [agent/HOOKS.md](agent/HOOKS.md) | Proactive delivery: context and warnings that arrive without the agent asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | `repowise distill`: compress noisy command output before your agent reads it |
 | [agent/VSCODE.md](agent/VSCODE.md) | The VS Code extension: health in the gutter, risk before you push, dashboards in the editor |
