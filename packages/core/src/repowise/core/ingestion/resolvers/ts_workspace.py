@@ -1,10 +1,15 @@
 """npm/yarn/pnpm workspace package resolution for TypeScript imports.
 
 Reads the root ``package.json``'s ``workspaces`` field (string list or
-``{"packages": [...]}`` form), expands glob patterns, and reads each
-sibling package's ``name`` field. The resulting ``{pkg_name: dir_posix}``
-map lets the TS resolver turn ``import x from "@myorg/foo"`` into the
-correct intra-repo file rather than an ``external:`` node.
+``{"packages": [...]}`` form) and ``pnpm-workspace.yaml``'s ``packages``
+list, expands glob patterns, and reads each sibling package's ``name``
+field. The resulting ``{pkg_name: dir_posix}`` map lets the TS resolver
+turn ``import x from "@myorg/foo"`` into the correct intra-repo file
+rather than an ``external:`` node.
+
+Both manifests are consulted because they are not interchangeable: pnpm
+does not read the ``workspaces`` field at all, so a pnpm monorepo
+declares its members only in ``pnpm-workspace.yaml``.
 
 Subpath imports (``@myorg/foo/bar/baz``) honour Node.js ``"exports"``
 subpath patterns when the workspace's ``package.json`` declares them:
@@ -25,6 +30,7 @@ flattened to the first plausible source target. Packages without an
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -229,10 +235,71 @@ def _read_workspaces_field(pkg_data: dict) -> list[str]:
     return []
 
 
+# pnpm names this file exactly. ``.yml`` is a long-standing request
+# (pnpm/pnpm#1380), not a supported spelling — honouring it would map
+# members from a manifest pnpm itself ignores.
+_PNPM_WORKSPACE_FILENAME = "pnpm-workspace.yaml"
+
+
+def _read_pnpm_workspace_patterns(repo_path: Path) -> tuple[list[str], list[str]] | None:
+    """Return ``(includes, excludes)`` member globs from ``pnpm-workspace.yaml``.
+
+    ``None`` means "not a pnpm workspace" — the manifest is absent or could
+    not be parsed. That is distinct from ``([], [])``, which means "a pnpm
+    workspace that declares no member globs", i.e. root-only: pnpm's
+    ``packages`` setting is optional and "if the field is omitted, only the
+    root package is included in the workspace". Since pnpm 10 the same file
+    also holds ``catalog``, ``onlyBuiltDependencies`` and other settings, so
+    a manifest with no ``packages`` key is normal rather than an error.
+
+    pnpm ignores ``package.json``'s ``workspaces`` field entirely, so a pnpm
+    monorepo declares its members only here::
+
+        packages:
+          - "apps/*"
+          - "packages/*"
+          - "!**/__fixtures__/**"
+
+    A leading ``!`` negates the pattern. Negated entries come back separately
+    because they are applied by expanding them the same way includes are
+    expanded and subtracting the result — see :func:`build_workspace_info`.
+    """
+    import yaml
+
+    manifest = repo_path / _PNPM_WORKSPACE_FILENAME
+    if not manifest.is_file():
+        return None
+    try:
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    entries = data.get("packages")
+    if not isinstance(entries, list):
+        # A settings-only manifest (catalog, onlyBuiltDependencies, ...) is
+        # still a pnpm workspace — root-only.
+        return [], []
+    includes: list[str] = []
+    excludes: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        pattern = entry.strip()
+        if pattern.startswith("!"):
+            negated = pattern[1:].strip()
+            if negated:
+                excludes.append(negated)
+        elif pattern:
+            includes.append(pattern)
+    return includes, excludes
+
+
 def build_workspace_map(repo_path: Path | None) -> dict[str, str]:
     """Return ``{package_name: dir_posix}`` for every workspace package.
 
-    Empty dict if no root ``package.json`` or no ``workspaces`` field.
+    Empty dict when neither ``package.json``'s ``workspaces`` field nor
+    ``pnpm-workspace.yaml`` declares any members.
     """
     return {name: info["dir"] for name, info in build_workspace_info(repo_path).items()}
 
@@ -248,47 +315,80 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
     """
     if repo_path is None or not repo_path.is_dir():
         return {}
-    root_pkg = repo_path / "package.json"
-    if not root_pkg.is_file():
-        return {}
-    try:
-        data = json.loads(root_pkg.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    patterns = _read_workspaces_field(data)
-    if not patterns:
+
+    # pnpm keeps its member globs in ``pnpm-workspace.yaml`` and does not read
+    # ``package.json``'s ``workspaces`` field at all, so the two manifests are
+    # not interchangeable and must not be merged: unioning them would register
+    # a member pnpm never installs, turning a registry dependency into a fake
+    # intra-repo edge. When the pnpm manifest is present it is authoritative.
+    pnpm = _read_pnpm_workspace_patterns(repo_path)
+    exclude_patterns: list[str] = []
+    include_root = False
+    if pnpm is not None:
+        patterns, exclude_patterns = pnpm
+        # "The root package is always included, even when custom location
+        # wildcards are used" — pnpm's ``packages`` setting. So a root-only
+        # workspace (no ``packages`` key) still has exactly one member, and
+        # the root is never subject to the negated patterns.
+        include_root = True
+    else:
+        patterns = []
+        root_pkg = repo_path / "package.json"
+        if root_pkg.is_file():
+            try:
+                data = json.loads(root_pkg.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                patterns = _read_workspaces_field(data)
+    if not patterns and not include_root:
         return {}
 
-    result: dict[str, dict[str, Any]] = {}
+    # Negated entries are expanded with the SAME globber as the includes and
+    # subtracted, rather than matched with a second pattern language. pathspec
+    # was the obvious candidate and is wrong here: it implements git-ignore
+    # semantics, under which a slashless ``foo`` matches at any depth and a
+    # directory match swallows its descendants, so ``!foo`` and ``!packages/*``
+    # would silently drop members pnpm keeps. ``Path.glob`` anchors at the
+    # repo root and honours single-segment ``*``, which is what fast-glob
+    # (pnpm's matcher) does for these forms.
+    excluded: set[Path] = set()
+    for pattern in exclude_patterns:
+        for path in repo_path.glob(pattern):
+            if path.is_dir():
+                excluded.add(path)
+
+    candidates: list[Path] = [repo_path] if include_root else []
     for pattern in patterns:
-        ws_dirs = [repo_path] if pattern == "." else repo_path.glob(pattern)
-        for ws_dir in ws_dirs:
-            if not ws_dir.is_dir():
-                continue
-            ws_pkg = ws_dir / "package.json"
-            if not ws_pkg.is_file():
-                continue
-            try:
-                ws_data = json.loads(ws_pkg.read_text(encoding="utf-8", errors="ignore"))
-            except Exception:
-                continue
-            if not isinstance(ws_data, dict):
-                continue
-            name = ws_data.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            try:
-                rel = ws_dir.relative_to(repo_path).as_posix()
-            except ValueError:
-                continue
-            result[name] = {
-                "dir": rel,
-                "exports": _build_exports_map(ws_data),
-                "main": ws_data.get("module") if isinstance(ws_data.get("module"), str)
-                        else (ws_data.get("main") if isinstance(ws_data.get("main"), str) else None),
-            }
+        globbed = [repo_path] if pattern == "." else repo_path.glob(pattern)
+        candidates.extend(p for p in globbed if p.is_dir() and p not in excluded)
+
+    result: dict[str, dict[str, Any]] = {}
+    for ws_dir in candidates:
+        if not ws_dir.is_dir():
+            continue
+        try:
+            rel = ws_dir.relative_to(repo_path).as_posix()
+        except ValueError:
+            continue
+        ws_pkg = ws_dir / "package.json"
+        if not ws_pkg.is_file():
+            continue
+        try:
+            ws_data = json.loads(ws_pkg.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        if not isinstance(ws_data, dict):
+            continue
+        name = ws_data.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        result[name] = {
+            "dir": rel,
+            "exports": _build_exports_map(ws_data),
+            "main": ws_data.get("module") if isinstance(ws_data.get("module"), str)
+                    else (ws_data.get("main") if isinstance(ws_data.get("main"), str) else None),
+        }
     return result
 
 
@@ -313,6 +413,25 @@ _PROBE_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+def _normalize_repo_rel(base: str) -> str:
+    """Collapse a joined repo-relative path so it can match ``path_set``.
+
+    Callers build candidates as ``f"{pkg_dir}/{sub}"``, and the workspace
+    ROOT's dir is ``"."`` (pnpm always includes the root; npm/yarn repos may
+    list ``"."`` explicitly). That join yields ``"./src/index.ts"``, which
+    never equals the repo-relative ``"src/index.ts"`` a path set holds — so
+    without this every root-package import silently failed to resolve.
+
+    A trailing slash survives: one caller uses the result as a ``startswith``
+    prefix, where dropping it would let ``src/locales`` also match
+    ``src/locales-old``.
+    """
+    if not (base.startswith("./") or "/./" in base):
+        return base
+    normalized = posixpath.normpath(base)
+    return f"{normalized}/" if base.endswith("/") and not normalized.endswith("/") else normalized
+
+
 def _probe_path(base: str, path_set: set[str]) -> str | None:
     """Locate a concrete file for ``base`` (a repo-relative path stem).
 
@@ -321,6 +440,7 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     pattern). Then probes common TS/JS extensions and ``index.*``
     children so directory-shaped specifiers resolve to a barrel file.
     """
+    base = _normalize_repo_rel(base)
     if base in path_set:
         return base
     for ext in _PROBE_EXTENSIONS:
@@ -445,7 +565,10 @@ def _expand_exports_wildcard(
     # suffix=``.ts``. The Node spec only allows one ``*`` per pattern.
     stripped = target.lstrip("./")
     prefix, _, suffix = stripped.partition("*")
-    base_prefix = f"{pkg_dir}/{prefix}"
+    # Normalized because this is a startswith probe rather than a _probe_path
+    # lookup — a root package's ``"."`` dir would otherwise make every
+    # candidate fail the prefix test.
+    base_prefix = _normalize_repo_rel(f"{pkg_dir}/{prefix}")
     matches: set[str] = set()
     for candidate in path_set:
         if not candidate.startswith(base_prefix):
