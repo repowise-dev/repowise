@@ -386,25 +386,35 @@ def agents_refresh(path: str | None, scope: str, fmt: str) -> None:
 
     Never adds an agent. This is what to run after upgrading repowise, or after
     moving the repo: it repoints what exists and leaves everything else alone,
-    so it is safe to wire into ``doctor --repair``.
+    which is what makes it safe for ``doctor --repair`` to call.
     """
-    from repowise.cli.agent_targets.registry import get_target
-
     repo_path = _repo_path(path, fmt)
-    rows = describe_agents(repo_path)
-    wired = [
-        target
-        for row in rows
-        if row["registrations"] and (target := get_target(row["id"])) is not None
-    ]
-    payload = _write_payload("refresh", repo_path, wired, scope, remove=False)
+    payload = refresh_wired_agents(repo_path, scope=scope)
     if fmt == "json":
         emit_json(payload)
         return
-    if not wired:
+    if not payload["agents"]:
         console.print("[dim]No agent is wired up yet. Run [bold]repowise agents add[/bold].[/dim]")
         return
     _render_writes(payload)
+
+
+def refresh_wired_agents(repo_path: Path, *, scope: str = "both") -> dict:
+    """Rewrite every already-wired agent's config. The body of ``agents refresh``.
+
+    Public because ``doctor --repair`` routes here rather than reimplementing
+    it or shelling out to the CLI. Adds nothing: a target with no detected
+    registration is left alone, so a repair can never wire up an agent the user
+    never asked for.
+    """
+    from repowise.cli.agent_targets.registry import get_target
+
+    wired = [
+        target
+        for row in describe_agents(repo_path)
+        if row["registrations"] and (target := get_target(row["id"])) is not None
+    ]
+    return _write_payload("refresh", repo_path, wired, scope, remove=False)
 
 
 @agents_group.command("print-config")

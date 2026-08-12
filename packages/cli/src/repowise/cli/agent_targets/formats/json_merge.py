@@ -73,6 +73,29 @@ def load_json_object_or_value_error(config_path: Path, label: str) -> dict:
     return existing
 
 
+def is_damaged(config_path: Path) -> bool:
+    """True when *config_path* is present but is not readable JSON.
+
+    The distinction a health check lives on. A config that is absent and a
+    config that is there and unparseable both make every "is repowise wired
+    up" probe answer no, and telling the user "not installed" when the truth is
+    "your settings file has a trailing comma in it" sends them to run an
+    install that will refuse for the same reason.
+
+    False for a file that is absent or that cannot be opened at all: neither is
+    damage we can claim to have seen.
+    """
+    if not config_path.exists():
+        return False
+    try:
+        json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def json_deep_equal(left: Any, right: Any) -> bool:
     """Deep equality that ignores mapping key order.
 

@@ -257,6 +257,83 @@ def test_print_config_names_the_known_ids_for_an_unknown_one(repo: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# doctor integration
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_reports_one_row_per_agent_from_its_own_descriptor(repo: Path) -> None:
+    """Nothing in doctor knows what any particular agent's health means."""
+    from repowise.cli.commands.doctor_cmd.repo_checks import _agent_target_checks
+
+    checks, needs_refresh = _agent_target_checks()
+
+    assert [c.name for c in checks] == [
+        "Agent: claude-code",
+        "Agent: codex",
+        "Agent: vscode",
+    ]
+    # Nothing is wired on a clean machine, and an agent you do not use is not a
+    # problem with your setup.
+    assert all(c.ok for c in checks)
+    assert needs_refresh is False
+
+
+def test_doctor_surfaces_a_stale_hook_matcher_rather_than_calling_it_ok(
+    repo: Path, monkeypatch
+) -> None:
+    """The agreed mitigation for gating the self-heal on the skip env var.
+
+    A hook whose matcher names a tool the host has since renamed is installed,
+    parses, and will never fire. Someone who exports REPOWISE_SKIP_EDITOR_SETUP
+    permanently never gets the migration that would fix it, so this row is the
+    only place the staleness becomes visible.
+    """
+    from repowise.cli.commands.doctor_cmd.repo_checks import _agent_target_checks
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(codex_config, "codex_rewrite_hook_matcher", lambda: "local_shell")
+
+    checks, needs_refresh = _agent_target_checks()
+
+    codex = next(c for c in checks if c.name == "Agent: codex")
+    assert codex.ok is False
+    assert "will never fire" in codex.detail
+    assert "run:" in codex.detail
+    assert needs_refresh is True
+
+
+def test_doctor_calls_a_damaged_config_broken_not_missing(repo: Path) -> None:
+    """'Not installed' would send the user to run an install that refuses too."""
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    settings = Path.home() / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"mcpServers": {,}', encoding="utf-8")
+
+    report = target_mod.TARGET.doctor()
+
+    assert report.status.value == "broken"
+    assert "not valid JSON" in report.issues[0]
+    assert report.fix_command
+
+
+def test_doctor_repair_routes_to_the_same_refresh_the_command_runs(repo: Path) -> None:
+    """One implementation, so a repair cannot drift from `agents refresh`."""
+    from repowise.cli.commands.agents_cmd import refresh_wired_agents
+
+    _run(["agents", "add", str(repo), "--target", "vscode", "-y"])
+    config_path = repo / ".vscode" / "mcp.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["servers"]["repowise"]["args"] = ["mcp", "/gone", "--transport", "stdio"]
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    payload = refresh_wired_agents(repo)
+
+    assert payload["changed"] is True
+    assert "/gone" not in config_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # The interactive gate
 # ---------------------------------------------------------------------------
 

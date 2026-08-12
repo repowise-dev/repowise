@@ -382,6 +382,21 @@ class ClaudeCodeTarget:
             claude_code_rewrite_hook_matcher,
         )
 
+        from ..formats.json_merge import is_damaged
+
+        # Checked before detection, because detection cannot tell an absent
+        # registration from one inside a file it could not parse — and
+        # reporting "not installed" for a settings file with a trailing comma
+        # sends the user to run an install that refuses for the same reason.
+        settings = settings_path()
+        if is_damaged(settings):
+            return DoctorReport(
+                target_id=ID,
+                status=DoctorStatus.BROKEN,
+                issues=(f"{settings} is not valid JSON, so Claude Code ignores all of it.",),
+                fix_command="repowise agents refresh",
+            )
+
         registrations = detect()
         if not registrations:
             return DoctorReport(

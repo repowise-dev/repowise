@@ -418,6 +418,17 @@ class CodexTarget:
             codex_supports_rewrite,
         )
 
+        from ..formats.json_merge import is_damaged
+
+        hooks = user_hooks_path()
+        if is_damaged(hooks):
+            return DoctorReport(
+                target_id=ID,
+                status=DoctorStatus.BROKEN,
+                issues=(f"{hooks} is not valid JSON, so Codex loads none of its hooks.",),
+                fix_command="repowise hook rewrite install",
+            )
+
         matcher = codex_rewrite_hook_matcher()
         if matcher is None:
             return DoctorReport(

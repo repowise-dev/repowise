@@ -149,19 +149,6 @@ class EditorSetupOptions:
             integration_overrides=dict(self.integration_overrides),
         )
 
-    def with_project_file_override(
-        self,
-        project_file_id: str,
-        enabled: bool,
-    ) -> EditorSetupOptions:
-        """Return options with one managed project file explicitly enabled or disabled."""
-
-        return EditorSetupOptions(
-            disabled_project_files=self.disabled_project_files,
-            project_file_overrides={**self.project_file_overrides, project_file_id: enabled},
-            integration_overrides=dict(self.integration_overrides),
-        )
-
     def with_integration_override(
         self,
         integration_id: str,

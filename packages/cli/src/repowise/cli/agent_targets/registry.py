@@ -108,7 +108,7 @@ def describe_agents(repo_path: Path | None = None) -> list[dict]:
             {
                 "id": target.id,
                 "display_name": target.display_name,
-                "tier": derive_tier(target).value,
+                "tier": tier_of(target.id).value,
                 "docs_url": target.docs_url,
                 "project_file_id": target.project_file_id,
                 "present": present,
