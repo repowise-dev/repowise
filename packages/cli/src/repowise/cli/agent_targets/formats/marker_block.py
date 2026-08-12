@@ -78,16 +78,34 @@ def inspect(path: Path, start: str, end: str) -> BlockInspection:
     return BlockInspection(state, body=match.group(1))
 
 
-def upsert(path: Path, body: str, start: str, end: str) -> bool:
+def upsert(
+    path: Path,
+    body: str,
+    start: str,
+    end: str,
+    *,
+    new_file_prefix: str = "",
+) -> bool:
     """Ensure *path* carries exactly ``start + body + end``.
 
     Replaces an existing block in place, or appends one after existing content.
     Returns True when the file changed, so a caller can report ``unchanged``
     for a re-run rather than claiming an update it did not make.
+
+    *new_file_prefix* is written above the block when the file did not exist —
+    a header telling the reader this file is theirs and only the marked section
+    is managed. Pair it with ``remove(delete_if_only=...)`` so install and
+    uninstall round-trip to "no file".
+
+    The replacement goes through a function rather than a string because
+    ``re.sub`` interprets backslashes and ``\\g<name>`` group references in a
+    replacement *string*. Instruction bodies are prose that can legitimately
+    contain either, and the failure mode is a corrupted managed block or a
+    ``bad escape`` crash at install time.
     """
     wrapped = f"{start}{body}{end}"
     if not path.exists():
-        atomic_write_text(path, wrapped + "\n", newline="\n")
+        atomic_write_text(path, f"{new_file_prefix}\n{wrapped}\n" if new_file_prefix else wrapped + "\n", newline="\n")
         return True
 
     existing = path.read_text(encoding="utf-8")

@@ -309,22 +309,27 @@ def install_agents_md_distill_section(repo_path: Path) -> Path | None:
     already teaches distillation elsewhere (e.g. a future indexed-template
     section) is left untouched; otherwise the block is appended. Returns the
     AGENTS.md path, or None on write failure.
+
+    The marker mechanics live in ``agent_targets.formats.marker_block``; what
+    stays here is the Codex-specific policy — the section text, and the
+    "already taught elsewhere" bail, which is a judgement about this file's
+    content rather than about managed blocks in general.
     """
+    from repowise.cli.agent_targets.formats import marker_block
+
     target = _agents_md_path(repo_path)
-    wrapped = f"{_DISTILL_MARKER_START}\n{_DISTILL_SECTION}\n{_DISTILL_MARKER_END}"
     try:
-        if not target.exists():
-            content = f"{_NEW_FILE_PLACEHOLDER}\n{wrapped}\n"
-        else:
+        if target.exists():
             existing = target.read_text(encoding="utf-8")
-            if _DISTILL_MARKER_START in existing:
-                pattern = re.escape(_DISTILL_MARKER_START) + r".*?" + re.escape(_DISTILL_MARKER_END)
-                content = re.sub(pattern, wrapped, existing, flags=re.DOTALL)
-            elif _DISTILL_SECTION_HEADING in existing:
+            if _DISTILL_MARKER_START not in existing and _DISTILL_SECTION_HEADING in existing:
                 return target  # already taught elsewhere in the file
-            else:
-                content = existing.rstrip() + "\n\n" + wrapped + "\n"
-        target.write_text(content, encoding="utf-8", newline="\n")
+        marker_block.upsert(
+            target,
+            f"\n{_DISTILL_SECTION}\n",
+            _DISTILL_MARKER_START,
+            _DISTILL_MARKER_END,
+            new_file_prefix=_NEW_FILE_PLACEHOLDER,
+        )
         return target
     except OSError:
         return None
@@ -337,32 +342,14 @@ def remove_agents_md_distill_section(repo_path: Path) -> bool:
     is deleted entirely so install→uninstall round-trips to "no AGENTS.md".
     User content is never touched.
     """
-    target = _agents_md_path(repo_path)
-    if not target.exists():
-        return False
-    try:
-        existing = target.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    if _DISTILL_MARKER_START not in existing:
-        return False
+    from repowise.cli.agent_targets.formats import marker_block
 
-    pattern = (
-        r"\n*" + re.escape(_DISTILL_MARKER_START) + r".*?" + re.escape(_DISTILL_MARKER_END) + r"\n?"
+    return marker_block.remove(
+        _agents_md_path(repo_path),
+        _DISTILL_MARKER_START,
+        _DISTILL_MARKER_END,
+        delete_if_only=_NEW_FILE_PLACEHOLDER,
     )
-    remaining = re.sub(pattern, "", existing, flags=re.DOTALL)
-    if remaining and not remaining.endswith("\n"):
-        # Install rstrips before appending the block; restore the trailing
-        # newline that strip consumed so removal is a true inverse.
-        remaining += "\n"
-    try:
-        if remaining.strip() in ("", _NEW_FILE_PLACEHOLDER.strip()):
-            target.unlink()
-        else:
-            target.write_text(remaining, encoding="utf-8", newline="\n")
-    except OSError:
-        return False
-    return True
 
 
 def agents_md_distill_section_installed(repo_path: Path) -> bool:
