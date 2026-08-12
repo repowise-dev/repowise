@@ -368,7 +368,7 @@ Set Up This Repository**. Guide: **[docs/agent/VSCODE.md →](docs/agent/VSCODE.
 
 ## Supported agents
 
-**Three agents wired end to end · two at the Full tier · every other MCP host one
+**Four agents wired end to end · two at the Full tier · every other MCP host one
 paste away.**
 
 <p>
@@ -379,6 +379,7 @@ paste away.**
 <p>
   <strong>Good tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/VS_Code-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white" alt="VS Code" />
+  <img src="https://img.shields.io/badge/Cursor-000000?style=flat-square&logo=cursor&logoColor=white" alt="Cursor" />
 </p>
 
 **Full** is every surface repowise has: MCP tools, skills, slash commands, a managed
@@ -390,8 +391,8 @@ computed from what each integration actually wires, so this list cannot claim a 
 the code does not have.
 
 Everything else that speaks MCP is one snippet away. `repowise agents print-config
-claude-code` prints a stdio server entry to paste into Cursor, Cline, Windsurf, Zed,
-Gemini CLI or any other host that keys on `mcpServers`, and repowise writes nothing.
+claude-code` prints a stdio server entry to paste into Cline, Windsurf, Zed, Gemini
+CLI or any other host that keys on `mcpServers`, and repowise writes nothing.
 
 Adding an agent takes **one descriptor file and one registry line**, with no changes to
 the orchestrators. Full matrix and the contributor recipe:

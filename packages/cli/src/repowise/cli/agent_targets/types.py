@@ -57,16 +57,16 @@ class Scope(StrEnum):
 class FileAction(StrEnum):
     """What an install or uninstall did to one file.
 
-    Taken from codegraph's installer, which reports one of these per file and
-    renders a log line from it. ``UNCHANGED`` is the one that earns its keep:
-    it means the file was inspected and already held exactly what we would
-    write, which is what makes a re-run byte-identical and stops an idempotent
+    One per file, which is what lets an installer render a real per-file log
+    instead of a summary. ``UNCHANGED`` is the value that earns its keep: it
+    means the file was inspected and already held exactly what we would write,
+    which is what makes a re-run byte-identical and stops an idempotent
     re-install from printing a misleading "updated".
 
-    (The plan called this a 7-value enum; codegraph ships six, and six is what
-    the actions actually are. Its marker-block helper has a seventh internal
-    ``appended`` state, but it is folded into ``updated`` before it reaches a
-    result, so it is not an action a caller can observe.)
+    Six values, not seven. Appending a managed block to a file that did not
+    carry one looks like a distinct action and is not: it is folded into
+    ``UPDATED`` before it reaches a result, because from the caller's side the
+    file existed and now differs.
     """
 
     CREATED = "created"
@@ -108,9 +108,9 @@ class Tier(StrEnum):
 class DoctorStatus(StrEnum):
     """The four states a target's health can be in.
 
-    Borrowed from tokenjuice's instruction doctor, which is better than
-    codegraph's two-state version for one reason: ``STALE`` is distinct from
-    ``BROKEN``. A hook whose matcher names a tool the host has since renamed is
+    Four rather than the obvious two, for one reason: ``STALE`` has to be
+    distinct from ``BROKEN``. A hook whose matcher names a tool the host has
+    since renamed is
     installed, parses fine, and will never fire — reporting that as "ok" is how
     it stays invisible, and reporting it as "broken" sends the user to fix a
     file that is not damaged.
@@ -255,11 +255,12 @@ class AgentTarget(Protocol):
     """One agent repowise can wire up.
 
     Implementations compose the helpers in :mod:`.formats` rather than
-    inheriting from a base class. codegraph states the rationale and our own
-    evidence agrees: Codex needs TOML plus a hooks JSON, VS Code needs two JSON
-    files one of which may carry comments, and a future Cursor target needs a
-    frontmattered rules file. A base class would need an override hook for each
-    and would force that shape on every target that does not want it.
+    inheriting from a base class. The targets differ too much for one to fit:
+    Codex needs TOML plus a hooks JSON, VS Code needs two JSON files one of
+    which may carry comments, and Cursor needs a JSON config plus a rules file
+    with YAML frontmatter that repowise creates outright. A base class would
+    need an override hook for each and would force that shape on every target
+    that does not want it.
 
     Every method must be safe to call when nothing was ever installed.
     """

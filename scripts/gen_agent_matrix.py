@@ -55,7 +55,6 @@ for _pkg in ("cli", "core", "server"):
 #: that nothing here collides with a registered target, so promoting one of
 #: these to a real integration and forgetting to delete the line is caught.
 PASTE_CONFIG_HOSTS: tuple[str, ...] = (
-    "Cursor",
     "Cline",
     "Windsurf",
     "Zed",
@@ -267,6 +266,19 @@ def _matrix_table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _join_names(names: list[str]) -> str:
+    """``A``, ``A and B``, ``A, B and C`` — a real list, at any length.
+
+    The first version of this handled one name and read as a grammar error at
+    two ("VS Code and Cursor sits at Good"), which is the shape of drift a
+    generated document is supposed to make impossible. Verb agreement is the
+    caller's, because only it knows whether the sentence needs one.
+    """
+    if len(names) < 3:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
 def _tier_list() -> str:
     return "\n".join(
         f"- **{title}.** {body}" for title, body in (TIER_BLURBS[key] for key in TIER_BLURBS)
@@ -310,11 +322,11 @@ def render() -> str:
     ]
 
     if good:
-        names = " and ".join(good) if len(good) < 3 else ", ".join(good)
         parts += [
             "### What Good tier does not include",
             "",
-            f"{names} sits at Good, and the honest version of that is worth stating",
+            f"{_join_names(good)} {'sits' if len(good) == 1 else 'sit'} at Good, and the "
+            "honest version of that is worth stating",
             "plainly. These agents get the MCP tools and the config repowise writes.",
             "They do **not** get hook-level interception: repowise never sees a tool",
             "call before it runs, never rewrites a noisy command, and never annotates",
@@ -337,12 +349,12 @@ def render() -> str:
         "repowise agents print-config claude-code   # prints, writes nothing",
         "```",
         "",
-        "That emits an `mcpServers` block, which is the shape Cursor, Cline, Windsurf,",
-        "Zed and most others read. Ask for `vscode` instead when the host follows VS",
-        "Code: that one keys on `servers` and adds a `type` field inside each entry, so",
-        "it is not the same text with a different wrapper. Print the one that matches",
-        "your host rather than editing either by hand. Hosts people ask about most,",
-        "none of which repowise writes config for today:",
+        "That emits an `mcpServers` block, which is the shape Cline, Windsurf, Zed and",
+        "most others read. Ask for `vscode` instead when the host follows VS Code: that",
+        "one keys on `servers` and adds a `type` field inside each entry, so it is not",
+        "the same text with a different wrapper. Print the one that matches your host",
+        "rather than editing either by hand. Hosts people ask about most, none of which",
+        "repowise writes config for today:",
         "",
         ", ".join(PASTE_CONFIG_HOSTS) + ".",
         "",

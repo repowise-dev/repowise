@@ -125,13 +125,26 @@ args = ["mcp"]
 [Codex integration](../agent/CODEX.md).
 </details>
 
-<details><summary><b>Cursor, Cline, Windsurf, and other MCP clients</b></summary>
-
-Point the client at `repowise mcp`, run from the repo directory, over stdio:
+<details><summary><b>Cursor</b></summary>
 
 ```bash
-repowise mcp --transport stdio
+repowise agents add --target=cursor
 ```
+
+Writes project-local `.cursor/mcp.json` and a managed `.cursor/rules/repowise.mdc`.
+Cursor does not read `.vscode/mcp.json`, so this is separate from the VS Code
+setup below. See [Agent integrations](../agent/INTEGRATIONS.md).
+</details>
+
+<details><summary><b>Cline, Windsurf, and other MCP clients</b></summary>
+
+Print the server entry and paste it into whatever config the host reads:
+
+```bash
+repowise agents print-config claude-code
+```
+
+Or point the client at `repowise mcp`, run from the repo directory, over stdio.
 </details>
 
 <details><summary><b>VS Code</b></summary>

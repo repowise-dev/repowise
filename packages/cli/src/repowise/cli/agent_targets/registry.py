@@ -9,10 +9,10 @@ mirroring the hook-adapter registry. Registration should cost nothing: a caller
 resolving one target must not pay the import of every other, and this module is
 reachable from ``init`` and ``doctor`` where startup time is visible.
 
-One deviation from codegraph, deliberate: their ``TargetId`` is a hand-written
-string union, so adding a target touches three files instead of two and the
-union can drift from the registry. Here the ids *are* the registry keys, so
-there is nothing to keep in sync.
+There is deliberately no hand-written ``TargetId`` union beside this map. A
+literal type listing the ids is the obvious companion and it is a third file to
+keep in sync, which means it can drift from the registry it describes. Here the
+ids *are* the registry keys, so there is nothing to synchronise.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ _TARGET_MODULES: dict[str, str] = {
     "claude-code": "repowise.cli.agent_targets.targets.claude_code:TARGET",
     "codex": "repowise.cli.agent_targets.targets.codex:TARGET",
     "vscode": "repowise.cli.agent_targets.targets.vscode:TARGET",
+    "cursor": "repowise.cli.agent_targets.targets.cursor:TARGET",
 }
 
 #: Resolved when :meth:`resolve_target_flag` is asked for ``auto`` and nothing

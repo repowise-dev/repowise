@@ -2,9 +2,8 @@
 
 Absorbed from ``mcp_config``. It is not a general TOML serializer and should
 not become one: it handles the value types our tables actually contain, and
-raises on anything else rather than guessing at an encoding. codegraph made the
-same call for the same reason — 254 lines serving one target beats a dependency
-whose failure modes you inherit.
+raises on anything else rather than guessing at an encoding. A couple of hundred
+lines serving one target beats a dependency whose failure modes you inherit.
 
 The merge strategy is regex table replacement over the *source text*, not a
 parse-and-reserialize. That is what preserves the user's comments, key order and

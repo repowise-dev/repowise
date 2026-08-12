@@ -437,8 +437,14 @@ def test_checklist_ticking_everything_disables_nothing(monkeypatch, tmp_path) ->
         monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices}
     )
 
+    from repowise.cli.agent_targets.registry import list_target_ids
+
     assert options.disabled_project_files == frozenset()
-    assert options.integration_overrides == {"claude-code": True, "codex": True, "vscode": True}
+    # Derived rather than frozen: this test is about "ticking everything leaves
+    # nothing off", and the list of agents that exist is pinned once, in
+    # ``test_agent_targets``. Restating it here would make a fifth target fail
+    # two tests for one reason.
+    assert options.integration_overrides == dict.fromkeys(list_target_ids(), True)
 
 
 def test_checklist_pre_ticks_an_agent_an_explicit_flag_asked_for(monkeypatch, tmp_path) -> None:

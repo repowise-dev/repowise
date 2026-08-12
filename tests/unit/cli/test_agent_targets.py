@@ -41,8 +41,13 @@ ALL_IDS = list_target_ids()
 # ---------------------------------------------------------------------------
 
 
-def test_registry_exposes_the_three_shipped_targets() -> None:
-    assert ALL_IDS == ["claude-code", "codex", "vscode"]
+def test_registry_exposes_the_shipped_targets() -> None:
+    """A frozen list, so adding a target is a deliberate edit rather than a side effect.
+
+    Order is load-bearing: it is the order agents appear in prompts, in
+    ``--target=all`` and in listings, and new ids append rather than sort in.
+    """
+    assert ALL_IDS == ["claude-code", "codex", "vscode", "cursor"]
 
 
 @pytest.mark.parametrize("target_id", ALL_IDS)
@@ -70,9 +75,9 @@ def test_resolve_target_flag_handles_the_four_forms(tmp_path: Path) -> None:
 def test_unknown_target_flag_names_the_known_ids(tmp_path: Path) -> None:
     """A typo must not silently resolve to nothing and report success."""
     with pytest.raises(ValueError) as excinfo:
-        resolve_target_flag("cursor,codex", tmp_path)
+        resolve_target_flag("emacs,codex", tmp_path)
     message = str(excinfo.value)
-    assert "cursor" in message
+    assert "emacs" in message
     for target_id in ALL_IDS:
         assert target_id in message
     assert "auto" in message
@@ -118,6 +123,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("claude-code") is Tier.FULL
     assert tier_of("codex") is Tier.FULL
     assert tier_of("vscode") is Tier.GOOD
+    assert tier_of("cursor") is Tier.GOOD
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
@@ -228,6 +234,194 @@ def test_vscode_declines_user_scope() -> None:
     """Scope support is a real answer, not a shrug: VS Code has no user-level file."""
     assert get_target("vscode").supports_scope(Scope.PROJECT)
     assert not get_target("vscode").supports_scope(Scope.USER)
+
+
+def test_cursor_declines_user_scope() -> None:
+    """One global entry can only name one repo, so this target does not write one."""
+    assert get_target("cursor").supports_scope(Scope.PROJECT)
+    assert not get_target("cursor").supports_scope(Scope.USER)
+
+
+def test_cursor_writes_its_own_config_key_not_vs_codes() -> None:
+    """The two files disagree, and Cursor does not read ``.vscode/mcp.json``.
+
+    ``mcpServers`` against ``servers`` is the whole reason this is a separate
+    target rather than a flag on the VS Code one, so it is pinned rather than
+    left to the reader of the descriptor.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = Path.cwd()
+    written = json.loads(cursor_target.TARGET.print_config(Scope.PROJECT, repo_path=repo))
+
+    assert set(written) == {"mcpServers"}
+    assert "repowise" in written["mcpServers"]
+    # Cursor documents ``type`` as required for stdio servers. It is the one
+    # field that differs from the repo-shared ``.mcp.json``, and the one most
+    # likely to be tidied away as redundant.
+    assert written["mcpServers"]["repowise"]["type"] == "stdio"
+
+
+def test_cursors_registration_carries_the_repo_path_positionally(tmp_path: Path) -> None:
+    """The load-bearing accident that makes Cursor work without a special case.
+
+    Cursor launches MCP subprocesses with a working directory that is not the
+    workspace root and passes no ``rootUri``, so a server resolving its repo from
+    ``cwd`` reads the wrong tree and reports "not indexed" on every call. repowise
+    is unaffected only because the shared generator emits the absolute repo path
+    as a positional argument. Nothing else forces that to stay true, and the
+    failure it would cause looks like an indexing bug rather than a config one.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    args = cursor_target.server_entry(repo)["args"]
+
+    assert str(repo.resolve()).replace("\\", "/") in args
+
+
+def test_cursor_rules_file_round_trips_to_no_file(tmp_path: Path) -> None:
+    """Install then uninstall leaves no stub carrying only our own frontmatter.
+
+    A leftover ``.mdc`` holding nothing but ``alwaysApply: true`` still reads as
+    repowise-managed to whoever opens it, and Cursor would still load it on every
+    conversation.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    rules = cursor_target.rules_path(repo)
+
+    cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert rules.exists()
+    assert rules.read_text(encoding="utf-8").startswith("---\nalwaysApply: true\n---\n")
+
+    cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+    assert not rules.exists()
+
+
+def test_cursor_reinstall_reports_unchanged(tmp_path: Path) -> None:
+    """Both files, so ``agents refresh`` on a settled repo reports no movement."""
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    first = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+    assert first.changed
+
+    second = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert not second.changed
+    assert {f.action for f in second.files} == {FileAction.UNCHANGED}
+
+
+def test_cursor_keeps_a_sibling_server_and_a_user_env_block(tmp_path: Path) -> None:
+    """The merge is per server, and per key inside ours.
+
+    Same guarantee the other JSON targets give. A user who added an ``env`` block
+    to the repowise entry keeps it, and another tool's server is not our business.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = cursor_target.mcp_config_path(repo)
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "other": {"command": "other-server"},
+                    "repowise": {"command": "stale", "env": {"RUST_LOG": "debug"}},
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    servers = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]
+    assert servers["other"] == {"command": "other-server"}
+    assert servers["repowise"]["env"] == {"RUST_LOG": "debug"}
+    # ...while a generated key still wins, so a moved repo repoints.
+    assert servers["repowise"]["command"] != "stale"
+
+
+def test_cursor_declines_a_config_it_cannot_parse(tmp_path: Path) -> None:
+    """Declining beats rewriting: a file we misparsed loses whatever we could not read."""
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = cursor_target.mcp_config_path(repo)
+    config.parent.mkdir(parents=True)
+    original = '// a comment\n{ "mcpServers": {} }\n'
+    config.write_text(original, encoding="utf-8", newline="\n")
+
+    result = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert config.read_text(encoding="utf-8") == original
+    action = next(f.action for f in result.files if f.path == config)
+    assert action is FileAction.KEPT
+    assert any("mcp.json" in note for note in result.notes)
+
+
+def test_cursor_refuses_a_rules_file_with_malformed_markers(tmp_path: Path) -> None:
+    """The helper refuses; the target has to say so rather than report a write."""
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    rules = cursor_target.rules_path(repo)
+    rules.parent.mkdir(parents=True)
+    from repowise.cli.agent_targets.instructions import DISTILL_MARKER_START
+
+    original = f"---\nalwaysApply: true\n---\n\n{DISTILL_MARKER_START}\nI deleted the end.\n"
+    rules.write_text(original, encoding="utf-8", newline="\n")
+
+    result = cursor_target.TARGET.install(Scope.PROJECT, repo_path=repo)
+
+    assert rules.read_text(encoding="utf-8") == original
+    assert next(f.action for f in result.files if f.path == rules) is FileAction.KEPT
+    assert any("unpaired or duplicated" in note for note in result.notes)
+
+
+def test_cursor_leaves_a_rules_file_it_does_not_own(tmp_path: Path) -> None:
+    """Uninstall reports what it did not touch rather than deleting a user's rule.
+
+    ``.cursor/rules/repowise.mdc`` is a name a user could plausibly have written
+    themselves, and a marker-free file at that path is theirs.
+    """
+    from repowise.cli.agent_targets.targets import cursor as cursor_target
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    rules = cursor_target.rules_path(repo)
+    rules.parent.mkdir(parents=True)
+    original = "---\nalwaysApply: true\n---\n\nMy own notes about repowise.\n"
+    rules.write_text(original, encoding="utf-8", newline="\n")
+
+    result = cursor_target.TARGET.uninstall(Scope.PROJECT, repo_path=repo)
+
+    assert rules.read_text(encoding="utf-8") == original
+    assert next(f.action for f in result.files if f.path == rules) is FileAction.KEPT
+
+
+def test_the_shared_instruction_body_has_one_home() -> None:
+    """Two hosts now carry the same managed block, and prose forks a sentence at a time.
+
+    That is exactly how the plugin skill sets drifted, so the second copy is an
+    import rather than a paste.
+    """
+    from repowise.cli.agent_targets import instructions
+    from repowise.cli.editor_integrations import codex_config
+
+    assert codex_config._DISTILL_SECTION is instructions.DISTILL_SECTION
+    assert codex_config._DISTILL_MARKER_START is instructions.DISTILL_MARKER_START
 
 
 def test_claude_code_reports_plugin_and_direct_separately(tmp_path: Path, monkeypatch) -> None:

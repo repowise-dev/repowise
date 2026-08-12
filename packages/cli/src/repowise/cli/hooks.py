@@ -4,7 +4,7 @@ Installs/uninstalls a post-commit hook that runs ``repowise update`` in the
 background after every commit, keeping the wiki in sync automatically.
 
 The hook uses start/end markers so it can safely coexist with other hooks
-in the same file (e.g. lint hooks, graphify hooks).
+in the same file (a lint hook, another tool's index hook).
 """
 
 from __future__ import annotations

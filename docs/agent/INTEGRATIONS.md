@@ -28,12 +28,13 @@ for that agent.
 | [Claude Code](https://docs.claude.com/en/docs/claude-code) | Full | Yes | Yes | Plugin | Plugin | Yes | Yes |
 | [Codex CLI](https://developers.openai.com/codex/cli) | Full | Yes | Yes | Plugin | Yes | Yes | Yes |
 | [VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers) | Good | Yes | No | No | No | No | No |
+| [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | No | No | No | Yes | No |
 
-Target ids for `--target=`: `claude-code`, `codex`, `vscode`.
+Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`.
 
 ### What Good tier does not include
 
-VS Code sits at Good, and the honest version of that is worth stating
+VS Code and Cursor sit at Good, and the honest version of that is worth stating
 plainly. These agents get the MCP tools and the config repowise writes.
 They do **not** get hook-level interception: repowise never sees a tool
 call before it runs, never rewrites a noisy command, and never annotates
@@ -53,14 +54,14 @@ the server entry and paste it into whatever config that host reads:
 repowise agents print-config claude-code   # prints, writes nothing
 ```
 
-That emits an `mcpServers` block, which is the shape Cursor, Cline, Windsurf,
-Zed and most others read. Ask for `vscode` instead when the host follows VS
-Code: that one keys on `servers` and adds a `type` field inside each entry, so
-it is not the same text with a different wrapper. Print the one that matches
-your host rather than editing either by hand. Hosts people ask about most,
-none of which repowise writes config for today:
+That emits an `mcpServers` block, which is the shape Cline, Windsurf, Zed and
+most others read. Ask for `vscode` instead when the host follows VS Code: that
+one keys on `servers` and adds a `type` field inside each entry, so it is not
+the same text with a different wrapper. Print the one that matches your host
+rather than editing either by hand. Hosts people ask about most, none of which
+repowise writes config for today:
 
-Cursor, Cline, Windsurf, Zed, Continue, Gemini CLI, OpenCode, JetBrains AI Assistant, Amp.
+Cline, Windsurf, Zed, Continue, Gemini CLI, OpenCode, JetBrains AI Assistant, Amp.
 
 `print-config` takes one of the target ids above; there is no descriptor to
 name for a host at this tier, which is the point of the tier.
