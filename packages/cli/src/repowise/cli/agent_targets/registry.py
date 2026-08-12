@@ -80,6 +80,59 @@ def detect_all(repo_path: Path | None = None) -> dict[str, list[Registration]]:
     return found
 
 
+def describe_agents(repo_path: Path | None = None) -> list[dict]:
+    """One row per registered target: what it is, and where it is wired.
+
+    The projection both consumers read — ``repowise agents``' JSON payload and
+    table, and ``init``'s checklist. Built here, next to the descriptors, so
+    there is one answer to "what do we know about this agent" rather than one
+    per caller that drift into disagreeing about which are pre-ticked.
+
+    Every probe is best-effort: a descriptor whose detection or presence check
+    raises is reported as absent rather than taking the listing down.
+    """
+    rows: list[dict] = []
+    for target in all_targets():
+        try:
+            registrations = list(target.detect(repo_path))
+        except Exception:
+            registrations = []
+        try:
+            present = bool(target.is_present(repo_path))
+        except Exception:
+            present = False
+        #: None here means "already provided by a host-managed install", which
+        #: is the stand-down the method axis exists for — not "cannot install".
+        method = select_install_method(target, registrations)
+        rows.append(
+            {
+                "id": target.id,
+                "display_name": target.display_name,
+                "tier": derive_tier(target).value,
+                "docs_url": target.docs_url,
+                "project_file_id": target.project_file_id,
+                "present": present,
+                "method": method.id if method is not None else None,
+                "registrations": [r.as_dict() for r in registrations],
+            }
+        )
+    return rows
+
+
+def default_selection(rows: list[dict], repo_path: Path | None = None) -> set[str]:
+    """Which agents to pre-tick, given :func:`describe_agents` rows.
+
+    Wired agents and installed agents. When neither turns anything up — a fresh
+    machine, which is precisely who runs ``init`` — this defers to the same
+    fallback ``--target=auto`` uses, rather than presenting an empty checklist
+    and setting nothing up. One policy, not two that disagree.
+    """
+    chosen = {row["id"] for row in rows if row["registrations"] or row["present"]}
+    if chosen:
+        return chosen
+    return {target.id for target in resolve_target_flag("auto", repo_path)}
+
+
 def select_install_method(
     target: AgentTarget,
     registrations: list[Registration],

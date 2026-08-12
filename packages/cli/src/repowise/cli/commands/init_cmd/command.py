@@ -27,6 +27,7 @@ from repowise.cli.editor_integrations.defaults import (
 from repowise.cli.editor_setup import (
     register_editor_clients,
     resolve_editor_setup_options,
+    select_agents_interactively,
     write_editor_project_files,
 )
 from repowise.cli.helpers import (
@@ -1043,7 +1044,6 @@ def init_command(
     wiki_style = resolve_style(wiki_style).name
 
     editor_options = resolve_editor_setup_options(
-        console,
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
         ),
@@ -1053,11 +1053,13 @@ def init_command(
         integration_overrides=get_default_integration_overrides(
             codex_setup=codex_setup,
         ),
-        # Prompt for CLAUDE.md / AGENTS.md / Codex setup whenever the user is
-        # engaging interactively — either generating docs or customizing an
-        # index-only run (the latter previously got no say).
-        prompt_for_project_files=is_interactive and (generate_docs or customize),
     )
+    # Ask which agents to wire up whenever the user is engaging interactively —
+    # either generating docs or customizing an index-only run (the latter
+    # previously got no say). One checklist, pre-ticked from detection, in
+    # place of the three sequential yes/no prompts each integration used to own.
+    if is_interactive and (generate_docs or customize):
+        editor_options = select_agents_interactively(console, repo_path, editor_options)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)

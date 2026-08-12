@@ -30,6 +30,7 @@ from typing import Any
 
 import click
 
+from repowise.cli.agent_targets.registry import default_selection, describe_agents
 from repowise.cli.helpers import console, resolve_command_target
 from repowise.cli.output import emit_json, format_option, notice_console
 
@@ -94,36 +95,6 @@ def _can_prompt(target_flag: str | None, yes: bool) -> bool:
 # ---------------------------------------------------------------------------
 # Payload construction — the single source both renderers read
 # ---------------------------------------------------------------------------
-
-
-def _agent_rows(repo_path: Path) -> list[dict]:
-    """One row per registered target: what it is, and where it is wired."""
-    from repowise.cli.agent_targets.registry import all_targets, select_install_method
-    from repowise.cli.agent_targets.types import derive_tier
-
-    rows: list[dict] = []
-    for target in all_targets():
-        try:
-            registrations = list(target.detect(repo_path))
-        except Exception:
-            registrations = []
-        try:
-            present = bool(target.is_present(repo_path))
-        except Exception:
-            present = False
-        method = select_install_method(target, registrations)
-        rows.append(
-            {
-                "id": target.id,
-                "display_name": target.display_name,
-                "tier": derive_tier(target).value,
-                "docs_url": target.docs_url,
-                "present": present,
-                "method": method.id if method is not None else None,
-                "registrations": [r.as_dict() for r in registrations],
-            }
-        )
-    return rows
 
 
 def _write_payload(
@@ -283,7 +254,7 @@ def agents_group(ctx: click.Context, fmt: str) -> None:
         return
 
     repo_path = _repo_path(None, fmt)
-    payload = {"repo": str(repo_path), "agents": _agent_rows(repo_path)}
+    payload = {"repo": str(repo_path), "agents": describe_agents(repo_path)}
     if fmt == "json":
         emit_json(payload)
         return
@@ -339,8 +310,8 @@ def _select_targets_for_add(
     if target_flag is not None:
         return _resolve_targets(target_flag, repo_path)
 
-    rows = _agent_rows(repo_path)
-    chosen = {row["id"] for row in rows if row["registrations"] or row["present"]}
+    rows = describe_agents(repo_path)
+    chosen = default_selection(rows, repo_path)
 
     if _can_prompt(target_flag, yes) and fmt != "json":
         answered = _prompt_for_agents(rows, chosen)
@@ -420,7 +391,7 @@ def agents_refresh(path: str | None, scope: str, fmt: str) -> None:
     from repowise.cli.agent_targets.registry import get_target
 
     repo_path = _repo_path(path, fmt)
-    rows = _agent_rows(repo_path)
+    rows = describe_agents(repo_path)
     wired = [
         target
         for row in rows

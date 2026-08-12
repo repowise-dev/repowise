@@ -359,25 +359,23 @@ class AgentTarget(Protocol):
 class InstallLifecycle(Protocol):
     """The ``init`` / ``update`` half of an integration's contract.
 
-    Four methods, and they are a subset of :class:`AgentTarget`:
+    Three methods, and they are a subset of :class:`AgentTarget`:
     ``write_project_files`` is a project-scope install, ``register_client`` is a
-    user-scope one, ``refresh_project_files`` is an install that declines to
-    create what is not already there, and ``configure_options`` is the prompting
-    that decides which of those run.
+    user-scope one, and ``refresh_project_files`` is an install that declines to
+    create what is not already there.
 
     It lives here rather than in ``editor_setup`` so there is exactly one home
     for integration protocols. It is still spelled separately from
-    :class:`AgentTarget` because the two are driven by different callers today:
+    :class:`AgentTarget` because the two are driven by different callers:
     ``init`` and ``update`` drive this one and own the console object and the
-    prompting, while ``AgentTarget`` is driven by detection and repair paths
-    that must never prompt. Phase 2 collapses them, when ``repowise agents``
-    takes over the call sites and the prompting moves behind a resolved
-    interactivity decision rather than a per-integration ``click.confirm``.
-    """
+    per-file progress lines, while ``AgentTarget`` is driven by detection and
+    repair paths that must never print into someone else's layout.
 
-    def configure_options(self, console_obj: object, options: object) -> object:
-        """Let the integration prompt or adjust setup options before writing."""
-        ...
+    It had a fourth method, ``configure_options``, where each integration
+    prompted for itself. That is gone: the prompting is now one registry-built
+    checklist rather than one hand-written question per agent, which is what
+    stops a fourth agent from meaning a fourth prompt in a fourth module.
+    """
 
     def write_project_files(
         self, console_obj: object, repo_path: Path, options: object

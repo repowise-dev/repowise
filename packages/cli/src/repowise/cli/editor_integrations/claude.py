@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import click
-
 from repowise.cli.agent_targets.targets import claude_code as claude_target
 from repowise.cli.editor_setup import EditorSetupOptions
 from repowise.cli.helpers import get_db_url_for_repo, load_config, run_async
@@ -23,20 +21,6 @@ class ClaudeCodeSetup:
 
     #: Read from the descriptor rather than restated, so the id has one home.
     project_file_id = claude_target.PROJECT_FILE_ID
-
-    def configure_options(
-        self,
-        console_obj: Any,
-        options: EditorSetupOptions,
-    ) -> EditorSetupOptions:
-        if (
-            not options.prompt_for_project_files
-            or self.project_file_id in options.disabled_project_files
-        ):
-            return options
-        if _prompt_claude_md_enabled(console_obj):
-            return options
-        return options.with_disabled_project_file(self.project_file_id)
 
     def write_project_files(
         self,
@@ -127,21 +111,6 @@ def _uses_lean_tool_surface(repo_path: Path) -> bool:
     if isinstance(tools, (list, tuple)) and len(tools) == 1:
         return str(tools[0]).strip().lower() == "lean"
     return False
-
-
-def _prompt_claude_md_enabled(console_obj: Any) -> bool:
-    """Ask whether the Claude project instruction file should be generated."""
-
-    # The inline ``Name:`` form its four sibling prompts use. A brand-coloured
-    # section header, borrowed from advanced config, oversold a single yes/no.
-    console_obj.print()
-    console_obj.print(
-        "[bold]Claude Code:[/bold] Write a project instruction file describing this codebase?"
-    )
-    return click.confirm(
-        "  Generate .claude/CLAUDE.md?",
-        default=True,
-    )
 
 
 def _claude_md_enabled(repo_path: Path) -> bool:

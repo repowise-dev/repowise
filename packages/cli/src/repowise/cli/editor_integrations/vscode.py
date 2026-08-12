@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import click
-
 from repowise.cli.agent_targets.targets import vscode as vscode_target
 from repowise.cli.editor_setup import EditorSetupOptions
 
@@ -22,20 +20,6 @@ class VSCodeSetup:
     #: Read from the descriptor rather than restated, so the ids have one home.
     integration_id = vscode_target.ID
     project_file_id = vscode_target.PROJECT_FILE_ID
-
-    def configure_options(
-        self,
-        console_obj: Any,
-        options: EditorSetupOptions,
-    ) -> EditorSetupOptions:
-        if (
-            not options.prompt_for_project_files
-            or self.project_file_id in options.disabled_project_files
-        ):
-            return options
-        if _prompt_vscode_enabled(console_obj):
-            return options
-        return options.with_disabled_project_file(self.project_file_id)
 
     def write_project_files(
         self,
@@ -61,19 +45,6 @@ class VSCodeSetup:
         if self.project_file_id in options.disabled_project_files:
             return
         _write_vscode_files(console_obj, repo_path)
-
-
-def _prompt_vscode_enabled(console_obj: Any) -> bool:
-    """Ask whether the VS Code workspace config should be written."""
-
-    console_obj.print()
-    console_obj.print(
-        "[bold]VS Code:[/bold] Configure the workspace MCP server and recommend the extension?"
-    )
-    return click.confirm(
-        "  Write .vscode/mcp.json and .vscode/extensions.json?",
-        default=True,
-    )
 
 
 def _write_vscode_files(console_obj: Any, repo_path: Path) -> None:

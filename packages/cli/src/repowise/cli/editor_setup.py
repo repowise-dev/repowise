@@ -137,7 +137,6 @@ class EditorSetupOptions:
     """Options shared across editor setup integrations."""
 
     disabled_project_files: frozenset[str] = field(default_factory=frozenset)
-    prompt_for_project_files: bool = False
     project_file_overrides: dict[str, bool] = field(default_factory=dict)
     integration_overrides: dict[str, bool] = field(default_factory=dict)
 
@@ -146,7 +145,6 @@ class EditorSetupOptions:
 
         return EditorSetupOptions(
             disabled_project_files=self.disabled_project_files | {project_file_id},
-            prompt_for_project_files=self.prompt_for_project_files,
             project_file_overrides=dict(self.project_file_overrides),
             integration_overrides=dict(self.integration_overrides),
         )
@@ -160,7 +158,6 @@ class EditorSetupOptions:
 
         return EditorSetupOptions(
             disabled_project_files=self.disabled_project_files,
-            prompt_for_project_files=self.prompt_for_project_files,
             project_file_overrides={**self.project_file_overrides, project_file_id: enabled},
             integration_overrides=dict(self.integration_overrides),
         )
@@ -174,7 +171,6 @@ class EditorSetupOptions:
 
         return EditorSetupOptions(
             disabled_project_files=self.disabled_project_files,
-            prompt_for_project_files=self.prompt_for_project_files,
             project_file_overrides=dict(self.project_file_overrides),
             integration_overrides={**self.integration_overrides, integration_id: enabled},
         )
@@ -191,24 +187,88 @@ def _resolve_integrations(
 
 
 def resolve_editor_setup_options(
-    console_obj: Any,
     *,
     disabled_project_files: Iterable[str] | None = None,
-    prompt_for_project_files: bool = False,
     project_file_overrides: Mapping[str, bool] | None = None,
     integration_overrides: Mapping[str, bool] | None = None,
-    integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> EditorSetupOptions:
-    """Build setup options, allowing integrations to own their prompts."""
+    """Build setup options from the CLI flags.
 
-    options = EditorSetupOptions(
+    Used to also give every integration a chance to prompt, through a
+    ``configure_options`` hook. That is gone: the prompting is now one
+    checklist (:func:`select_agents_interactively`) built from the registry
+    rather than one hand-written question per agent, so the hook had no
+    implementation left that did anything.
+    """
+
+    return EditorSetupOptions(
         disabled_project_files=frozenset(disabled_project_files or ()),
-        prompt_for_project_files=prompt_for_project_files,
         project_file_overrides=dict(project_file_overrides or {}),
         integration_overrides=dict(integration_overrides or {}),
     )
-    for integration in _resolve_integrations(integrations):
-        options = integration.configure_options(console_obj, options)
+
+
+def select_agents_interactively(
+    console_obj: Any,
+    repo_path: Path,
+    options: EditorSetupOptions,
+) -> EditorSetupOptions:
+    """Ask once which agents to set up, and fold the answer into *options*.
+
+    Replaces the three sequential yes/no prompts each integration used to own
+    — one per agent, in registry order, each hand-written. Two things were wrong
+    with that shape and only one of them was cosmetic. The cosmetic one: Codex
+    defaulted to *no* while its two neighbours defaulted to yes, so holding
+    Enter through the sequence silently inverted in the middle, and the code
+    apologised for it in a dim line. The structural one: a fourth agent meant a
+    fourth prompt, written by hand, in a fourth module.
+
+    Now the checklist is built from the registry and pre-ticked from detection,
+    so an agent is offered because it is installed rather than because someone
+    remembered to write a question for it.
+
+    The mapping back onto options carries no per-agent knowledge: an unticked
+    agent has its own ``project_file_id`` disabled and its integration id
+    overridden off, both of which the descriptor supplies. A ticked one is
+    overridden on. An id already carrying an explicit override (a CLI flag such
+    as ``--codex``) is shown pre-ticked to match the flag, so accepting the
+    checklist re-applies what the flag already said.
+    """
+    from repowise.cli.agent_targets.registry import default_selection, describe_agents
+    from repowise.cli.ui.agent_selection import AgentChoice, interactive_agent_select
+
+    rows = describe_agents(repo_path)
+    ticked = default_selection(rows, repo_path)
+    for row in rows:
+        flagged = options.integration_overrides.get(row["id"])
+        if flagged is not None:
+            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+
+    chosen = interactive_agent_select(
+        console_obj,
+        [
+            AgentChoice(
+                id=row["id"],
+                display_name=row["display_name"],
+                detail=(
+                    "already wired"
+                    if row["registrations"]
+                    else ("installed" if row["present"] else "not detected")
+                ),
+                enabled=row["id"] in ticked,
+            )
+            for row in rows
+        ],
+    )
+    if chosen is None:
+        # stdin claimed a terminal and then returned EOF. Keep the defaults.
+        return options
+
+    for row in rows:
+        enabled = row["id"] in chosen
+        options = options.with_integration_override(row["id"], enabled)
+        if not enabled:
+            options = options.with_disabled_project_file(row["project_file_id"])
     return options
 
 
