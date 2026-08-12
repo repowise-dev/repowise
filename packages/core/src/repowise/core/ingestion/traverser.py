@@ -44,6 +44,34 @@ from .models import (
 # ---------------------------------------------------------------------------
 
 
+class _OversizeSkip(NamedTuple):
+    """Outcome of the second-tier size check.
+
+    ``is_source`` is what decides whether the skip is worth telling the user
+    about: a dropped 12 MB video is noise, a dropped 600 KB module is the bug
+    this type exists to surface.
+    """
+
+    reason: str
+    is_source: bool
+
+
+class SkippedSourceFile(NamedTuple):
+    """A file with a real parser that traversal dropped on size.
+
+    Carried as a record rather than folded into ``skipped_oversized`` because
+    the count alone is what let this hide: "39 oversized" reads as lockfiles
+    and images, so nobody looks, and a dropped entry point is indistinguishable
+    from a dropped video. The path is the actionable part, and ``reason``
+    separates "genuinely too big to parse" from "we think this is minified",
+    which are different user actions.
+    """
+
+    path: str
+    size_kb: int
+    reason: str  # "over_max_size" | "minified"
+
+
 @dataclass
 class TraversalStats:
     """Counts collected during file traversal, broken down by skip reason."""
@@ -73,12 +101,24 @@ class TraversalStats:
     """
     nested_repo_paths_truncated: bool = False
     """True once the cap above dropped a name, so a reader can say "at least"."""
+    skipped_source_files: list[SkippedSourceFile] = field(default_factory=list)
+    """Parseable source files dropped on size — the subset worth naming.
+
+    Mirrors :attr:`nested_repo_paths`: capped at
+    :data:`_MAX_SKIPPED_SOURCE_PATHS` so a pathological tree cannot grow this
+    without bound, while ``skipped_oversized`` stays exact.
+    """
+    skipped_source_files_truncated: bool = False
+    """True once the cap above dropped a name, so a reader can say "at least"."""
 
 
 log = structlog.get_logger(__name__)
 
 #: Cap on the nested-repo names retained in :class:`TraversalStats`.
 _MAX_NESTED_REPO_PATHS = 50
+
+#: Cap on the skipped-source records retained in :class:`TraversalStats`.
+_MAX_SKIPPED_SOURCE_PATHS = 50
 
 # ---------------------------------------------------------------------------
 # Blocklists
@@ -226,8 +266,41 @@ _ENTRY_POINT_NAME_SUFFIXES: tuple[str, ...] = tuple(
 # question at query time, so the flag stored here and the fallback the MCP
 # tools use can never disagree (#1103).
 
-# Default file-size limit
+# Default file-size limit, applied to files we have no AST parser for:
+# lockfiles, changelogs, JSON fixtures, images, videos. For those, size is the
+# only signal available and 500 KB is generous.
 _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
+
+# Ceiling for files a parser *can* read. The 500 KB limit above was applied to
+# every file before any language check, so a repo's largest hand-written
+# modules were dropped with no page, no symbols and no wiki entry — on
+# NousResearch/hermes-agent that silently removed the CLI, the gateway, the web
+# server and the state layer: 6 files, 103,664 lines, 2,640 symbols (#1237).
+#
+# Why 2 MB and not "no limit": tree-sitter's peak cost is linear in source
+# size at roughly **95 MB of peak RSS per MB of source** (measured 502 KB ->
+# 95 MB, 1.36 MB -> 182 MB, 6.5 MB -> 669 MB, 46 MB -> 4,411 MB). The parse
+# pool runs up to ``_MAX_PARSE_WORKERS`` (8) of these concurrently, so the cap
+# is really a memory budget: 2 MB bounds one worker at ~230 MB and the pool at
+# ~1.8 GB. Lifting it to 46 MB would be 4.4 GB *per worker*, and vendored
+# tree-sitter grammars ship `parser.c` files of exactly that size — one repo in
+# the corpus (codebase-memory-mcp) carries 268 of them, the largest 104 MB,
+# which would want ~10 GB in a single worker.
+_SOURCE_MAX_FILE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB
+
+# A minified bundle has a real parser and a source extension, so neither the
+# language check nor the size ceiling excludes it — but it is machine-written,
+# yields junk symbols, and is exactly what the 500 KB limit used to catch by
+# accident. Mean line length separates the two cleanly: hand-written source in
+# the corpus runs 25-60 bytes/line (the hermes six: 41-50), while minified
+# JavaScript runs 1,200+ and a single-line JSON blob runs into the millions.
+# 200 leaves a wide margin over the widest real source measured.
+_MINIFIED_MEAN_LINE_BYTES: int = 200
+
+# Only the head of the file is read to decide: a minified bundle has no
+# newlines to find, so a sample answers the question as well as the whole file
+# and bounds the read on a file we are about to reject anyway.
+_MINIFIED_SAMPLE_BYTES: int = 256 * 1024
 
 # Languages for which generated-file detection is skipped.  These files have
 # no AST parsing anyway, so reading 512 bytes to check for generated markers
@@ -242,7 +315,11 @@ class FileTraverser:
 
     Args:
         repo_root: Absolute path to the repository root.
-        max_file_size_kb: Skip files larger than this.  Default: 500 KB.
+        max_file_size_kb: Skip files larger than this *when nothing can parse
+            them* (lockfiles, changelogs, JSON fixtures, images, video).
+            Default: 500 KB. Files whose language has an AST parser are bounded
+            instead by :data:`_SOURCE_MAX_FILE_SIZE_BYTES`, a memory budget
+            this argument cannot raise.
         extra_ignore_filename: Name of an additional gitignore-syntax file.
             Defaults to ``.repowiseIgnore``.
         extra_exclude_patterns: Additional gitignore-style patterns to exclude
@@ -484,6 +561,19 @@ class FileTraverser:
     # Internal: FileInfo construction
     # ------------------------------------------------------------------
 
+    def _oversize_skip_reason(self, abs_path: Path, size_bytes: int) -> _OversizeSkip | None:
+        """This traverser's size verdict for one file. See :func:`size_verdict`."""
+        return size_verdict(abs_path, size_bytes, max_file_size_bytes=self.max_file_size_bytes)
+
+    def _record_skipped_source(self, rel_str: str, size_bytes: int, reason: str) -> None:
+        """Note a skipped source file by name. Caller holds ``_count_lock``."""
+        if len(self.stats.skipped_source_files) < _MAX_SKIPPED_SOURCE_PATHS:
+            self.stats.skipped_source_files.append(
+                SkippedSourceFile(rel_str, size_bytes // 1024, reason)
+            )
+        else:
+            self.stats.skipped_source_files_truncated = True
+
     def _build_file_info(self, abs_path: Path) -> FileInfo | None:
         try:
             stat = abs_path.stat()
@@ -494,11 +584,23 @@ class FileTraverser:
         rel_path = abs_path.relative_to(self.repo_root)
         rel_str = rel_path.as_posix()
 
-        # Size limit
-        if size_bytes > self.max_file_size_bytes:
+        # Size limit. Two ceilings, because one number cannot serve both jobs:
+        # keeping multi-megabyte blobs out, and keeping a repo's biggest real
+        # module in. The lookup that separates them is a dict hit with no I/O
+        # (see :func:`_language_from_name_or_ext`), so this stays as cheap as
+        # the single comparison it replaces and a 12 MB video is still
+        # rejected on its stat alone.
+        if (reason := self._oversize_skip_reason(abs_path, size_bytes)) is not None:
             with self._count_lock:
                 self.stats.skipped_oversized += 1
-            log.debug("Skipping oversized file", path=rel_str, size_kb=size_bytes // 1024)
+                if reason.is_source:
+                    self._record_skipped_source(rel_str, size_bytes, reason.reason)
+            log.debug(
+                "Skipping oversized file",
+                path=rel_str,
+                size_kb=size_bytes // 1024,
+                reason=reason.reason,
+            )
             return None
 
         # Blocked extension
@@ -712,6 +814,68 @@ def _is_binary(abs_path: Path) -> bool:
             return b"\x00" in f.read(8192)
     except OSError:
         return True
+
+
+def size_verdict(
+    abs_path: Path,
+    size_bytes: int,
+    *,
+    max_file_size_bytes: int = _DEFAULT_MAX_FILE_SIZE_BYTES,
+) -> _OversizeSkip | None:
+    """Whether this file is excluded on size, and why. None means "index it".
+
+    Which ceiling applies depends on whether anything can actually read the
+    file. A parserless file (lockfile, changelog, image, video) is bounded by
+    *max_file_size_bytes*, the caller-facing knob. A file whose language has a
+    parser is bounded by :data:`_SOURCE_MAX_FILE_SIZE_BYTES`, which is
+    deliberately *not* configurable: it is a memory budget (~95 MB of peak RSS
+    per MB of source, times an 8-worker parse pool), not a preference, so
+    raising the knob must not be able to lift it.
+
+    Shared with the MCP layer so that "why is this file missing" is answered by
+    the same code that made it missing, rather than a second copy that can
+    drift.
+    """
+    language = _language_from_name_or_ext(abs_path)
+    # No parser, so there is nothing to gain by reading it and size is the only
+    # signal available. Pre-existing behaviour, unchanged.
+    if language is None or language in _SKIP_GENERATED_CHECK:
+        if size_bytes > max_file_size_bytes:
+            return _OversizeSkip("over_max_size", is_source=False)
+        return None
+    if size_bytes > _SOURCE_MAX_FILE_SIZE_BYTES:
+        return _OversizeSkip("over_max_size", is_source=True)
+    # Only files the old cap would have dropped are worth the sample read;
+    # below it a minified bundle is small enough to be harmless.
+    if size_bytes > max_file_size_bytes:
+        minified = _looks_minified(abs_path)
+        if minified is None:
+            return _OversizeSkip("unreadable", is_source=True)
+        if minified:
+            return _OversizeSkip("minified", is_source=True)
+    return None
+
+
+def _looks_minified(abs_path: Path) -> bool | None:
+    """Return True if the file's mean line length says it is machine-packed.
+
+    Reads only the head: a minified file's defining property is that it has
+    almost no newlines, so the sample is representative by construction.
+
+    Returns ``None`` when the file could not be read. The file still has to be
+    skipped, but reporting an unreadable file as "looks minified" would send
+    the user to check a bundler when the real problem is permissions.
+    """
+    try:
+        with open(abs_path, "rb") as f:
+            sample = f.read(_MINIFIED_SAMPLE_BYTES)
+    except OSError:
+        return None
+    if not sample:
+        return False
+    # +1 so a file with no trailing newline is not divided by zero, and a
+    # single-line file measures its own full length.
+    return len(sample) / (sample.count(b"\n") + 1) > _MINIFIED_MEAN_LINE_BYTES
 
 
 def _is_generated(abs_path: Path) -> bool:

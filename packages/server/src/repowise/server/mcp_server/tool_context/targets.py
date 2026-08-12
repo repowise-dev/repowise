@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -187,6 +188,40 @@ def _clean_signature(signature: str | None) -> str:
     runs collapse to single spaces; the text is unchanged otherwise.
     """
     return " ".join((signature or "").split())
+
+
+def _size_exclusion_note(repo_root: Any, target: str) -> str | None:
+    """Explain a missing file that ingestion dropped on size, else None.
+
+    Computed live from the file on disk rather than read from the index,
+    because a file excluded from ingestion leaves no row to read. Delegates the
+    actual rule to ``size_verdict`` so this answer cannot drift from the code
+    that produced the exclusion.
+    """
+    if repo_root is None:
+        return None
+    try:
+        from repowise.core.ingestion.traverser import size_verdict
+
+        root = Path(str(repo_root))
+        abs_path = (root / target).resolve()
+        # An index row is not a trust boundary; refuse anything outside the repo.
+        abs_path.relative_to(root.resolve())
+        size_bytes = abs_path.stat().st_size
+        verdict = size_verdict(abs_path, size_bytes)
+    except (OSError, ValueError):
+        return None
+    if verdict is None or not verdict.is_source:
+        return None
+    detail = {
+        "minified": "it looks minified (machine-packed, not hand-written)",
+        "unreadable": "it could not be read",
+    }.get(verdict.reason, "it exceeds the maximum size for an indexed source file")
+    return (
+        f"'{target}' is not indexed: {detail} "
+        f"({size_bytes // 1024:,} KB). It has no page and no symbols, and "
+        "`repowise update` will not create them. Read the file directly."
+    )
 
 
 async def _resolve_one_target(
@@ -372,9 +407,17 @@ async def _resolve_one_target(
             )
             meta = res.scalar_one_or_none()
             if meta:
+                # Say so when the file was excluded on size. The generic answer
+                # below ("too few symbols or below the PageRank threshold")
+                # sends the reader to regenerate docs, which cannot help: the
+                # file was never read, so no amount of updating will produce a
+                # page. Computed from the same function that made the decision,
+                # so the two cannot drift (#1237).
+                size_note = _size_exclusion_note(repo_root, target)
                 return {
                     "target": target,
-                    "error": (
+                    "error": size_note
+                    or (
                         f"'{target}' exists in the repository but has no wiki page. "
                         "This usually means the file has too few symbols or is below "
                         "the PageRank threshold. Run `repowise update` to regenerate docs."
