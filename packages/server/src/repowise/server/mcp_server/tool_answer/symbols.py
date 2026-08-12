@@ -992,6 +992,17 @@ def _match_definition(raw: str, next_raw: str = "") -> re.Match[str] | None:
             # An anonymous function passed as an argument, in either syntax.
             if "=>" in raw[: m.end()] or "function" in raw[: m.end()]:
                 continue
+            # Go's third spelling of the same thing: ``func(req *http.Request)
+            # (*http.Response, error) {``. There is no space after ``func``, so
+            # the optional return-type group matches empty and the name group
+            # takes the keyword itself, yielding an unresolvable ``path::func``.
+            # This cannot be handled by either general-purpose set above:
+            # ``_RESERVED_NAMES`` is tested for every pattern and ``def func():``
+            # is a real Python definition (41 of them in django alone), while
+            # ``_NOT_A_DEFINITION`` is also tested against the line's FIRST
+            # word, which is ``func`` on every named Go function too.
+            if m.group("name") == "func":
+                continue
             # Allman: the brace is on the next line. A declaration never ends in
             # a comma, but an argument on its own line inside a multi-line call
             # does -- and when the following argument is a dict literal, the

@@ -725,6 +725,60 @@ def test_go_definitions_are_found(tmp_path) -> None:
     assert "for" not in names
 
 
+def test_a_go_anonymous_func_literal_is_not_a_symbol_named_func(tmp_path) -> None:
+    """141 of 23,038 sweep entries on cli/cli, one of them the headline.
+
+    ``func(`` has no space after the keyword, so the brace-member pattern's
+    optional return-type group matches empty and the name group takes ``func``
+    itself — an unresolvable ``d.go::func`` that the note then tells the agent
+    to fetch. The named function around it must still be reported.
+    """
+    from repowise.server.mcp_server.tool_answer.symbols import withheld_definitions
+
+    (tmp_path / "rt.go").write_text(
+        "package main\n"
+        "\n"
+        "func NewClient(t *testing.T) *http.Client {\n"
+        "\treg := &httpmock.Registry{}\n"
+        "\treg.Register(\n"
+        "\t\thttpmock.REST(\"GET\", \"repos/o/r\"),\n"
+        "\t\tfunc(req *http.Request) (*http.Response, error) {\n"
+        "\t\t\treturn nil, nil\n"
+        "\t\t},\n"
+        "\t)\n"
+        "\treturn reg.Client()\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    got = withheld_definitions(tmp_path, "rt.go:5-12")
+    names = [d["name"] for d in got]
+    assert "func" not in names, names
+    # Not vacuous: the enclosing named function is still found, so the guard
+    # is rejecting the literal rather than the whole file.
+    assert names and names[0] == "NewClient" and got[0]["body_continues"] is True
+
+
+def test_a_python_function_actually_named_func_is_still_reported(tmp_path) -> None:
+    """The reason ``func`` cannot simply join ``_RESERVED_NAMES``.
+
+    That set is consulted for every pattern, and ``def func(...)`` is a real
+    definition — 41 of them in django alone.
+    """
+    from repowise.server.mcp_server.tool_answer.symbols import withheld_definitions
+
+    (tmp_path / "fn.py").write_text(
+        "import functools\n"
+        "\n"
+        "\n"
+        "def func(a, b):\n"
+        "    total = a + b\n"
+        "    return total\n",
+        encoding="utf-8",
+    )
+    names = [d["name"] for d in withheld_definitions(tmp_path, "fn.py:5-6")]
+    assert "func" in names, names
+
+
 def test_java_members_are_found(tmp_path) -> None:
     from repowise.server.mcp_server.tool_answer.symbols import withheld_definitions
 
