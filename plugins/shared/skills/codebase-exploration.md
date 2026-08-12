@@ -1,6 +1,19 @@
 ---
-name: codebase-exploration
-description: Use when exploring, understanding, or answering questions about a Repowise-indexed codebase, including architecture, where code is implemented, how a module works, or which files are relevant before reading source.
+claude-code:
+  dir: codebase-exploration
+  frontmatter: |
+    name: codebase-exploration
+    description: >
+      Use when exploring, understanding, or answering questions about a codebase that has Repowise
+      indexed (a .repowise/ directory in the project root). Activates for "how does X work",
+      "explain the architecture", "where is Y implemented", "what does this module do", or any task
+      that needs an understanding of structure before diving into source files.
+    user-invocable: false
+codex:
+  dir: codebase-exploration
+  frontmatter: |
+    name: codebase-exploration
+    description: Use when exploring, understanding, or answering questions about a Repowise-indexed codebase, including architecture, where code is implemented, how a module works, or which files are relevant before reading source.
 ---
 
 # Codebase Exploration with Repowise
@@ -46,16 +59,16 @@ Otherwise the response is current — act on it.
 
 ## Error handling
 
-- "No repositories found. Run 'repowise init' first." → suggest `/prompts:repowise-init`.
+- "No repositories found. Run 'repowise init' first." → suggest `{{cmd:init}}`.
   Add `--no-editor-setup` if this repo is a scratch clone, a fixture, or a
   worktree: `init` otherwise repoints the user's single global `repowise` MCP
   entry at it.
 - MCP tools unavailable → prefer the matching CLI slash commands when the
-  plugin is installed (`/prompts:repowise-ask`, `/prompts:repowise-context`, `/prompts:repowise-symbol`,
-  `/prompts:repowise-search`) rather than grepping blind.
+  plugin is installed (`{{cmd:ask}}`, `{{cmd:context}}`, `{{cmd:symbol}}`,
+  `{{cmd:search}}`) rather than grepping blind.
 - `get_answer`/`search_codebase` come back empty → the repo may have a
   template-rendered wiki. Fall back to `get_context` with explicit paths, and note
-  that model-written pages (`repowise generate`, or `/prompts:repowise-init` with an LLM
+  that model-written pages (`repowise generate`, or `{{cmd:init}}` with an LLM
   provider) unlock richer docs + semantic search.
 - Tools fail to connect at all → the `repowise` binary may not be installed;
-  suggest `/prompts:repowise-init`.
+  suggest `{{cmd:init}}`.

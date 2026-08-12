@@ -1,6 +1,19 @@
 ---
-name: code-health
-description: Use when the user asks about code health, code quality, complexity, technical debt, risky or hard-to-maintain files, what to refactor next, untested hotspots, or coverage gaps in a Repowise-indexed codebase (.repowise/ directory exists). Also use for before/after health reads when planning or finishing a refactor.
+claude-code:
+  dir: code-health
+  frontmatter: |
+    name: code-health
+    description: >
+      Use when the user asks about code health, code quality, complexity, technical debt, which files
+      are risky or hard to maintain, what to refactor next, untested hotspots, or coverage gaps in a
+      Repowise-indexed codebase (.repowise/ directory exists). Also use to get a before/after health
+      read when planning or finishing a refactor.
+    user-invocable: false
+codex:
+  dir: code-health
+  frontmatter: |
+    name: code-health
+    description: Use when the user asks about code health, code quality, complexity, technical debt, risky or hard-to-maintain files, what to refactor next, untested hotspots, or coverage gaps in a Repowise-indexed codebase (.repowise/ directory exists). Also use for before/after health reads when planning or finishing a refactor.
 ---
 
 # Code Health with Repowise
@@ -57,6 +70,6 @@ not just *bigger*.
 
 ## Error handling
 
-If `get_health` reports no repository, suggest `/prompts:repowise-init`. Code health is
+If `get_health` reports no repository, suggest `{{cmd:init}}`. Code health is
 computed even with a template-rendered wiki (no LLM needed), so it should be available
 whenever the repo is indexed.

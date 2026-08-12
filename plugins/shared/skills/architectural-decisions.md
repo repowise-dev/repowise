@@ -1,6 +1,20 @@
 ---
-name: architectural-decisions
-description: Use when a task asks why code is built a certain way, proposes architectural changes, compares implementation approaches, or mentions decision markers such as WHY, DECISION, TRADEOFF, or ADR in a Repowise-indexed repository.
+claude-code:
+  dir: architectural-decisions
+  frontmatter: |
+    name: architectural-decisions
+    description: >
+      Use when encountering questions about WHY code is built a certain way, when about to make
+      architectural changes (new patterns, restructuring, choosing between approaches), or when
+      the user asks about design rationale in a Repowise-indexed codebase (.repowise/ directory exists).
+      Also activates when commit messages or code comments contain decision signals like "WHY:",
+      "DECISION:", "TRADEOFF:", "ADR:".
+    user-invocable: false
+codex:
+  dir: architectural-decisions
+  frontmatter: |
+    name: architectural-decisions
+    description: Use when a task asks why code is built a certain way, proposes architectural changes, compares implementation approaches, or mentions decision markers such as WHY, DECISION, TRADEOFF, or ADR in a Repowise-indexed repository.
 ---
 
 # Architectural Decisions with Repowise
@@ -40,8 +54,8 @@ Call `get_why()` with no arguments to get the decision-health dashboard:
 - Ungoverned hotspots (high-churn files with no recorded decisions)
 
 The same signals surface in the CLI via `repowise decision health` /
-`/prompts:repowise-decision`, and you can query *why* mid-task with `repowise why` /
-`/prompts:repowise-why` (the `get_why` adapter). Review auto-proposed decisions with
+`{{cmd:decision}}`, and you can query *why* mid-task with `repowise why` /
+`{{cmd:why}}` (the `get_why` adapter). Review auto-proposed decisions with
 `repowise decision confirm`.
 
 ## When a file has decision markers

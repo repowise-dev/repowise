@@ -1,6 +1,19 @@
 ---
-name: change-review
-description: Use when reviewing a set of changes before they merge in a Repowise-indexed repository, a PR, a branch diff, or the working-tree changes you just made. Activates for "review this PR", "is this safe to merge", "what is the blast radius of these changes", or "did I miss anything".
+claude-code:
+  dir: change-review
+  frontmatter: |
+    name: change-review
+    description: >
+      Use when reviewing a set of changes before they merge — a PR, a branch diff, or the working-tree
+      changes you just made — in a Repowise-indexed codebase (.repowise/ directory exists). Activates
+      for "review this PR", "is this safe to merge", "what's the blast radius of these changes", "did I
+      miss anything", or "what else should change with this".
+    user-invocable: false
+codex:
+  dir: change-review
+  frontmatter: |
+    name: change-review
+    description: Use when reviewing a set of changes before they merge in a Repowise-indexed repository, a PR, a branch diff, or the working-tree changes you just made. Activates for "review this PR", "is this safe to merge", "what is the blast radius of these changes", or "did I miss anything".
 ---
 
 # Change Review with Repowise
@@ -98,4 +111,4 @@ didn't support.
 
 If `get_risk` errors or returns nothing, the MCP server may be down or the repo
 unindexed — say so and review from the raw diff, noting that Repowise context was
-unavailable. Suggest `/prompts:repowise-init` if the repo isn't indexed.
+unavailable. Suggest `{{cmd:init}}` if the repo isn't indexed.

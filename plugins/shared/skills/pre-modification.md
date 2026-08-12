@@ -1,6 +1,19 @@
 ---
-name: pre-modification-check
-description: Use before modifying, refactoring, moving, or deleting files in a Repowise-indexed repository, especially shared utilities, core modules, public APIs, or files the user did not explicitly identify.
+claude-code:
+  dir: pre-modification
+  frontmatter: |
+    name: pre-modification-check
+    description: >
+      Use before modifying, refactoring, or deleting files in a codebase that has Repowise indexed
+      (indicated by a .repowise/ directory). Activates when Claude is about to edit code, especially
+      shared utilities, core modules, or files the user didn't explicitly mention. Helps assess
+      impact and avoid breaking things.
+    user-invocable: false
+codex:
+  dir: pre-modification-check
+  frontmatter: |
+    name: pre-modification-check
+    description: Use before modifying, refactoring, moving, or deleting files in a Repowise-indexed repository, especially shared utilities, core modules, public APIs, or files the user did not explicitly identify.
 ---
 
 # Pre-Modification Check with Repowise

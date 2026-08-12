@@ -1,6 +1,18 @@
 ---
-name: dead-code-cleanup
-description: Use when the user asks about unused code, cleanup, deleting files or exports, refactoring old areas, reducing bundle size, code hygiene, technical debt, or maintenance in a Repowise-indexed repository.
+claude-code:
+  dir: dead-code-cleanup
+  frontmatter: |
+    name: dead-code-cleanup
+    description: >
+      Use when the user asks about cleanup, removing unused code, refactoring, reducing bundle size,
+      or identifying dead code in a Repowise-indexed codebase (.repowise/ directory exists). Also
+      activates when discussing technical debt, code hygiene, or repository maintenance.
+    user-invocable: false
+codex:
+  dir: dead-code-cleanup
+  frontmatter: |
+    name: dead-code-cleanup
+    description: Use when the user asks about unused code, cleanup, deleting files or exports, refactoring old areas, reducing bundle size, code hygiene, technical debt, or maintenance in a Repowise-indexed repository.
 ---
 
 # Dead Code Cleanup with Repowise
