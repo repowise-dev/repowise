@@ -47,7 +47,11 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "get_context",
-        "description": "Get documentation, ownership, freshness, and decisions for one or more files, modules, or symbols.",
+        "description": (
+            "Triage card for files/modules/symbols: docs, freshness, hotspot bit, "
+            "signatures. Opt into full_doc, ownership, last_change, callers/callees, "
+            "metrics, community, decisions, health, or skeleton (body-elided source)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -61,20 +65,31 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {
                         "type": "string",
                         "enum": [
-                            "docs",
                             "full_doc",
                             "ownership",
                             "last_change",
-                            "decisions",
-                            "freshness",
-                            "source",
                             "callers",
                             "callees",
                             "metrics",
                             "community",
+                            "decisions",
+                            "health",
+                            "skeleton",
                         ],
                     },
-                    "description": "Data blocks to include. Default: docs + freshness.",
+                    "description": (
+                        "Opt-in blocks (docs + freshness are always on): "
+                        "full_doc | ownership | last_change | callers | callees | "
+                        "metrics | community | decisions | health | skeleton."
+                    ),
+                },
+                "compact": {
+                    "type": "boolean",
+                    "description": (
+                        "Default true. False adds structure, imports, and docstrings "
+                        "to the triage card."
+                    ),
+                    "default": True,
                 },
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
