@@ -472,15 +472,15 @@ def remove_server_config(repo_path: Path, *, drop_hooks_feature: bool) -> FileWr
     # flow lands in exactly that shape.
     changed = (has_server and not server_refused) or (has_feature and not feature_refused)
     if not changed:
+        left = []
+        if server_refused:
+            left.append("the repowise server entry")
+        if feature_refused:
+            left.append("features.hooks")
         return FileWrite(
             path=config_path,
             action=FileAction.KEPT,
-            reason=(
-                "the repowise entry uses a key spelling this remover cannot match; "
-                "delete it by hand"
-            )
-            if server_refused
-            else "features.hooks holds a value this remover cannot cut; delete it by hand",
+            reason=f"{' and '.join(left)} could not be removed; delete by hand",
         )
 
     try:
@@ -517,20 +517,26 @@ def remove_server_config(repo_path: Path, *, drop_hooks_feature: bool) -> FileWr
                 reason="the entry was still present after the write",
             )
 
-    # Something went, and something else was declined. Both halves belong in
-    # the report: a bare REMOVED here would be true of the server table and
-    # silently false of the flag.
-    if feature_refused:
+    # Something moved and something else was declined. The row is KEPT, not
+    # REMOVED, and the action is what matters rather than the reason: the runner
+    # counts leftovers and picks the exit code from the action alone, so a
+    # REMOVED row carrying a "left in place" sentence was counted as clean.
+    # `uninstall --all` exited 0 under "everything selected is gone" while
+    # Codex went on launching our MCP server from an entry still in the file.
+    #
+    # Both halves are named when both were refused. The KEPT head and the
+    # REMOVED tail used to disagree about which one to report, so a run that
+    # declined both mentioned only the server.
+    if server_refused or feature_refused:
+        left = []
+        if server_refused:
+            left.append("the repowise server entry")
+        if feature_refused:
+            left.append("features.hooks")
         return FileWrite(
             path=config_path,
-            action=FileAction.REMOVED,
-            reason="features.hooks was left in place; its value is one this remover cannot cut",
-        )
-    if server_refused:
-        return FileWrite(
-            path=config_path,
-            action=FileAction.REMOVED,
-            reason="the repowise server entry was left in place; delete it by hand",
+            action=FileAction.KEPT,
+            reason=f"{' and '.join(left)} could not be removed; delete by hand",
         )
     return FileWrite(path=config_path, action=FileAction.REMOVED)
 
@@ -559,7 +565,21 @@ def _config_parse_refusal(repo_path: Path) -> str | None:
 
 
 def _user_hooks_leftover_reason() -> str | None:
-    """Why ``~/.codex/hooks.json`` still has us in it, read from disk. None when clean."""
+    """Why ``~/.codex/hooks.json`` still has us in it, read from disk. None when clean.
+
+    Scoped to **exactly what the remover removes**, which is the rewrite hook.
+    Probing for any command containing "repowise" made the two halves disagree:
+    the probe flagged a hook the remover does not touch, so the row reported
+    ``KEPT`` on every run and the machine could never be made clean. Any hook
+    the user wrote that merely mentions ``repowise distill`` or
+    ``repowise update`` triggered it.
+
+    The Claude Code side is broad because its uninstall is broad, removing the
+    rewrite hook and the augment hooks and the MCP entry. Codex's user-scope
+    uninstall removes the rewrite hook, so this asks about the rewrite hook.
+    """
+    from repowise.cli.editor_integrations.codex_config import _is_rewrite_hook
+
     path = user_hooks_path()
     if not path.exists():
         return None
@@ -567,11 +587,11 @@ def _user_hooks_leftover_reason() -> str | None:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         try:
-            if b"repowise" not in path.read_bytes().lower():
+            if b"repowise-rewrite" not in path.read_bytes().lower():
                 return None
         except OSError:
             return None
-        return "the file could not be read and still mentions repowise"
+        return "the file could not be read and still mentions our rewrite hook"
     hooks = doc.get("hooks") if isinstance(doc, dict) else None
     if not isinstance(hooks, dict):
         return None
@@ -581,9 +601,8 @@ def _user_hooks_leftover_reason() -> str | None:
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
                 continue
-            for hook in entry["hooks"]:
-                if isinstance(hook, dict) and "repowise" in str(hook.get("command", "")):
-                    return "one of our hooks was still present after the write"
+            if any(_is_rewrite_hook(hook) for hook in entry["hooks"]):
+                return "our rewrite hook was still present after the write"
     return None
 
 

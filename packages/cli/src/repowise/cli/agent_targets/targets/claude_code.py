@@ -470,7 +470,10 @@ class ClaudeCodeTarget:
                 result.record(desktop, FileAction.KEPT, desktop_leftover)
             elif desktop_removed:
                 result.record(desktop, FileAction.REMOVED)
-        removed = desktop_removed or removed
+        # Deliberately not folded into `removed`. That accumulator feeds the
+        # settings.json row below, so once the Desktop config got its own row a
+        # Desktop-only removal reported settings.json as `removed` too, over a
+        # file that in the common case does not even exist.
 
         # Asked of the file, not inferred from the three booleans. Each of them
         # returns False for "nothing of ours was here", "could not parse" and

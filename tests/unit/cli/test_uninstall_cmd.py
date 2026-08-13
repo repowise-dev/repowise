@@ -479,6 +479,14 @@ def test_every_kept_row_carries_a_reason(repo: Path) -> None:
         '{\n  // a comment\n  "mcpServers": {"repowise": {}}\n}\n', encoding="utf-8"
     )
     (repo / ".codex" / "config.toml").write_text("bad = = toml [[[\n", encoding="utf-8")
+    (repo / ".vscode" / "extensions.json").write_text(
+        '{\n  // a comment\n  "recommendations": ["repowise-dev.repowise"]\n}\n', encoding="utf-8"
+    )
+    # Claude Code was the sixth target and the only one this scenario never made
+    # refuse, so its reason wiring and both its leftover probes were unpinned.
+    (Path.home() / ".claude" / "settings.json").write_text(
+        '{\n  // a comment\n  "mcpServers": {"repowise": {}}\n}\n', encoding="utf-8"
+    )
 
     payload = _payload(["uninstall", str(repo), "--all"])
 
@@ -487,7 +495,7 @@ def test_every_kept_row_carries_a_reason(repo: Path) -> None:
     assert len({r["group"] for r in kept}) > 1, kept
     # Every target that can refuse here does, so a reverted reason in any one of
     # them turns this red rather than only the three that happened to be wired.
-    for expected in ("OpenCode", "Hermes", "Codex", "Cursor", "VS Code"):
+    for expected in ("OpenCode", "Hermes", "Codex", "Cursor", "VS Code", "Claude Code"):
         assert any(expected in label for label in labels), (expected, sorted(labels))
     assert all(r["reason"] for r in kept), [r for r in kept if not r["reason"]]
 

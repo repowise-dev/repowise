@@ -228,6 +228,45 @@ def test_a_feature_value_we_cannot_cut_does_not_abandon_the_server_removal(
     assert '"a",' in body
 
 
+def test_a_half_refused_removal_is_not_reported_as_clean(tmp_path: Path) -> None:
+    """The action is what the runner counts, so it has to carry the bad news.
+
+    A ``REMOVED`` row with a "left in place" reason was counted as clean, so
+    ``uninstall --all`` exited 0 under "everything selected is gone" while Codex
+    went on launching our MCP server from an entry still in the file. The reason
+    text was accurate and nothing read it.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # The inline spelling `remove_table`'s regex cannot match, beside a feature
+    # flag that removes cleanly, so one half succeeds and one half does not.
+    _write(
+        repo,
+        '[mcp_servers]\nrepowise = { command = "repowise" }\n[features]\nhooks = true\n',
+    )
+
+    write = remove_server_config(repo, drop_hooks_feature=True)
+
+    assert write.action is FileAction.KEPT
+    assert write.reason and "server entry" in write.reason
+
+
+def test_both_refusals_are_named_not_just_the_first(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write(
+        repo,
+        '[mcp_servers]\nrepowise = { command = "repowise" }\n'
+        '[features]\nhooks = [\n  "a",\n]\n',
+    )
+
+    write = remove_server_config(repo, drop_hooks_feature=True)
+
+    assert write.action is FileAction.KEPT
+    assert "server entry" in (write.reason or "")
+    assert "features.hooks" in (write.reason or "")
+
+
 def test_one_row_per_file(tmp_path: Path) -> None:
     """Two passes over config.toml put two rows for one path in the report."""
     from repowise.cli.agent_targets.registry import get_target
