@@ -97,11 +97,20 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
     """Success-shaped response for a store whose schema predates this repowise.
 
     ``init_db`` back-fills *additive* drift on every read path, so reaching
-    here means the drift is the kind ``_reconcile_schema`` deliberately does
-    not touch (a removed or renamed column, a changed type — see
-    ``database.py``). The generic internal-error shape is the wrong answer for
-    it: it tells the caller to stop using the tool for the session, when one
-    ``repowise update`` fixes it.
+    here has two causes, not one:
+
+      * the drift is the kind ``_reconcile_schema`` deliberately does not touch
+        (a removed or renamed column, a changed type: see ``database.py``);
+      * or the reconcile ran and one of its statements failed, leaving this
+        column still missing. The reconciler continues past a failure and
+        converges over repeated calls, so this cause can clear on its own.
+
+    Which one it is cannot be told apart from here, and that is why the remedy
+    leads with a retry rather than with ``repowise update``: telling a caller
+    to re-index a store whose reconcile is failing sends them somewhere that
+    fails the same way. The generic internal-error shape is still the wrong
+    answer for either cause, because it tells the caller to stop using the tool
+    for the whole session when the store is very likely repairable.
     """
     return {
         # The driver's own message: SQLAlchemy appends the whole compiled
@@ -112,14 +121,19 @@ def _shape_stale_index(exc: Exception) -> dict[str, Any]:
             f"repowise: {_driver_message(exc).splitlines()[0].strip()}"
         ),
         "remedy": (
-            "The user can rebuild it by running 'repowise update' in the repo "
-            "root. Re-indexing is the user's decision — suggest it once, do "
-            "not run it yourself."
+            "Retry this call once: the schema repair runs on every read and "
+            "makes progress each time, so a partial repair can finish on the "
+            "next call. If it returns this notice again, the user can rebuild "
+            "the index with 'repowise update' in the repo root, or "
+            "'repowise init --force' if update reports the same error. "
+            "Re-indexing is the user's decision: suggest it once, do not run "
+            "it yourself."
         ),
         "guidance": (
-            "Until the index is rebuilt, every repowise tool will return this "
-            "notice. Answer questions about this repo with your built-in "
-            "tools (Read/Grep/Glob) for the rest of the session."
+            "If the retry returns this notice too, every repowise tool will "
+            "keep returning it until the index is rebuilt. Answer questions "
+            "about this repo with your built-in tools (Read/Grep/Glob) for the "
+            "rest of the session."
         ),
     }
 

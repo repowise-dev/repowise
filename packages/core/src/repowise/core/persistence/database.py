@@ -12,10 +12,11 @@ Call init_db() once at startup to create all tables and the FTS index.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import structlog
 from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -28,6 +29,8 @@ from sqlalchemy.schema import CreateIndex
 from sqlalchemy.sql import text
 
 from .models import Base
+
+log = structlog.get_logger(__name__)
 
 # SQLite tuning. WAL allows concurrent readers while a writer is active and
 # turns the "database is locked" failure mode into a polite block, while the
@@ -319,13 +322,53 @@ def _reconcile_schema(connection: object) -> None:
       * Postgres extensions / functions (e.g. pgvector) are NOT created
         here — those still belong in Alembic migrations.
 
-    The function is invoked inside the same transactional block as
-    ``create_all`` and uses a sync connection (via ``run_sync``) so the
-    SQLAlchemy DDL compilers work directly.
+    Uses a sync connection (via ``run_sync``) so the SQLAlchemy DDL compilers
+    work directly.
+
+    **Not atomic on SQLite, deliberately convergent instead.** ``init_db``
+    opens a transactional block, but pysqlite does not begin a transaction for
+    DDL, so every ``ALTER TABLE`` and ``CREATE INDEX`` here autocommits as it
+    runs. A statement that fails therefore cannot be rolled back, and aborting
+    the loop would strand every table ordered after the victim in
+    ``Base.metadata`` on that call and on every later one: a permanently
+    half-migrated store. So a failed statement is recorded and the walk
+    continues, and the first failure is re-raised once the walk is done. Two
+    properties follow, both wanted:
+
+      * calling again makes progress, because the tables after the victim are
+        reached on the first call rather than never;
+      * the caller still sees the error, so a write path fails as loudly as it
+        did before. The read paths pair this with
+        ``reconcile_schema_best_effort``, which swallows it on purpose.
+
+    On a backend with transactional DDL (PostgreSQL) the first failure poisons
+    the transaction, so continuing is pointless and the error is raised at
+    once, which keeps that backend's existing all-or-nothing behaviour.
     """
     inspector = inspect(connection)
     db_tables = set(inspector.get_table_names())
     dialect = connection.dialect  # type: ignore[attr-defined]
+    # Only SQLite autocommits DDL, which is what makes partial progress real
+    # rather than something a rollback undoes on the way out.
+    continue_past_failure = dialect.name == "sqlite"  # type: ignore[attr-defined]
+    failures: list[tuple[str, Exception]] = []
+
+    def _run(what: str, build: Callable[[], object]) -> None:
+        # ``build`` renders the statement as well as running it, because
+        # compiling a column's type can fail on its own and that failure has
+        # to strand no more than compiling it successfully and failing to
+        # execute it would.
+        try:
+            connection.execute(build())  # type: ignore[attr-defined]
+        except Exception as exc:  # re-raised below, once the walk is done
+            if not continue_past_failure:
+                raise
+            log.warning(
+                "schema_reconcile_statement_failed",
+                statement=what,
+                error=str(exc),
+            )
+            failures.append((what, exc))
 
     for table in Base.metadata.tables.values():
         if table.name not in db_tables:
@@ -344,9 +387,12 @@ def _reconcile_schema(connection: object) -> None:
         for column in table.columns:
             if column.name in db_cols:
                 continue
-            column_ddl = _add_column_ddl(column, dialect)
-            connection.execute(  # type: ignore[attr-defined]
-                text(f'ALTER TABLE "{table.name}" ADD COLUMN {column_ddl}')
+            _run(
+                f"{table.name}.{column.name}",
+                lambda table=table, column=column: text(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN '
+                    f"{_add_column_ddl(column, dialect)}"
+                ),
             )
 
         # --- Indexes ---------------------------------------------------
@@ -358,7 +404,19 @@ def _reconcile_schema(connection: object) -> None:
         for index in table.indexes:
             if index.name in db_indexes:
                 continue
-            connection.execute(CreateIndex(index))  # type: ignore[attr-defined]
+            _run(
+                f"{table.name}:{index.name}",
+                lambda index=index: CreateIndex(index),
+            )
+
+    if failures:
+        what = ", ".join(name for name, _ in failures)
+        log.warning(
+            "schema_reconcile_incomplete",
+            failed=len(failures),
+            statements=what,
+        )
+        raise failures[0][1]
 
 
 async def init_db(engine: AsyncEngine) -> None:
