@@ -413,12 +413,48 @@ def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     return None
 
 
-def answer_hint(confidence: str, retrieval_count: int) -> str | None:
+def answer_hint(
+    confidence: str,
+    retrieval_count: int,
+    *,
+    degraded: str | None = None,
+    retrieval_quality: str | None = None,
+    has_bodies: bool = False,
+) -> str | None:
     """Hint for `get_answer` callers.
 
     Encourages verification when confidence is low; never tells the agent to
     "trust the answer" — that's the over-trust failure mode.
+
+    A degraded payload is keyed separately, because "low" means something
+    different there. Everywhere else it rates an answer that exists and might be
+    wrong, so "go verify" is the right push. On a degraded payload there is no
+    synthesised text at all: what is missing is the prose, not the evidence, and
+    the evidence beside it can be excellent. Telling an install with no LLM to
+    doubt its files on every question is what made a keyless agent call
+    search_codebase after every get_answer: one question, two calls, measured on
+    11 of 26 questions whose rank-1 file was right. So say which half is missing
+    and let `retrieval_quality` rate the other half.
     """
+    if degraded:
+        if retrieval_quality == "weak":
+            return (
+                "No synthesis, and retrieval was weak. Refine the query with "
+                "search_codebase rather than reading these files in order."
+            )
+        # Name symbol_bodies only when there is one. A hint that points at a key
+        # the payload does not carry is the same misdirection this branch exists
+        # to remove, and strong retrieval without an anchored body is an ordinary
+        # outcome here (a prose question naming no identifier).
+        if has_bodies:
+            return (
+                "Synthesis is what is missing here, not retrieval. Answer from "
+                "symbol_bodies; retrieval_quality rates what was served."
+            )
+        return (
+            "Synthesis is what is missing here, not retrieval. retrieval_quality "
+            "rates the ranked hits; start from the first one."
+        )
     if confidence == "low":
         return "Low confidence — Read the listed fallback_targets to verify before answering."
     if retrieval_count == 0:

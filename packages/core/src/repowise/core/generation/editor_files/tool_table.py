@@ -51,9 +51,16 @@ from __future__ import annotations
 TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     "get_answer": (
         "get_answer(question)",
-        'First call for any how / where / why question. `confidence: "high"` or '
-        '`grounding: "extracted"` is content-grounded, so cite it directly; '
-        "`symbol_bodies` carries full live bodies.",
+        # `degraded` earns its three words because without them the row is wrong
+        # for a whole class of install. An LLM-less repowise answers every
+        # question with `confidence: "low"`, since confidence rates prose that
+        # was never synthesised, and this row told the agent to distrust the
+        # payload on the strength of it, so it re-searched after every call.
+        # `retrieval_quality` is the field that rates what such a payload does
+        # carry. Reworded, not lengthened: 186 chars against the 179 it replaced.
+        'First call for any how/where/why question. Cite `confidence: "high"` or '
+        '`grounding: "extracted"` directly; `degraded` means judge by '
+        "`retrieval_quality`. `symbol_bodies` has live bodies.",
     ),
     "get_context": (
         "get_context(targets=[...])",

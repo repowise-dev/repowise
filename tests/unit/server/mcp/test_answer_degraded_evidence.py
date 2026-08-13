@@ -193,3 +193,159 @@ async def test_degraded_with_no_anchor_match_is_unchanged(tmp_path):
     assert payload["degraded"] == "no-llm-provider"
     assert "ranked" in payload["answer"]
     assert "symbol_bodies" not in payload
+
+
+# --- retrieval_quality on the degraded payload (D10) -----------------------
+#
+# 26 of 26 measured keyless payloads carried no `retrieval_quality` key at all,
+# so the only trust signal a caller had was `confidence: "low"`, which rates
+# synthesised prose that a degraded payload does not have. 11 of those 26 said
+# "low" while rank 1 was a file the keyed arm went on to cite. `confidence`
+# stays low on purpose; the retrieval gets rated separately, by the same rule
+# the synthesised path uses.
+
+
+def _scored(*scores: float) -> list[dict]:
+    return [
+        {"target_path": f"pkg/m{i}.py", "title": f"m{i}", "summary": "s", "score": s}
+        for i, s in enumerate(scores)
+    ]
+
+
+async def _quality(hits, **kw):
+    payload = await _degraded_payload(
+        reason="no-llm-provider",
+        note="DEGRADED",
+        hits=hits,
+        fallback_targets=["pkg/m0.py"],
+        repository=None,
+        t0=0.0,
+        **kw,
+    )
+    return payload["retrieval_quality"]
+
+
+async def test_degraded_rates_a_dominant_retrieval_high():
+    """A clear winner over the score floor is a good retrieval, LLM or not."""
+    assert await _quality(_scored(6.0, 1.0)) == "high"
+
+
+async def test_degraded_rates_a_dominant_but_weak_retrieval_partial():
+    """Dominant relative to its siblings, but under the floor: partial, not high."""
+    assert await _quality(_scored(1.0, 0.1)) == "partial"
+
+
+async def test_degraded_does_not_lift_a_genuinely_weak_retrieval():
+    """The control that must not move.
+
+    14 of the 26 measured questions had retrieval that was weak in the KEYED arm
+    too. The reporter's literal fix, calling a degraded answer high-confidence,
+    would have promoted all of them, and a wrong "high" costs more trust than a
+    redundant second call saves. Ambiguous retrieval grades weak on both arms.
+    """
+    assert await _quality(_scored(6.0, 5.9)) == "weak"
+
+
+async def test_degraded_agreement_can_lift_but_the_floor_still_binds():
+    """Agreement is OR'd into dominance exactly as it is on the synthesised path."""
+    assert await _quality(_scored(6.0, 5.9), agreement_dominant=True) == "high"
+    assert await _quality(_scored(0.9, 0.8), agreement_dominant=True) == "partial"
+
+
+async def test_degraded_keeps_confidence_low():
+    """The label the reporter asked to raise stays where it is.
+
+    Confidence rates the synthesised text, and a degraded `answer` is assembled
+    boilerplate, byte-identical on 24 of the 26 measured questions. Telling an
+    agent to cite that is worse than the extra call it saves.
+    """
+    payload = await _degraded_payload(
+        reason="no-llm-provider",
+        note="DEGRADED",
+        hits=_scored(6.0, 1.0),
+        fallback_targets=["pkg/m0.py"],
+        repository=None,
+        t0=0.0,
+    )
+    assert payload["confidence"] == "low"
+    assert payload["retrieval_quality"] == "high"
+
+
+async def test_degraded_hint_says_what_is_missing_not_what_to_doubt():
+    """The `_meta` hint is the third push that made a keyless agent re-search.
+
+    On strong retrieval it must name the half that is actually absent (the
+    prose), not tell the caller to go verify the half that is fine.
+    """
+    payload = await _degraded_payload(
+        reason="no-llm-provider",
+        note="DEGRADED",
+        hits=_scored(6.0, 1.0),
+        fallback_targets=["pkg/m0.py"],
+        repository=None,
+        t0=0.0,
+    )
+    hint = payload["_meta"]["hint"]
+    assert "Synthesis is what is missing" in hint
+    assert "verify" not in hint
+
+
+async def test_degraded_hint_still_pushes_back_on_weak_retrieval():
+    """Weak retrieval keeps an honest hint; the fix must not flatter it."""
+    payload = await _degraded_payload(
+        reason="no-llm-provider",
+        note="DEGRADED",
+        hits=_scored(6.0, 5.9),
+        fallback_targets=["pkg/m0.py"],
+        repository=None,
+        t0=0.0,
+    )
+    assert "retrieval was weak" in payload["_meta"]["hint"]
+
+
+# --- the payload must not describe evidence it does not have ---------------
+
+
+async def test_degraded_answer_does_not_call_a_truncated_body_full(tmp_path):
+    """The entry two keys away says `truncated`; the sentence must agree with it."""
+    ctx = _tree(tmp_path, body_lines=200)
+    payload = await _degraded(ctx, _hits(end_line=200), {"Flask"})
+
+    assert payload["symbol_bodies"][0]["truncated"] is True
+    assert "in full" not in payload["answer"]
+    assert "continuation" in payload["answer"]
+
+
+async def test_degraded_answer_says_full_when_the_body_is_whole(tmp_path):
+    """The other direction: an uncut body should say so, or the hedge is noise."""
+    ctx = _tree(tmp_path)
+    payload = await _degraded(ctx, _hits(end_line=6), {"Flask"})
+
+    assert "in full" in payload["answer"]
+
+
+async def test_degraded_note_and_hint_never_name_absent_symbol_bodies(tmp_path):
+    """Strong retrieval with nothing anchored is ordinary, not an error.
+
+    A prose question that names no identifier gets `retrieval_quality: "high"`
+    and no `symbol_bodies`. Pointing it at that key is the same misdirection the
+    change set out to remove.
+    """
+    ctx = _tree(tmp_path)
+    hits = _hits(end_line=6)
+    hits[0]["score"] = 6.0
+    payload = await _degraded(ctx, hits, {"Blueprint"})
+
+    assert "symbol_bodies" not in payload
+    assert payload["retrieval_quality"] == "high"
+    assert "symbol_bodies" not in payload["note"]
+    assert "symbol_bodies" not in payload["_meta"]["hint"]
+
+
+async def test_degraded_note_names_symbol_bodies_when_it_has_them(tmp_path):
+    """And does name it when the key is really there."""
+    ctx = _tree(tmp_path)
+    payload = await _degraded(ctx, _hits(end_line=6), {"Flask"})
+
+    assert "symbol_bodies" in payload["note"]
+    assert "symbol_bodies" in payload["_meta"]["hint"]

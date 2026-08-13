@@ -395,6 +395,7 @@ async def test_both_failure_modes_return_the_same_payload_shape(reason):
         "answer",
         "citations",
         "confidence",
+        "retrieval_quality",
         "degraded",
         "fallback_targets",
         "retrieval",

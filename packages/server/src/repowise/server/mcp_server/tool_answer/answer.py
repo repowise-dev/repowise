@@ -701,6 +701,31 @@ def _gather_body_candidates(
     return candidates
 
 
+def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
+    """Rate the retrieval, independently of the text it fed.
+
+    Where ``confidence`` says "how much should you trust the synthesised text",
+    this says "how good was the retrieval that fed it". The agent reads
+    confidence to decide whether to re-read, and this to decide whether to call
+    search_codebase again with a refined query.
+
+    Kept as one function because the degraded path needs the same rating and must
+    not invent a second one. That path has no synthesised text to rate (its
+    ``confidence`` stays low, correctly), but it ran exactly the same retrieval,
+    and "high" has to mean the same thing to a keyless caller as to a keyed one
+    or the field is worth less than nothing.
+    """
+    if len(hits) >= 2:
+        ratio = hits[0].get("score", 0.0) / (hits[1].get("score", 0.0) or 1e-9)
+    else:
+        ratio = float("inf") if hits else 0.0
+    top_score = hits[0].get("score", 0.0) if hits else 0.0
+    dominant_grade = ratio >= _DOMINANCE_RATIO or agreement_dominant
+    if dominant_grade and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
+        return "high"
+    return "partial" if dominant_grade else "weak"
+
+
 def _build_symbol_bodies(
     body_candidates: list[tuple[int, int, int, str, dict]], repo_root: Path | None
 ) -> tuple[list[dict], bool]:
@@ -890,6 +915,7 @@ async def _degraded_payload(
     ctx=None,
     question_ids: set[str] | None = None,
     exclude_spec=None,
+    agreement_dominant: bool = False,
     resolved_pool: list[dict] | None = None,
 ) -> dict:
     """Shape a synthesis-less get_answer response.
@@ -921,7 +947,19 @@ async def _degraded_payload(
     ``src/flask/app.py`` 105-225. Selecting tier 0 against the question's own
     identifiers instead recovers it, and an agent handed the body of the symbol
     it asked about answers from the tool rather than leaving it to Read.
+
+    ``confidence`` stays "low" and is not up for debate: it rates the synthesised
+    text, and here that text is assembled boilerplate, byte-identical on 24 of
+    the 26 measured questions. An agent told to cite it would cite that sentence.
+    What was missing is ``retrieval_quality``, which rates the retrieval instead
+    and was simply never set: 26 of 26 keyless payloads carried no such key, so
+    the only trust signal a caller had was a "low" about something it should not
+    have been trusting anyway, and 11 of them said it while rank 1 was a file the
+    keyed arm went on to cite. The same rule the synthesised path uses answers
+    that question here, and it stays honest in the other direction: 14 of the 26
+    retrievals were genuinely weak in both arms and still grade "weak".
     """
+    retrieval_quality = _retrieval_quality(hits, agreement_dominant)
     repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
     symbol_bodies, _served_named_body = _build_symbol_bodies(
         _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
@@ -936,11 +974,21 @@ async def _degraded_payload(
     served = len(hits)
     if symbol_bodies:
         _names = ", ".join(f"`{b['name']}`" for b in symbol_bodies)
+        # Never say "full" over a body the payload itself flags as cut. The
+        # entry carries `truncated` and a `continuation` two keys away, so the
+        # claim is refutable from inside the same response.
+        _cut = any(b.get("truncated") for b in symbol_bodies)
         summary = (
             f"No synthesized prose ({reason}), but the evidence is here: "
-            f"`symbol_bodies` carries the full live source of {_names}, read from "
-            "the current checkout. Answer from that; `retrieval`, "
-            "`fallback_targets` and `candidates` cover the wider question."
+            f"`symbol_bodies` carries the live source of {_names}, read from the "
+            "current checkout"
+            + (
+                ", cut at the line cap where noted; see `continuation`. "
+                if _cut
+                else " in full. "
+            )
+            + "Answer from that; `retrieval`, `fallback_targets` and `candidates` "
+            "cover the wider question."
         )
     elif served:
         summary = (
@@ -961,6 +1009,7 @@ async def _degraded_payload(
         "answer": summary,
         "citations": citations,
         "confidence": "low",
+        "retrieval_quality": retrieval_quality,
         "degraded": reason,
         "fallback_targets": fallback_targets,
         "retrieval": _serialize_hits(hits),
@@ -972,10 +1021,20 @@ async def _degraded_payload(
         payload["next_action_hint"] = await _degraded_next_action(
             symbol_bodies, ctx, repository, exclude_spec
         )
+        payload["note"] += (
+            " symbol_bodies carries the live body of the symbol(s) you named, so "
+            "answer from that rather than re-reading the file."
+        )
     payload["_meta"] = {
         **_build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_answer_hint("low", len(hits)),
+            hint=_answer_hint(
+                "low",
+                len(hits),
+                degraded=reason,
+                retrieval_quality=retrieval_quality,
+                has_bodies=bool(symbol_bodies),
+            ),
             repository=repository,
             targets=[*citations, *fallback_targets],
         ),
@@ -1697,8 +1756,7 @@ async def get_answer(
             reason="no-llm-provider",
             note=(
                 "DEGRADED: no LLM provider configured (set REPOWISE_PROVIDER "
-                "+ API key). Synthesis is what is missing, not retrieval. "
-                "Answer from symbol_bodies and the ranked hits below."
+                "+ API key). Synthesis is what is missing here, not retrieval."
             ),
             hits=hits,
             fallback_targets=fallback_targets,
@@ -1707,6 +1765,7 @@ async def get_answer(
             ctx=ctx,
             question_ids=question_ids,
             exclude_spec=exclude_spec,
+            agreement_dominant=agreement_dominant,
             resolved_pool=resolved_pool,
         )
 
@@ -1751,6 +1810,7 @@ async def get_answer(
             ctx=ctx,
             question_ids=question_ids,
             exclude_spec=exclude_spec,
+            agreement_dominant=agreement_dominant,
             resolved_pool=resolved_pool,
         )
 
@@ -2035,17 +2095,7 @@ async def get_answer(
     if not dominant and not earn_high and confidence == "high":
         confidence = "medium"
 
-    # retrieval_quality is a separate signal from confidence. Where confidence
-    # says "how much should you trust the synthesised text", retrieval_quality
-    # says "how good was the retrieval that fed it". The agent uses confidence
-    # to decide whether to re-read; retrieval_quality to decide whether to
-    # call search_codebase again with a refined query.
-    if _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR and _dominant_grade:
-        retrieval_quality = "high"
-    elif _dominant_grade:
-        retrieval_quality = "partial"
-    else:
-        retrieval_quality = "weak"
+    retrieval_quality = _retrieval_quality(hits, agreement_dominant)
 
     if hedged:
         # Hedged answers: keep the retrieval payload lean but non-empty. The

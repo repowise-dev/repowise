@@ -394,6 +394,14 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # must bypass. Secondarily, the note no longer advertises a symbol_id that
 # resolves to nothing at all — a guard rather than an observed fix, since 0 of
 # the 130 ids on the corpus were dead ends.
+# NOT bumped for the degraded-payload rework (`symbol_bodies` / `citations` /
+# `grounding` / `next_action_hint` / `retrieval_quality` on the no-provider and
+# synthesis-failed paths). Every one of those is a response-shape change, which
+# is normally exactly what this counter is for, but no cached row can carry the
+# old shape: the cache write is gated on `answer_text` and sits below both
+# degraded returns, so a degraded payload has never been written to it. The
+# synthesised shape is untouched. A bump here would invalidate every keyed
+# install's cache, and re-synthesis is real provider spend, for nothing.
 _ANSWER_SCHEMA_VERSION = 15
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's

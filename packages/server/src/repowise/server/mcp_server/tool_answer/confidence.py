@@ -356,10 +356,13 @@ def implicated_withheld_symbols(
     prose happens not to name the symbol, which was 3 responses in 4 measured.
 
     It is NOT what protects the no-LLM modes, and an earlier version of this
-    docstring wrongly claimed it was. A keyless deployment returns
-    ``_degraded_payload`` before ``symbol_bodies`` is built, so there is nothing
-    here to gate; the homonym-union early return is the no-LLM path that does
-    serve bodies, and it caps on truncation alone rather than calling this.
+    docstring wrongly claimed it was. Both of those paths now serve bodies:
+    ``_degraded_payload`` builds them from the question's anchors, and the
+    homonym-union early return inlines every definition, and neither calls this
+    gate. The union path caps on truncation alone. The degraded path does not gate
+    at all, because it has no synthesised claim to demote: its ``confidence`` is
+    already "low" for want of prose, and what a cut body costs it is said in the
+    payload instead, by the ``continuation`` on the entry and by the next action.
 
     ``body_continues`` entries sort first: a symbol whose body was cut by the
     truncation boundary is the sharper failure, because the response has already
