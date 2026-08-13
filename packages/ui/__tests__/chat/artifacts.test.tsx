@@ -129,6 +129,29 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText("Use SSE for chat")).toBeInTheDocument();
   });
 
+  it("DecisionsRenderer health mode reads MCP counts and stale rows", () => {
+    render(
+      <DecisionsRenderer
+        data={{
+          mode: "health",
+          summary: "12 active · 2 stale · 1 proposed · 3 ungoverned hotspots",
+          counts: { active: 12, stale: 2, proposed: 1 },
+          stale_decisions: [
+            {
+              title: "Prefer SSE",
+              affected_files: ["packages/server/src/chat.py"],
+            },
+          ],
+          proposed_awaiting_review: [{ title: "Drop Redis", source: "commit" }],
+          ungoverned_hotspots: ["src/hot.ts"],
+        }}
+      />,
+    );
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("Prefer SSE")).toBeInTheDocument();
+    expect(screen.getByText("Drop Redis")).toBeInTheDocument();
+  });
+
   it("DecisionsRenderer search mode renders matches with affected files", () => {
     render(
       <DecisionsRenderer
@@ -149,6 +172,48 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText("LRU artifact cache")).toBeInTheDocument();
     expect(
       screen.getByText("app/services/artifact_service.py"),
+    ).toBeInTheDocument();
+  });
+
+  it("DecisionsRenderer search mode reads MCP decisions array", () => {
+    render(
+      <DecisionsRenderer
+        data={{
+          mode: "search",
+          query: "auth",
+          decisions: [
+            {
+              title: "JWT sessions",
+              decision: "Use signed cookies.",
+              affected_files: ["packages/server/auth.py"],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("JWT sessions")).toBeInTheDocument();
+    expect(screen.getByText("packages/server/auth.py")).toBeInTheDocument();
+  });
+
+  it("DecisionsRenderer path mode shows governing decisions", () => {
+    render(
+      <DecisionsRenderer
+        data={{
+          mode: "path",
+          path: "packages/ui/src/chat/artifacts.tsx",
+          decisions: [
+            {
+              title: "Typed chat artifacts",
+              status: "active",
+              decision: "One renderer per tool.",
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("Typed chat artifacts")).toBeInTheDocument();
+    expect(
+      screen.getByText((_, el) => el?.textContent === '"packages/ui/src/chat/artifacts.tsx"'),
     ).toBeInTheDocument();
   });
 

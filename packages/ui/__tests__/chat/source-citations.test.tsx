@@ -66,6 +66,32 @@ describe("extractSources", () => {
     // Badge hides rather than falling back to the unbounded raw score.
     expect(sources[0]?.confidence).toBeUndefined();
   });
+
+  it("cites files from get_why health stale_decisions", () => {
+    const sources = extractSources(
+      [
+        {
+          id: "why1",
+          name: "get_why",
+          arguments: {},
+          status: "done",
+          result: {
+            mode: "health",
+            stale_decisions: [
+              {
+                title: "Prefer SSE",
+                affected_files: ["packages/server/src/chat.py"],
+              },
+            ],
+          },
+        },
+      ],
+      "repo1",
+    );
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.targetPath).toBe("packages/server/src/chat.py");
+  });
 });
 
 describe("SourceCitations render", () => {
