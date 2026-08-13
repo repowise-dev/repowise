@@ -174,10 +174,10 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _hydrate_symbols_for_hits,
     _read_repo_text,
     _read_symbol_source,
+    attach_truncation_contract,
     build_homonym_union_bodies,
     is_symbol_lookup_question,
     union_defers_to_synthesis,
-    withheld_definitions,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _hash_question,
@@ -527,6 +527,29 @@ def _is_readable_path(target: str) -> bool:
     return bool(ext) and ext.isalnum() and len(ext) <= 6
 
 
+def _repo_root(ctx) -> Path | None:
+    """The checkout root as a Path, or None when the context carries no path.
+
+    Every live source read in this module is anchored on it, and a context
+    without a path is the repo-less case those reads must skip rather than
+    guess at.
+    """
+    return Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+
+
+def _top_two_score_ratio(hits: list[dict]) -> float:
+    """The top hit's retrieval score over the runner-up's.
+
+    The separator both the confidence grade and :func:`_retrieval_quality` are
+    built on, kept in one place because they must agree on what "dominant"
+    measures. A lone hit has nothing to be ambiguous against, so it is infinitely
+    dominant; no hits at all is zero.
+    """
+    if len(hits) >= 2:
+        return hits[0].get("score", 0.0) / (hits[1].get("score", 0.0) or 1e-9)
+    return float("inf") if hits else 0.0
+
+
 async def _first_resolvable_id(
     ids: list[str], ctx, repository, exclude_spec
 ) -> str | None:
@@ -549,7 +572,7 @@ async def _first_resolvable_id(
     evidence the id is fabricated. Only a positive read that does not contain
     the name, with no index row either, disqualifies one.
     """
-    repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+    repo_root = _repo_root(ctx)
     for sid in ids:
         file_part, name_part = parse_symbol_id(sid)
         if not file_part or not name_part:
@@ -569,6 +592,29 @@ async def _first_resolvable_id(
     return None
 
 
+def _rationale_anchors(h: dict) -> list[tuple[str, int | None]]:
+    """One ``(path, near-line)`` pair per reason this hit is worth scanning.
+
+    A concept-anchored file leads: it was selected precisely because its comment
+    explains the question, and the grep match line is the best near-line boost
+    available. Each anchored or question-matched symbol then contributes the
+    same path again at its own definition line, so a file with several matches
+    is repeated as many times as it has reasons, which is the weighting the
+    scan below orders on.
+    """
+    path = h.get("target_path")
+    if not path:
+        return []
+    anchors: list[tuple[str, int | None]] = []
+    if h.get("_concept_anchored"):
+        anchors.append((path, h.get("_concept_near_line")))
+    for s in (h.get("_anchor_symbols") or []) + [
+        s for s in (h.get("symbols") or []) if s.get("_matched")
+    ]:
+        anchors.append((path, s.get("start_line")))
+    return anchors
+
+
 def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], question: str):
     """Mine in-code rationale comments for a low-confidence answer.
 
@@ -585,24 +631,11 @@ def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], q
     candidates: list[str] = []
     near_lines: dict[str, int] = {}
     for h in hits or []:
-        path = h.get("target_path")
-        if not path:
-            continue
-        # A concept-anchored file leads: it was selected precisely because its
-        # comment explains the question, and the grep match line is the best
-        # near-line boost we have.
-        if h.get("_concept_anchored"):
+        for path, near_line in _rationale_anchors(h):
             candidates.append(path)
-            cl = h.get("_concept_near_line")
-            if cl and path not in near_lines:
-                near_lines[path] = cl
-        for s in (h.get("_anchor_symbols") or []) + [
-            s for s in (h.get("symbols") or []) if s.get("_matched")
-        ]:
-            candidates.append(path)
-            sl = s.get("start_line")
-            if sl and path not in near_lines:
-                near_lines[path] = sl
+            # First mention of a path wins its near-line boost.
+            if near_line and path not in near_lines:
+                near_lines[path] = near_line
     candidates.extend(p for p in (fallback_targets or []) if p)
     try:
         return _mine_rationale(repo_root, candidates, question, near_lines=near_lines)
@@ -620,28 +653,31 @@ def _drop_already_surfaced(rationale: list[dict], *surfaced: list[dict]) -> list
     drop any mined comment whose ``(path, line-range)`` overlaps an entry already
     surfaced. Entries without a ``(path, lines)`` pair are ignored.
     """
-    occupied: list[tuple[str, int, int]] = []
-    for entries in surfaced:
-        for e in entries or []:
-            path = e.get("path")
-            lines = e.get("lines")
-            if path and isinstance(lines, (list, tuple)) and len(lines) == 2:
-                occupied.append((path, lines[0], lines[1]))
+    occupied = [span for entries in surfaced for span in map(_line_span, entries or []) if span]
     if not occupied:
         return rationale
-    kept: list[dict] = []
-    for r in rationale:
-        path = r.get("path")
-        lines = r.get("lines")
-        if (
-            path
-            and isinstance(lines, (list, tuple))
-            and len(lines) == 2
-            and any(p == path and not (lines[1] < s or lines[0] > e) for p, s, e in occupied)
-        ):
-            continue
-        kept.append(r)
-    return kept
+    return [r for r in rationale if not _overlaps_any(_line_span(r), occupied)]
+
+
+def _line_span(entry: dict) -> tuple[str, int, int] | None:
+    """The ``(path, start, end)`` an entry occupies, or None if it names none.
+
+    Entries without a usable ``(path, lines)`` pair cannot be compared for
+    overlap in either direction, so they neither occupy space nor get dropped.
+    """
+    path = entry.get("path")
+    lines = entry.get("lines")
+    if path and isinstance(lines, (list, tuple)) and len(lines) == 2:
+        return (path, lines[0], lines[1])
+    return None
+
+
+def _overlaps_any(span: tuple[str, int, int] | None, occupied: list[tuple[str, int, int]]) -> bool:
+    """Whether ``span`` shares a file and any line with something already shown."""
+    if span is None:
+        return False
+    path, start, end = span
+    return any(p == path and not (end < s or start > e) for p, s, e in occupied)
 
 
 def _gather_body_candidates(
@@ -676,29 +712,57 @@ def _gather_body_candidates(
         if not path:
             continue
         for s in h.get("_anchor_symbols") or []:
-            name = s.get("name")
-            if not name:
-                continue
-            if name not in anchor_names if anchor_names is not None else name not in answer_text:
-                continue
-            kind = s.get("kind")
-            kind_rank = 0 if kind in ("function", "method") else 1
-            candidates.append((0, kind_rank, s.get("start_line") or 0, path, s))
+            if _selection_names(s.get("name"), answer_text, anchor_names):
+                candidates.append((0, _kind_rank(s), s.get("start_line") or 0, path, s))
+        # Tier 1 exists to catch a symbol only the PROSE names, so it has
+        # nothing to do in the degraded mode that has no prose.
         if anchor_names is not None:
             continue
         for s in h.get("symbols") or []:
-            name = s.get("name")
-            if not name or len(name) < 3 or not s.get("_matched"):
-                continue
-            if name not in answer_text:
-                continue
-            kind = s.get("kind")
-            if kind not in ("function", "method", "class", "interface"):
-                continue
-            kind_rank = 0 if kind in ("function", "method") else 1
-            candidates.append((1, kind_rank, s.get("start_line") or 0, path, s))
+            if _is_named_definition(s, answer_text):
+                candidates.append((1, _kind_rank(s), s.get("start_line") or 0, path, s))
     candidates.sort(key=lambda t: (t[0], t[1], t[2]))
     return candidates
+
+
+def _selection_names(name: str | None, answer_text: str, anchor_names: set[str] | None) -> bool:
+    """Whether the text that selects bodies names this symbol.
+
+    Two selection texts, one predicate: normally the synthesised answer decides
+    which definitions are worth inlining, but the degraded path has no prose, so
+    ``anchor_names`` puts the question's own identifiers in its place. Note the
+    difference in kind: ``anchor_names`` is an exact set membership, the answer
+    text a substring match.
+    """
+    if not name:
+        return False
+    return name in anchor_names if anchor_names is not None else name in answer_text
+
+
+def _kind_rank(s: dict) -> int:
+    """0 for a callable, 1 for a container.
+
+    Within a tier a function or method outranks the class that holds it, so
+    "explain the extract_all method of DecisionExtractor" serves extract_all
+    rather than the 1,300-line class head.
+    """
+    return 0 if s.get("kind") in ("function", "method") else 1
+
+
+def _is_named_definition(s: dict, answer_text: str) -> bool:
+    """Whether a hydrated symbol is a definition the answer actually names.
+
+    Requires a name long enough that substring containment means something (a
+    1-2 character constant would "appear" in almost any answer), the
+    question-match the hydrator recorded, and a kind that has a body worth
+    inlining. Constants stay in ``quotes``: their body IS the assignment line.
+    """
+    name = s.get("name")
+    if not name or len(name) < 3 or not s.get("_matched"):
+        return False
+    if name not in answer_text:
+        return False
+    return s.get("kind") in ("function", "method", "class", "interface")
 
 
 def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
@@ -715,10 +779,7 @@ def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     and "high" has to mean the same thing to a keyless caller as to a keyed one
     or the field is worth less than nothing.
     """
-    if len(hits) >= 2:
-        ratio = hits[0].get("score", 0.0) / (hits[1].get("score", 0.0) or 1e-9)
-    else:
-        ratio = float("inf") if hits else 0.0
+    ratio = _top_two_score_ratio(hits)
     top_score = hits[0].get("score", 0.0) if hits else 0.0
     dominant_grade = ratio >= _DOMINANCE_RATIO or agreement_dominant
     if dominant_grade and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
@@ -771,22 +832,102 @@ def _build_symbol_bodies(
             "lines": [start, end_served],
             "source": body,
         }
-        if sym_end > end_served:
-            entry["truncated"] = True
-            entry["continuation"] = f"{path}:{end_served + 1}-{sym_end}"
-            # Say WHAT was withheld, not just that something was. A bare
-            # truncated flag plus a get_symbol pointer was followed zero times
-            # across the agent runs measured, so the consumer needs the names in
-            # hand to decide whether it is missing anything it cares about, and
-            # to continue inside this tool rather than falling back to Read.
-            withheld = withheld_definitions(repo_root, entry["continuation"])
-            if withheld:
-                entry["withheld_symbols"] = withheld
+        attach_truncation_contract(
+            entry, indexed_end=sym_end, end_served=end_served, repo_root=repo_root
+        )
         symbol_bodies.append(entry)
         seen.add((path, name))
         if tier == 0:
             served_named_body = True
     return symbol_bodies, served_named_body
+
+
+def _data_shape_prose(grounded: dict, citations: list[str]) -> tuple[str, str]:
+    """The ``answer`` and ``note`` for a mined data shape, by how it was grounded.
+
+    A documented shape is authoritative and says so (cite it, no verification
+    Read). A usage-mined shape is the keys consumers actually pull off the value,
+    which may be a subset of what is stored, so it asks to be verified.
+    """
+    ident = grounded["identifier"]
+    fields = grounded["fields"]
+    sources = grounded["sources"]
+    also_accessed = grounded.get("also_accessed") or []
+    field_list = ", ".join(f"`{f}`" for f in fields)
+
+    if grounded["grounding"] != "docstring":
+        first = sources[0]
+        return (
+            f"Each entry in `{ident}` is accessed with {len(fields)} key(s): "
+            f"{field_list}. These are the keys consumers actually pull off the "
+            f"parsed value (e.g. {first['file']}:{first['line']}); this is mined "
+            "from usage, not a declared schema, so verify if you need the full set.",
+            "Grounded in the key accesses mined from consumer source (no "
+            "documented shape was found). Medium confidence: these are the keys "
+            "the code reads, which may be a subset of the stored fields.",
+        )
+
+    doc_src = next((s for s in sources if s["kind"] == "docstring"), None)
+    where = f"{doc_src['file']}:{doc_src['line']}" if doc_src else citations[0]
+    if not also_accessed:
+        return (
+            f"Each entry in `{ident}` has {len(fields)} field(s): {field_list}. "
+            f"This is the documented shape at {where}; cite it directly, no "
+            "verification Read needed.",
+            "Grounded in the documented field shape mined from source (the "
+            "quoted keys in the docstring/comment at the cited line). "
+            "data_shape.sources lists every field's origin line.",
+        )
+
+    # The doc lists the declared shape, but consumers read alias key(s) it omits
+    # (a legacy fallback). Surface them: telling the agent "no Read needed" while
+    # hiding a key it must handle would be a confidently-incomplete answer.
+    alias_list = ", ".join(f"`{a['field']}`" for a in also_accessed)
+    first_alias = also_accessed[0]
+    return (
+        f"Each entry in `{ident}` has {len(fields)} documented field(s): "
+        f"{field_list} (documented shape at {where}). Consumers also read "
+        f"{alias_list} as a fallback (e.g. {first_alias['file']}:"
+        f"{first_alias['line']}) - an alias the docstring omits, so handle "
+        f"{alias_list} too if you touch this.",
+        "Grounded in the documented field shape, plus alias key(s) "
+        "consumers read beside a documented field that the docstring "
+        "omits (see data_shape.also_accessed). The documented fields are "
+        "authoritative; the aliases are real keys the code defends against.",
+    )
+
+
+def _is_question_named_body_cut_by_us(entry: dict, question_ids: set[str]) -> bool:
+    """Whether this body is the question's own symbol, cut because WE ran out of lines.
+
+    ``truncated`` alone is not trustworthy enough to demote on. It is set by
+    comparing the INDEXED end line against what was read, while the read clamps
+    to the end of the live file, so a symbol whose stored end overshoots (an
+    unsupported language or a syntax error leaves the bounds unverified, and a
+    file that shrank since indexing does it too) is served WHOLE and still
+    flagged. Requiring the served span to have reached the line cap says the cut
+    was ours, which is the only case where something was really withheld.
+    """
+    if not (entry.get("truncated") and entry.get("continuation")):
+        return False
+    if entry.get("name") not in question_ids:
+        return False
+    return entry["lines"][1] - entry["lines"][0] + 1 >= _INLINE_BODY_MAX_LINES
+
+
+def _is_enclosing_continuation(entry: dict, implicated: set[str]) -> bool:
+    """Whether this body simply continues past the cut, rather than losing a symbol.
+
+    A withheld entry carrying the served body's OWN name is the enclosing symbol
+    continuing past the cut, not something that never arrived. Calling that "not
+    served" is wrong about the payload directly above the note, and sends the
+    caller to get_symbol for a body they already hold most of. The accurate
+    pointer is the ``continuation`` the entry already carries.
+    """
+    name = entry.get("name")
+    if not (entry.get("continuation") and name in implicated):
+        return False
+    return any(s.get("name") == name for s in (entry.get("withheld_symbols") or []))
 
 
 def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
@@ -801,54 +942,7 @@ def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
     sources = grounded["sources"]
     also_accessed = grounded.get("also_accessed") or []
     citations = sorted({s["file"] for s in sources})
-    field_list = ", ".join(f"`{f}`" for f in fields)
-    doc_src = next((s for s in sources if s["kind"] == "docstring"), None)
-    if grounded["grounding"] == "docstring":
-        where = f"{doc_src['file']}:{doc_src['line']}" if doc_src else citations[0]
-        if also_accessed:
-            # The doc lists the declared shape, but consumers read alias key(s)
-            # it omits (a legacy fallback). Surface them: telling the agent "no
-            # Read needed" while hiding a key it must handle would be a
-            # confidently-incomplete answer.
-            alias_list = ", ".join(f"`{a['field']}`" for a in also_accessed)
-            first_alias = also_accessed[0]
-            answer = (
-                f"Each entry in `{ident}` has {len(fields)} documented field(s): "
-                f"{field_list} (documented shape at {where}). Consumers also read "
-                f"{alias_list} as a fallback (e.g. {first_alias['file']}:"
-                f"{first_alias['line']}) - an alias the docstring omits, so handle "
-                f"{alias_list} too if you touch this."
-            )
-            note = (
-                "Grounded in the documented field shape, plus alias key(s) "
-                "consumers read beside a documented field that the docstring "
-                "omits (see data_shape.also_accessed). The documented fields are "
-                "authoritative; the aliases are real keys the code defends against."
-            )
-        else:
-            answer = (
-                f"Each entry in `{ident}` has {len(fields)} field(s): {field_list}. "
-                f"This is the documented shape at {where}; cite it directly, no "
-                "verification Read needed."
-            )
-            note = (
-                "Grounded in the documented field shape mined from source (the "
-                "quoted keys in the docstring/comment at the cited line). "
-                "data_shape.sources lists every field's origin line."
-            )
-    else:
-        first = sources[0]
-        answer = (
-            f"Each entry in `{ident}` is accessed with {len(fields)} key(s): "
-            f"{field_list}. These are the keys consumers actually pull off the "
-            f"parsed value (e.g. {first['file']}:{first['line']}); this is mined "
-            "from usage, not a declared schema, so verify if you need the full set."
-        )
-        note = (
-            "Grounded in the key accesses mined from consumer source (no "
-            "documented shape was found). Medium confidence: these are the keys "
-            "the code reads, which may be a subset of the stored fields."
-        )
+    answer, note = _data_shape_prose(grounded, citations)
     payload: dict = {
         "answer": answer,
         "citations": citations,
@@ -871,6 +965,34 @@ def _build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
         ),
     }
     return payload
+
+
+def _no_answer_payload(note: str, *, repository, t0: float) -> dict:
+    """The reply for a post-retrieval gate that has nothing to answer with.
+
+    Two gates end this way and both mean the same thing: retrieval ran, and the
+    honest reply is "not this" plus what to do instead. The qualified-miss guard
+    refuses to substitute a same-named symbol from another file; the no-hits
+    guard has no candidates at all. ``note`` is the only part that differs, and
+    it carries the redirect.
+
+    Both callers still wrap this in :func:`_with_candidates`, which is what keeps
+    the ranked shortlist travelling with every post-retrieval return.
+    """
+    return {
+        "answer": "",
+        "citations": [],
+        "confidence": "low",
+        "note": note,
+        "fallback_targets": [],
+        "retrieval": [],
+        "_meta": _build_meta(
+            timing_ms=(time.perf_counter() - t0) * 1000,
+            hint=_answer_hint("low", 0),
+            repository=repository,
+            targets=[],
+        ),
+    }
 
 
 def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
@@ -902,6 +1024,43 @@ def _with_candidates(payload: dict, resolved_pool: list[dict]) -> dict:
     if candidates:
         payload["candidates"] = candidates
     return payload
+
+
+def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
+    """The ``answer`` sentence a synthesis-less payload states about itself.
+
+    Assembled from what the payload actually carries, so it can never claim more
+    than it has, and it invents no prose about the question itself, that being
+    precisely the part that needs a provider. Three cases, best evidence first:
+    bodies in hand, a ranked retrieval, or nothing.
+    """
+    if symbol_bodies:
+        names = ", ".join(f"`{b['name']}`" for b in symbol_bodies)
+        # Never say "full" over a body the payload itself flags as cut. The
+        # entry carries `truncated` and a `continuation` two keys away, so the
+        # claim is refutable from inside the same response.
+        cut = any(b.get("truncated") for b in symbol_bodies)
+        return (
+            f"No synthesized prose ({reason}), but the evidence is here: "
+            f"`symbol_bodies` carries the live source of {names}, read from the "
+            "current checkout"
+            + (", cut at the line cap where noted; see `continuation`. " if cut else " in full. ")
+            + "Answer from that; `retrieval`, `fallback_targets` and `candidates` "
+            "cover the wider question."
+        )
+    if served:
+        return (
+            f"No synthesized prose ({reason}), but retrieval succeeded and this "
+            f"payload is usable: {served} ranked "
+            f"{'hit' if served == 1 else 'hits'} in `retrieval`, the files to open "
+            "in `fallback_targets`, and the wider ranked shortlist in `candidates`. "
+            "Read those rather than starting a fresh search."
+        )
+    return (
+        f"No synthesized prose ({reason}), and retrieval matched nothing for "
+        "this question. Rephrase with an identifier or path from the codebase, "
+        "or search directly."
+    )
 
 
 async def _degraded_payload(
@@ -960,7 +1119,7 @@ async def _degraded_payload(
     retrievals were genuinely weak in both arms and still grade "weak".
     """
     retrieval_quality = _retrieval_quality(hits, agreement_dominant)
-    repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+    repo_root = _repo_root(ctx)
     symbol_bodies, _served_named_body = _build_symbol_bodies(
         _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
         repo_root,
@@ -971,39 +1130,7 @@ async def _degraded_payload(
     # discarding this reply.
     citations = list(dict.fromkeys(b["path"] for b in symbol_bodies))
 
-    served = len(hits)
-    if symbol_bodies:
-        _names = ", ".join(f"`{b['name']}`" for b in symbol_bodies)
-        # Never say "full" over a body the payload itself flags as cut. The
-        # entry carries `truncated` and a `continuation` two keys away, so the
-        # claim is refutable from inside the same response.
-        _cut = any(b.get("truncated") for b in symbol_bodies)
-        summary = (
-            f"No synthesized prose ({reason}), but the evidence is here: "
-            f"`symbol_bodies` carries the live source of {_names}, read from the "
-            "current checkout"
-            + (
-                ", cut at the line cap where noted; see `continuation`. "
-                if _cut
-                else " in full. "
-            )
-            + "Answer from that; `retrieval`, `fallback_targets` and `candidates` "
-            "cover the wider question."
-        )
-    elif served:
-        summary = (
-            f"No synthesized prose ({reason}), but retrieval succeeded and this "
-            f"payload is usable: {served} ranked "
-            f"{'hit' if served == 1 else 'hits'} in `retrieval`, the files to open "
-            "in `fallback_targets`, and the wider ranked shortlist in `candidates`. "
-            "Read those rather than starting a fresh search."
-        )
-    else:
-        summary = (
-            f"No synthesized prose ({reason}), and retrieval matched nothing for "
-            "this question. Rephrase with an identifier or path from the codebase, "
-            "or search directly."
-        )
+    summary = _degraded_summary(reason, symbol_bodies, len(hits))
 
     payload: dict = {
         "answer": summary,
@@ -1311,7 +1438,7 @@ async def get_answer(
     homonyms: dict = {"union": {}, "qualified_miss": []}
     if question_ids:
         with contextlib.suppress(Exception):
-            _anchor_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+            _anchor_root = _repo_root(ctx)
             async with get_session(ctx.session_factory) as session:
                 hits, homonyms = await _anchor_symbol_hits(
                     session,
@@ -1404,28 +1531,17 @@ async def get_answer(
     if homonyms.get("qualified_miss"):
         missed = homonyms["qualified_miss"]
         return _with_candidates(
-            {
-                "answer": "",
-                "citations": [],
-                "confidence": "low",
-                "note": (
-                    f"No indexed definition matches the qualified name(s) {missed}. "
-                    "The base name is defined elsewhere, but not under the "
-                    "class/module you named, so this is not returning a same-named "
-                    "symbol from another file, to avoid a confidently-wrong answer. "
-                    'Re-check the qualifier, or call search_codebase mode="symbol" '
-                    "on the base name to see every definition. The files retrieval "
-                    "ranked for this question are in candidates."
-                ),
-                "fallback_targets": [],
-                "retrieval": [],
-                "_meta": _build_meta(
-                    timing_ms=(time.perf_counter() - t0) * 1000,
-                    hint=_answer_hint("low", 0),
-                    repository=repository,
-                    targets=[],
-                ),
-            },
+            _no_answer_payload(
+                f"No indexed definition matches the qualified name(s) {missed}. "
+                "The base name is defined elsewhere, but not under the "
+                "class/module you named, so this is not returning a same-named "
+                "symbol from another file, to avoid a confidently-wrong answer. "
+                'Re-check the qualifier, or call search_codebase mode="symbol" '
+                "on the base name to see every definition. The files retrieval "
+                "ranked for this question are in candidates.",
+                repository=repository,
+                t0=t0,
+            ),
             resolved_pool,
         )
 
@@ -1455,7 +1571,7 @@ async def get_answer(
     if union_groups and _flag_on(_UNION_MECHANISM_DEFER_ENV) and _is_mechanism_question(question):
         union_groups = {}
     if union_groups:
-        repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+        repo_root = _repo_root(ctx)
         union_bodies, more_defs = build_homonym_union_bodies(repo_root, union_groups)
         if union_bodies:
             names = sorted(union_groups)
@@ -1542,26 +1658,15 @@ async def get_answer(
         # retrieval goes through ``_with_candidates``" is what stops the next
         # reordering of this function quietly re-opening the hole.
         return _with_candidates(
-            {
-                "answer": "",
-                "citations": [],
-                "confidence": "low",
-                "fallback_targets": [],
-                "retrieval": [],
-                "note": (
-                    "No wiki hits for this question. Rephrase around the code "
-                    'concept, or use search_codebase (mode="symbol" for an '
-                    'identifier, mode="path" for a file name); if the question '
-                    "names a file, call get_context on it directly. Grep only "
-                    "if those come back empty too."
-                ),
-                "_meta": _build_meta(
-                    timing_ms=(time.perf_counter() - t0) * 1000,
-                    hint=_answer_hint("low", 0),
-                    repository=repository,
-                    targets=[],
-                ),
-            },
+            _no_answer_payload(
+                "No wiki hits for this question. Rephrase around the code "
+                'concept, or use search_codebase (mode="symbol" for an '
+                'identifier, mode="path" for a file name); if the question '
+                "names a file, call get_context on it directly. Grep only "
+                "if those come back empty too.",
+                repository=repository,
+                t0=t0,
+            ),
             resolved_pool,
         )
 
@@ -1868,7 +1973,7 @@ async def get_answer(
     # even when synthesis hedges. The confidence gate below reads this to avoid
     # the "low, go Read" label that contradicts a payload already holding the
     # answer (2026-07-11 dogfood).
-    repo_root = Path(str(ctx.path)) if getattr(ctx, "path", None) else None
+    repo_root = _repo_root(ctx)
     symbol_bodies, served_named_body = _build_symbol_bodies(
         _gather_body_candidates(hits, answer_text), repo_root
     )
@@ -1876,12 +1981,7 @@ async def get_answer(
     # Compute confidence from the dominance ratio (top hit vs second hit).
     # The dominance ratio is a more reliable separator than absolute BM25
     # thresholds, which tend to label most retrievals "high" indiscriminately.
-    if len(hits) >= 2:
-        _top = hits[0].get("score", 0.0)
-        _second = hits[1].get("score", 0.0) or 1e-9
-        _ratio = _top / _second
-    else:
-        _ratio = float("inf") if hits else 0.0
+    _ratio = _top_two_score_ratio(hits)
     _top_score = hits[0].get("score", 0.0) if hits else 0.0
     # Agreement lifts the RRF-compressed ratio: a consensus top hit (both
     # retrievers rank it at/near #1) grades dominant even though its fused
@@ -2064,14 +2164,7 @@ async def get_answer(
     # to have hit the line cap says the cut was ours, which is the only case
     # where something was really withheld.
     named_body_cut = next(
-        (
-            b
-            for b in symbol_bodies
-            if b.get("truncated")
-            and b.get("continuation")
-            and b.get("name") in question_ids
-            and b["lines"][1] - b["lines"][0] + 1 >= _INLINE_BODY_MAX_LINES
-        ),
+        (b for b in symbol_bodies if _is_question_named_body_cut_by_us(b, question_ids)),
         None,
     )
     lookup_body_truncated = (
@@ -2244,13 +2337,7 @@ async def get_answer(
             # valid get_symbol id in its own right ("path.py:174-221").
             # Measured: 7 instances on 5 of 6 corpus trees.
             _implicated = set(withheld_implicated)
-            _continuing = [
-                b
-                for b in symbol_bodies
-                if b.get("continuation")
-                and b.get("name") in _implicated
-                and any(s.get("name") == b.get("name") for s in (b.get("withheld_symbols") or []))
-            ]
+            _continuing = [b for b in symbol_bodies if _is_enclosing_continuation(b, _implicated)]
             _continuing_names = {b["name"] for b in _continuing}
             _absent = [n for n in withheld_implicated if n not in _continuing_names]
             # Only advertise an id get_symbol can actually answer. The scanner

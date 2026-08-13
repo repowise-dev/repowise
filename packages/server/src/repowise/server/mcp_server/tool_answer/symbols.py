@@ -445,6 +445,41 @@ async def _anchor_symbol_hits(
     return hits, homonyms
 
 
+def attach_truncation_contract(
+    entry: dict, *, indexed_end: int, end_served: int, repo_root: Path | None
+) -> None:
+    """Mark an inlined body that was cut, and name what the cut withheld.
+
+    Every place that inlines a symbol body owes the consumer the same three
+    keys when the indexed body outruns what was served: ``truncated``, a
+    ``continuation`` naming the exact range holding the remainder, and the
+    ``withheld_symbols`` that range covers.
+
+    Say WHAT was withheld, not just that something was. A bare truncated flag
+    plus a get_symbol pointer was followed zero times across the agent runs
+    measured, so the consumer needs the names in hand to decide whether it is
+    missing anything it cares about, and to continue inside this tool rather
+    than falling back to Read.
+
+    Both callers need it for the same reason and one of them needs it more: the
+    homonym union payload returns BEFORE synthesis, so it is served in no-LLM
+    mode and never reaches any of the confidence gates. Held in one function
+    because two copies of this contract drifting apart is a live risk: the
+    truncation keys are read by the confidence cascade, and the two sites have
+    co-changed ten times.
+
+    ``indexed_end`` is the end line the index recorded, ``end_served`` the last
+    line actually inlined. A falsy ``indexed_end`` means the index recorded no
+    end, which can never be a cut.
+    """
+    if indexed_end > end_served:
+        entry["truncated"] = True
+        entry["continuation"] = f"{entry['path']}:{end_served + 1}-{indexed_end}"
+        withheld = withheld_definitions(repo_root, entry["continuation"])
+        if withheld:
+            entry["withheld_symbols"] = withheld
+
+
 def build_homonym_union_bodies(
     repo_root: Path | None,
     union_groups: dict[str, list[dict]],
@@ -503,16 +538,9 @@ def build_homonym_union_bodies(
                 "lines": [start, end_served],
                 "source": body,
             }
-            if end and end > end_served:
-                entry["truncated"] = True
-                entry["continuation"] = f"{path}:{end_served + 1}-{end}"
-                # Same treatment as the main answer path: say WHAT was withheld.
-                # This one matters more, not less — the union payload returns
-                # BEFORE synthesis, so it is served in no-LLM mode and it never
-                # reaches any of the confidence gates.
-                w = withheld_definitions(repo_root, entry["continuation"])
-                if w:
-                    entry["withheld_symbols"] = w
+            attach_truncation_contract(
+                entry, indexed_end=end, end_served=end_served, repo_root=repo_root
+            )
             symbol_bodies.append(entry)
             spent += len(body)
         else:

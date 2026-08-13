@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from repowise.server.mcp_server.tool_answer import answer as answer_mod
+from repowise.server.mcp_server.tool_answer import symbols as symbols_mod
 from repowise.server.mcp_server.tool_answer.answer import _degraded_payload
 
 
@@ -141,7 +141,7 @@ async def test_degraded_hint_names_a_withheld_symbol_that_resolves(tmp_path, mon
     """When something really was not served, name it rather than the range."""
     ctx = _tree(tmp_path, body_lines=200)
     monkeypatch.setattr(
-        answer_mod,
+        symbols_mod,
         "withheld_definitions",
         lambda repo_root, cont: [
             {"name": "attr_150", "line": 151, "symbol_id": "src/flask/app.py::attr_150"}
@@ -162,7 +162,7 @@ async def test_degraded_hint_never_advertises_an_unresolvable_id(tmp_path, monke
     """
     ctx = _tree(tmp_path, body_lines=200)
     monkeypatch.setattr(
-        answer_mod,
+        symbols_mod,
         "withheld_definitions",
         lambda repo_root, cont: [
             {

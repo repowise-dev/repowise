@@ -26,6 +26,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from repowise.server.mcp_server.tool_answer import symbols as symbols_mod
+
 
 def _patch_provider(monkeypatch, answer_mod, content: str):
     class _Provider:
@@ -144,7 +146,7 @@ async def test_an_id_that_resolves_to_nothing_is_not_advertised(
         answer_text="big_handler runs each step in order and returns the first.",
     )
 
-    real = answer_mod.withheld_definitions
+    real = symbols_mod.withheld_definitions
 
     def _fabricating(repo_root, continuation):
         out = list(real(repo_root, continuation))
@@ -159,7 +161,7 @@ async def test_an_id_that_resolves_to_nothing_is_not_advertised(
         )
         return out
 
-    monkeypatch.setattr(answer_mod, "withheld_definitions", _fabricating)
+    monkeypatch.setattr(symbols_mod, "withheld_definitions", _fabricating)
 
     result = await get_answer("how does big_handler use phantomThing on each step")
 
@@ -193,7 +195,7 @@ async def test_an_unreadable_file_does_not_disqualify_its_id(
         answer_text="big_handler runs each step in order and returns the first.",
     )
 
-    real = answer_mod.withheld_definitions
+    real = symbols_mod.withheld_definitions
 
     def _from_a_vanished_file(repo_root, continuation):
         out = list(real(repo_root, continuation))
@@ -208,7 +210,7 @@ async def test_an_unreadable_file_does_not_disqualify_its_id(
         )
         return out
 
-    monkeypatch.setattr(answer_mod, "withheld_definitions", _from_a_vanished_file)
+    monkeypatch.setattr(symbols_mod, "withheld_definitions", _from_a_vanished_file)
 
     result = await get_answer("how does big_handler use movedAway on each step")
 
