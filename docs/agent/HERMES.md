@@ -17,7 +17,9 @@ them, but no hook-level interception and no transcript mining. See the
 [support matrix](INTEGRATIONS.md) for what that means in full.
 
 Remove it with `repowise agents remove --target=hermes`, and check it with
-`repowise agents` or `repowise doctor`.
+`repowise agents` or `repowise doctor`. To remove every agent at once, along
+with the index and anything else repowise has written, see
+[`repowise uninstall`](../reference/CLI_REFERENCE.md#repowise-uninstall-path).
 
 ## What each scope writes
 

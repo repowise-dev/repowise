@@ -120,7 +120,7 @@ The plugin does not carry these, and cannot: a Codex plugin manifest has no slot
 repowise agents add --target=codex
 ```
 
-That writes one `repowise-*.md` per command, and `repowise agents remove --target=codex` takes them back out. Invoke them as `/prompts:repowise-risk`, `/prompts:repowise-ask` and so on. They are rendered from the same `plugins/shared/` source as the Claude Code plugin's commands, so the two hosts cannot drift.
+That writes one `repowise-*.md` per command, and `repowise agents remove --target=codex` takes them back out, along with `.codex/config.toml`, `.codex/hooks.json` and the managed block in `AGENTS.md`. To remove every agent at once, see [`repowise uninstall`](../reference/CLI_REFERENCE.md#repowise-uninstall-path). Invoke them as `/prompts:repowise-risk`, `/prompts:repowise-ask` and so on. They are rendered from the same `plugins/shared/` source as the Claude Code plugin's commands, so the two hosts cannot drift.
 
 Note this is the mirror image of Claude Code, where the commands come from the plugin and `repowise init` never writes any.
 

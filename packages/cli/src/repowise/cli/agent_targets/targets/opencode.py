@@ -343,7 +343,7 @@ def write_instructions(scope: Scope, repo_path: Path | None = None) -> FileWrite
     return FileWrite(path=path, action=action)
 
 
-def _remove_server_entry(path: Path) -> tuple[Path, FileAction]:
+def _remove_server_entry(path: Path) -> tuple[Path, FileAction, str | None]:
     """Drop ``mcp.repowise``, preserving sibling servers.
 
     Rounds the install trip back to nothing: the ``mcp`` wrapper goes once it is
@@ -359,17 +359,21 @@ def _remove_server_entry(path: Path) -> tuple[Path, FileAction]:
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
     if not path.exists():
-        return path, FileAction.NOT_FOUND
+        return path, FileAction.NOT_FOUND, None
     try:
         existing = load_json_object_or_value_error(path, path.name)
     except (OSError, ValueError):
         # Same reason install declines: rewriting a file we could not parse
         # destroys whatever we failed to read.
-        return path, FileAction.KEPT
+        return (
+            path,
+            FileAction.KEPT,
+            "not strict JSON, so removing our entry would drop comments",
+        )
 
     servers = existing.get("mcp")
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
-        return path, FileAction.NOT_FOUND
+        return path, FileAction.NOT_FOUND, None
     servers.pop(SERVER_NAME)
 
     if not servers:
@@ -384,10 +388,10 @@ def _remove_server_entry(path: Path) -> tuple[Path, FileAction]:
             # Falling through to the rewrite keeps the failure loud, from the
             # same ``os.replace`` the write path uses.
             write_json_config(path, existing)
-        return path, FileAction.REMOVED
+        return path, FileAction.REMOVED, None
 
     write_json_config(path, existing)
-    return path, FileAction.REMOVED
+    return path, FileAction.REMOVED, None
 
 
 def _remove_instructions(
@@ -445,6 +449,29 @@ def _remove_instructions(
     if state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
         return path, FileAction.NOT_FOUND, []
     return path, FileAction.KEPT, []
+
+
+def _instructions_outcome(owners: list[str], path: Path) -> tuple[FileAction, str]:
+    """What a non-removal of ``AGENTS.md`` actually was, and how to say it.
+
+    Three genuinely different outcomes reach one action, and they want opposite
+    things from the user. Shared ownership is a deliberate refusal and stays
+    ``KEPT``. A malformed marker pair is also a refusal. But the block still
+    sitting there *with no other owner* means the write failed, which is a
+    ``FAILED`` and a different exit code, not a decision we made.
+    """
+    from ..formats import marker_block
+    from ..formats.marker_block import BlockState
+    from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+
+    if owners:
+        return FileAction.KEPT, (
+            f"{' and '.join(owners)} still reads the same managed block; "
+            "remove that agent too if you want the block gone"
+        )
+    state = marker_block.inspect(path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
+    action = FileAction.FAILED if state is BlockState.PRESENT else FileAction.KEPT
+    return action, marker_block.refusal_reason(state)
 
 
 def _prune_user_dir() -> None:
@@ -612,7 +639,11 @@ class OpenCodeTarget:
             result.record(written.path, written.action)
         except RemoteServerEntryError:
             path = write_target_path(scope, repo_path)
-            result.record(path, FileAction.KEPT)
+            result.record(
+                path,
+                FileAction.KEPT,
+                'its "repowise" entry names a remote server',
+            )
             result.note(
                 f'{path.name} left unchanged: its "repowise" entry names a remote server, '
                 "and converting it in place would leave an entry that is neither. Run "
@@ -624,7 +655,7 @@ class OpenCodeTarget:
             # name the file the write actually aimed at, which is the one
             # already holding our entry when there is one.
             path = write_target_path(scope, repo_path)
-            result.record(path, FileAction.KEPT)
+            result.record(path, FileAction.KEPT, f"could not be rewritten ({exc})")
             # The reason is carried rather than asserted: this guard is wide
             # enough to catch things that are not a bad config file at all, and
             # a note that flatly said "not valid JSON" would send the user to
@@ -639,7 +670,13 @@ class OpenCodeTarget:
 
         try:
             written = write_instructions(scope, repo_path)
-            result.record(written.path, written.action)
+            result.record(
+                written.path,
+                written.action,
+                _instructions_outcome([], written.path)[1]
+                if written.action is FileAction.KEPT
+                else None,
+            )
             if written.action is FileAction.KEPT:
                 # The helper refuses an orphaned or duplicated marker pair
                 # rather than guessing at a repair that could swallow the
@@ -651,7 +688,11 @@ class OpenCodeTarget:
                     "Fix it by hand and re-run."
                 )
         except (OSError, ValueError) as exc:
-            result.record(instructions_path(scope, repo_path), FileAction.KEPT)
+            result.record(
+                instructions_path(scope, repo_path),
+                FileAction.KEPT,
+                f"could not be written ({exc})",
+            )
             result.note(f"AGENTS.md could not be written ({exc}).")
 
         return result
@@ -673,17 +714,17 @@ class OpenCodeTarget:
         # the *next* iteration reports anything.
         preferred = config_path(scope, repo_path)
         for candidate in config_paths(scope, repo_path):
-            path, action = _remove_server_entry(candidate)
+            path, action, reason = _remove_server_entry(candidate)
             if action is not FileAction.NOT_FOUND or path == preferred:
-                result.record(path, action)
+                result.record(path, action, reason)
 
         instructions, action, owners = _remove_instructions(scope, repo_path)
-        result.record(instructions, action)
+        reason = None
+        if action is FileAction.KEPT:
+            action, reason = _instructions_outcome(owners, instructions)
+        result.record(instructions, action, reason)
         if owners:
-            result.note(
-                f"{instructions} kept: {' and '.join(owners)} still reads the same "
-                "managed block. Remove that agent too if you want the block gone."
-            )
+            result.note(f"{instructions} kept: {reason}.")
 
         if scope is Scope.USER and any(
             written.action is FileAction.REMOVED for written in result.files

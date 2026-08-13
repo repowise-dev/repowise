@@ -214,22 +214,26 @@ def write_rules_file(repo_path: Path) -> FileWrite:
     return FileWrite(path=config_path, action=action)
 
 
-def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
+def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
     """Drop ``mcpServers.repowise``, preserving sibling servers."""
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
     if not config_path.exists():
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     try:
         existing = load_json_object_or_value_error(config_path, "mcp.json")
     except ValueError:
         # Same reason install declines: rewriting a file we could not parse
         # destroys whatever we failed to read.
-        return config_path, FileAction.KEPT
+        return (
+            config_path,
+            FileAction.KEPT,
+            "not strict JSON, so removing our entry would drop comments",
+        )
 
     servers = existing.get("mcpServers")
     if not isinstance(servers, dict) or "repowise" not in servers:
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     servers.pop("repowise")
 
     # Drop the wrapper once it is empty, and the file once *it* is empty, so an
@@ -248,13 +252,13 @@ def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
             # rewrite keeps the loud failure the previous code had, from the
             # same `os.replace` it used.
             write_json_config(config_path, existing)
-        return config_path, FileAction.REMOVED
+        return config_path, FileAction.REMOVED, None
 
     write_json_config(config_path, existing)
-    return config_path, FileAction.REMOVED
+    return config_path, FileAction.REMOVED, None
 
 
-def _remove_rules_file(repo_path: Path) -> tuple[Path, FileAction]:
+def _remove_rules_file(repo_path: Path) -> tuple[Path, FileAction, str | None]:
     """Strip the managed block, deleting the file if it held nothing else."""
     from ..formats import marker_block
     from ..formats.marker_block import BlockState
@@ -267,7 +271,7 @@ def _remove_rules_file(repo_path: Path) -> tuple[Path, FileAction]:
         DISTILL_MARKER_END,
         delete_if_only=RULES_PREFIX,
     ):
-        return config_path, FileAction.REMOVED
+        return config_path, FileAction.REMOVED, None
 
     # ``remove`` returns False for four different reasons, and they do not mean
     # the same thing to a reader of the output. "There was nothing of ours here"
@@ -276,8 +280,22 @@ def _remove_rules_file(repo_path: Path) -> tuple[Path, FileAction]:
     # markers in it exists and is not ours.
     state = marker_block.inspect(config_path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
     if state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
-        return config_path, FileAction.NOT_FOUND
-    return config_path, FileAction.KEPT
+        return config_path, FileAction.NOT_FOUND, None
+    if state is BlockState.PRESENT:
+        # Still exactly where it was, so the write failed rather than us
+        # declining. This target has no shared-ownership case, so there is no
+        # other way to reach PRESENT here.
+        return config_path, FileAction.FAILED, marker_block.refusal_reason(state)
+    return config_path, FileAction.KEPT, marker_block.refusal_reason(state)
+
+
+def _rules_refusal_reason(config_path: Path) -> str:
+    """Why the rules file was left alone, in the words needed to unpick it."""
+    from ..formats import marker_block
+    from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+
+    state = marker_block.inspect(config_path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
+    return marker_block.refusal_reason(state)
 
 
 def _prune_empty_dirs(repo_path: Path) -> None:
@@ -387,7 +405,11 @@ class CursorTarget:
             written = write_mcp_config(repo_path)
             result.record(written.path, written.action)
         except RemoteServerEntryError:
-            result.record(mcp_config_path(repo_path), FileAction.KEPT)
+            result.record(
+                mcp_config_path(repo_path),
+                FileAction.KEPT,
+                'its "repowise" entry names a remote server',
+            )
             result.note(
                 '.cursor/mcp.json left unchanged: its "repowise" entry names a remote '
                 "server, and converting it in place would leave an entry that is "
@@ -402,7 +424,9 @@ class CursorTarget:
         # after other agents' configs have already been written, and prints a
         # traceback instead of the summary that would have said so.
         except (ValueError, OSError) as exc:
-            result.record(mcp_config_path(repo_path), FileAction.KEPT)
+            result.record(
+                mcp_config_path(repo_path), FileAction.KEPT, f"could not be rewritten ({exc})"
+            )
             # The reason is carried rather than asserted. This guard is wide
             # enough to catch things that are not a bad config file at all: the
             # generated entry is built inside the guarded call, so an OSError
@@ -416,7 +440,11 @@ class CursorTarget:
 
         try:
             written = write_rules_file(repo_path)
-            result.record(written.path, written.action)
+            result.record(
+                written.path,
+                written.action,
+                _rules_refusal_reason(written.path) if written.action is FileAction.KEPT else None,
+            )
             if written.action is FileAction.KEPT:
                 # The helper refuses an orphaned or duplicated marker pair rather
                 # than guessing at a repair that could swallow the user's text,
@@ -427,7 +455,7 @@ class CursorTarget:
                     "hand and re-run."
                 )
         except (OSError, ValueError):
-            result.record(rules_path(repo_path), FileAction.KEPT)
+            result.record(rules_path(repo_path), FileAction.KEPT, "could not be written")
             result.note(".cursor/rules/repowise.mdc could not be written.")
 
         return result

@@ -20,7 +20,13 @@ def cli(ctx: click.Context) -> None:
     # Skipped when invoked as the augment subcommand itself (hook hot path) —
     # `augment_hook.main` handles that case. See `self_heal` for why the call
     # site stays here.
-    if ctx.invoked_subcommand != "augment":
+    #
+    # Also skipped for `uninstall`, where repairing agent hook entries is the
+    # opposite of what the user asked for, and where the migration stamp lands
+    # in `~/.repowise/` — the directory that command may be about to delete.
+    # Without this, a second `uninstall --all` found and removed a stamp its own
+    # startup had just written, and the command never converged.
+    if ctx.invoked_subcommand not in ("augment", "uninstall"):
         try:
             from repowise.cli.self_heal import run_editor_migrations
 
@@ -66,6 +72,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("export", "export_cmd:export_command"),
     ("hook", "hook_cmd:hook_group"),
     ("agents", "agents_cmd:agents_group"),
+    ("uninstall", "uninstall_cmd:uninstall_command"),
     ("status", "status_cmd:status_command"),
     ("doctor", "doctor_cmd:doctor_command"),
     ("watch", "watch_cmd:watch_command"),

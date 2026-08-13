@@ -140,44 +140,96 @@ def write_extensions_config(repo_path: Path) -> FileWrite:
     return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
-def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
+def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
     """Drop ``servers.repowise``, preserving sibling servers."""
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
     if not config_path.exists():
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     try:
         existing = load_json_object_or_value_error(config_path, "mcp.json")
     except ValueError:
         # Same reason install declines: it is far more likely to be JSONC than
         # damaged, and rewriting it would silently delete the user's comments.
-        return config_path, FileAction.KEPT
+        return config_path, FileAction.KEPT, "not strict JSON, so removing our entry would drop comments"
 
     servers = existing.get("servers")
     if not isinstance(servers, dict) or "repowise" not in servers:
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     servers.pop("repowise")
+
+    # Prune the wrapper and then the file, matching Cursor. Deleting on an empty
+    # *parse* is only sound because the parse above is strict JSON: a file that
+    # got here cannot have held comments, so an empty object really is an empty
+    # file. The YAML and TOML targets must not copy this shortcut, and do not.
+    if not servers:
+        existing.pop("servers", None)
+    if not existing:
+        try:
+            config_path.unlink()
+        except OSError:
+            # Swallowing this would report REMOVED over a file that still holds
+            # our entry. Fall through to the rewrite so the failure stays loud,
+            # from the same os.replace the previous code used.
+            write_json_config(config_path, existing)
+        return config_path, FileAction.REMOVED, None
+
     write_json_config(config_path, existing)
-    return config_path, FileAction.REMOVED
+    return config_path, FileAction.REMOVED, None
 
 
-def _remove_extension_recommendation(config_path: Path) -> tuple[Path, FileAction]:
+def _remove_extension_recommendation(config_path: Path) -> tuple[Path, FileAction, str | None]:
     """Drop our id from ``recommendations``, preserving everyone else's."""
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
     if not config_path.exists():
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     try:
         existing = load_json_object_or_value_error(config_path, "extensions.json")
     except ValueError:
-        return config_path, FileAction.KEPT
+        return (
+            config_path,
+            FileAction.KEPT,
+            "not strict JSON, so removing our entry would drop comments",
+        )
 
     recommendations = existing.get("recommendations")
     if not isinstance(recommendations, list) or EXTENSION_ID not in recommendations:
-        return config_path, FileAction.NOT_FOUND
-    existing["recommendations"] = [r for r in recommendations if r != EXTENSION_ID]
+        return config_path, FileAction.NOT_FOUND, None
+    remaining = [r for r in recommendations if r != EXTENSION_ID]
+
+    # Same prune, same justification. `extensions.json` holding an empty
+    # recommendations array is a file we created and the user never asked for.
+    if remaining:
+        existing["recommendations"] = remaining
+    else:
+        existing.pop("recommendations", None)
+    if not existing:
+        try:
+            config_path.unlink()
+        except OSError:
+            write_json_config(config_path, existing)
+        return config_path, FileAction.REMOVED, None
+
     write_json_config(config_path, existing)
-    return config_path, FileAction.REMOVED
+    return config_path, FileAction.REMOVED, None
+
+
+def _prune_project_dir(repo_path: Path) -> None:
+    """Remove ``.vscode/`` once uninstall emptied it, and never otherwise.
+
+    ``rmdir`` rather than a recursive delete, so a directory still holding
+    anything at all, ours or the user's ``settings.json``, is left exactly as it
+    is. The symlink guard is Cursor's: following a junction to delete something
+    outside the repo is not a risk worth a tidy directory.
+    """
+    directory = mcp_config_path(repo_path).parent
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    try:
+        directory.rmdir()
+    except OSError:
+        return
 
 
 def detect(repo_path: Path | None = None) -> list[Registration]:
@@ -271,7 +323,11 @@ class VSCodeTarget:
             # Before the broader handler below, which it would otherwise reach
             # as a ``ValueError`` and be described as an unreadable file. It is
             # a perfectly readable file holding a deliberate choice.
-            result.record(mcp_config_path(repo_path), FileAction.KEPT)
+            result.record(
+                mcp_config_path(repo_path),
+                FileAction.KEPT,
+                'its "repowise" entry names a remote server',
+            )
             result.note(
                 '.vscode/mcp.json left unchanged: its "repowise" entry names a remote '
                 "server, and converting it in place would leave an entry that is "
@@ -279,7 +335,11 @@ class VSCodeTarget:
                 "want the local server instead."
             )
         except (ValueError, OSError):
-            result.record(mcp_config_path(repo_path), FileAction.KEPT)
+            result.record(
+                mcp_config_path(repo_path),
+                FileAction.KEPT,
+                "unreadable, or not strict JSON, so rewriting it would lose text",
+            )
             result.note(
                 ".vscode/mcp.json left unchanged (unreadable, or not valid JSON; it "
                 'may contain comments). Add a "repowise" server under "servers" manually.'
@@ -288,7 +348,11 @@ class VSCodeTarget:
             written = write_extensions_config(repo_path)
             result.record(written.path, written.action)
         except (ValueError, OSError):
-            result.record(extensions_config_path(repo_path), FileAction.KEPT)
+            result.record(
+                extensions_config_path(repo_path),
+                FileAction.KEPT,
+                "unreadable, or not strict JSON, so rewriting it would lose text",
+            )
             result.note(
                 ".vscode/extensions.json left unchanged (unreadable, or not valid JSON; "
                 f'it may contain comments). Add "{EXTENSION_ID}" to "recommendations" '
@@ -310,6 +374,11 @@ class VSCodeTarget:
             return result
         result.record(*_remove_server_entry(mcp_config_path(repo_path)))
         result.record(*_remove_extension_recommendation(extensions_config_path(repo_path)))
+        # Only when something of ours actually went, matching Cursor. Pruning
+        # unconditionally deleted a `.vscode/` that happened to be empty and
+        # that this uninstall had just reported finding nothing in.
+        if any(written.action is FileAction.REMOVED for written in result.files):
+            _prune_project_dir(repo_path)
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:

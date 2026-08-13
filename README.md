@@ -781,6 +781,7 @@ repowise distill pytest   # compact, errors-first, reversible command output
 repowise saved            # tokens and dollars saved by distillation
 repowise workspace add    # multi-repo workspace management
 repowise doctor           # check setup, API keys, index drift
+repowise uninstall        # remove what repowise wrote, and say what it left
 ```
 
 Every command and flag: **[docs/reference/CLI_REFERENCE.md](docs/reference/CLI_REFERENCE.md)** ·

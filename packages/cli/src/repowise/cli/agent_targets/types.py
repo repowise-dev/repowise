@@ -75,6 +75,12 @@ class FileAction(StrEnum):
     REMOVED = "removed"
     NOT_FOUND = "not-found"
     KEPT = "kept"
+    #: We tried and could not. Distinct from ``KEPT``, which is a decision, and
+    #: the distinction only earns its keep on the destructive verb: "I chose not
+    #: to touch this" and "I failed to remove this" look identical in a report
+    #: that has one value for both, and they need opposite things from the user.
+    #: Only ``repowise uninstall`` produces it today.
+    FAILED = "failed"
 
 
 class Capability(StrEnum):
@@ -169,10 +175,18 @@ class Registration:
 
 @dataclass(frozen=True)
 class FileWrite:
-    """What happened to one file."""
+    """What happened to one file.
+
+    *reason* exists for one action in particular. ``KEPT`` on its own is
+    indistinguishable from a bug: the user asked for a file to go, it is still
+    there, and the row says nothing about whether that was a deliberate refusal
+    or a silent failure. Every ``KEPT`` carries one. The other actions speak for
+    themselves and leave it ``None``.
+    """
 
     path: Path
     action: FileAction
+    reason: str | None = None
 
 
 @dataclass
@@ -189,8 +203,8 @@ class WriteResult:
     #: One-line notes surfaced verbatim, e.g. "Restart the editor to apply."
     notes: list[str] = field(default_factory=list)
 
-    def record(self, path: Path, action: FileAction) -> None:
-        self.files.append(FileWrite(path=path, action=action))
+    def record(self, path: Path, action: FileAction, reason: str | None = None) -> None:
+        self.files.append(FileWrite(path=path, action=action, reason=reason))
 
     def note(self, message: str) -> None:
         self.notes.append(message)
@@ -212,7 +226,10 @@ class WriteResult:
         checks the projection alone.
         """
         return {
-            "files": [{"path": str(f.path), "action": f.action.value} for f in self.files],
+            "files": [
+                {"path": str(f.path), "action": f.action.value, "reason": f.reason}
+                for f in self.files
+            ],
             "notes": list(self.notes),
         }
 

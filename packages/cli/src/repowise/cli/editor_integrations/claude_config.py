@@ -465,7 +465,8 @@ def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
     """Widen legacy rewrite-hook matchers in place (``Bash`` → current)."""
     changed = False
     for entry in hook_list:
-        only_rewrite = entry.get("hooks") and all(_is_rewrite_hook(h) for h in entry["hooks"])
+        hooks = _hooks_of(entry)
+        only_rewrite = hooks and all(_is_rewrite_hook(h) for h in hooks)
         if only_rewrite and entry.get("matcher", "") in _LEGACY_REWRITE_MATCHERS:
             entry["matcher"] = _REWRITE_MATCHER
             changed = True
@@ -485,18 +486,230 @@ def uninstall_claude_code_rewrite_hook() -> bool:
     hooks = existing.get("hooks")
     if not isinstance(hooks, dict):
         return False
-    pre_hooks = hooks.get("PreToolUse")
-    if not isinstance(pre_hooks, list):
-        return False
 
-    changed = _strip_hooks(pre_hooks, _is_rewrite_hook)
+    # Every event, not just ``PreToolUse``. We only ever write this hook there,
+    # but ``claude_code_leftover_reason`` looks for it everywhere, so a hand-moved
+    # or legacy entry under another event was found by the probe and unreachable
+    # by the remover: an uninstall that reported KEPT forever and never
+    # converged however many times it was run.
+    changed = False
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list) or not entries:
+            continue
+        if _strip_hooks(entries, _is_rewrite_hook):
+            changed = True
+            if not entries:
+                hooks.pop(event, None)
     if not changed:
         return False
-    if not pre_hooks:
-        hooks.pop("PreToolUse", None)
+    if not hooks:
+        existing.pop("hooks", None)
 
+    return _write_settings(settings_path, existing)
+
+
+def uninstall_claude_code_augment_hooks() -> bool:
+    """Remove every repowise augment hook from settings.json, across all events.
+
+    The sibling of :func:`uninstall_claude_code_rewrite_hook`, and deliberately
+    a separate function: the rewrite hook is one opt-in entry under one event,
+    while the augment hooks are installed across ``SessionStart``,
+    ``PostToolUse`` and ``PostToolUseFailure``. Sweeping every event with the
+    same predicate is what keeps a future fourth event from being missed here
+    while ``install_claude_code_hooks`` grows one.
+
+    Prunes as it goes, in the same order the file nests: our command out of an
+    entry, an entry we emptied out of its event, an event we emptied out of
+    ``hooks``, and ``hooks`` itself once nothing is left. Every hook the user
+    wrote survives, including hooks under the same event as ours.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
     try:
-        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+
+    changed = False
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list) or not entries:
+            # An event that was already empty is not one we emptied. Popping it
+            # unconditionally deleted a key the user had written and counted as
+            # a removal in a file holding none of our hooks.
+            continue
+        if _strip_hooks(entries, _is_repowise_hook):
+            changed = True
+            if not entries:
+                hooks.pop(event, None)
+    if not changed:
+        return False
+    if not hooks:
+        existing.pop("hooks", None)
+
+    return _write_settings(settings_path, existing)
+
+
+def uninstall_claude_code_mcp_entry() -> bool:
+    """Drop ``mcpServers.repowise`` from settings.json, sparing sibling servers.
+
+    Keyed on our exact server name, never on a prefix or on the entry's shape.
+    The wrapper goes when it empties; the file never does. ``settings.json`` is
+    the user's, it long predates us, and an empty object there is still their
+    file rather than a stub we left.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+
+    servers = existing.get("mcpServers")
+    if not isinstance(servers, dict) or "repowise" not in servers:
+        return False
+    servers.pop("repowise")
+    if not servers:
+        existing.pop("mcpServers", None)
+
+    return _write_settings(settings_path, existing)
+
+
+def uninstall_claude_desktop_mcp_entry() -> bool:
+    """Drop ``mcpServers.repowise`` from Claude Desktop's config.
+
+    The sibling of :func:`uninstall_claude_code_mcp_entry`, and easy to miss
+    because the two live in different files on different platforms.
+    ``install`` writes both (:func:`register_with_claude_desktop` and
+    :func:`register_with_claude_code`), and leaving this one behind did more
+    than leave a stale entry: ``detect`` reads it, so a removed Claude Code
+    still reported a user-scope registration, ``refresh_wired_agents`` counted
+    it as wired, and the next ``repowise doctor --repair`` silently reinstalled
+    everything the uninstall had just removed.
+    """
+    config_path = _claude_desktop_config_path()
+    if config_path is None or not config_path.exists():
+        return False
+    try:
+        existing = load_existing_config(config_path)
+    except Exception:
+        return False
+
+    servers = existing.get("mcpServers")
+    if not isinstance(servers, dict) or "repowise" not in servers:
+        return False
+    servers.pop("repowise")
+    if not servers:
+        existing.pop("mcpServers", None)
+
+    return _write_settings(config_path, existing)
+
+
+def claude_code_leftover_reason() -> str | None:
+    """Why settings.json still has repowise in it, read from disk. None when clean.
+
+    The three uninstall helpers each return ``False`` for four different
+    outcomes: nothing of ours was there, the file would not parse, the write
+    raised, and the file does not exist. Collapsing those into "not found" told
+    a user with an unparseable ``settings.json`` that we had looked and found
+    nothing of ours, while our MCP registration and our hooks sat in it. That
+    answer then fed the exit code, so the command printed "everything selected
+    is gone" and exited zero over a file it had failed to touch.
+
+    Scoped to ``settings.json`` alone. The Desktop config has its own probe and
+    its own row: folding it in here produced a row whose path column named
+    ``settings.json`` and whose reason talked about the Desktop config, over a
+    settings file that was perfectly clean.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return None
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        # Unreadable and unparseable are the cases this function exists for. We
+        # cannot say what is in there, and "we cannot say" is not "it is clean".
+        return "the file could not be read, so whether our entries are gone is unknown"
+
+    servers = existing.get("mcpServers")
+    if isinstance(servers, dict) and "repowise" in servers:
+        return "our MCP registration was still present after the write"
+
+    hooks = existing.get("hooks")
+    if isinstance(hooks, dict):
+        for entries in hooks.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                    continue
+                for hook in entry["hooks"]:
+                    if isinstance(hook, dict) and (
+                        _is_repowise_hook(hook) or _is_rewrite_hook(hook)
+                    ):
+                        return "one of our hooks was still present after the write"
+    return None
+
+
+def claude_desktop_leftover_reason() -> str | None:
+    """Whether Claude Desktop's config still names us. None when clean or absent."""
+    config_path = _claude_desktop_config_path()
+    if config_path is None or not config_path.exists():
+        return None
+    try:
+        existing = load_existing_config(config_path)
+    except Exception:
+        # Unparseable is not the same as ours. A JSONC Claude Desktop config is
+        # ordinary, and reporting every one of them as a leftover made a clean
+        # machine print "N path(s) still here" and exit 3 forever, because the
+        # remover returns False on the same file and nothing ever converges.
+        # So ask the bytes whether we are even mentioned.
+        try:
+            if b"repowise" not in config_path.read_bytes().lower():
+                return None
+        except OSError:
+            return None
+        return (
+            "the Claude Desktop config could not be read and still mentions repowise, "
+            "so whether our entry is gone is unknown"
+        )
+    servers = existing.get("mcpServers")
+    if isinstance(servers, dict) and "repowise" in servers:
+        return "our entry was still in the Claude Desktop config after the write"
+    return None
+
+
+def _write_settings(settings_path: Path, existing: dict) -> bool:
+    """Write ``settings.json`` atomically. False when the write did not happen.
+
+    Atomic because a single ``uninstall`` now performs three of these in a row
+    on a long-lived file the user owns, and a truncated ``settings.json`` costs
+    them every hook and every MCP server they have, not just ours.
+
+    ``newline=None`` deliberately, which is the platform translation every other
+    writer of this file already takes. Pinning it to ``\\n`` would have made an
+    uninstall silently rewrite a Windows user's entire settings file from CRLF
+    to LF, so the one command that is supposed to leave less behind would have
+    touched every line of it.
+    """
+    from repowise.core.fsutils import atomic_write_text
+
+    payload = json.dumps(existing, indent=2) + "\n"
+    try:
+        if settings_path.is_symlink():
+            # Write through the link, not over it. The atomic path is a
+            # temp-file rename, which would replace a dotfile manager's symlink
+            # with a regular file and quietly detach settings.json from the
+            # repo the user keeps it in. Losing atomicity on this one shape is
+            # the smaller harm.
+            settings_path.write_text(payload, encoding="utf-8")
+        else:
+            atomic_write_text(settings_path, payload, newline=None)
     except OSError:
         return False
     return True
@@ -530,14 +743,44 @@ def claude_code_rewrite_hook_matcher() -> str | None:
     return _rewrite_matcher(pre_hooks)
 
 
+def _hooks_of(entry: object) -> list:
+    """The hook list on *entry*, or empty for any shape that is not one.
+
+    The read helpers used this as ``entry.get("hooks", [])``, which assumes the
+    entry is a dict and the value is iterable. Both assumptions are about a file
+    the user owns, and the write half already stopped making them.
+    """
+    if not isinstance(entry, dict):
+        return []
+    hooks = entry.get("hooks")
+    return hooks if isinstance(hooks, list) else []
+
+
+def _hook_command(hook: object) -> str:
+    """The command string on *hook*, or ``""`` for any shape that is not one.
+
+    The predicates below index this rather than ``hook.get("command", "")``.
+    The isinstance guards in :func:`_strip_hooks` cover the entry and the list
+    but not the value the predicate reaches into, so a ``"command": 7`` in a
+    file we did not write still raised ``TypeError`` out of the middle of an
+    uninstall, after an earlier removal had already rewritten the file. That
+    became reachable across every event once the rewrite-hook sweep stopped
+    being confined to ``PreToolUse``.
+    """
+    if not isinstance(hook, dict):
+        return ""
+    command = hook.get("command")
+    return command if isinstance(command, str) else ""
+
+
 def _is_rewrite_hook(hook: dict) -> bool:
-    return _REWRITE_HOOK_COMMAND in hook.get("command", "")
+    return _REWRITE_HOOK_COMMAND in _hook_command(hook)
 
 
 def _rewrite_matcher(hook_list: list) -> str | None:
     """Matcher of the first entry carrying our hook, or None if there is none."""
     for entry in hook_list:
-        if any(_is_rewrite_hook(h) for h in entry.get("hooks", [])):
+        if any(_is_rewrite_hook(h) for h in _hooks_of(entry)):
             matcher = entry.get("matcher")
             return matcher if isinstance(matcher, str) else ""
     return None
@@ -548,11 +791,24 @@ def _has_rewrite_hook(hook_list: list) -> bool:
 
 
 def _strip_hooks(hook_list: list, predicate) -> bool:
-    """Remove hooks matching *predicate* from a hook bucket in place."""
+    """Remove hooks matching *predicate* from a hook bucket in place.
+
+    Every shape is guarded, which it did not used to need. This only ever ran
+    over ``PreToolUse``, an event repowise writes and therefore knows the shape
+    of. :func:`uninstall_claude_code_augment_hooks` now sweeps **every** event in
+    the user's ``settings.json``, so one string or one null anywhere in a file
+    we did not write used to raise ``AttributeError`` out of the middle of an
+    uninstall, after an earlier removal had already rewritten the file.
+    """
     changed = False
     for entry in list(hook_list):
-        kept = [h for h in entry.get("hooks", []) if not predicate(h)]
-        if len(kept) != len(entry.get("hooks", [])):
+        if not isinstance(entry, dict):
+            continue
+        inner = entry.get("hooks")
+        if not isinstance(inner, list):
+            continue
+        kept = [h for h in inner if not (isinstance(h, dict) and predicate(h))]
+        if len(kept) != len(inner):
             changed = True
             if kept:
                 entry["hooks"] = kept
@@ -563,16 +819,13 @@ def _strip_hooks(hook_list: list, predicate) -> bool:
 
 def _has_repowise_hook(hook_list: list) -> bool:
     """Check if a repowise hook is already registered, current or legacy."""
-    for entry in hook_list:
-        for hook in entry.get("hooks", []):
-            cmd = hook.get("command", "")
-            if "repowise-augment" in cmd or "repowise augment" in cmd:
-                return True
-    return False
+    return any(
+        any(_is_repowise_hook(hook) for hook in _hooks_of(entry)) for entry in hook_list
+    )
 
 
 def _is_repowise_hook(hook: dict) -> bool:
-    cmd = hook.get("command", "")
+    cmd = _hook_command(hook)
     return "repowise-augment" in cmd or "repowise augment" in cmd
 
 
@@ -589,16 +842,19 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
     """In-place migration of legacy PostToolUse entries to current shape."""
     changed = False
     for entry in hook_list:
-        for hook in entry.get("hooks", []):
-            cmd = hook.get("command", "")
+        for hook in _hooks_of(entry):
+            cmd = _hook_command(hook)
             # Both the old subcommand form and the unguarded console script
             # migrate to the guarded command, so an install predating the guard
             # stops emitting "command not found" without needing a re-init.
             if cmd in ("repowise augment", "repowise-augment"):
                 hook["command"] = _AUGMENT_HOOK_COMMAND
                 changed = True
+        if not isinstance(entry, dict):
+            continue
         matcher = entry.get("matcher", "")
-        only_repowise = entry.get("hooks") and all(_is_repowise_hook(h) for h in entry["hooks"])
+        entry_hooks = _hooks_of(entry)
+        only_repowise = entry_hooks and all(_is_repowise_hook(h) for h in entry_hooks)
         if only_repowise and matcher in _LEGACY_AUGMENT_MATCHERS:
             entry["matcher"] = _AUGMENT_MATCHER
             changed = True

@@ -195,6 +195,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | `repowise costs` | What indexing has cost you, by provider and operation. |
 | `repowise generate-claude-md` | Regenerate `CLAUDE.md` / `AGENTS.md` on demand. |
 | `repowise telemetry disable` | Turn off anonymous usage telemetry. |
+| `repowise uninstall` | Remove what repowise wrote from this repo, and optionally this machine. It lists everything first, and says what it left and why. |
 
 ---
 

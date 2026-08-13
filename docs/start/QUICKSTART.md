@@ -349,6 +349,19 @@ repowise doctor --repair # fixes what it safely can
 repowise status          # what is indexed, and how stale it is
 ```
 
+## Taking it back out
+
+```bash
+repowise uninstall             # list what repowise wrote, then ask what to remove
+repowise uninstall --all       # everything: wiring, index, and machine-wide state
+repowise uninstall --dry-run   # the same list, changing nothing
+```
+
+It reports every path it removed and every path it left, with the reason on the
+row. The index is not selected by default, because rebuilding it is the one
+expensive thing here. Full flags in the
+[CLI Reference](../reference/CLI_REFERENCE.md#repowise-uninstall-path).
+
 ## Environment variables
 
 None of these are required. Every one of them is only needed for a model-written

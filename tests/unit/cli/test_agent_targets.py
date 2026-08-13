@@ -2394,26 +2394,54 @@ def test_hermes_and_codex_do_not_strip_the_shared_block_from_each_other(
 
     Driven through both targets rather than by calling the helper by hand, so
     deleting either side's guard fails this.
+
+    One scenario per direction, each on its own repo. Chaining them used to work
+    on a single repo and no longer does, for a reason worth recording: Codex's
+    project uninstall now removes ``.codex/config.toml``, so a removed Codex
+    stops being detected as wired. Before that, its leftover config kept
+    answering "still an owner" long after it had been removed, and the second
+    half of a chained test was really asserting on that leftover. The block
+    surviving both agents' removal was the bug, not the contract.
     """
-    repo = tmp_path / "repo"
-    repo.mkdir()
     hermes_target = get_target("hermes")
     codex_target = get_target("codex")
-
-    codex_target.install(Scope.PROJECT, repo_path=repo)
     hermes_target.install(Scope.USER)
-    hermes_target.install(Scope.PROJECT, repo_path=repo)
 
-    removed_codex = codex_target.uninstall(Scope.PROJECT, repo_path=repo)
-    assert FileAction.KEPT in [written.action for written in removed_codex.files]
+    # Codex removed while Hermes is still wired.
+    codex_first = tmp_path / "codex-first"
+    codex_first.mkdir()
+    codex_target.install(Scope.PROJECT, repo_path=codex_first)
+    hermes_target.install(Scope.PROJECT, repo_path=codex_first)
+    removed_codex = codex_target.uninstall(Scope.PROJECT, repo_path=codex_first)
+    kept_codex = [w for w in removed_codex.files if w.action is FileAction.KEPT]
+    assert kept_codex
+    assert any("Hermes" in (w.reason or "") for w in kept_codex)
     assert any("Hermes" in note for note in removed_codex.notes)
+    assert "REPOWISE_DISTILL:START" in (codex_first / "AGENTS.md").read_text(encoding="utf-8")
 
-    removed_hermes = hermes_target.uninstall(Scope.PROJECT, repo_path=repo)
-    assert FileAction.KEPT in [written.action for written in removed_hermes.files]
+    # Hermes removed while Codex is still wired.
+    hermes_first = tmp_path / "hermes-first"
+    hermes_first.mkdir()
+    codex_target.install(Scope.PROJECT, repo_path=hermes_first)
+    hermes_target.install(Scope.PROJECT, repo_path=hermes_first)
+    removed_hermes = hermes_target.uninstall(Scope.PROJECT, repo_path=hermes_first)
+    kept_hermes = [w for w in removed_hermes.files if w.action is FileAction.KEPT]
+    assert kept_hermes
+    assert any("Codex" in (w.reason or "") for w in kept_hermes)
     assert any("Codex" in note for note in removed_hermes.notes)
+    assert "REPOWISE_DISTILL:START" in (hermes_first / "AGENTS.md").read_text(encoding="utf-8")
 
-    # The block is still there, which is the whole point.
-    assert "REPOWISE_DISTILL:START" in (repo / "AGENTS.md").read_text(encoding="utf-8")
+    # Removing the second agent in a *separate* invocation does not free the
+    # block, and that is a known limitation rather than an accident. Hermes's
+    # project-scope detection reads the very block that was kept for Codex, so
+    # a Hermes removed a command ago still answers "still an owner" and Codex
+    # keeps the block for it. `registry.removing` breaks exactly this cycle, but
+    # only within one command: `agents remove --target=codex,hermes` and
+    # `repowise uninstall` both batch and both clear the block. Pinned here so
+    # the behaviour is a recorded decision rather than a surprise.
+    second = codex_target.uninstall(Scope.PROJECT, repo_path=hermes_first)
+    assert FileAction.KEPT in [w.action for w in second.files]
+    assert "REPOWISE_DISTILL:START" in (hermes_first / "AGENTS.md").read_text(encoding="utf-8")
 
 
 def test_hermes_batch_removal_does_not_deadlock_on_the_shared_block(

@@ -206,23 +206,36 @@ def uninstall_codex_rewrite_hook() -> bool:
     hooks = existing.get("hooks")
     if not isinstance(hooks, dict):
         return False
-    pre_hooks = hooks.get("PreToolUse")
-    if not isinstance(pre_hooks, list):
-        return False
 
+    # Every event and every shape, matching the Claude Code half. Sweeping only
+    # ``PreToolUse`` while the leftover probe scans every event made a hook the
+    # user had moved an unclearable KEPT: reported forever, removable never. And
+    # indexing ``entry.get("hooks", [])`` raw raised ``AttributeError`` on a bare
+    # string in a file we did not write, which escapes ``agents remove`` (it
+    # wraps nothing) as a traceback part-way through a batch.
     changed = False
-    for entry in list(pre_hooks):
-        kept = [h for h in entry.get("hooks", []) if not _is_rewrite_hook(h)]
-        if len(kept) != len(entry.get("hooks", [])):
-            changed = True
-            if kept:
-                entry["hooks"] = kept
-            else:
-                pre_hooks.remove(entry)
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list) or not entries:
+            continue
+        for entry in list(entries):
+            if not isinstance(entry, dict):
+                continue
+            inner = entry.get("hooks")
+            if not isinstance(inner, list):
+                continue
+            kept = [h for h in inner if not (isinstance(h, dict) and _is_rewrite_hook(h))]
+            if len(kept) != len(inner):
+                changed = True
+                if kept:
+                    entry["hooks"] = kept
+                else:
+                    entries.remove(entry)
+        if not entries:
+            hooks.pop(event, None)
     if not changed:
         return False
-    if not pre_hooks:
-        hooks.pop("PreToolUse", None)
+    if not hooks:
+        existing.pop("hooks", None)
 
     try:
         hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
@@ -262,14 +275,25 @@ def codex_rewrite_hook_matcher() -> str | None:
     return _rewrite_matcher(pre_hooks)
 
 
-def _is_rewrite_hook(hook: dict) -> bool:
-    return _REWRITE_HOOK_COMMAND in hook.get("command", "")
+def _is_rewrite_hook(hook: object) -> bool:
+    """True when *hook* is our rewrite entry. Any other shape is False.
+
+    Guarded rather than assumed, for the same reason the Claude Code side is:
+    this reads a file the user owns, so ``"command": 7`` is a shape to answer
+    rather than to raise on.
+    """
+    if not isinstance(hook, dict):
+        return False
+    command = hook.get("command")
+    return isinstance(command, str) and _REWRITE_HOOK_COMMAND in command
 
 
 def _rewrite_matcher(hook_list: list) -> str | None:
     """Matcher of the first entry carrying our hook, or None if there is none."""
     for entry in hook_list:
-        if any(_is_rewrite_hook(h) for h in entry.get("hooks", [])):
+        if not isinstance(entry, dict):
+            continue
+        if any(_is_rewrite_hook(h) for h in entry.get("hooks") or []):
             matcher = entry.get("matcher")
             return matcher if isinstance(matcher, str) else ""
     return None

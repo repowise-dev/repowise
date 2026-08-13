@@ -2,7 +2,7 @@
 
 Complete reference for all `repowise` commands. For a guided introduction, see the [Quickstart](../start/QUICKSTART.md).
 
-Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
+Command list (in registration order): `augment`, `init`, `delete`, `generate-claude-md`, `costs`, `update`, `generate`, `dead-code`, `health`, `risk`, `decision`, `coverage`, `impacted-tests`, `search`, `ask`, `context`, `symbol`, `why`, `distill`, `expand`, `saved`, `security`, `corrections`, `export`, `hook`, `agents`, `uninstall`, `status`, `doctor`, `watch`, `serve`, `mcp`, `reindex`, `restyle`, `wiki-styles`, `whats-new`, `telemetry`, `login`, `logout`, `whoami`, `workspace`. Two more ship as separate console scripts, not subcommands: `repowise-augment`, `repowise-rewrite` (both hook entry points, not meant to be run by hand).
 
 **Do you need an LLM key?** Most commands are pure index/analysis and never call an LLM. `init` never requires a key: without one it renders the wiki from structure. It calls an LLM only when a provider is resolvable or `--prose` is passed. The exceptions: `update` (unless `--index-only` or `--no-docs`), `generate`, `restyle`, `watch` (when it regenerates a page), `health --generate-code`, and `workspace add --docs`. Everything else, `search`, `dead-code`, `health`, `risk`, `impacted-tests`, `decision`, `coverage`, `security`, `export`, `mcp`, `reindex`, `doctor`, and so on, works index-only, with no provider configured.
 
@@ -1439,6 +1439,61 @@ unless `--force` is passed.
 repowise delete                          # delete the current repo's index (prompts)
 repowise delete <repo-id> --force        # delete a specific repo's index, no prompt
 ```
+
+---
+
+### `repowise uninstall [PATH]`
+
+Remove what repowise has written, and report everything it did not remove and
+why. Wider than `repowise delete`, which removes one repository's rows from the
+index database and no files at all.
+
+Four groups, chosen independently:
+
+| Group | What it covers |
+|------|-------------|
+| `agents` | Every wired agent, both scopes, through each target's own uninstall |
+| `repo-files` | The managed blocks in `.claude/CLAUDE.md` and `AGENTS.md` |
+| `index` | The repo's `.repowise/` directory |
+| `global` | `~/.repowise/`: login, caches, telemetry preference |
+
+With a terminal and no flags it prints the inventory and asks. Otherwise say
+what you want removed:
+
+| Flag | Description |
+|------|-------------|
+| `--all` | Everything, including the index and machine-wide state |
+| `--keep-index` | The reinstall case: agent wiring and generated blocks only |
+| `--dry-run` | Print the plan and change nothing |
+| `--format table\|json` | `json` reports the plan, every path and what happened to it |
+
+**There is no `--yes`.** On every other command it means "run the default", and
+a partial uninstall is not a safe default, so the scope is named instead. With
+no terminal and no scope flag the command prints the inventory, removes nothing
+and exits non-zero.
+
+The index and machine-wide state are never pre-selected. The index is expensive
+to rebuild, and `~/.repowise/` is shared by every repo on the machine, which a
+command running inside one of them cannot see.
+
+Exit codes: `0` everything selected is gone, `1` a removal failed, `3` a removal
+was refused and something remains, `4` no scope was given and nobody could be
+asked. Each refusal prints its reason on the row.
+
+Two things it never touches: the package, which belongs to pip, uv or pipx, and
+the Claude Code plugin, which only `/plugin uninstall` can remove. It prints the
+right command for each.
+
+```bash
+repowise uninstall                       # show what is there, then ask
+repowise uninstall --all                 # everything, including index and login
+repowise uninstall --keep-index          # drop the wiring, keep the index
+repowise uninstall --all --dry-run       # what --all would do, changing nothing
+repowise uninstall --all --format json   # the same, machine-readable
+```
+
+To remove a single agent rather than all of them, use
+[`repowise agents remove --target=<id>`](../agent/INTEGRATIONS.md).
 
 ---
 

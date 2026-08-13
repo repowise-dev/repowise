@@ -486,7 +486,7 @@ def write_instructions(repo_path: Path) -> FileWrite:
     return FileWrite(path=path, action=action)
 
 
-def _remove_server_entry() -> tuple[Path, FileAction]:
+def _remove_server_entry() -> tuple[Path, FileAction, str | None]:
     """Drop ``mcp_servers.repowise`` and any allowlist entry naming it.
 
     Both edits again land in one file and one write.
@@ -516,20 +516,20 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
     try:
         raw = _read_text(path)
     except (OSError, ValueError):
-        return path, FileAction.KEPT
+        return path, FileAction.KEPT, "the file could not be read, so its contents are unknown"
     if raw is None:
-        return path, FileAction.NOT_FOUND
+        return path, FileAction.NOT_FOUND, None
     bom, newline, existing_text = _prepare(raw)
     try:
         existing_doc = yaml_merge.load_mapping(existing_text or "")
     except (OSError, ValueError):
         # Same reason install declines: rewriting a file we could not read
         # destroys whatever we failed to read.
-        return path, FileAction.KEPT
+        return path, FileAction.KEPT, "the file is not valid YAML, so rewriting it would lose text"
 
     servers = existing_doc.get(MCP_KEY)
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
-        return path, FileAction.NOT_FOUND
+        return path, FileAction.NOT_FOUND, None
 
     merged_text, section = yaml_merge.remove_child(existing_text, MCP_KEY, SERVER_NAME)
 
@@ -554,7 +554,11 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
         # A splice that did not produce the intended document must not be
         # written, and on the destructive verb that is worth reporting as
         # "left alone" rather than as a removal that did not happen.
-        return path, FileAction.KEPT
+        return (
+            path,
+            FileAction.KEPT,
+            "removing our entry from this file's shape would have changed something else in it",
+        )
 
     merged_text = bom + merged_text
     if not merged_text.strip() and _is_sole_occupant(path):
@@ -567,10 +571,10 @@ def _remove_server_entry() -> tuple[Path, FileAction]:
             yaml_merge.write_if_changed(
                 path, merged_text, intended, existing_doc, newline=newline
             )
-        return path, FileAction.REMOVED
+        return path, FileAction.REMOVED, None
 
     yaml_merge.write_if_changed(path, merged_text, intended, existing_doc, newline=newline)
-    return path, FileAction.REMOVED
+    return path, FileAction.REMOVED, None
 
 
 def _prune_allowlist(text: str, intended: dict) -> str:
@@ -682,6 +686,27 @@ def _remove_instructions(scope: Scope, repo_path: Path) -> tuple[Path, FileActio
     if state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
         return path, FileAction.NOT_FOUND, []
     return path, FileAction.KEPT, []
+
+
+def _instructions_outcome(owners: list[str], path: Path) -> tuple[FileAction, str]:
+    """What a non-removal of ``AGENTS.md`` actually was, and how to say it.
+
+    Shared ownership is a deliberate refusal and stays ``KEPT``; so is a
+    malformed marker pair. The block still in place with no other owner means
+    the write failed, which is ``FAILED`` and a different exit code.
+    """
+    from ..formats import marker_block
+    from ..formats.marker_block import BlockState
+    from ..instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
+
+    if owners:
+        return FileAction.KEPT, (
+            f"{' and '.join(owners)} still reads the same managed block; "
+            "remove that agent too if you want the block gone"
+        )
+    state = marker_block.inspect(path, DISTILL_MARKER_START, DISTILL_MARKER_END).state
+    action = FileAction.FAILED if state is BlockState.PRESENT else FileAction.KEPT
+    return action, marker_block.refusal_reason(state)
 
 
 def _reads_repowise() -> bool:
@@ -841,7 +866,11 @@ class HermesTarget:
             written = write_mcp_config()
             result.record(written.path, written.action)
         except RemoteServerEntryError:
-            result.record(path, FileAction.KEPT)
+            result.record(
+                path,
+                FileAction.KEPT,
+                f'its "{SERVER_NAME}" entry names a remote server',
+            )
             result.note(
                 f'{path} left unchanged: its "{SERVER_NAME}" entry names a remote '
                 "server, and Hermes prefers a URL over a command even when both are "
@@ -851,7 +880,7 @@ class HermesTarget:
             )
             return
         except (ValueError, OSError) as exc:
-            result.record(path, FileAction.KEPT)
+            result.record(path, FileAction.KEPT, f"could not be rewritten ({exc})")
             # The reason is carried rather than asserted: this guard is wide
             # enough to catch things that are not a bad config file at all, and
             # a note that flatly said "not valid YAML" would send the user to
@@ -892,7 +921,13 @@ class HermesTarget:
     def _install_project(self, result: WriteResult, repo_path: Path) -> None:
         try:
             written = write_instructions(repo_path)
-            result.record(written.path, written.action)
+            result.record(
+                written.path,
+                written.action,
+                _instructions_outcome([], written.path)[1]
+                if written.action is FileAction.KEPT
+                else None,
+            )
             if written.action is FileAction.KEPT:
                 # The helper refuses an orphaned or duplicated marker pair
                 # rather than guessing at a repair that could swallow the
@@ -904,7 +939,9 @@ class HermesTarget:
                     "read. Fix it by hand and re-run."
                 )
         except (OSError, ValueError) as exc:
-            result.record(instructions_path(repo_path), FileAction.KEPT)
+            result.record(
+                instructions_path(repo_path), FileAction.KEPT, f"could not be written ({exc})"
+            )
             result.note(f"AGENTS.md could not be written ({exc}).")
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
@@ -914,20 +951,20 @@ class HermesTarget:
             raise ValueError("project-scope uninstall needs a repo_path")
 
         if scope is Scope.USER:
-            path, action = _remove_server_entry()
-            result.record(path, action)
+            path, action, reason = _remove_server_entry()
+            result.record(path, action, reason)
             if action is FileAction.REMOVED:
                 _prune_home()
             return result
 
         assert repo_path is not None  # narrowed by the guard above
         instructions, action, owners = _remove_instructions(scope, repo_path)
-        result.record(instructions, action)
+        reason = None
+        if action is FileAction.KEPT:
+            action, reason = _instructions_outcome(owners, instructions)
+        result.record(instructions, action, reason)
         if owners:
-            result.note(
-                f"{instructions} kept: {' and '.join(owners)} still reads the same "
-                "managed block. Remove that agent too if you want the block gone."
-            )
+            result.note(f"{instructions} kept: {reason}.")
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:

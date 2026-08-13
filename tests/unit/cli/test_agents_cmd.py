@@ -233,8 +233,11 @@ def test_remove_takes_the_entry_out_and_reports_it_both_ways(repo: Path) -> None
     assert payload["action"] == "remove"
     assert payload["agents"][0]["writes"]["project"]["files"][0]["action"] == "removed"
 
-    config = json.loads((repo / ".vscode" / "mcp.json").read_text(encoding="utf-8"))
-    assert "repowise" not in config["servers"]
+    # The file goes with the entry when it held nothing else. It used to be left
+    # as a `{"servers": {}}` stub: a file repowise created, that the user never
+    # asked for, that still reads as repowise having been here, and that re-armed
+    # `is_present` for a repo it had just been removed from.
+    assert not (repo / ".vscode" / "mcp.json").exists()
 
     output = _run(["agents", "remove", str(repo), "--target", "vscode"]).output
     assert "not-found" in output
@@ -305,7 +308,8 @@ def test_remove_takes_the_extension_recommendation_with_it(repo: Path) -> None:
 
     written = {f["path"]: f["action"] for f in payload["agents"][0]["writes"]["project"]["files"]}
     assert written[str(extensions)] == "removed"
-    assert json.loads(extensions.read_text(encoding="utf-8"))["recommendations"] == []
+    # Same prune as mcp.json: an empty recommendations array is a stub, not a file.
+    assert not extensions.exists()
 
 
 def test_refresh_on_a_clean_repo_says_nothing_is_wired(repo: Path) -> None:

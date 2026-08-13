@@ -39,7 +39,9 @@ Two things worth knowing:
   of them leaves the section in place while another is still wired, and says so.
 
 Remove it with `repowise agents remove --target=opencode`, and check it with
-`repowise agents` or `repowise doctor`.
+`repowise agents` or `repowise doctor`. To remove every agent at once, along
+with the index and anything else repowise has written, see
+[`repowise uninstall`](../reference/CLI_REFERENCE.md#repowise-uninstall-path).
 
 ## Prerequisites
 

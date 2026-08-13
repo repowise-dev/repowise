@@ -32,6 +32,7 @@ from typing import Any
 import click
 
 from repowise.cli.agent_targets.registry import default_selection, describe_agents
+from repowise.cli.agent_targets.types import FileAction
 from repowise.cli.helpers import console, resolve_command_target
 from repowise.cli.output import emit_json, format_option, notice_console
 
@@ -282,7 +283,18 @@ def _render_writes(payload: dict) -> None:
     for agent in payload["agents"]:
         for scope, write in agent["writes"].items():
             for entry in write["files"]:
-                table.add_row(agent["id"], scope, entry["action"], entry["path"])
+                # The reason rides on the row rather than in the notes block
+                # below the table. A bare "kept" is indistinguishable from a
+                # bug: the user asked for a file to go, it is still there, and
+                # the row says nothing about whether that was deliberate. Only
+                # three targets ever emitted a note, so for the other three the
+                # answer was invisible.
+                file_cell = entry["path"]
+                if entry.get("reason"):
+                    file_cell = f"{entry['path']}\n[dim]{entry['reason']}[/dim]"
+                elif entry["action"] == FileAction.KEPT.value:
+                    file_cell = f"{entry['path']}\n[dim]no reason recorded[/dim]"
+                table.add_row(agent["id"], scope, entry["action"], file_cell)
         # Every skip gets its own row. Folding them into one "skipped" line
         # per agent hid the reason whenever a second scope had written
         # something, which is the common case rather than the edge one.

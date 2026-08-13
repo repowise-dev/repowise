@@ -38,7 +38,7 @@ _EXPECTED_NAMES = frozenset(
         "export", "generate", "generate-claude-md", "health", "hook",
         "impacted-tests", "init", "login", "logout", "mcp", "reindex", "restyle",
         "risk", "saved", "search", "security", "serve", "status", "symbol",
-        "telemetry", "update", "watch", "whats-new", "whoami", "why",
+        "telemetry", "uninstall", "update", "watch", "whats-new", "whoami", "why",
         "wiki-styles", "workspace",
     }
 )  # fmt: skip

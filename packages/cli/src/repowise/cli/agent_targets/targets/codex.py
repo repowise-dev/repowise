@@ -32,6 +32,8 @@ Two quirks preserved from the existing implementation, both load-bearing:
 
 from __future__ import annotations
 
+import json
+import tomllib
 from pathlib import Path
 
 from ..types import (
@@ -292,6 +294,336 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     return FileWrite(path=hooks_path, action=action), enable_hooks_feature(repo_path)
 
 
+def remove_hooks_config(repo_path: Path) -> FileWrite:
+    """Strip our hook entries from ``.codex/hooks.json``, sparing the user's.
+
+    A two-pass prune, not a file delete: drop our commands from each matcher
+    group, drop a group we emptied, drop an event left with no groups, drop the
+    ``hooks`` key once it holds nothing, and unlink the file only when the whole
+    document is empty. A user who added their own hook to the same event keeps
+    it, and keeps the event.
+
+    The ownership test is :func:`_is_augment_hook`, the same predicate install
+    uses to decide a matcher already carries our entry. It matches on the
+    command string rather than on the entry's shape, which is sound here for a
+    reason worth stating: the string it looks for is a repowise executable, so a
+    hook carrying it is a repowise hook whoever typed it, and leaving one behind
+    after an uninstall would spawn a process for a tool that is no longer wired.
+    """
+    from ..formats.json_merge import load_json_object_or_value_error, write_json_config
+
+    hooks_path = project_hooks_path(repo_path)
+    if not hooks_path.exists():
+        return FileWrite(path=hooks_path, action=FileAction.NOT_FOUND)
+    try:
+        existing = load_json_object_or_value_error(hooks_path, "hooks.json")
+    except ValueError:
+        return FileWrite(
+            path=hooks_path,
+            action=FileAction.KEPT,
+            reason="not strict JSON, so removing our entries would drop comments",
+        )
+
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return FileWrite(path=hooks_path, action=FileAction.NOT_FOUND)
+
+    changed = False
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            continue
+        # An event that was already empty is not something we emptied, and
+        # popping it reported REMOVED over a file holding none of our hooks
+        # while quietly deleting a key the user had written.
+        if not entries:
+            continue
+        surviving: list[object] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                surviving.append(entry)
+                continue
+            inner = entry["hooks"]
+            remaining = [h for h in inner if not (isinstance(h, dict) and _is_augment_hook(h))]
+            if len(remaining) == len(inner):
+                surviving.append(entry)
+                continue
+            changed = True
+            # A group that held only our hook goes with it. A group the user
+            # also wrote in keeps everything except ours.
+            if remaining:
+                entry["hooks"] = remaining
+                surviving.append(entry)
+        if surviving:
+            hooks[event] = surviving
+        else:
+            hooks.pop(event)
+            changed = True
+
+    if not changed:
+        return FileWrite(path=hooks_path, action=FileAction.NOT_FOUND)
+    if not hooks:
+        existing.pop("hooks", None)
+
+    if not existing:
+        try:
+            hooks_path.unlink()
+        except OSError:
+            # Falling through to the rewrite rather than swallowing: reporting
+            # REMOVED over a file we failed to delete is the false success this
+            # track has already shipped once.
+            write_json_config(hooks_path, existing)
+        return FileWrite(path=hooks_path, action=FileAction.REMOVED)
+
+    write_json_config(hooks_path, existing)
+    return FileWrite(path=hooks_path, action=FileAction.REMOVED)
+
+
+def remove_server_config(repo_path: Path, *, drop_hooks_feature: bool) -> FileWrite:
+    """Strip ``[mcp_servers.repowise]``, and the hooks feature when it is ours to drop.
+
+    *drop_hooks_feature* is decided by the caller from what the hooks file looks
+    like afterwards. ``features.hooks`` is Codex's global switch, not a repowise
+    key: turning it off while the user still has hooks of their own in
+    ``.codex/hooks.json`` would silently disable them. So it goes only when
+    nothing is left for it to enable.
+
+    Both removals are re-parsed and re-checked rather than trusted.
+    :func:`~..formats.toml_merge.remove_table` works by regex over the source
+    text, which is what preserves the user's comments everywhere else in the
+    file, and which is also why a table spelled some other legal way slips past
+    it. A silent miss on the destructive verb reads as a successful uninstall
+    over a file that still launches our server.
+    """
+    import click
+
+    from ..formats.toml_merge import (
+        ensure_valid_toml,
+        load_toml_document,
+        remove_key_line,
+        remove_table,
+        require_table,
+        table_is_bare,
+    )
+
+    config_path = project_config_path(repo_path)
+    if not config_path.exists():
+        return FileWrite(path=config_path, action=FileAction.NOT_FOUND)
+
+    existing_text = config_path.read_text(encoding="utf-8")
+    doc = load_toml_document(config_path, existing_text)
+
+    servers = require_table(doc, "mcp_servers", config_path, "mcp_servers")
+    has_server = isinstance(servers, dict) and "repowise" in servers
+    features = require_table(doc, "features", config_path, "features") or {}
+    has_feature = drop_hooks_feature and "hooks" in features
+
+    if not has_server and not has_feature:
+        return FileWrite(path=config_path, action=FileAction.NOT_FOUND)
+
+    # The two edits are applied and validated **independently**, and that is the
+    # whole shape of this function. Accumulating both into one string and
+    # gating the write on "did either fail" meant a `features.hooks` value the
+    # line remover declines to cut (a multi-line array, Codex's own key, nothing
+    # to do with us) threw away a perfectly good removal of
+    # `[mcp_servers.repowise]` as well, and blamed it on "the repowise entry
+    # uses a key spelling this remover cannot match" when the repowise entry
+    # was fine. Codex went on launching our MCP server.
+    def _attempt(text: str, edit, gone) -> tuple[str, bool]:
+        """Apply *edit*, keep it only if it parses and *gone* says the key went."""
+        candidate = edit(text)
+        try:
+            parsed = ensure_valid_toml(candidate, config_path) if candidate.strip() else {}
+        except click.ClickException:
+            return text, False
+        return (candidate, True) if gone(parsed) else (text, False)
+
+    merged_text = existing_text
+    server_refused = feature_refused = False
+
+    if has_server:
+        merged_text, ok = _attempt(
+            merged_text,
+            lambda text: remove_table(text, "mcp_servers.repowise"),
+            lambda doc: "repowise" not in (doc.get("mcp_servers") or {}),
+        )
+        server_refused = not ok
+
+    if has_feature:
+        # One line, not a re-render. ``[features]`` is Codex's table, so
+        # rebuilding it from the parse would drop the user's comments inside it
+        # and raise outright on any value the narrow serializer cannot encode.
+        def _drop_feature(text: str) -> str:
+            text = remove_key_line(text, "features", "hooks")
+            return remove_table(text, "features") if table_is_bare(text, "features") else text
+
+        merged_text, ok = _attempt(
+            merged_text,
+            _drop_feature,
+            lambda doc: "hooks" not in (doc.get("features") or {}),
+        )
+        feature_refused = not ok
+
+    # Keyed on whether anything actually moved, not on which flag is set. The
+    # earlier spelling asked `server_refused and ...`, which is never true when
+    # there was no server table to remove, so a lone declined `features.hooks`
+    # fell through, wrote the file back byte-identical, skipped a re-check
+    # gated on `has_server`, and reported REMOVED with no reason. Three runs in
+    # a row said `removed` over an unchanged file, and run 2 of the ordinary
+    # flow lands in exactly that shape.
+    changed = (has_server and not server_refused) or (has_feature and not feature_refused)
+    if not changed:
+        return FileWrite(
+            path=config_path,
+            action=FileAction.KEPT,
+            reason=(
+                "the repowise entry uses a key spelling this remover cannot match; "
+                "delete it by hand"
+            )
+            if server_refused
+            else "features.hooks holds a value this remover cannot cut; delete it by hand",
+        )
+
+    try:
+        if not merged_text.strip():
+            try:
+                config_path.unlink()
+            except OSError:
+                config_path.write_text(merged_text, encoding="utf-8")
+        else:
+            config_path.write_text(merged_text, encoding="utf-8")
+    except OSError as exc:
+        # Escaping here reached `agents remove`, which wraps nothing, as a
+        # traceback part-way through a batch.
+        return FileWrite(path=config_path, action=FileAction.FAILED, reason=str(exc))
+
+    # Proven from disk, never from ``merged_doc``: a check fed a value derived
+    # from our own output cannot fail, which is exactly how ``agents remove``
+    # came to report REMOVED over a file that still held the entry. Each key is
+    # re-checked only where the edit was actually applied, so a deliberate
+    # decline is not reported as a failed write.
+    if config_path.exists():
+        try:
+            written = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, tomllib.TOMLDecodeError):
+            written = {}
+        left_server = has_server and not server_refused
+        left_server = left_server and "repowise" in (written.get("mcp_servers") or {})
+        left_feature = has_feature and not feature_refused
+        left_feature = left_feature and "hooks" in (written.get("features") or {})
+        if left_server or left_feature:
+            return FileWrite(
+                path=config_path,
+                action=FileAction.KEPT,
+                reason="the entry was still present after the write",
+            )
+
+    # Something went, and something else was declined. Both halves belong in
+    # the report: a bare REMOVED here would be true of the server table and
+    # silently false of the flag.
+    if feature_refused:
+        return FileWrite(
+            path=config_path,
+            action=FileAction.REMOVED,
+            reason="features.hooks was left in place; its value is one this remover cannot cut",
+        )
+    if server_refused:
+        return FileWrite(
+            path=config_path,
+            action=FileAction.REMOVED,
+            reason="the repowise server entry was left in place; delete it by hand",
+        )
+    return FileWrite(path=config_path, action=FileAction.REMOVED)
+
+
+def _config_parse_refusal(repo_path: Path) -> str | None:
+    """Why ``config.toml`` cannot be edited, or ``None`` when it can.
+
+    Asked before anything is removed, so a file we cannot read stops the run
+    cleanly at the start rather than raising out of the middle of it. The merge
+    path is right to raise: it is called from `install`, where aborting leaves
+    the file untouched. Removal is called from a batch that has already deleted
+    things by the time it gets here.
+    """
+    config_path = project_config_path(repo_path)
+    if not config_path.exists():
+        return None
+    try:
+        doc = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return "the file is not valid TOML, so editing it would lose whatever we misread"
+    for key in ("mcp_servers", "features"):
+        value = doc.get(key)
+        if value is not None and not isinstance(value, dict):
+            return f"[{key}] is not a table in this file, so our entry cannot be located"
+    return None
+
+
+def _user_hooks_leftover_reason() -> str | None:
+    """Why ``~/.codex/hooks.json`` still has us in it, read from disk. None when clean."""
+    path = user_hooks_path()
+    if not path.exists():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        try:
+            if b"repowise" not in path.read_bytes().lower():
+                return None
+        except OSError:
+            return None
+        return "the file could not be read and still mentions repowise"
+    hooks = doc.get("hooks") if isinstance(doc, dict) else None
+    if not isinstance(hooks, dict):
+        return None
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                continue
+            for hook in entry["hooks"]:
+                if isinstance(hook, dict) and "repowise" in str(hook.get("command", "")):
+                    return "one of our hooks was still present after the write"
+    return None
+
+
+def _hooks_file_has_entries(hooks_path: Path) -> bool:
+    """Whether ``hooks.json`` still holds any hook at all.
+
+    Read from disk rather than inferred from what the removal returned, and
+    deliberately broader than "has a `hooks` key with something in it": a file
+    we cannot parse might hold anything, and switching off the feature that runs
+    it would be a guess about somebody else's file.
+    """
+    if not hooks_path.exists():
+        return False
+    try:
+        doc = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    hooks = doc.get("hooks") if isinstance(doc, dict) else None
+    # A file with no hooks left but other keys still in it is the user's file,
+    # and still not a reason to keep the feature switched on.
+    return isinstance(hooks, dict) and any(entries for entries in hooks.values())
+
+
+def prune_project_dir(repo_path: Path) -> None:
+    """Remove ``.codex/`` once uninstall emptied it, and never otherwise.
+
+    ``rmdir`` rather than a recursive delete, so a directory holding anything at
+    all, ours or the user's, is left exactly as it is. The symlink guard is the
+    one Cursor already carries: following a junction out of the repo to delete
+    something is not a risk worth a tidy directory.
+    """
+    directory = project_config_path(repo_path).parent
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    try:
+        directory.rmdir()
+    except OSError:
+        return
+
+
 #: Namespace for every prompt this target writes. ``~/.codex/prompts`` is a flat
 #: global directory shared with every other tool the user has installed, so the
 #: prefix is what keeps our filenames from colliding with theirs.
@@ -371,7 +703,13 @@ def write_prompts() -> list[FileWrite]:
             directory.mkdir(parents=True, exist_ok=True)
             atomic_write_text(path, text, newline="\n")
         except OSError:
-            writes.append(FileWrite(path=path, action=FileAction.KEPT))
+            writes.append(
+                FileWrite(
+                    path=path,
+                    action=FileAction.KEPT,
+                    reason="could not be written (permission, or a directory in its place)",
+                )
+            )
             continue
         writes.append(
             FileWrite(path=path, action=FileAction.UPDATED if existed else FileAction.CREATED)
@@ -398,9 +736,18 @@ def remove_prompts() -> list[FileWrite]:
     removed: list[FileWrite] = []
     for name, _text in bundled_prompts():
         path = directory / name
+        existed = path.exists()
         try:
             path.unlink()
-        except OSError:
+        except OSError as exc:
+            # Reported rather than skipped. Producing no row at all for a file
+            # we could not delete meant the caller saw no leftover, so
+            # `repowise uninstall` printed "everything selected is gone" and
+            # exited zero over a prompt still sitting in the user's directory.
+            if existed:
+                removed.append(
+                    FileWrite(path=path, action=FileAction.FAILED, reason=str(exc))
+                )
             continue
         removed.append(FileWrite(path=path, action=FileAction.REMOVED))
     return removed
@@ -555,7 +902,7 @@ class CodexTarget:
         # separate directory, and a Codex build too old for PreToolUse rewriting
         # still reads slash commands perfectly well.
         for written in write_prompts():
-            result.record(written.path, written.action)
+            result.record(written.path, written.action, written.reason)
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
@@ -567,12 +914,21 @@ class CodexTarget:
         result = WriteResult()
         if scope is Scope.USER:
             removed = uninstall_codex_rewrite_hook()
-            result.record(
-                user_hooks_path(),
-                FileAction.REMOVED if removed else FileAction.NOT_FOUND,
-            )
+            # Asked of the file rather than inferred from the boolean, for the
+            # same reason Claude Code's user scope is: that return is False for
+            # "nothing of ours was here", "could not parse" and "the write
+            # failed" alike, and calling the last two not-found claims we looked
+            # and the file was clean.
+            leftover = _user_hooks_leftover_reason()
+            if leftover is not None:
+                result.record(user_hooks_path(), FileAction.KEPT, leftover)
+            else:
+                result.record(
+                    user_hooks_path(),
+                    FileAction.REMOVED if removed else FileAction.NOT_FOUND,
+                )
             for deleted in remove_prompts():
-                result.record(deleted.path, deleted.action)
+                result.record(deleted.path, deleted.action, deleted.reason)
             return result
 
         if repo_path is None:
@@ -596,14 +952,55 @@ class CodexTarget:
         # added most recently leaves the identical bug in its siblings, which is
         # how this class of defect has kept surviving a review round on this
         # track.
+        # The two config files install writes go first, and unconditionally.
+        # They used to be left behind entirely: `describe_paths` listed them as
+        # ours, install wrote both, and uninstall touched neither, so a removed
+        # Codex kept launching our MCP server and spawning our hooks. `.codex/`
+        # is gitignored in most repos, so `git status` showed nothing either.
+        # Computed up front so the config decision is made against the file as
+        # the user left it. It gates the config edit below, not the hooks
+        # removal: the two files are independent, and a config we cannot read is
+        # no reason to leave our hooks running.
+        hooks_path = project_hooks_path(repo_path)
+        parse_refusal = _config_parse_refusal(repo_path)
+
+        # Hooks first, then one pass over config.toml. Two passes over the same
+        # file put two rows for one path in the report, which is contradictory
+        # the moment they disagree.
+        hooks_write = remove_hooks_config(repo_path)
+        result.record(hooks_write.path, hooks_write.action, hooks_write.reason)
+
+        if parse_refusal is not None:
+            result.record(project_config_path(repo_path), FileAction.KEPT, parse_refusal)
+        else:
+            # `features.hooks` is Codex's global switch, so it goes only once
+            # nothing is left for it to enable. Read from the file as it stands
+            # now, not inferred from what the removal returned: an `unlink` that
+            # failed and fell back to a rewrite reports REMOVED over a file that
+            # still exists.
+            keep_feature = _hooks_file_has_entries(hooks_path)
+            server_write = remove_server_config(repo_path, drop_hooks_feature=not keep_feature)
+            result.record(server_write.path, server_write.action, server_write.reason)
+            if keep_feature:
+                result.note(
+                    f"{project_config_path(repo_path)}: features.hooks left enabled because "
+                    f"{hooks_path} still holds hooks that are not ours."
+                )
+        # Only when something of ours actually went, matching Cursor. Pruning
+        # unconditionally deleted a `.codex/` that happened to be empty and that
+        # this uninstall had just reported finding nothing in.
+        if any(written.action is FileAction.REMOVED for written in result.files):
+            prune_project_dir(repo_path)
+
         owners = other_managers_of(instructions, exclude=ID, scope=scope, repo_path=repo_path)
         block_state = inspect(instructions, DISTILL_MARKER_START, DISTILL_MARKER_END).state
         if owners and block_state is BlockState.PRESENT:
-            result.record(instructions, FileAction.KEPT)
-            result.note(
-                f"{instructions} kept: {' and '.join(owners)} still reads the same "
-                "managed block. Remove that agent too if you want the block gone."
+            reason = (
+                f"{' and '.join(owners)} still reads the same managed block; "
+                "remove that agent too if you want the block gone"
             )
+            result.record(instructions, FileAction.KEPT, reason)
+            result.note(f"{instructions} kept: {reason}.")
             return result
 
         if remove_agents_md_distill_section(repo_path):
@@ -618,12 +1015,15 @@ class CodexTarget:
         # than reusing ``block_state``: the removal above runs in between and
         # the whole question here is what the file looks like after it.
         state = inspect(instructions, DISTILL_MARKER_START, DISTILL_MARKER_END).state
-        result.record(
-            instructions,
-            FileAction.NOT_FOUND
-            if state in (BlockState.ABSENT_FILE, BlockState.ABSENT)
-            else FileAction.KEPT,
-        )
+        if state in (BlockState.ABSENT_FILE, BlockState.ABSENT):
+            result.record(instructions, FileAction.NOT_FOUND)
+        else:
+            from ..formats.marker_block import refusal_reason
+
+            # PRESENT here means the write failed, not that we declined: the
+            # shared-ownership refusal returned earlier.
+            action = FileAction.FAILED if state is BlockState.PRESENT else FileAction.KEPT
+            result.record(instructions, action, refusal_reason(state))
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:

@@ -131,6 +131,167 @@ def replace_table(existing_text: str, table_name: str, block: str) -> str:
     return f"{merged_text}\n\n{block}\n" if merged_text else f"{block}\n"
 
 
+#: A line that is blank, or holds nothing but a comment.
+#:
+#: TOML has no way to say who a trailing comment belongs to. A run of them
+#: between our table and whatever follows could be annotating either. On the
+#: destructive verb the tie has to break towards the user, so these lines are
+#: never part of what we remove.
+_TRAILING_NOISE = re.compile(r"^[ \t]*(#.*)?$")
+
+
+def remove_table(existing_text: str, table_name: str) -> str:
+    """Strip *table_name* from *existing_text*, keeping every comment.
+
+    Shares :func:`replace_table`'s regex for finding the table, and then does
+    something that function does not: **peels the trailing comments and blank
+    lines back off the match before deleting it.**
+
+    That step is the whole function. The shared pattern runs to the next table
+    header, and ``\\s`` does not match a ``#``, so a comment line never ends the
+    span. On the merge path the consequence is a lost comment. On this path it
+    was far worse: everything from our header to the next live header was
+    consumed, so a file whose remainder was a commented-out server and the
+    user's notes came back empty, and the caller read empty as "this file was
+    ours" and deleted it. An empty parse is not an empty file, and an emptiness
+    test is worthless when the thing being tested has already eaten the
+    evidence.
+
+    Comments *inside* the table, annotating our own keys, go with it. Only the
+    trailing run is preserved, because only the trailing run can belong to
+    something else.
+
+    The bare ``[table.name]`` spelling is still the only one recognised, so a
+    table written as a quoted key or nested inline under its parent survives
+    silently. Callers must re-parse the result and confirm the key is gone
+    rather than trusting the returned text.
+    """
+    table_re = re.compile(
+        r"(?ms)^\s*\[" + re.escape(table_name) + r"\]\s*\n.*?(?=^\s*\[|\Z)",
+    )
+
+    def _keep_trailing_noise(match: re.Match[str]) -> str:
+        lines = match.group(0).splitlines(keepends=True)
+        cut = len(lines)
+        while cut > 0 and _TRAILING_NOISE.match(lines[cut - 1].rstrip("\r\n")):
+            cut -= 1
+        return "".join(lines[cut:])
+
+    remaining = table_re.sub(_keep_trailing_noise, existing_text)
+    if not remaining.strip():
+        return ""
+    # The file's own ending, not the platform's: this is a config the user owns
+    # and a rewritten last line is a diff on every Windows checkout.
+    newline = "\r\n" if "\r\n" in existing_text else "\n"
+    return remaining.rstrip("\r\n \t") + newline
+
+
+def remove_key_line(existing_text: str, table_name: str, key: str) -> str:
+    """Delete one ``key = ...`` line from *table_name*, leaving the rest alone.
+
+    The surgical alternative to upserting the table without the key, and the
+    right tool whenever the table is the user's rather than ours.
+    ``[features]`` is Codex's own, and re-rendering it to drop one key had two
+    failure modes that a single-line delete simply does not have: the narrow
+    serializer raises on any value type it cannot encode, so a user with
+    ``retries = [1, 2, 3]`` got a ``TypeError`` mid-uninstall; and
+    :func:`replace_table` rebuilds the table from the parsed dict, so every
+    comment inside it was dropped and the whole table moved to the end of the
+    file.
+
+    Only a single-line ``key = value`` is removed. A value continued across
+    lines is left entirely in place, and the caller sees that when it re-parses
+    and finds the key still there.
+
+    That refusal is the load-bearing part. Deleting the first line of
+
+    .. code-block:: toml
+
+        hooks = [
+          "a",
+        ]
+
+    orphans the rest into ``[features]\\n  "a",\\n]``, which is not TOML at all.
+    The caller's own validation then raised, from a helper whose message says
+    "no changes were written", by which point the server table had been written
+    out of the file and the hooks file deleted. A removal that cannot see where
+    a value ends must decline rather than cut at the first newline.
+    """
+    table_re = re.compile(
+        r"(?ms)^\s*\[" + re.escape(table_name) + r"\]\s*\n.*?(?=^\s*\[|\Z)",
+    )
+    key_re = re.compile(r"(?m)^[ \t]*" + re.escape(key) + r"[ \t]*=([^\n]*)\r?\n?")
+
+    def _drop(match: re.Match[str]) -> str:
+        head, _, body = match.group(0).partition("\n")
+        found = key_re.search(body)
+        if found is None or not _value_is_complete(found.group(1)):
+            return match.group(0)
+        # A line reading ``hooks = true`` inside an earlier key's multi-line
+        # string is text, not a key. Cutting it silently edited the user's
+        # value and left a file that still parsed, so nothing downstream
+        # noticed. An odd number of triple quotes before the match means we are
+        # inside one.
+        before = body[: found.start()]
+        if before.count('"""') % 2 or before.count("'''") % 2:
+            return match.group(0)
+        return f"{head}\n{before}{body[found.end() :]}"
+
+    return table_re.sub(_drop, existing_text, count=1)
+
+
+def _value_is_complete(value: str) -> bool:
+    """Whether *value* is a whole TOML value rather than the head of one.
+
+    Counts brackets and braces outside of strings, and refuses an unterminated
+    string or a multi-line basic string opener. Deliberately conservative: any
+    shape it is unsure about is reported incomplete, because the only cost of a
+    false negative is a key left in place and reported honestly, while a false
+    positive writes a file that no longer parses.
+    """
+    if '"""' in value or "'''" in value:
+        return False
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for char in value:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        elif char == "#":
+            break
+    return quote is None and depth == 0
+
+
+def table_is_bare(existing_text: str, table_name: str) -> bool:
+    """True when *table_name* holds no keys and no comments, only its header.
+
+    The safe precondition for removing a table wholesale: nothing of the user's
+    is inside it, so nothing of the user's can be lost with it.
+    """
+    table_re = re.compile(
+        r"(?ms)^\s*\[" + re.escape(table_name) + r"\]\s*\n(.*?)(?=^\s*\[|\Z)",
+    )
+    match = table_re.search(existing_text)
+    if match is None:
+        return False
+    return all(
+        _TRAILING_NOISE.match(line.rstrip("\r\n")) and not line.strip().startswith("#")
+        for line in match.group(1).splitlines()
+    )
+
+
 def write_if_changed(
     config_path: Path,
     merged_text: str,

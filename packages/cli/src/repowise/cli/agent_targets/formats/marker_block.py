@@ -57,6 +57,40 @@ class BlockInspection:
     body: str | None = None
 
 
+#: Why a refused state was refused, in the words the user needs to fix it.
+#: Lives here rather than at each call site so the six targets cannot drift into
+#: six descriptions of the same refusal.
+_REFUSALS = {
+    BlockState.ORPHANED: (
+        "one of our two markers is missing, so the block's end is unknowable; "
+        "delete the leftover marker by hand"
+    ),
+    BlockState.DUPLICATED: (
+        "more than one managed block is present, so removing them could take "
+        "text written between them; reconcile them by hand"
+    ),
+    BlockState.UNREADABLE: "the file could not be read, so its contents are unknown",
+    # Reachable, despite looking like it should not be. ``remove`` returns False
+    # on a write error with the block still in place, and every caller
+    # re-inspects afterwards, so a permission error on a real block lands here.
+    # It used to fall through to the "unexpected block state" branch and reach
+    # the user as the word "present".
+    BlockState.PRESENT: "the file could not be written, so our block is still in it",
+}
+
+
+def refusal_reason(state: BlockState) -> str:
+    """The one-line reason a ``KEPT`` row should carry for a refused *state*.
+
+    Deliberately total: every state gets a sentence rather than ``None``, so no
+    row can reach a user with an empty reason. ``PRESENT`` is in the table and
+    is reachable, because :func:`remove` returns False with the block untouched
+    when the write fails. Callers should read that state as a failure rather
+    than a refusal; the sentence here says so.
+    """
+    return _REFUSALS.get(state, f"unexpected block state {state.value}")
+
+
 def inspect(path: Path, start: str, end: str) -> BlockInspection:
     """Report what *path* holds for the ``start``/``end`` marker pair."""
     if not path.exists():
