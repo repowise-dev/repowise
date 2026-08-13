@@ -43,6 +43,8 @@ def resolve_embedding_timeout(
         return float(explicit)
     names = [provider_env] if provider_env else []
     names.append("REPOWISE_EMBEDDING_TIMEOUT")
+    invalid: list[tuple[str, str]] = []
+    selected = default
     for name in names:
         raw = os.environ.get(name)
         if not raw:
@@ -54,11 +56,14 @@ def resolve_embedding_timeout(
         # isfinite also rejects "inf" — a plausible way to ask for no limit, and
         # the one value that hangs a stalled endpoint forever.
         if math.isfinite(value) and value > 0:
-            return value
+            selected = value
+            break
         # A value that failed to parse is not a value, so it must not consume
         # the narrower variable's precedence over the shared one.
-        _report_invalid_timeout(name, raw, default)
-    return default
+        invalid.append((name, raw))
+    for name, raw in invalid:
+        _report_invalid_timeout(name, raw, selected)
+    return selected
 
 
 def _report_invalid_timeout(var: str, raw: str, default: float) -> None:

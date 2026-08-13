@@ -42,12 +42,15 @@ def test_provider_variable_wins(monkeypatch):
     assert resolve_embedding_timeout(None, 10.0, provider_env="OPENAI_EMBEDDING_TIMEOUT") == 45.0
 
 
-def test_a_malformed_provider_variable_falls_through_to_the_shared_one(monkeypatch):
+def test_a_malformed_provider_variable_reports_the_shared_value_that_won(monkeypatch, capsys):
     # A value that did not parse is not a value, so it cannot outrank a good one.
     _clear(monkeypatch)
     monkeypatch.setenv("REPOWISE_EMBEDDING_TIMEOUT", "180")
     monkeypatch.setenv("OPENAI_EMBEDDING_TIMEOUT", "45s")
     assert resolve_embedding_timeout(None, 10.0, provider_env="OPENAI_EMBEDDING_TIMEOUT") == 180.0
+    stderr = capsys.readouterr().err
+    assert "OPENAI_EMBEDDING_TIMEOUT='45s'" in stderr
+    assert "using 180.0s" in stderr
 
 
 @pytest.mark.parametrize("bad", ["abc", "30s", "0", "-5", "inf", "nan", "1e400"])
