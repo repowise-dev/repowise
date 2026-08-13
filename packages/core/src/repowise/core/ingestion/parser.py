@@ -43,6 +43,10 @@ from .extractors import (
     refine_kotlin_class_kind,
 )
 from .extractors.bindings.python import expand_bare_relative_imports
+from .extractors.bindings.ts_js import (
+    declarator_binds_callable,
+    declarator_value_is_module_ref,
+)
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     refine_cpp_visibility,
@@ -530,7 +534,27 @@ class ASTParser:
             # with no letters (``_``, ``__all__``) fall to "variable" rather
             # than being mislabelled constants by ``name == name.upper()``.
             if node_type in _MODULE_ANCHORED_NODE_TYPES:
-                kind = "constant" if name.isupper() else "variable"
+                # TS/JS: the symbol query admits call_expression values so
+                # forwardRef / memo / onCall / styled() bindings exist at all,
+                # which also lets `const svc = require('./svc')` through. Those
+                # bind a module and are already imports — drop them here rather
+                # than in the query, which cannot see past the await / paren /
+                # non-null / member-pick shells.
+                if file_info.language in _TS_JS_LANGUAGES and declarator_value_is_module_ref(
+                    def_node, src
+                ):
+                    continue
+                # A declarator whose value is structurally callable is not
+                # data, whatever its name looks like: `const C =
+                # forwardRef(fn)` and `const f = function(){}` are a component
+                # and a function. Naming decides only for the rest, which is
+                # what it was ever able to answer.
+                callable_kind = (
+                    declarator_binds_callable(def_node, src)
+                    if file_info.language in _TS_JS_LANGUAGES
+                    else None
+                )
+                kind = callable_kind or ("constant" if name.isupper() else "variable")
 
             # Params signature text
             params_text = _node_text(params_nodes[0], src) if params_nodes else ""

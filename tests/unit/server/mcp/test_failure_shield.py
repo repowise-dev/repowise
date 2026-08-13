@@ -73,6 +73,73 @@ async def test_workspace_unknown_repo_valueerror_is_success_shaped():
 
 
 @pytest.mark.asyncio
+async def test_a_store_older_than_the_models_says_run_update_not_give_up():
+    """Drift ``init_db`` cannot repair must not read as an internal crash.
+
+    Every read path now reconciles *additive* drift, so a ``no such column``
+    that still reaches here is the kind ``_reconcile_schema`` deliberately
+    skips — a removed or renamed column, a changed type. The generic shape
+    tells the caller to stop using the tool for the rest of the session, which
+    is the worst possible advice when one ``repowise update`` fixes it.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    async def stale_store_tool() -> dict:
+        raise OperationalError(
+            "SELECT repositories.churn_anchor_sha FROM repositories",
+            {},
+            Exception("no such column: repositories.churn_anchor_sha"),
+        )
+
+    result = await shield(stale_store_tool)()
+
+    assert "predates the installed repowise" in result["error"]
+    # First line only — SQLAlchemy appends the whole compiled statement.
+    assert "\n" not in result["error"]
+    assert "repowise update" in result["remedy"]
+    assert "user" in result["remedy"]
+    assert "Retry this call once" not in result.get("guidance", "")
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_operationalerror_keeps_the_internal_error_shape():
+    """The stale-index branch is keyed on the message, so guard the negative."""
+    from sqlalchemy.exc import OperationalError
+
+    async def locked_db_tool() -> dict:
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    result = await shield(locked_db_tool)()
+
+    assert "predates" not in result["error"]
+    assert "Retry this call once" in result["guidance"]
+
+
+@pytest.mark.asyncio
+async def test_the_users_own_question_cannot_fake_a_stale_index():
+    """`str()` on a SQLAlchemy error appends the statement AND its parameters.
+
+    `get_answer` binds the caller's question as a parameter, so matching the
+    full string let someone who merely ASKS about "no such column" be told
+    their index is stale and to re-index — over what is really a transient
+    lock. Match the driver's own message instead.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    async def locked_while_asking_about_columns() -> dict:
+        raise OperationalError(
+            "INSERT INTO answer_cache (question, payload) VALUES (?, ?)",
+            ("why do I get no such column errors when I upgrade?", "{}"),
+            Exception("database is locked"),
+        )
+
+    result = await shield(locked_while_asking_about_columns)()
+
+    assert "predates" not in result["error"], result["error"]
+    assert "Retry this call once" in result["guidance"]
+
+
+@pytest.mark.asyncio
 async def test_unexpected_exception_is_success_shaped():
     async def exploding_tool(x: int) -> dict:
         raise RuntimeError("boom")

@@ -3,38 +3,36 @@ name: dead-code-cleanup
 description: Use when the user asks about unused code, cleanup, deleting files or exports, refactoring old areas, reducing bundle size, code hygiene, technical debt, or maintenance in a Repowise-indexed repository.
 ---
 
-# Dead Code Cleanup With Repowise
+# Dead Code Cleanup with Repowise
 
-Repowise detects dead code through graph analysis and git context. Treat findings as a cleanup plan, not automatic permission to delete.
+Repowise detects dead code through graph analysis — no LLM needed, works even with a template-rendered wiki.
 
-## Finding Dead Or Unused Code
+## When the user asks about dead/unused code
 
-Call `get_dead_code()` to get findings organized by confidence tier. Useful parameters:
+Call `get_dead_code()` to get findings sorted by confidence tier. Useful parameters:
+- `safe_only=true` — only findings confirmed safe to delete (confidence >= 0.7)
+- `kind="unreachable_file"` — files with no importers
+- `kind="unused_export"` — public symbols nobody uses
+- `kind="zombie_package"` — monorepo packages with no consumers
+- `directory="src/old/"` — limit to a specific directory
+- `tier="high"` — only high-confidence findings (>= 0.8)
+- `min_confidence=0.7` — raise the floor (default is 0.5) for a release-ready cleanup
+- `group_by="directory"` or `group_by="owner"` — roll up to see where the dead code concentrates and who owns the most of it
 
-- `safe_only=true` for findings already marked safe to delete.
-- `min_confidence=0.7` for high-confidence cleanup work.
-- `kind="unreachable_file"` for files with no importers.
-- `kind="unused_export"` for public symbols with no known consumers.
-- `kind="zombie_package"` for monorepo packages with no consumers.
-- `directory="src/old/"` to limit scope.
-- `tier="high"` for the highest-confidence band.
-- `group_by="directory"` or `group_by="owner"` to roll up where dead code concentrates and who owns the most of it.
+## How to present findings
 
-## Presenting Findings
+- Only suggest deletion for findings with `safe_to_delete: true`
+- For lower-confidence findings, present them as "candidates to investigate" not "things to delete"
+- Dynamically-loaded code (plugins, handlers, adapters) may appear as dead code but isn't — Repowise filters common patterns but edge cases exist
 
-- Only recommend deletion for findings with `safe_to_delete: true`.
-- Present lower-confidence findings as candidates to investigate.
-- Flag dynamic loading, plugin systems, route handlers, adapters, and public APIs as common false-positive zones.
+## Before deleting anything
 
-## Before Deleting Anything
+1. Confirm with the user. Present the file/symbol name, confidence score, and why Repowise thinks it's dead.
+2. Call `get_risk(targets=["path/to/file"])` to double-check dependents.
+3. Recently-modified "dead" code is more likely a false positive — flag this if the finding has recent git activity.
 
-1. Confirm with the user.
-2. Present the file or symbol, confidence score, and why Repowise thinks it is dead.
-3. Call `get_risk(targets=["path/to/file"])` before deleting files or exports.
-4. If the finding has recent git activity, note the higher false-positive risk.
+## Safe deletion order
 
-## Safe Deletion Order
-
-1. Unreachable files first.
-2. Unused internal symbols next.
-3. Unused exports last.
+1. Unreachable files first (whole file removal, cleanest)
+2. Unused internal symbols next
+3. Unused exports last (highest false-positive risk due to potential dynamic imports)

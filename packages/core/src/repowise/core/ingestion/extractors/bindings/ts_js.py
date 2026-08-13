@@ -203,6 +203,133 @@ def collect_cjs_requires(stmt_node: Node, src: str) -> list[str]:
     return out
 
 
+# Wrapper nodes that sit between a declarator and the call it really binds,
+# each unwrapped through its single named child. ``as_expression`` and
+# ``satisfies_expression`` put the expression first and the type second, so
+# the same rule holds; neither exists in the JavaScript grammar, which simply
+# means those entries never match there.
+_VALUE_WRAPPER_NODE_TYPES = frozenset(
+    {
+        "await_expression",
+        "parenthesized_expression",
+        "non_null_expression",
+        "as_expression",
+        "satisfies_expression",
+    }
+)
+
+
+def declarator_value_is_module_ref(declarator: Node, src: str) -> bool:
+    """True when a ``const x = …`` value binds a module rather than a symbol.
+
+    ``require('./svc')``, ``import('./lazy')`` and ``await import('./lazy')``
+    bind a module, so the declarator must not be indexed as a symbol. The
+    symbol query cannot make this call itself: a tree-sitter predicate can
+    only test a capture it can name, and the callee hides behind ``await`` /
+    parentheses / ``!`` / ``as T`` / a member pick. Unwrapping here keeps the
+    decision in one place.
+
+    The member pick is unwrapped one level only, deliberately. One level is
+    exactly what the CommonJS import patterns match
+    (``value: (member_expression object: (call_expression …))``), so
+    ``require('./x').y`` is suppressed here *and* carries an import edge.
+    ``require('./x').y.z`` matches no import pattern, and suppressing it too
+    would leave the file advertising neither a binding nor a dependency.
+    Ceiling: the two stay in step by construction rather than by a shared
+    definition. Upgrade path is to widen the import patterns to unwrap the
+    same shells, at which point this can unwrap without a depth limit.
+    """
+    if declarator.type != "variable_declarator":
+        return False
+    value = declarator.child_by_field_name("value")
+
+    while value is not None and value.type in _VALUE_WRAPPER_NODE_TYPES:
+        value = value.named_children[0] if value.named_children else None
+    if value is not None and value.type == "member_expression":
+        value = value.child_by_field_name("object")
+        while value is not None and value.type in _VALUE_WRAPPER_NODE_TYPES:
+            value = value.named_children[0] if value.named_children else None
+
+    if value is None or value.type != "call_expression":
+        return False
+    fn = value.child_by_field_name("function")
+    if fn is None:
+        return False
+    # ``import(...)`` is its own node type in both grammars; ``require`` is a
+    # plain identifier, so the text check must not accept ``obj.require``.
+    # Ceiling: the match is textual, so a locally shadowed ``const require =
+    # …`` suppresses its callers' bindings. The import query's ``#eq?``
+    # predicate is blind the same way, so the two agree; a scope-aware fix
+    # would have to change both.
+    return fn.type == "import" or (fn.type == "identifier" and node_text(fn, src) == "require")
+
+
+_CALLABLE_VALUE_NODE_TYPES = frozenset({"arrow_function", "function_expression"})
+
+# Wrappers whose RESULT is callable, keyed on the last segment of the callee
+# (``React.forwardRef`` and a bare imported ``forwardRef`` both match).
+#
+# A structural rule cannot do this job, and trying one is how this list was
+# arrived at. "The call receives a function" looks like it separates
+# ``forwardRef(fn)`` from ``z.object({…})``, but measured against real
+# TypeScript it also promotes ``[...a, ...b].filter(key => …)`` and
+# ``z.preprocess(val => …, schema)`` — both hand over a function and both bind
+# data. Whether a call returns something callable is a fact about the callee,
+# not about its arguments, so the only honest options are to name the callees
+# or to say nothing.
+#
+# Ceiling: incomplete by construction, and deliberately biased. An unlisted
+# wrapper falls back to the naming rule and is classified as data, which is
+# the pre-existing behaviour; nothing is newly mislabelled by an omission.
+# Upgrade path is to add names here as they show up.
+_CALLABLE_RETURNING_CALLEES = frozenset(
+    {
+        # React and friends: wrappers that return a component.
+        "forwardRef",
+        "memo",
+        "lazy",
+        "observer",
+        "useCallback",
+        # Firebase Cloud Functions: handler factories.
+        "onCall",
+        "onRequest",
+    }
+)
+
+
+def declarator_binds_callable(declarator: Node, src: str) -> str | None:
+    """Kind for a ``const x = …`` that binds something callable.
+
+    Returns ``"class"``, ``"function"``, or None to leave the naming-based
+    constant/variable rule in place. Only meaningful for TS/JS module-anchored
+    declarators, and only after the module-reference guard has run.
+
+    Two cases. A value that literally *is* a function or a class
+    (``const f = function(){}``, ``const C = class {}``, a parenthesised
+    arrow) is unambiguous. A call is not: ``const C = forwardRef(fn)`` binds a
+    component and ``const schema = z.object({…})`` binds data, and only the
+    callee says which. Hence ``_CALLABLE_RETURNING_CALLEES``.
+    """
+    value = declarator.child_by_field_name("value")
+    while value is not None and value.type in _VALUE_WRAPPER_NODE_TYPES:
+        value = value.named_children[0] if value.named_children else None
+    if value is None:
+        return None
+
+    if value.type == "class":
+        return "class"
+    if value.type in _CALLABLE_VALUE_NODE_TYPES:
+        return "function"
+    if value.type != "call_expression":
+        return None
+
+    fn = value.child_by_field_name("function")
+    if fn is None:
+        return None
+    callee = node_text(fn, src).rsplit(".", 1)[-1].strip()
+    return "function" if callee in _CALLABLE_RETURNING_CALLEES else None
+
+
 def cjs_statement_is_reexport(stmt_node: Node, src: str) -> bool:
     """True when a CJS require statement re-exports through ``module.exports``.
 

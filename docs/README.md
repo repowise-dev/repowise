@@ -16,7 +16,7 @@ your agent in under five minutes, with no API key.
 
 | You are | Start here | Then |
 |---|---|---|
-| **A developer wiring up an AI agent** | [Quickstart](start/QUICKSTART.md) | [MCP tools](agent/MCP_TOOLS.md) · [Hooks](agent/HOOKS.md) · [Distill](agent/DISTILL.md) |
+| **A developer wiring up an AI agent** | [Quickstart](start/QUICKSTART.md) | [Supported agents](agent/INTEGRATIONS.md) · [MCP tools](agent/MCP_TOOLS.md) · [Hooks](agent/HOOKS.md) · [Distill](agent/DISTILL.md) |
 | **Living in an editor** | [VS Code extension](agent/VSCODE.md) | [Codex](agent/CODEX.md) · [opencode](agent/OPENCODE.md) |
 | **A team lead watching what ships** | [Change risk](layers/CHANGE_RISK.md) | [Code health](layers/CODE_HEALTH.md) · [Bug history](layers/BUG_HISTORY.md) |
 | **Running many repos** | [Workspaces](scale/WORKSPACES.md) | [Worktrees](scale/WORKTREES.md) · [Auto-sync](scale/AUTO_SYNC.md) |
@@ -37,6 +37,7 @@ your agent in under five minutes, with no API key.
 
 | Doc | What it covers |
 |-----|----------------|
+| [agent/INTEGRATIONS.md](agent/INTEGRATIONS.md) | Which agents are supported at what depth, generated from the code, plus the recipe for adding one |
 | [agent/MCP_TOOLS.md](agent/MCP_TOOLS.md) | The ten task-shaped tools, what each answers, and worked multi-tool examples |
 | [agent/HOOKS.md](agent/HOOKS.md) | Proactive delivery: context and warnings that arrive without the agent asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | `repowise distill`: compress noisy command output before your agent reads it |
@@ -56,7 +57,7 @@ your agent in under five minutes, with no API key.
 | [layers/TEST_INTELLIGENCE.md](layers/TEST_INTELLIGENCE.md) | Coverage ingestion, untested hotspots, and running only the tests a diff touches |
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
 | [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language, across 16 parsed languages and 11 at the Full tier |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language, across 18 parsed languages and 13 at the Full tier |
 | [layers/WIKI_STYLES.md](layers/WIKI_STYLES.md) | Selectable documentation styles (comprehensive / reference / tutorial / caveman) |
 
 ## Scale it

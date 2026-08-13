@@ -45,6 +45,38 @@ def _no_telemetry_network(tmp_path_factory: pytest.TempPathFactory):
     mp.undo()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _no_real_editor_setup():
+    """Guarantee no test repoints the developer's real global editor config.
+
+    ``repowise init`` (and ``doctor``'s self-heal path) defaults to
+    ``--editor-setup`` on, which rewrites the *global*, machine-wide MCP
+    server registration (e.g. ``~/.claude/settings.json``) to point at
+    whatever repo path was just indexed. A test that drives the real CLI
+    against a ``tmp_path`` fixture repo — e.g.
+    ``tests/integration/test_cli.py``'s lock/watcher tests, which call
+    ``init`` through ``CliRunner`` in-process rather than mocking it out —
+    was doing exactly that: it repointed the developer's actual Claude Code
+    MCP entry at a pytest temp directory that gets wiped on reboot, breaking
+    every other project's ``repowise`` MCP tools until the *next*
+    ``doctor``/``update`` run happened to self-heal it back (and even then,
+    an already-running Claude Code session keeps using the stale spawn
+    command it cached at connect time, since it has no reason to re-read
+    the file mid-session).
+
+    ``REPOWISE_SKIP_EDITOR_SETUP`` is the exact env var editor_setup.py and
+    doctor's self-heal migrations already gate on — set once, for the whole
+    session, so no test (present or future) can hit this by omission the
+    way the lock/watcher tests did.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    yield
+    mp.undo()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_structlog_config():
     """Restore structlog's global configuration after every test.

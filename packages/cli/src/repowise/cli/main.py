@@ -14,28 +14,23 @@ from repowise.core.registry import cli_registry, register_lazy_command
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """repowise -- codebase intelligence for developers and AI."""
-    # Self-heal: migrate any legacy `repowise augment` Claude Code hooks
-    # to the import-isolated `repowise-augment` console script. Cheap,
-    # silent, idempotent — only writes when there is something to change.
+    # Self-heal: repair agent hook entries whose shape a past repowise version
+    # wrote and a later one changed. Silent, idempotent, and now stamped, so it
+    # costs one small read per invocation rather than two JSON config parses.
     # Skipped when invoked as the augment subcommand itself (hook hot path) —
-    # `augment_hook.main` handles that case.
-    if ctx.invoked_subcommand != "augment":
+    # `augment_hook.main` handles that case. See `self_heal` for why the call
+    # site stays here.
+    #
+    # Also skipped for `uninstall`, where repairing agent hook entries is the
+    # opposite of what the user asked for, and where the migration stamp lands
+    # in `~/.repowise/` — the directory that command may be about to delete.
+    # Without this, a second `uninstall --all` found and removed a stamp its own
+    # startup had just written, and the command never converged.
+    if ctx.invoked_subcommand not in ("augment", "uninstall"):
         try:
-            from repowise.cli.editor_integrations.claude_config import migrate_claude_code_hooks
+            from repowise.cli.self_heal import run_editor_migrations
 
-            migrate_claude_code_hooks()
-        except Exception:
-            pass
-        # And the same for an installed Codex rewrite hook whose matcher
-        # names a tool Codex has since renamed. That one cannot self-heal
-        # from its own hook the way the Claude side does — a hook matching
-        # nothing never runs — so the CLI is the only place it can happen.
-        try:
-            from repowise.cli.editor_integrations.codex_config import (
-                migrate_codex_rewrite_hook,
-            )
-
-            migrate_codex_rewrite_hook()
+            run_editor_migrations()
         except Exception:
             pass
 
@@ -77,6 +72,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("export", "export_cmd:export_command"),
     ("hook", "hook_cmd:hook_group"),
     ("agents", "agents_cmd:agents_group"),
+    ("uninstall", "uninstall_cmd:uninstall_command"),
     ("status", "status_cmd:status_command"),
     ("doctor", "doctor_cmd:doctor_command"),
     ("watch", "watch_cmd:watch_command"),

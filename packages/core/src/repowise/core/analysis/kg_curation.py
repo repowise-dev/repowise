@@ -33,7 +33,9 @@ from typing import Any
 
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult, _slugify
 from repowise.core.generation.entry_points import (
-    GLUE_STEMS,
+    CONVENTIONAL_ENTRY_STEMS as _CONVENTIONAL_ENTRY_STEMS,
+)
+from repowise.core.generation.entry_points import (
     is_glue_leaf,
     rank_entry_points,
 )
@@ -70,9 +72,6 @@ _TEST_PROJECT_DIR_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_dir_suffixes()
 _NON_CODE_ENTRY_LANGUAGES: frozenset[str] = (
     _LANG_REGISTRY.config_languages() | _LANG_REGISTRY.infra_languages()
 )
-# Conventional execution-start filename stems (main/app/cli/manage/…) minus
-# the dispatch-glue stems (index/mod) — drives the entry-point name ranking.
-_CONVENTIONAL_ENTRY_STEMS: frozenset[str] = _LANG_REGISTRY.entry_filename_stems() - GLUE_STEMS
 
 # Honest-degradation thresholds. Density = (imports + tested_by)
 # edges per dominant-language file — the same definition the validation

@@ -86,20 +86,36 @@ This is the payoff: your agent reads the index instead of your codebase.
 
 <details open><summary><b>Claude Code</b></summary>
 
-The plugin wires up the MCP server, the hooks and the slash commands together:
+**`repowise init` already did this.** It writes a repo-root `.mcp.json`
+unconditionally, and unless you passed `--no-editor-setup` or set
+`REPOWISE_SKIP_EDITOR_SETUP=1`, it also registers repowise with
+`~/.claude/settings.json`. A Claude Code session opened in this repo already
+sees the MCP server. Check with `repowise agents` (Claude Code should show as
+wired) or `repowise doctor`.
+
+Skipped editor setup, or setting up a machine where you did? Wire it up now:
+
+```bash
+repowise agents add --target=claude-code
+```
+
+**The plugin** additionally installs hooks and slash commands, which `init`
+never writes because the plugin route is host-managed and only the plugin can
+install it:
 
 ```text
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
 ```
 
-Or wire just the MCP server:
+**A different MCP client, or wiring the server by hand:**
 
 ```bash
 claude mcp add repowise -- repowise mcp
 ```
 
-Or commit a project `.mcp.json` so your whole team gets it:
+Or edit the project `.mcp.json` `init` already wrote (commit it if your team
+should share it):
 
 ```json
 { "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }
@@ -125,13 +141,69 @@ args = ["mcp"]
 [Codex integration](../agent/CODEX.md).
 </details>
 
-<details><summary><b>Cursor, Cline, Windsurf, and other MCP clients</b></summary>
-
-Point the client at `repowise mcp`, run from the repo directory, over stdio:
+<details><summary><b>Cursor</b></summary>
 
 ```bash
-repowise mcp --transport stdio
+repowise agents add --target=cursor
 ```
+
+Writes project-local `.cursor/mcp.json` and a managed `.cursor/rules/repowise.mdc`.
+Cursor does not read `.vscode/mcp.json`, so this is separate from the VS Code
+setup below. See [Agent integrations](../agent/INTEGRATIONS.md).
+</details>
+
+<details><summary><b>OpenCode</b></summary>
+
+```bash
+repowise agents add --target=opencode                  # this repo and this machine
+repowise agents add --target=opencode --scope=project  # this repo only
+```
+
+Writes `opencode.jsonc` (or an existing `opencode.json`) and a managed section in
+`AGENTS.md`, in both scopes by default. The repo-local pair sits at the repo root;
+the per-machine pair goes to `$XDG_CONFIG_HOME/opencode`, falling back to
+`~/.config/opencode`. That path is the same on Windows: OpenCode does not read
+`%APPDATA%`. The repo-local entry names its repo outright, while the per-machine one
+resolves whichever repo OpenCode was launched in.
+
+OpenCode accepts comments in its config. Repowise does not rewrite a file it cannot
+parse as strict JSON, so if yours has comments it prints the entry to paste instead:
+`repowise agents print-config opencode`. See
+[Agent integrations](../agent/INTEGRATIONS.md).
+</details>
+
+<details><summary><b>Hermes</b></summary>
+
+```bash
+repowise agents add --target=hermes                  # this repo and this machine
+repowise agents add --target=hermes --scope=user     # the MCP server only
+```
+
+Hermes reads one `config.yaml` per machine, so the MCP server is registered there
+and serves every repo: `%LOCALAPPDATA%\hermes\config.yaml` on Windows,
+`~/.hermes/config.yaml` elsewhere, or `$HERMES_HOME/config.yaml` when that is set.
+Project scope writes a managed section in `AGENTS.md`, which Hermes loads per repo.
+
+Repowise edits that config in place rather than rewriting it, so your comments, key
+order and any anchors survive. If it cannot parse the file it leaves it alone and
+prints the entry to paste instead: `repowise agents print-config hermes`.
+
+`platform_toolsets.cli` is deliberately left alone. Hermes exposes every enabled MCP
+server to the CLI by default, and that list only becomes an allowlist once it already
+names one. So repowise adds itself there **only** when the list is already an
+allowlist, and never converts a permissive config into a restrictive one. See
+[Hermes](../agent/HERMES.md).
+</details>
+
+<details><summary><b>Cline, Windsurf, and other MCP clients</b></summary>
+
+Print the server entry and paste it into whatever config the host reads:
+
+```bash
+repowise agents print-config claude-code
+```
+
+Or point the client at `repowise mcp`, run from the repo directory, over stdio.
 </details>
 
 <details><summary><b>VS Code</b></summary>
@@ -292,6 +364,19 @@ repowise doctor          # checks install, API keys, index drift, store health
 repowise doctor --repair # fixes what it safely can
 repowise status          # what is indexed, and how stale it is
 ```
+
+## Taking it back out
+
+```bash
+repowise uninstall             # list what repowise wrote, then ask what to remove
+repowise uninstall --all       # everything: wiring, index, and machine-wide state
+repowise uninstall --dry-run   # the same list, changing nothing
+```
+
+It reports every path it removed and every path it left, with the reason on the
+row. The index is not selected by default, because rebuilding it is the one
+expensive thing here. Full flags in the
+[CLI Reference](../reference/CLI_REFERENCE.md#repowise-uninstall-path).
 
 ## Environment variables
 

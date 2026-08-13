@@ -10,6 +10,8 @@ import pytest
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.ts_workspace import (
+    _normalize_repo_rel,
+    build_ts_workspace_index,
     build_workspace_map,
     resolve_via_workspaces,
 )
@@ -98,6 +100,238 @@ class TestWorkspaceMap:
 
     def test_empty_when_no_root_package(self, tmp_path: Path) -> None:
         assert build_workspace_map(tmp_path) == {}
+
+    def test_empty_workspaces_entry_drops_itself_not_the_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        # ``Path.glob("")`` raises ValueError. Unlike the pnpm reader, which
+        # drops blank entries before they reach the globber, the ``workspaces``
+        # field passes every string straight through — so the guard in
+        # ``_expand_member_dirs`` is what keeps one blank entry from costing
+        # the whole map.
+        (tmp_path / "package.json").write_text(
+            json.dumps({"workspaces": ["", "packages/*"]})
+        )
+        pkg = tmp_path / "packages" / "a"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "@org/a"}))
+        assert build_workspace_map(tmp_path) == {"@org/a": "packages/a"}
+
+
+class TestPnpmWorkspaceMap:
+    """pnpm declares members in ``pnpm-workspace.yaml``, never in ``workspaces``."""
+
+    def _pkg(self, tmp_path: Path, rel: str, name: str) -> None:
+        pkg_dir = tmp_path / rel
+        pkg_dir.mkdir(parents=True)
+        (pkg_dir / "package.json").write_text(json.dumps({"name": name}))
+
+    def _root(self, tmp_path: Path) -> None:
+        """An unnamed private root, the common pnpm shape — not a member."""
+        (tmp_path / "package.json").write_text(json.dumps({"private": True}))
+
+    def test_pnpm_workspace_yaml_is_read(self, tmp_path: Path) -> None:
+        # A pnpm root package.json carries no ``workspaces`` field at all.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            'packages:\n  - "apps/*"\n  - "packages/*"\n'
+        )
+        self._pkg(tmp_path, "apps/console", "@org/console")
+        self._pkg(tmp_path, "packages/domain", "@org/domain")
+        assert build_workspace_map(tmp_path) == {
+            "@org/console": "apps/console",
+            "@org/domain": "packages/domain",
+        }
+
+    def test_named_root_is_a_member(self, tmp_path: Path) -> None:
+        # "The root package is always included, even when custom location
+        # wildcards are used" — pnpm's ``packages`` setting.
+        (tmp_path / "package.json").write_text(json.dumps({"name": "@org/root"}))
+        (tmp_path / "pnpm-workspace.yaml").write_text('packages:\n  - "packages/*"\n')
+        self._pkg(tmp_path, "packages/a", "@org/a")
+        assert build_workspace_map(tmp_path) == {
+            "@org/root": ".",
+            "@org/a": "packages/a",
+        }
+
+    def test_root_is_not_subject_to_negation(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"name": "@org/root"}))
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            'packages:\n  - "packages/*"\n  - "!**"\n'
+        )
+        assert build_workspace_map(tmp_path) == {"@org/root": "."}
+
+    def test_yml_extension_is_not_a_pnpm_manifest(self, tmp_path: Path) -> None:
+        # pnpm reads only ``pnpm-workspace.yaml``; ``.yml`` is an open request
+        # (pnpm/pnpm#1380). Honouring it would map members pnpm never installs.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yml").write_text('packages:\n  - "libs/*"\n')
+        self._pkg(tmp_path, "libs/core", "@org/core")
+        assert build_workspace_map(tmp_path) == {}
+
+    def test_non_glob_entry_resolved(self, tmp_path: Path) -> None:
+        # ``- scripts`` (a plain directory, no glob) is legal pnpm.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - scripts\n")
+        self._pkg(tmp_path, "scripts", "@org/scripts")
+        assert build_workspace_map(tmp_path) == {"@org/scripts": "scripts"}
+
+    def test_negated_pattern_excludes_member(self, tmp_path: Path) -> None:
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            'packages:\n  - "packages/**"\n  - "!**/__fixtures__/**"\n'
+        )
+        self._pkg(tmp_path, "packages/real", "@org/real")
+        self._pkg(tmp_path, "packages/__fixtures__/fake", "@org/fake")
+        assert build_workspace_map(tmp_path) == {"@org/real": "packages/real"}
+
+    def test_slashless_negation_is_anchored_at_the_root(self, tmp_path: Path) -> None:
+        # fast-glob (pnpm's matcher) anchors a slashless pattern at the
+        # workspace root, so ``!fixtures`` must NOT drop packages/fixtures.
+        # git-ignore semantics would match it at any depth — the reason this
+        # is expanded with Path.glob rather than pathspec.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            'packages:\n  - "packages/*"\n  - "!fixtures"\n'
+        )
+        self._pkg(tmp_path, "packages/fixtures", "@org/fixtures")
+        assert build_workspace_map(tmp_path) == {"@org/fixtures": "packages/fixtures"}
+
+    def test_negation_does_not_swallow_nested_members(self, tmp_path: Path) -> None:
+        # ``!packages/*`` excludes direct children only. Under git-ignore
+        # semantics a directory match also removes everything beneath it,
+        # which would wrongly drop packages/group/nested.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            'packages:\n  - "packages/**"\n  - "!packages/*"\n'
+        )
+        self._pkg(tmp_path, "packages/top", "@org/top")
+        self._pkg(tmp_path, "packages/group/nested", "@org/nested")
+        assert build_workspace_map(tmp_path) == {"@org/nested": "packages/group/nested"}
+
+    def test_pnpm_manifest_wins_over_package_json_workspaces(self, tmp_path: Path) -> None:
+        # pnpm does not read the ``workspaces`` field, so a member declared
+        # only there is one pnpm never installs. Mapping it would invent an
+        # intra-repo edge for what is really a registry dependency.
+        (tmp_path / "package.json").write_text(
+            json.dumps({"private": True, "workspaces": ["legacy/*"]})
+        )
+        (tmp_path / "pnpm-workspace.yaml").write_text('packages:\n  - "packages/*"\n')
+        self._pkg(tmp_path, "legacy/old", "@org/old")
+        self._pkg(tmp_path, "packages/new", "@org/new")
+        assert build_workspace_map(tmp_path) == {"@org/new": "packages/new"}
+
+    def test_catalog_only_manifest_is_a_root_only_workspace(self, tmp_path: Path) -> None:
+        # Since pnpm 10 the file also holds settings. ``packages`` is optional
+        # and "if the field is omitted, only the root package is included".
+        (tmp_path / "package.json").write_text(json.dumps({"name": "@org/root"}))
+        (tmp_path / "pnpm-workspace.yaml").write_text("catalog:\n  react: ^19.0.0\n")
+        self._pkg(tmp_path, "packages/a", "@org/a")
+        assert build_workspace_map(tmp_path) == {"@org/root": "."}
+
+    def test_malformed_yaml_is_not_fatal(self, tmp_path: Path) -> None:
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - [unclosed\n")
+        assert build_workspace_map(tmp_path) == {}
+
+    @pytest.mark.parametrize("bad", ["/abs/packages/*", "!/abs/*"])
+    def test_unglobbable_entry_drops_itself_not_the_workspace(
+        self, tmp_path: Path, bad: str
+    ) -> None:
+        # ``Path.glob`` refuses an absolute pattern (NotImplementedError). The
+        # strings are manifest-supplied and this path runs unguarded under
+        # ``resolve_via_workspaces``, so a bad entry must cost its own member
+        # rather than every member. Both the include and the exclude loop.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            f'packages:\n  - "packages/*"\n  - "{bad}"\n'
+        )
+        self._pkg(tmp_path, "packages/a", "@org/a")
+        assert build_workspace_map(tmp_path) == {"@org/a": "packages/a"}
+
+    def test_resolves_import_through_pnpm_member(self, tmp_path: Path) -> None:
+        # The end-to-end claim: a member found only via pnpm-workspace.yaml
+        # still resolves through its own ``exports`` map, so a cross-package
+        # import becomes an intra-repo edge instead of an ``external:`` node.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text('packages:\n  - "packages/*"\n')
+        pkg_dir = tmp_path / "packages" / "domain"
+        pkg_dir.mkdir(parents=True)
+        (pkg_dir / "package.json").write_text(
+            json.dumps({"name": "@org/domain", "exports": {".": "./src/index.ts"}})
+        )
+        ctx = _ctx(tmp_path, ["packages/domain/src/index.ts"])
+        assert resolve_via_workspaces("@org/domain", ctx) == "packages/domain/src/index.ts"
+
+
+class TestRootPackageResolution:
+    """A workspace member AT the repo root carries ``dir == "."``.
+
+    Joining that with a subpath yields ``./src/index.ts``, which never equals
+    the repo-relative ``src/index.ts`` a path set holds. These cover both
+    managers because the defect predates pnpm support: an npm/yarn repo
+    listing ``"."`` in ``workspaces`` mapped the member but never resolved it.
+    """
+
+    def test_npm_root_workspace_resolves_via_exports(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(
+            json.dumps(
+                {"name": "@org/root", "workspaces": ["."], "exports": {".": "./src/index.ts"}}
+            )
+        )
+        ctx = _ctx(tmp_path, ["src/index.ts"])
+        assert build_workspace_map(tmp_path) == {"@org/root": "."}
+        assert resolve_via_workspaces("@org/root", ctx) == "src/index.ts"
+
+    def test_pnpm_root_resolves_via_main(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(
+            json.dumps({"name": "@org/root", "main": "./src/entry.ts"})
+        )
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages: []\n")
+        ctx = _ctx(tmp_path, ["src/entry.ts"])
+        assert resolve_via_workspaces("@org/root", ctx) == "src/entry.ts"
+
+    def test_root_subpath_import_resolves(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"name": "@org/root"}))
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages: []\n")
+        ctx = _ctx(tmp_path, ["src/util/date.ts"])
+        assert resolve_via_workspaces("@org/root/src/util/date", ctx) == "src/util/date.ts"
+
+    def test_root_exports_wildcard_expands(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(
+            json.dumps({"name": "@org/root", "exports": {"./lib/*": "./src/lib/*.ts"}})
+        )
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages: []\n")
+        ctx = _ctx(tmp_path, ["src/lib/a.ts", "src/lib/b.ts", "src/other.ts"])
+        index = build_ts_workspace_index(ctx)
+        assert index.exports_entry_paths == {"src/lib/a.ts", "src/lib/b.ts"}
+
+    def test_root_exports_wildcard_at_repo_root_expands(self, tmp_path: Path) -> None:
+        """A root package whose wildcard target has NO directory prefix.
+
+        ``{"./*": "./*.ts"}`` on a ``dir == "."`` member joins to ``"./"``,
+        which collapses entirely to the repo root. The sibling test above
+        cannot see this: its ``./src/lib/*.ts`` target keeps a non-empty
+        ``src/lib/`` prefix, so the join never reaches the degenerate case.
+        Left unguarded the prefix stayed ``"./"``, no repo-relative path
+        started with it, and every wildcard-exported root file dropped out of
+        ``exports_entry_paths`` — a false-positive dead-code source.
+        """
+        (tmp_path / "package.json").write_text(
+            json.dumps({"name": "@org/root", "exports": {"./*": "./*.ts"}})
+        )
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages: []\n")
+        ctx = _ctx(tmp_path, ["index.ts", "util.ts", "notes.md"])
+        index = build_ts_workspace_index(ctx)
+        assert index.exports_entry_paths == {"index.ts", "util.ts"}
+
+    def test_normalize_repo_rel_collapses_bare_root(self) -> None:
+        """The unit under the case above — ``"./"`` is the repo root, i.e. ``""``."""
+        assert _normalize_repo_rel("./") == ""
+        # Unchanged for every non-degenerate shape.
+        assert _normalize_repo_rel("./src/lib/") == "src/lib/"
+        assert _normalize_repo_rel("./src/index.ts") == "src/index.ts"
+        assert _normalize_repo_rel("pkgs/a/src/") == "pkgs/a/src/"
 
 
 class TestWorkspaceResolution:

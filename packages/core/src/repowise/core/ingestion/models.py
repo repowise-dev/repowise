@@ -273,6 +273,31 @@ EdgeType = Literal[
     "type_use",
 ]
 
+# Structural containment, not reference. ``defines`` is file → symbol and
+# ``has_method`` / ``has_property`` are class symbol → member symbol, so both
+# endpoints describe the same code rather than one depending on the other.
+# Their target is a ``path::Name`` symbol node, which is why a consumer that
+# keys on file paths gets nothing usable out of them.
+CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method", "has_property"})
+
+# Evidence from history rather than from code: two files move together in
+# commits, not one referencing the other. This is the one that bites, because
+# a co-change edge fed back in as a dependency makes every co-change partner
+# look like an import of its own subject.
+TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
+
+# Edge types that are *not* code dependencies, and so must be excluded by any
+# consumer answering "what depends on this?" about FILES.
+#
+# Excluding containment is right for that question and wrong for traversal.
+# Containment is the only bridge between the two layers of the graph: files are
+# joined to each other by ``imports`` / ``type_use``, symbols to each other by
+# ``calls`` / ``extends`` / ``implements``, and nothing points from a symbol
+# back to a file. Drop ``defines`` and a caller can no longer walk from a file
+# to the functions it declares, so anything traversing the graph wants
+# ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+
 
 @dataclass
 class TypeReference:

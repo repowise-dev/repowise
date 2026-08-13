@@ -47,6 +47,10 @@ def test_register_editor_clients_skipped_when_env_set(monkeypatch) -> None:
     registered: list[Path] = []
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(self, c: Any, p: Path, o: Any) -> None:
             pass
 
@@ -79,6 +83,10 @@ def test_register_editor_clients_skipped_by_flag(monkeypatch) -> None:
     registered: list[Path] = []
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(self, c: Any, p: Path, o: Any) -> None:
             pass
 
@@ -274,6 +282,7 @@ def test_the_rewrite_hook_answer_decides_every_replacing_surface(
     """
     from repowise.cli.commands.init_cmd._interactive import offer_distill_rewrite_hook
 
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setattr(
         "repowise.cli.agent_adapters.claude_code.ClaudeCodeAdapter.install_rewrite_hook",
@@ -437,8 +446,34 @@ def test_checklist_ticking_everything_disables_nothing(monkeypatch, tmp_path) ->
         monkeypatch, tmp_path, lambda choices: {choice.id for choice in choices}
     )
 
+    from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
+
     assert options.disabled_project_files == frozenset()
-    assert options.integration_overrides == {"claude-code": True, "codex": True, "vscode": True}
+    # Derived from the *setup integrations*, not the target registry, and the
+    # difference is the point: the checklist offers what ``init`` can write, and
+    # a registered agent without a setup integration is not that. Restating the
+    # list here would make a fifth agent fail two tests for one reason.
+    assert options.integration_overrides == {
+        integration.integration_id: True for integration in get_default_editor_integrations()
+    }
+
+
+def test_checklist_offers_only_agents_init_can_write(monkeypatch, tmp_path) -> None:
+    """A ticked box that writes nothing reads as success, because the others print a line.
+
+    The checklist is built from the agent registry and the writing is done by
+    the setup integrations, and those are two lists. An agent can be registered
+    (matrix row, ``--target`` id, ``doctor`` row) without ``init`` having a
+    writer for it, and Cursor is the first one that is. It gets a pointer to the
+    command that does wire it, not a box that quietly does nothing.
+    """
+    from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
+
+    _, choices = _select(monkeypatch, tmp_path, lambda c: {choice.id for choice in c})
+
+    offered = {choice.id for choice in choices}
+    assert offered == {i.integration_id for i in get_default_editor_integrations()}
+    assert "cursor" not in offered
 
 
 def test_checklist_pre_ticks_an_agent_an_explicit_flag_asked_for(monkeypatch, tmp_path) -> None:
@@ -514,6 +549,10 @@ def test_write_editor_project_files_saves_common_mcp_before_integrations(
         return repo_path / ".repowise" / "mcp.json"
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(
             self,
             console_obj: object,
@@ -555,6 +594,10 @@ def test_write_editor_project_files_uses_pre_resolved_options(
         return repo_path / ".repowise" / "mcp.json"
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def write_project_files(
             self,
             console_obj: object,
@@ -620,6 +663,10 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     calls: list[tuple[str, Path, frozenset[str]]] = []
 
     class FakeIntegration:
+        # ``InstallLifecycle`` declares this, and the checklist reads it to
+        # decide which agents ``init`` can act on.
+        integration_id = "fake"
+
         def refresh_project_files(
             self,
             console_obj: object,

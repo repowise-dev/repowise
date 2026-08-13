@@ -886,6 +886,11 @@ async def _run_git_log(
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
+                # ``%s`` is the commit subject and ``%an`` the author name, both
+                # utf-8 from git. text=True alone decodes with the locale codec,
+                # which is cp1252 on a default Windows install.
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
                 # See commits_since() in core/precedent/currency.py: a git child
                 # that inherits this server's JSON-RPC stdin can wedge the
@@ -921,6 +926,8 @@ async def _run_git_log(
                     cwd=repo_path,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",  # see above
+                    errors="replace",
                     timeout=10,
                     stdin=subprocess.DEVNULL,  # see above
                 )

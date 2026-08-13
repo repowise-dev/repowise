@@ -139,6 +139,47 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
     return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
+def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
+    """Drop ``mcpServers.repowise`` from the repo-root ``.mcp.json``.
+
+    The file is repo-shared and usually committed, which cuts both ways: other
+    contributors' servers must survive, and a stub left behind lands in everyone
+    else's diff. So the wrapper goes when it empties and the file goes with it.
+
+    Deleting on an empty parse is sound here only because the parse is strict
+    JSON: a file carrying comments raises above and is kept untouched, so
+    anything reaching the prune genuinely held nothing but our entry.
+    """
+    from ..formats.json_merge import load_json_object_or_value_error, write_json_config
+
+    if not config_path.exists():
+        return config_path, FileAction.NOT_FOUND, None
+    try:
+        existing = load_json_object_or_value_error(config_path, ".mcp.json")
+    except ValueError:
+        return (
+            config_path,
+            FileAction.KEPT,
+            "not strict JSON, so removing our entry would drop comments",
+        )
+
+    servers = existing.get("mcpServers")
+    if not isinstance(servers, dict) or "repowise" not in servers:
+        return config_path, FileAction.NOT_FOUND, None
+    servers.pop("repowise")
+    if not servers:
+        existing.pop("mcpServers", None)
+    if not existing:
+        try:
+            config_path.unlink()
+        except OSError:
+            write_json_config(config_path, existing)
+        return config_path, FileAction.REMOVED, None
+
+    write_json_config(config_path, existing)
+    return config_path, FileAction.REMOVED, None
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -168,6 +209,78 @@ def _plugin_installs() -> list[dict]:
     if not isinstance(installs, list):
         return []
     return [entry for entry in installs if isinstance(entry, dict)]
+
+
+#: What the host, not repowise, has to run to update the plugin.
+PLUGIN_UPDATE_COMMAND = "/plugin update repowise@repowise"
+
+
+def plugin_version_skew() -> list[str]:
+    """Installed plugin versions that are not this CLI's version, sorted.
+
+    The plugin is the one artifact the CLI cannot rewrite. ``pip install -U
+    repowise`` upgrades the MCP server and every command, and leaves the plugin's
+    skills and slash commands exactly where they were, so the two drift apart
+    silently, and silence is the worst of the available behaviours. Measured on a
+    real machine: an 0.16.0 plugin installed months earlier against a 0.41.0 CLI,
+    which is why five slash commands the CLI had shipped did not exist in the
+    session.
+
+    Reads the host's own manifest through :func:`_plugin_installs` rather than a
+    second parser. An entry with no ``version`` is skipped: it cannot be compared,
+    and a report the user cannot act on is noise.
+
+    Compared through :func:`release_key`, so ``0.41``, ``0.41.0`` and ``v0.41.0``
+    are one release. Spelling drift is not drift, and reporting it produces a row
+    no command can ever clear.
+    """
+    from repowise.cli import __version__
+
+    current = release_key(__version__)
+    return sorted(
+        {
+            str(entry["version"])
+            for entry in _plugin_installs()
+            if entry.get("version") and not _same_release(str(entry["version"]), current)
+        }
+    )
+
+
+def release_key(version: str) -> tuple[int, ...] | None:
+    """*version* as a comparable tuple, or None when it is not a plain release.
+
+    Deliberately **not** ``core.upgrade.release.parse_release``, which answers a
+    different question. That one exists to decide "is there a newer release", so
+    it drops everything after the first non-digit: it reads ``0.41.0rc1`` and
+    ``0.41.0.post1`` as plain ``0.41.0``, which is right for an upgrade prompt and
+    wrong here: a release candidate is not the release. It also returns None for
+    a leading ``v``, which is the single most likely way for a plugin manifest to
+    spell a version.
+
+    So: strip one leading ``v``, require every remaining part to be digits, and
+    drop trailing zeros so ``0.41`` and ``0.41.0`` land on the same key. Anything
+    with a suffix returns None and falls back to exact string comparison, which
+    reports it, the conservative direction for a version we cannot reason about.
+    """
+    text = version.strip()
+    if text[:1] in ("v", "V"):
+        text = text[1:]
+    parts = text.split(".")
+    if not text or not all(part.isdigit() for part in parts):
+        return None
+    numbers = [int(part) for part in parts]
+    while numbers and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)
+
+
+def _same_release(version: str, current: tuple[int, ...] | None) -> bool:
+    installed = release_key(version)
+    if installed is None or current is None:
+        from repowise.cli import __version__
+
+        return version == __version__
+    return installed == current
 
 
 def _has_repowise_server(config_path: Path) -> bool:
@@ -306,24 +419,71 @@ class ClaudeCodeTarget:
         return result
 
     def uninstall(self, scope: Scope, *, repo_path: Path | None = None) -> WriteResult:
-        """Remove the distill rewrite hook; leave sibling user hooks intact.
+        """Remove everything the direct install path wrote, and nothing else.
 
-        Scoped narrowly on purpose. Tearing the augment hooks and the MCP
-        registration out is not something any command asks for today, and a
-        half-written uninstall is worse than none — the surface grows in
-        Phase 2 alongside the command that needs it.
+        Three things, where this used to remove one. The rewrite hook, the
+        augment hooks and the MCP registration were all written by ``install``
+        and all survived ``uninstall``, so removing this target left Claude Code
+        launching our server and spawning our hooks for a repo it had just been
+        unwired from. At project scope it left ``.mcp.json`` untouched entirely
+        and reported ``KEPT`` about a file it had never looked at.
+
+        What stays out of reach is the plugin. ``~/.claude/plugins`` is
+        host-owned, documented at the top of this module as ours to read and
+        never to write, and only ``/plugin uninstall`` can remove it. The
+        caller surfaces that line rather than us writing the manifest.
         """
         from repowise.cli.editor_integrations.claude_config import (
+            claude_code_leftover_reason,
+            claude_desktop_leftover_reason,
+            uninstall_claude_code_augment_hooks,
+            uninstall_claude_code_mcp_entry,
             uninstall_claude_code_rewrite_hook,
+            uninstall_claude_desktop_mcp_entry,
         )
 
         result = WriteResult()
-        settings = settings_path()
         if scope is not Scope.USER:
-            result.record(settings, FileAction.KEPT)
+            if repo_path is None:
+                raise ValueError("project-scope uninstall needs a repo_path")
+            result.record(*_remove_project_mcp_entry(project_mcp_config_path(repo_path)))
             return result
+
+        settings = settings_path()
+        # Each returns True only when it changed the file, so the aggregate is a
+        # real answer rather than "we tried three things". Not short-circuited:
+        # `or` would skip the later removals whenever an earlier one succeeded.
         removed = uninstall_claude_code_rewrite_hook()
-        result.record(settings, FileAction.REMOVED if removed else FileAction.NOT_FOUND)
+        removed = uninstall_claude_code_augment_hooks() or removed
+        removed = uninstall_claude_code_mcp_entry() or removed
+        # The Desktop config too, because `install` writes it and `detect` reads
+        # it. Leaving it made a removed Claude Code still look wired, so the
+        # next `doctor --repair` reinstalled everything this had just removed.
+        #
+        # Its own row, with its own probe. Folding its reason into the
+        # settings.json row named one file and described another.
+        desktop_removed = uninstall_claude_desktop_mcp_entry()
+        desktop = desktop_config_path()
+        if desktop is not None:
+            desktop_leftover = claude_desktop_leftover_reason()
+            if desktop_leftover is not None:
+                result.record(desktop, FileAction.KEPT, desktop_leftover)
+            elif desktop_removed:
+                result.record(desktop, FileAction.REMOVED)
+        # Deliberately not folded into `removed`. That accumulator feeds the
+        # settings.json row below, so once the Desktop config got its own row a
+        # Desktop-only removal reported settings.json as `removed` too, over a
+        # file that in the common case does not even exist.
+
+        # Asked of the file, not inferred from the three booleans. Each of them
+        # returns False for "nothing of ours was here", "could not parse" and
+        # "the write failed" alike, and reporting the last two as not-found is a
+        # claim that we looked and the file was clean.
+        leftover = claude_code_leftover_reason()
+        if leftover is not None:
+            result.record(settings, FileAction.KEPT, leftover)
+        else:
+            result.record(settings, FileAction.REMOVED if removed else FileAction.NOT_FOUND)
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:
@@ -375,8 +535,12 @@ class ClaudeCodeTarget:
                 ),
                 # `add`, not `refresh`. A file this damaged makes detection
                 # find nothing, and refresh only touches what it detects — so
-                # it would skip this target entirely and report success.
+                # it would skip this target entirely and report success. Which
+                # is exactly why this is not repairable: `--repair` runs that
+                # same refresh, so letting it try buys the skip and the false
+                # success this comment was written about.
                 fix_command="repowise agents add --target=claude-code",
+                repairable=False,
             )
 
         registrations = detect()
@@ -390,7 +554,12 @@ class ClaudeCodeTarget:
 
         issues: list[str] = []
         matcher = claude_code_rewrite_hook_matcher()
-        if matcher is not None and matcher != SHELL_TOOL_MATCHER:
+        # The one issue here that `agents refresh` genuinely rewrites, so it is
+        # the one that decides `repairable`. Tracked separately from the issue
+        # list because the two questions (what is wrong, and can the repair
+        # pass fix it) have different answers per issue.
+        matcher_stale = matcher is not None and matcher != SHELL_TOOL_MATCHER
+        if matcher_stale:
             issues.append(
                 f"The distill rewrite hook matches {matcher!r}, but Claude Code now "
                 f"names its shell tools {SHELL_TOOL_MATCHER!r}. The hook is installed "
@@ -406,13 +575,46 @@ class ClaudeCodeTarget:
                 "so its MCP tool schemas and hooks are loaded twice."
             )
 
+        # Reported last and fixed first: an out-of-date plugin ships its own
+        # copy of the hooks, so updating it can resolve the matcher issue above
+        # as a side effect, where repairing the matcher does nothing for it.
+        fix_command = "repowise hook rewrite install"
+        skew = plugin_version_skew()
+        if skew:
+            from repowise.cli import __version__
+
+            versions = ", ".join(skew)
+            current = release_key(__version__)
+            # Ahead of the CLI is the same drift running the other way, and
+            # telling someone to update an already-newer plugin is a dead end.
+            # A version we cannot parse falls to the plugin side: an odd string
+            # in a plugin manifest is far likelier than an odd CLI version.
+            ahead = current is not None and all(
+                (key := release_key(version)) is not None and key > current for version in skew
+            )
+            issues.append(
+                f"The Claude Code plugin is at {versions} but this CLI is {__version__}. "
+                "Its skills and slash commands are the plugin's, not the CLI's, and "
+                "`pip install -U repowise` does not touch them."
+            )
+            fix_command = "pip install -U repowise" if ahead else PLUGIN_UPDATE_COMMAND
+
+        # Only the stale matcher. The plugin is host-managed and a duplicate
+        # registration is not something refresh removes, so on either of those
+        # alone `--repair` would write global config for a problem it cannot
+        # touch and then report success. But a *skewed plugin alongside* a stale
+        # matcher must stay repairable: the matcher is still broken, still
+        # rewritable, and the first cut of this let the skew suppress its repair.
+        repairable = matcher_stale
+
         if not issues:
             return DoctorReport(target_id=ID, status=DoctorStatus.OK)
         return DoctorReport(
             target_id=ID,
             status=DoctorStatus.STALE,
             issues=tuple(issues),
-            fix_command="repowise hook rewrite install",
+            fix_command=fix_command,
+            repairable=repairable,
         )
 
 

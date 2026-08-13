@@ -368,7 +368,33 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # contains. Cached pre-v12 rows carry the bare {path, lines} shape, which is the
 # named-but-not-carried payload this version exists to replace, so they must
 # bypass rather than serve the old block back.
-_ANSWER_SCHEMA_VERSION = 12
+# v13: withheld-body calibration — a truncated symbol_bodies entry now carries
+# `withheld_symbols`, confidence is capped when the response depends on one of
+# them (and on the homonym-union path whenever any cited body was truncated),
+# and the high/union notes no longer tell the caller to skip re-reading a
+# payload that admits it withheld part of a cited body. Cached pre-v13 rows
+# carry both the old `high` and the old "do not re-read the source" note, which
+# is precisely what this version exists to stop serving, so they must bypass.
+# v14: the LOOKUP half of v13. v13 capped the homonym-union path on truncation
+# alone, but a name with exactly ONE definition never reaches that path, so a
+# bare-symbol-name question about a uniquely-defined symbol still graded `high`
+# with most of the cited body withheld (measured: 93% and 78% withheld, on two
+# trees and two languages). It is now capped the same way. Separately, a
+# withheld entry naming the very symbol the payload already served is described
+# by its `continuation` range instead of being reported as "not served" with a
+# get_symbol pointer to a body the caller already holds most of. Cached pre-v14
+# rows carry both the old `high` and the old note, so they must bypass.
+# v15: the scanner behind `withheld_symbols` stops reading backtick strings as
+# code. Go raw strings and TS template literals were never masked, so the
+# GraphQL and interpolated text inside them was emitted as symbols — 282 of
+# 22,898 sweep entries on cli/cli, 19 of them the HEADLINE entry the note tells
+# the agent to fetch. Those ids are not dead (`get_symbol` answers them with a
+# live grep, since the name really is on that line) but they are misleading:
+# the "symbol" is a GraphQL field. A cached pre-v15 row still lists them, so it
+# must bypass. Secondarily, the note no longer advertises a symbol_id that
+# resolves to nothing at all — a guard rather than an observed fix, since 0 of
+# the 130 ids on the corpus were dead ends.
+_ANSWER_SCHEMA_VERSION = 15
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary

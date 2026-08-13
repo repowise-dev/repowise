@@ -15,9 +15,8 @@ not just *bigger*.
 ## Pick the mode by what you pass
 
 - **Dashboard** — `get_health()` (no targets): a `directive` naming what to fix
-  first, then repo-level KPIs plus the
-  lowest-scoring files. Start here for "how healthy is this codebase?" or "what
-  should we clean up?".
+  first, then repo-level KPIs and the lowest-scoring files. Start here for "how
+  healthy is this codebase?" or "what should we clean up?".
 - **Targeted** — `get_health(targets=["src/x.py", "src/y.py"])`: per-file score
   and the specific marker findings driving it. Use before/after a refactor,
   or to explain *why* a file is flagged.
@@ -36,7 +35,7 @@ not just *bigger*.
 
 1. For "what should I refactor?" → dashboard mode, lead with `directive`, then
    `get_health(targets=[worst files], include=["refactoring"])` and present the
-   ranked suggestions, not just the scores.
+   ranked plans, not just the scores.
 2. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
 3. For a specific file → report the score, the top 2–3 marker findings, and
    what each one means in plain language. Avoid dumping the raw payload.
@@ -58,6 +57,6 @@ not just *bigger*.
 
 ## Error handling
 
-If `get_health` reports no repository, suggest `repowise init --yes`. Code health is
+If `get_health` reports no repository, suggest `/prompts:repowise-init`. Code health is
 computed even with a template-rendered wiki (no LLM needed), so it should be available
 whenever the repo is indexed.

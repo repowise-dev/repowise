@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from repowise.core.ingestion.parser import ASTParser
 from tests.unit.ingestion.parser._helpers import _make_file_info
 
@@ -127,3 +129,84 @@ def test_top_level_js_constants_extracted_but_requires_are_not(parser: ASTParser
     # require() declarators are imports, not symbols
     assert "svc" not in by_name
     assert "local" not in by_name
+
+
+# ---------------------------------------------------------------------------
+# Module-reference declarators are never symbols
+#
+# The symbol query admits ``call_expression`` values so that forwardRef / memo
+# / onCall bindings are indexed at all. That also lets every ``require(...)``
+# and ``import(...)`` declarator through, and each of those shapes already
+# emits an import edge — indexing it a second time as a symbol would invent a
+# module-named binding. The wrappers are the reason the check is parser-side:
+# a query predicate can only test a capture it can name, and the callee hides
+# behind ``await`` / parentheses / ``!`` / a member pick.
+# ---------------------------------------------------------------------------
+
+_MODULE_REF_SHAPES = [
+    ("const svc = require('./svc');\n", "svc", "./svc"),
+    ("const picked = require('./svc').member;\n", "picked", "./svc"),
+    ("const lazy = import('./lazy');\n", "lazy", "./lazy"),
+    ("const awaited = await import('./lazy');\n", "awaited", "./lazy"),
+    ("export const reexported = require('./svc');\n", "reexported", "./svc"),
+]
+
+
+@pytest.mark.parametrize(("source", "name", "module"), _MODULE_REF_SHAPES)
+@pytest.mark.parametrize("language", ["javascript", "typescript"])
+def test_module_reference_declarator_is_import_not_symbol(
+    parser: ASTParser, source: str, name: str, module: str, language: str
+) -> None:
+    result = _parse(parser, source, language=language)
+    assert any(i.module_path == module for i in result.imports), (
+        f"{source!r} lost its import edge"
+    )
+    assert name not in {s.name for s in result.symbols}, (
+        f"{source!r} was indexed as a symbol as well as an import"
+    )
+
+
+@pytest.mark.parametrize("cast", ["as Foo", "satisfies Foo"])
+def test_cast_require_is_not_a_symbol(parser: ASTParser, cast: str) -> None:
+    """``const a = require('./x') as Foo`` is idiomatic in TypeScript CJS.
+
+    ``as_expression`` / ``satisfies_expression`` were already in the value
+    allowlist before call bindings were admitted, so this shape minted a
+    module-named symbol on its own. It is the one cast form common enough to
+    matter, which is why the guard unwraps both.
+    """
+    result = _parse(parser, f"const a = require('./x') {cast};\n", language="typescript")
+    assert "a" not in {s.name for s in result.symbols}
+
+
+def test_deep_member_pick_keeps_its_symbol(parser: ASTParser) -> None:
+    """``require('./x').y.z`` is deliberately NOT suppressed.
+
+    The CommonJS import patterns unwrap one member level, so a two-level pick
+    produces no import edge. Suppressing the symbol as well would leave the
+    file advertising neither a binding nor a dependency, so the guard stops at
+    the depth the import side can actually match.
+    """
+    result = _parse(parser, "const deep = require('./x').y.z;\n", language="typescript")
+    assert "deep" in {s.name for s in result.symbols}
+
+
+@pytest.mark.parametrize("language", ["javascript", "typescript"])
+def test_parenthesised_require_is_not_a_symbol(parser: ASTParser, language: str) -> None:
+    """``const x = (require('./svc'))`` is not a symbol either.
+
+    Known ceiling: the *import* queries do not see through the parentheses, so
+    this shape yields no import edge (it never did — the value allowlist had no
+    ``parenthesized_expression`` before, so it yielded nothing at all). The
+    guard keeps that parity rather than inventing a module-named symbol.
+    Upgrade path: widen the CommonJS import patterns to unwrap the same shells
+    ``declarator_value_is_module_ref`` already unwraps.
+    """
+    result = _parse(parser, "const wrapped = (require('./svc'));\n", language=language)
+    assert "wrapped" not in {s.name for s in result.symbols}
+
+
+def test_method_call_named_require_is_still_a_symbol(parser: ASTParser) -> None:
+    """``loader.require(...)`` is an ordinary method call, not CommonJS."""
+    result = _parse(parser, "const cfg = loader.require('./thing');\n")
+    assert "cfg" in {s.name for s in result.symbols}

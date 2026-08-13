@@ -6,11 +6,15 @@ import hashlib
 import hmac
 import json
 import os
+import re
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
+from repowise.core.persistence.models import Repository
 from repowise.server.deps import auth_is_open, get_db_session
 from repowise.server.schemas import WebhookResponse
 
@@ -20,6 +24,46 @@ router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 # Secrets are read per-request (not cached at import) so env changes are
 # picked up without a server restart.
 
+
+def _normalize_scm_url(url: str) -> str:
+    """Collapse clone / web URL variants to a comparable host/path key.
+
+    Strips scheme, userinfo, ``.git`` suffix, trailing slashes, and lowercases
+    the **whole** key (host and path). GitHub and GitLab resolve repo paths
+    case-insensitively; the previous ``contains`` match was also case-insensitive
+    under SQLite, so preserving path case would silently stop syncing when a
+    hand-registered URL differed only in casing from the webhook's ``clone_url``.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    # git@host:path → host/path
+    scp = re.match(r"^git@([^:]+):(.+)$", raw)
+    if scp:
+        host, path = scp.group(1), scp.group(2)
+    else:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        host = parsed.hostname or ""
+        path = parsed.path or ""
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    return f"{host}/{path}".rstrip("/").lower()
+
+
+async def _find_repo_by_scm_url(session: AsyncSession, url: str) -> Repository | None:
+    """Return the registered repo whose URL matches *url*, or None.
+
+    Exact normalized match only — never a truncated ``contains`` prefix.
+    """
+    needle = _normalize_scm_url(url)
+    if not needle:
+        return None
+    result = await session.execute(select(Repository))
+    for repo in result.scalars().all():
+        if _normalize_scm_url(repo.url) == needle:
+            return repo
+    return None
 
 
 def _verify_github_signature(request: Request, body: bytes, signature_header: str) -> None:
@@ -145,15 +189,7 @@ async def github_webhook(
         # Only sync pushes to the default branch
         if ref.startswith("refs/heads/"):
             branch = ref[len("refs/heads/") :]
-            # Find matching repo by URL
-            from sqlalchemy import select
-
-            from repowise.core.persistence.models import Repository
-
-            result = await session.execute(
-                select(Repository).where(Repository.url.contains(repo_url[:50]))
-            )
-            repo = result.scalar_one_or_none()
+            repo = await _find_repo_by_scm_url(session, repo_url)
             if repo and branch == repo.default_branch:
                 job = await crud.upsert_generation_job(
                     session,
@@ -204,14 +240,7 @@ async def gitlab_webhook(
             branch = ref[len("refs/heads/") :]
             project_url = payload.get("project", {}).get("web_url", "")
 
-            from sqlalchemy import select
-
-            from repowise.core.persistence.models import Repository
-
-            result = await session.execute(
-                select(Repository).where(Repository.url.contains(project_url[:50]))
-            )
-            repo = result.scalar_one_or_none()
+            repo = await _find_repo_by_scm_url(session, project_url)
             if repo and branch == repo.default_branch:
                 job = await crud.upsert_generation_job(
                     session,

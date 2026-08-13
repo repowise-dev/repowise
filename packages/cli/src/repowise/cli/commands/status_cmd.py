@@ -16,6 +16,7 @@ from repowise.cli.helpers import (
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
+    reconcile_schema_best_effort,
     resolve_command_target,
     run_async,
 )
@@ -55,6 +56,9 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
         from repowise.core.persistence.models import GraphNode, Repository
 
         url = get_db_url_for_repo(repo_path)
+        # Without this a store one repowise older reports 0 files / 0 pages:
+        # the `no such column` is swallowed by the caller's except.
+        await reconcile_schema_best_effort(url)
         engine = create_engine(url)
         sf = create_session_factory(engine)
 
@@ -115,6 +119,7 @@ def _query_page_count(repo_path: Path) -> int:
         from repowise.core.persistence.models import Page, Repository
 
         url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
         engine = create_engine(url)
         sf = create_session_factory(engine)
         try:
@@ -153,7 +158,9 @@ async def _query_pages(repo_path: Path) -> tuple[dict[str, int], int]:
         list_pages,
     )
 
-    engine = create_engine(get_db_url_for_repo(repo_path))
+    url = get_db_url_for_repo(repo_path)
+    await reconcile_schema_best_effort(url)
+    engine = create_engine(url)
     sf = create_session_factory(engine)
 
     counts: dict[str, int] = {}
@@ -195,6 +202,7 @@ def _query_health(repo_path: Path) -> dict | None:
         )
 
         url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
         engine = create_engine(url)
         sf = create_session_factory(engine)
         try:

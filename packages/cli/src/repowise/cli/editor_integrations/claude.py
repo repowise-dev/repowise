@@ -19,7 +19,8 @@ class ClaudeCodeSetup:
     class drives.
     """
 
-    #: Read from the descriptor rather than restated, so the id has one home.
+    #: Read from the descriptor rather than restated, so the ids have one home.
+    integration_id = claude_target.ID
     project_file_id = claude_target.PROJECT_FILE_ID
 
     def write_project_files(

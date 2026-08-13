@@ -404,6 +404,13 @@ def grep_comment_candidates(
             cwd=str(root),
             capture_output=True,
             text=True,
+            # Matched source lines come back verbatim, so this is the most
+            # encoding-sensitive git output we read. text=True alone decodes
+            # with the locale codec; one non-cp1252 byte in any hunk raised
+            # UnicodeDecodeError, which the handler below swallows, so get_why
+            # returned no rationale anchors at all rather than fewer.
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=_GREP_TIMEOUT_S,
         )

@@ -3,17 +3,16 @@ name: pre-modification-check
 description: Use before modifying, refactoring, moving, or deleting files in a Repowise-indexed repository, especially shared utilities, core modules, public APIs, or files the user did not explicitly identify.
 ---
 
-# Pre-Modification Check With Repowise
+# Pre-Modification Check with Repowise
 
-Before editing a Repowise-indexed codebase, assess impact with the graph and git signals.
+Before modifying files in a Repowise-indexed codebase, assess the impact.
 
-## Before Editing Files
+## Before editing a file
 
 Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
 `hotspot_score`, `trend`, `risk_type`, `impact_surface` (top 3),
 `dependents_count`, `co_change_partners`, `primary_owner`, `bus_factor`,
 `test_gap`, and `security_signals`. Read it for:
-
 - **Bug-fix history** (`defect_profile`) — present only on files with counted
   fixes: `fix_count` over the trailing 6 months, `last_fix_days_ago`, a
   `bug_magnet` flag for sustained recent fix pressure, and `top_symbols` (the
@@ -26,29 +25,27 @@ Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
 - **Ownership / bus factor** — who owns it, and whether a single author maintains it.
 - **Test gap & security signals** — flag untested or security-sensitive files before touching them.
 
-## When Editing Multiple Files
+## When modifying multiple files
 
-Batch all targets in one call: `get_risk(targets=["file1.py", "file2.py", "module/"])`.
+Batch all targets into one call: `get_risk(targets=["file1.py", "file2.py", "module/"])`.
 
-## When To Warn The User
+## When to warn the user
 
-Warn before editing when `get_risk` shows:
+If `get_risk` shows:
+- A `defect_profile` with `bug_magnet` set — say so plainly: this file has been fixed repeatedly and recently
+- Hotspot score above 90th percentile — mention this is a frequently-changed, high-risk file
+- More than 10 dependents — list the top dependents; API changes here will break consumers
+- Bus factor of 1 — note that a single person maintains this code
+- Risk type is "bug-prone" or "high-coupling" — flag explicitly before making changes
 
-- A `defect_profile` with `bug_magnet` set — say so plainly: this file has been fixed repeatedly and recently.
-- Hotspot score above the 90th percentile.
-- More than 10 dependents — list the top dependents; API changes here will break consumers.
-- Bus factor of 1.
-- Risk type such as `bug-prone` or `high-coupling`.
-- Missing tests around changed or affected files.
+## Before refactoring or moving code
 
-## Before Refactoring Or Moving Code
-
-Call `get_context(targets=["path/to/file.py"])` first to understand what uses the file, which decisions govern it, and why it is structured that way.
+Call `get_context(targets=["file.py"])` first to understand the full context: what uses this file, what decisions govern it, and why it's structured this way. This prevents accidentally violating architectural decisions.
 
 For a heavy refactor, also call `get_health(targets=["file.py"])` — the
 marker findings (complexity, deep nesting, low cohesion, duplication) tell
 you *what* to improve while you're in there, and give you a before/after score.
 
-## Error Handling
+## Error handling
 
-If `get_risk` fails or the MCP server is unavailable, proceed with normal inspection and mention that Repowise risk assessment was unavailable.
+If `get_risk` returns a tool error, the MCP server may not be running. Proceed with the modification but note that risk assessment was unavailable.

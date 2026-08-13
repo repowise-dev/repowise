@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GitMetadata, GraphNode
 
 
@@ -137,10 +138,21 @@ class PRBlastRadiusAnalyzer:
         """BFS over reverse graph edges (source_node_id -> target_node_id direction).
 
         We want files that *import* the changed files (i.e. are affected when a
-        changed file changes).  In graph_edges, an edge means
+        changed file changes).  In graph_edges, a dependency edge means
         ``source imports target``, so we look for rows where
         ``target_node_id IN (frontier)`` and collect the ``source_node_id``
         values — those are the files that depend on our changed set.
+
+        Not every row is a dependency edge, though, which is what the sentence
+        above used to assume. ``co_changes`` rows live in the same table, so an
+        unfiltered BFS treated "these two files tend to change together" as
+        "this file imports that one" and walked through it, then walked
+        through *that* file's co-change partners at the next depth. On this
+        repository a PR touching ``core/__init__.py`` reached five co-change
+        rows and two real importers at depth 1, and since ``will_break`` is
+        capped at five and sorted by depth, the noise crowded out the answer.
+        Those partners are already reported, correctly labelled, by
+        :meth:`_cochange_warnings`.
         """
         visited: dict[str, int] = {}  # path -> depth at which it was first reached
         frontier = list(set(changed_files))
@@ -150,13 +162,16 @@ class PRBlastRadiusAnalyzer:
                 break
             # SQLite / SQLAlchemy compatible IN query via text()
             placeholders = ",".join(f":p{i}" for i in range(len(frontier)))
+            excluded = ",".join(f":e{i}" for i in range(len(NON_DEPENDENCY_EDGE_TYPES)))
             params: dict[str, Any] = {"repo_id": self._repo_id}
             params.update({f"p{i}": v for i, v in enumerate(frontier)})
+            params.update({f"e{i}": v for i, v in enumerate(sorted(NON_DEPENDENCY_EDGE_TYPES))})
             rows = await self._session.execute(
                 text(
                     f"SELECT DISTINCT source_node_id FROM graph_edges "
                     f"WHERE repository_id = :repo_id "
-                    f"AND target_node_id IN ({placeholders})"
+                    f"AND target_node_id IN ({placeholders}) "
+                    f"AND edge_type NOT IN ({excluded})"
                 ),
                 params,
             )

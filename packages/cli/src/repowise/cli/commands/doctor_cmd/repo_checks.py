@@ -13,6 +13,7 @@ from repowise.cli.helpers import (
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
+    reconcile_schema_best_effort,
     run_async,
 )
 
@@ -102,6 +103,9 @@ def _run_repo_checks(
                 )
 
                 url = get_db_url_for_repo(repo_path)
+                # So doctor reports the store's real state rather than a
+                # `no such column` failure on a store one repowise older.
+                await reconcile_schema_best_effort(url)
                 engine = create_engine(url)
                 sf = create_session_factory(engine)
                 count = 0
@@ -214,6 +218,7 @@ def _run_repo_checks(
                 )
 
                 url = get_db_url_for_repo(repo_path)
+                await reconcile_schema_best_effort(url)
                 engine = create_engine(url)
                 sf = create_session_factory(engine)
                 async with get_session(sf) as session:
@@ -257,6 +262,7 @@ def _run_repo_checks(
                 from repowise.core.providers.embedding.base import MockEmbedder
 
                 url = get_db_url_for_repo(repo_path)
+                await reconcile_schema_best_effort(url)
                 engine = create_engine(url)
                 sf = create_session_factory(engine)
 
@@ -398,6 +404,7 @@ def _run_repo_checks(
                 from repowise.core.providers.embedding.base import MockEmbedder
 
                 url = get_db_url_for_repo(repo_path)
+                await reconcile_schema_best_effort(url)
                 engine = create_engine(url)
                 sf = create_session_factory(engine)
 
@@ -535,6 +542,7 @@ def _run_repo_checks(
             )
 
             url = get_db_url_for_repo(repo_path)
+            await reconcile_schema_best_effort(url)
             engine = create_engine(url)
             sf = create_session_factory(engine)
             repaired = 0
@@ -766,7 +774,11 @@ def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
             detail = report.issues[0] if report.issues else "wired up"
             checks.append(_check(name, True, detail))
             continue
-        needs_refresh = True
+        # Only conditions the repair pass can actually resolve drive it. A
+        # plugin the CLI cannot rewrite, or a fix that is a different command,
+        # would otherwise buy a global config write that changes nothing and
+        # then report advice for a condition the user does not have.
+        needs_refresh = needs_refresh or report.repairable
         detail = "; ".join(report.issues)
         if report.fix_command:
             detail += f" (run: {report.fix_command})"

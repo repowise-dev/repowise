@@ -48,6 +48,11 @@ class DeadCodeReport:
     findings: list[DeadCodeFindingData]
     deletable_lines: int
     confidence_summary: dict  # {"high": N, "medium": N, "low": N}
+    #: Number of findings produced by the analyzers but dropped because their
+    #: confidence is below ``min_confidence``.  Exposed so the CLI can print a
+    #: "N findings hidden; pass --min-confidence 0.0 to see them" footer
+    #: without changing what the buckets mean or what the report returns.
+    hidden_below_threshold: int = 0
     #: The file paths this report is allowed to speak for, or ``None`` for
     #: "all of them". Confidence is scored from per-file git metadata, and a
     #: file with no metadata is indistinguishable from one with no commits —

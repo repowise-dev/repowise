@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.generation.page_selection import STALE_STATUSES
+from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.crud import get_kg_layers, get_kg_tour_steps
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -653,11 +654,15 @@ async def _resolve_one_target(
                 # is empty, synthesize a deterministic one-liner from structure.
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(target, classes, functions)
-                # Importers
+                # Importers. The key is literally ``imported_by``, so the scan
+                # has to exclude the edge types that are not references —
+                # otherwise a file that merely tends to change alongside this
+                # one is served to the agent as one of its importers.
                 res = await session.execute(
                     select(GraphEdge).where(
                         GraphEdge.repository_id == repo_id,
                         GraphEdge.target_node_id == target,
+                        GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
                     )
                 )
                 importers = res.scalars().all()
@@ -782,11 +787,12 @@ async def _resolve_one_target(
                 docs["file_summary"] = sym_page.summary or ""
                 if want_full_doc:
                     docs["documentation"] = sym_page.content
-            # Used by
+            # Used by — same requirement as ``imported_by`` above.
             res = await session.execute(
                 select(GraphEdge).where(
                     GraphEdge.repository_id == repo_id,
                     GraphEdge.target_node_id == sym.file_path,
+                    GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
                 )
             )
             edges = res.scalars().all()

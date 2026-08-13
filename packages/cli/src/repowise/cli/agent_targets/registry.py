@@ -9,18 +9,21 @@ mirroring the hook-adapter registry. Registration should cost nothing: a caller
 resolving one target must not pay the import of every other, and this module is
 reachable from ``init`` and ``doctor`` where startup time is visible.
 
-One deviation from codegraph, deliberate: their ``TargetId`` is a hand-written
-string union, so adding a target touches three files instead of two and the
-union can drift from the registry. Here the ids *are* the registry keys, so
-there is nothing to keep in sync.
+There is deliberately no hand-written ``TargetId`` union beside this map. A
+literal type listing the ids is the obvious companion and it is a third file to
+keep in sync, which means it can drift from the registry it describes. Here the
+ids *are* the registry keys, so there is nothing to synchronise.
 """
 
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
-from .types import AgentTarget, InstallMethod, Registration, Tier, derive_tier
+from .types import AgentTarget, InstallMethod, Registration, Scope, Tier, derive_tier
 
 #: Every known target, by id. Values are ``module:attribute`` so registration
 #: costs no import.
@@ -28,6 +31,9 @@ _TARGET_MODULES: dict[str, str] = {
     "claude-code": "repowise.cli.agent_targets.targets.claude_code:TARGET",
     "codex": "repowise.cli.agent_targets.targets.codex:TARGET",
     "vscode": "repowise.cli.agent_targets.targets.vscode:TARGET",
+    "cursor": "repowise.cli.agent_targets.targets.cursor:TARGET",
+    "opencode": "repowise.cli.agent_targets.targets.opencode:TARGET",
+    "hermes": "repowise.cli.agent_targets.targets.hermes:TARGET",
 }
 
 #: Resolved when :meth:`resolve_target_flag` is asked for ``auto`` and nothing
@@ -176,6 +182,100 @@ def select_install_method(
         if method.preferred:
             return method
     return writable[0] if writable else None
+
+
+#: Ids being removed by the command currently running, so a shared file is not
+#: kept on behalf of an agent the same invocation is also removing.
+#:
+#: A context variable rather than a parameter on
+#: :meth:`~.types.AgentTarget.uninstall` because the fact belongs to the *run*,
+#: not to the target: a descriptor is asked to remove itself and has no business
+#: knowing what else the user asked for. Adding it to the Protocol would put a
+#: batch concern into the contract every future target has to implement.
+_REMOVING: ContextVar[frozenset[str]] = ContextVar("_REMOVING", default=frozenset())
+
+
+@contextmanager
+def removing(target_ids: Iterable[str]):
+    """Declare which targets the current command is removing.
+
+    Set by ``agents remove`` and ``doctor --repair`` around the whole batch.
+    Without it, ``agents remove --target=all`` deadlocks on any file two agents
+    share: each target's uninstall sees the other still wired -- it has not been
+    processed yet, or its own config is not what detection keys on -- and keeps
+    the shared block on its behalf, so both keep it and the user is told twice
+    to remove an agent they just removed.
+    """
+    token = _REMOVING.set(frozenset(target_ids))
+    try:
+        yield
+    finally:
+        _REMOVING.reset(token)
+
+
+def other_managers_of(
+    config_path: Path,
+    *,
+    exclude: str,
+    scope: Scope,
+    repo_path: Path | None = None,
+) -> list[str]:
+    """Display names of other **wired** targets that also manage *config_path*.
+
+    Some files are a host-neutral convention rather than one agent's private
+    config. ``AGENTS.md`` is the case that forced this: Codex reads it, OpenCode
+    reads it, and both descriptors legitimately manage the same path in the same
+    repo. Install is unaffected, because the managed block is marker-delimited
+    and idempotent, so the second writer reports ``unchanged``. **Uninstall is
+    not.** Removing one of the two agents stripped the block out from under the
+    other, which stayed wired and silently lost its instructions, and nothing in
+    the output said so.
+
+    So a target about to remove a shared file asks who else is still using it.
+    Only *wired* targets count: a descriptor that merely knows about the path is
+    not a reason to leave a block behind, and every target claims paths it has
+    never written. Targets the current command is itself removing do not count
+    either -- see :func:`removing`.
+
+    Deliberately built out of :meth:`~.types.AgentTarget.detect` and
+    :meth:`~.types.AgentTarget.describe_paths`, both of which already exist and
+    already mean exactly this. An ``owns_path`` method on the Protocol would be
+    a third thing to keep in agreement with the two that already answer the
+    question.
+
+    Paths are compared resolved, so ``AGENTS.md`` reached through a symlinked
+    or differently-cased repo root still matches. Best-effort per target, by the
+    same contract detection has everywhere else: a descriptor whose probe raises
+    is treated as not using the file rather than taking an uninstall down.
+    """
+    try:
+        wanted = config_path.resolve()
+    except OSError:
+        wanted = config_path
+
+    ignored = _REMOVING.get() | {exclude}
+    owners: list[str] = []
+    for target_id in _TARGET_MODULES:
+        if target_id in ignored:
+            continue
+        target = get_target(target_id)
+        if target is None:
+            continue
+        try:
+            if not any(r.scope is scope for r in target.detect(repo_path)):
+                continue
+            claimed = target.describe_paths(scope, repo_path=repo_path)
+        except Exception:
+            continue
+        for raw in claimed:
+            try:
+                candidate = Path(raw).resolve()
+            except OSError:
+                candidate = Path(raw)
+            if candidate == wanted:
+                owners.append(target.display_name)
+                break
+    return owners
 
 
 def resolve_target_flag(value: str, repo_path: Path | None = None) -> list[AgentTarget]:

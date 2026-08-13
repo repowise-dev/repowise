@@ -46,8 +46,8 @@ get_why()                                          # health dashboard
 
 ## Where decisions come from
 
-Eight capture sources run at index time. Seven are deterministic passes over the
-repo and its git history; the eighth is a harvest during LLM doc generation, and
+Six capture sources run at index time. Five are deterministic passes over the
+repo and its git history; the sixth is a harvest during LLM doc generation, and
 it is the only one that needs a provider.
 
 | Source | Key | Reads | Notes |

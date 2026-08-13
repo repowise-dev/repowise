@@ -170,7 +170,10 @@ def _load_knowledge_graph(path: str) -> dict | None:
     if not path or not os.path.isfile(path):
         return None
     try:
-        with open(path) as f:
+        # Explicit utf-8: a bare open() decodes with the locale codec, so on a
+        # default Windows install a non-ASCII knowledge graph cost the whole
+        # C4 architecture view via the handler below.
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         logger.warning("kg_file_unreadable path=%s", path, exc_info=True)

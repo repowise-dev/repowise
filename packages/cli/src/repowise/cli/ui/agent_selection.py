@@ -35,9 +35,19 @@ class AgentChoice:
     enabled: bool
 
 
+#: The wording for the case this prompt was written for, adding agents.
+_ADD_TITLE = "[bold]Agent integrations:[/bold] write project config and instruction files for?"
+_ADD_HINT = "Enter to accept, or numbers to toggle (1,3), 'all', 'none'."
+_ADD_PROMPT = "  Set up"
+
+
 def interactive_agent_select(
     console_obj: Any,
     choices: list[AgentChoice],
+    *,
+    title: str | None = None,
+    hint: str | None = None,
+    prompt: str | None = None,
 ) -> set[str] | None:
     """Ask which agents to set up. Returns the chosen ids, or None.
 
@@ -62,9 +72,11 @@ def interactive_agent_select(
     # scope: it is what the three per-agent prompts it replaced controlled.
     # The global MCP registration is a separate step and unticking a box here
     # does not withdraw it, so the question must not imply that it does.
-    console_obj.print(
-        "[bold]Agent integrations:[/bold] write project config and instruction files for?"
-    )
+    #
+    # Overridable because `repowise uninstall` reuses this widget, and asking
+    # "write project config and instruction files for?" above a row that reads
+    # "Machine-wide state" is the wrong verb in the one place it matters most.
+    console_obj.print(title or _ADD_TITLE)
     for index, choice in enumerate(choices, 1):
         # ``\[`` escapes the bracket for rich. Unescaped, ``[x]`` is valid
         # markup and gets eaten as a style tag while ``[ ]`` is not and
@@ -75,10 +87,12 @@ def interactive_agent_select(
         console_obj.print(
             f"  {box} [{BRAND_STYLE}][{index}][/] {choice.display_name}{detail}"
         )
-    console_obj.print("  [dim]Enter to accept, or numbers to toggle (1,3), 'all', 'none'.[/dim]")
+    console_obj.print(f"  [dim]{hint or _ADD_HINT}[/dim]")
 
     try:
-        raw = Prompt.ask("  Set up", default="", show_default=False, console=console_obj)
+        raw = Prompt.ask(
+            prompt or _ADD_PROMPT, default="", show_default=False, console=console_obj
+        )
     except EOFError:
         return None
 

@@ -224,7 +224,26 @@ def select_agents_interactively(
     from repowise.cli.agent_targets.registry import default_selection, describe_agents
     from repowise.cli.ui.agent_selection import AgentChoice, interactive_agent_select
 
+    # Offer only what this command can act on. The checklist is built from the
+    # agent registry and the writing is done by the setup integrations, and
+    # those are two lists: an agent can be registered (so it gets a matrix row,
+    # a ``--target`` id and a ``doctor`` row) without ``init`` having a writer
+    # for it. Showing the rest turns a ticked box into a silent no-op, which
+    # reads as success because every agent that *was* written prints a line.
+    #
+    # ``repowise agents add --target=<id>`` is the command for those, and the
+    # line below names it rather than leaving them invisible.
     rows = describe_agents(repo_path)
+    installable = {integration.integration_id for integration in _resolve_integrations(None)}
+    deferred = [row for row in rows if row["id"] not in installable]
+    rows = [row for row in rows if row["id"] in installable]
+    for row in deferred:
+        if row["present"] or row["registrations"]:
+            console_obj.print(
+                f"  [dim]{row['display_name']} detected. Set it up with "
+                f"[bold]repowise agents add --target={row['id']}[/bold][/dim]"
+            )
+
     ticked = default_selection(rows)
     for row in rows:
         flagged = options.integration_overrides.get(row["id"])

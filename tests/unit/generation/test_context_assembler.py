@@ -484,20 +484,20 @@ def test_foreign_edge_rejects_this_files_own_symbols():
     were 70% of every dependency line on the file pages, and on some pages
     they were the entire list.
     """
-    from repowise.core.generation.context.assembler import _is_foreign_edge
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
 
     path = "pkg/mod.py"
-    assert not _is_foreign_edge("pkg/mod.py", path)
-    assert not _is_foreign_edge("pkg/mod.py::Thing", path)
-    assert not _is_foreign_edge("pkg/mod.py::Thing::method", path)
-    assert not _is_foreign_edge("external:requests", path)
+    assert not is_foreign_edge("pkg/mod.py", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing::method", path)
+    assert not is_foreign_edge("external:requests", path)
 
 
 def test_foreign_edge_keeps_real_neighbours():
-    from repowise.core.generation.context.assembler import _is_foreign_edge
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
 
     path = "pkg/mod.py"
-    assert _is_foreign_edge("pkg/other.py", path)
-    assert _is_foreign_edge("pkg/other.py::Thing", path)
+    assert is_foreign_edge("pkg/other.py", path)
+    assert is_foreign_edge("pkg/other.py::Thing", path)
     # A path that merely shares a prefix is a different file.
-    assert _is_foreign_edge("pkg/mod_extra.py", path)
+    assert is_foreign_edge("pkg/mod_extra.py", path)

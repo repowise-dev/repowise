@@ -3,12 +3,17 @@
 "Silence means current" only trains agent trust if ``stale_warning`` fires
 when the served content is actually affected. These tests pin the contract:
 
-  * HEAD match → silence (no warning, no ``index_behind``).
+  * HEAD match → prose silence, and ``index_behind: false``.
   * HEAD mismatch + a served target changed → ``stale_warning``.
   * HEAD mismatch + no served target changed → ``index_behind: true`` only.
   * HEAD mismatch + no targets passed (repo-level tools) → repo-level warning.
   * git can't diff the two SHAs → fall back to the repo-level warning
     (fail toward warning, never toward false silence).
+
+``index_behind`` is two-valued wherever the live-vs-indexed comparison ran, and
+absent only where it could not run. It used to be written on the true branches
+only, which made the key unusable as a rate: every consumer that averaged it saw
+100% stale because a false was indistinguishable from a tool that never checks.
 """
 
 from __future__ import annotations
@@ -43,8 +48,19 @@ def test_head_match_is_silent(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "_read_live_head", lambda p: _INDEXED)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "stale_warning" not in out
-    assert "index_behind" not in out
+    assert out["index_behind"] is False
     assert "live_head" not in out
+
+
+def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
+    """Absence means "not evaluated", which is not the same as false.
+
+    Without a live HEAD the comparison never runs, so claiming ``false`` here
+    would report a repo as verified-current on no evidence at all.
+    """
+    monkeypatch.setattr(_meta, "_read_live_head", lambda p: None)
+    out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
+    assert "index_behind" not in out
 
 
 def test_served_target_changed_warns(tmp_path, monkeypatch):
@@ -52,7 +68,8 @@ def test_served_target_changed_warns(tmp_path, monkeypatch):
     _prime(tmp_path, frozenset({"src/a.py"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
     assert "stale_warning" in out
-    assert "index_behind" not in out
+    # The sharper signal does not suppress the measurable one.
+    assert out["index_behind"] is True
 
 
 def test_unaffected_targets_get_index_behind_not_warning(tmp_path, monkeypatch):
@@ -101,7 +118,7 @@ def test_no_targets_with_real_changes_still_warns(tmp_path, monkeypatch):
     _prime(tmp_path, frozenset({"src/a.py"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
     assert "stale_warning" in out
-    assert "index_behind" not in out
+    assert out["index_behind"] is True
 
 
 def test_empty_commit_over_real_git_is_not_stale(tmp_path):

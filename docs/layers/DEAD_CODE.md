@@ -102,11 +102,19 @@ compare numbers:
 | Surface | High | Medium | Low | Default floor |
 |---------|------|--------|-----|---------------|
 | CLI (`repowise dead-code`) | `>= 0.7` | `0.4` to `0.7` | `< 0.4` | `--min-confidence 0.4` |
-| MCP (`get_dead_code`) | `>= 0.8` | `0.4` to `0.8` | `< 0.4` | `min_confidence=0.4` |
+| MCP (`get_dead_code`) | `>= 0.8` | `0.5` to `0.8` | `< 0.5` | `min_confidence=0.4` |
 
-Both surfaces now share the same default floor (`0.4`). The MCP high/medium
-cutovers stay stricter: an agent acting on a finding is riskier than a human
-reading a table.
+Both surfaces share the same default floor (`0.4`), so both return the same
+findings. Only the tier labelling differs: MCP brackets both cutovers higher
+(`0.8`/`0.5` against the CLI's `0.7`/`0.4`), because an agent acting on a
+finding is riskier than a human reading a table. The two rows are deliberately
+different, so do not flatten them to matching numbers.
+
+When findings exist below the floor — for example, deprecated exports
+(confidence `0.30`, see the kind table above) — the CLI prints a dim footer
+line: `N finding(s) hidden below threshold; pass --min-confidence 0.0 to see
+them.` The report and its buckets are unaffected; the footer is the only
+visible change.
 
 ## What is exempt by construction
 

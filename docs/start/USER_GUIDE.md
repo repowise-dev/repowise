@@ -119,10 +119,17 @@ your-repo/
 │   ├── config.yaml       # provider, model, embedder, excludes
 │   ├── .env              # saved API keys (gitignored)
 │   └── lancedb/          # vector store for semantic search
+├── .mcp.json             # MCP server entry, so Claude Code and other clients find it
 ├── .claude/CLAUDE.md     # generated Claude Code context
 ├── AGENTS.md             # generated Codex context, when enabled
 └── .codex/               # project-local Codex MCP/hooks config, with --codex
 ```
+
+`init` also registers repowise machine-wide by default: the Claude Code
+(`~/.claude/settings.json`) and Claude Desktop MCP entry, plus the Claude Code
+PostToolUse/SessionStart hooks. `--no-editor-setup` (or setting
+`REPOWISE_SKIP_EDITOR_SETUP=1`) skips that machine-wide registration; every
+project-local file above is still written.
 
 `.repowise/` is safe to delete and rebuild, and safe to gitignore. Committing it
 is a reasonable choice for a team that wants everyone on the same index without
@@ -195,6 +202,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | `repowise costs` | What indexing has cost you, by provider and operation. |
 | `repowise generate-claude-md` | Regenerate `CLAUDE.md` / `AGENTS.md` on demand. |
 | `repowise telemetry disable` | Turn off anonymous usage telemetry. |
+| `repowise uninstall` | Remove what repowise wrote from this repo, and optionally this machine. It lists everything first, and says what it left and why. |
 
 ---
 
@@ -208,7 +216,7 @@ for Codex, `repowise init --codex` writes project-local config. Setup per client
 is in [Quickstart](QUICKSTART.md#3-connect-your-agent), and
 [Codex](../agent/CODEX.md) / [opencode](../agent/OPENCODE.md) have their own guides.
 
-**Ten tools, task-shaped.** Your agent gets architecture summaries, per-file
+**Eleven tools, task-shaped.** Your agent gets architecture summaries, per-file
 triage cards with callers and ownership, symbol source with exact bounds, risk
 assessment for a set of changed files, decision lookups and health scores, each in
 one call rather than a chain. What each one answers, and worked multi-tool

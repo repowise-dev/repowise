@@ -70,7 +70,14 @@ def test_bare_agents_lists_every_registered_target_as_a_table(repo: Path) -> Non
 
 def test_bare_agents_lists_every_registered_target_as_json(repo: Path) -> None:
     payload = _json(["agents"])
-    assert [row["id"] for row in payload["agents"]] == ["claude-code", "codex", "vscode"]
+    assert [row["id"] for row in payload["agents"]] == [
+        "claude-code",
+        "codex",
+        "vscode",
+        "cursor",
+        "opencode",
+        "hermes",
+    ]
     for row in payload["agents"]:
         # The keys the table renders, so a dropped one is a broken table.
         assert set(row) >= {"id", "tier", "present", "registrations", "method"}
@@ -226,8 +233,11 @@ def test_remove_takes_the_entry_out_and_reports_it_both_ways(repo: Path) -> None
     assert payload["action"] == "remove"
     assert payload["agents"][0]["writes"]["project"]["files"][0]["action"] == "removed"
 
-    config = json.loads((repo / ".vscode" / "mcp.json").read_text(encoding="utf-8"))
-    assert "repowise" not in config["servers"]
+    # The file goes with the entry when it held nothing else. It used to be left
+    # as a `{"servers": {}}` stub: a file repowise created, that the user never
+    # asked for, that still reads as repowise having been here, and that re-armed
+    # `is_present` for a repo it had just been removed from.
+    assert not (repo / ".vscode" / "mcp.json").exists()
 
     output = _run(["agents", "remove", str(repo), "--target", "vscode"]).output
     assert "not-found" in output
@@ -298,7 +308,8 @@ def test_remove_takes_the_extension_recommendation_with_it(repo: Path) -> None:
 
     written = {f["path"]: f["action"] for f in payload["agents"][0]["writes"]["project"]["files"]}
     assert written[str(extensions)] == "removed"
-    assert json.loads(extensions.read_text(encoding="utf-8"))["recommendations"] == []
+    # Same prune as mcp.json: an empty recommendations array is a stub, not a file.
+    assert not extensions.exists()
 
 
 def test_refresh_on_a_clean_repo_says_nothing_is_wired(repo: Path) -> None:
@@ -347,6 +358,9 @@ def test_doctor_reports_one_row_per_agent_from_its_own_descriptor(repo: Path) ->
         "Agent: claude-code",
         "Agent: codex",
         "Agent: vscode",
+        "Agent: cursor",
+        "Agent: opencode",
+        "Agent: hermes",
     ]
     # Nothing is wired on a clean machine, and an agent you do not use is not a
     # problem with your setup.
@@ -384,7 +398,14 @@ def test_doctor_surfaces_a_stale_hook_matcher_rather_than_calling_it_ok(
 
 
 def test_doctor_fails_the_run_only_for_a_damaged_config(repo: Path) -> None:
-    """The other side of that line: broken is a real fault, so it fails."""
+    """The other side of that line: broken is a real fault, so it fails.
+
+    It does **not** drive ``--repair``, and this assertion is the reverse of what
+    it once was. The target's own comment explains why: a file this damaged makes
+    detection find nothing, and refresh only touches what it detects, so the
+    repair pass would skip this target and report success. Failing the run and
+    naming ``agents add`` is the whole of the correct response.
+    """
     from repowise.cli.commands.doctor_cmd.repo_checks import _agent_target_checks
 
     settings = Path.home() / ".claude" / "settings.json"
@@ -395,7 +416,8 @@ def test_doctor_fails_the_run_only_for_a_damaged_config(repo: Path) -> None:
 
     claude = next(c for c in checks if c.name == "Agent: claude-code")
     assert claude.ok is False
-    assert needs_refresh is True
+    assert "repowise agents add --target=claude-code" in claude.detail
+    assert needs_refresh is False
 
 
 def test_doctor_calls_a_damaged_config_broken_not_missing(repo: Path) -> None:
@@ -466,3 +488,27 @@ def test_a_tty_that_cannot_answer_falls_through_to_the_defaults(repo: Path, monk
 
     assert result.exit_code == 0
     assert (repo / ".vscode" / "mcp.json").exists()
+
+
+def test_removing_every_agent_clears_the_shared_agents_md(repo: Path) -> None:
+    """``agents remove --target=all`` must not keep AGENTS.md for an agent it removes.
+
+    Codex and OpenCode both manage the repo's ``AGENTS.md``, and each target's
+    uninstall asks who else is still using it. During a batch removal the answer
+    used to be "the one not processed yet", so both kept the block on the
+    other's behalf and each told the user to remove an agent they had removed in
+    the same command.
+
+    Driven through ``CliRunner`` on purpose. The registry helper that fixes this
+    is entered in exactly one place in production, and a test that calls it by
+    hand passes with the entire CLI half of the fix deleted.
+    """
+    _run(["agents", "add", str(repo), "--target", "codex,opencode", "--scope", "project", "-y"])
+    agents_md = repo / "AGENTS.md"
+    assert agents_md.exists()
+
+    payload = _json(["agents", "remove", str(repo), "--target", "all", "--scope", "project"])
+
+    assert not agents_md.exists(), "shared AGENTS.md survived removing every agent"
+    notes = [note for agent in payload["agents"] for w in agent["writes"].values() for note in w["notes"]]
+    assert not any("still reads the same managed block" in note for note in notes)

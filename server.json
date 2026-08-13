@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://www.repowise.dev",
-  "version": "0.17.1",
+  "version": "0.41.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "repowise",
-      "version": "0.17.1",
+      "version": "0.41.0",
       "transport": {
         "type": "stdio"
       },
@@ -26,8 +26,8 @@
         {
           "type": "positional",
           "valueHint": "repo_path",
-          "description": "Absolute path to the repository to serve (must be indexed first with `repowise init`)",
-          "isRequired": true,
+          "description": "Path to the repository to serve, indexed first with `repowise init`. Optional: if omitted, the server serves the nearest indexed repository at or above the working directory, falling back to the working directory itself when there is none.",
+          "isRequired": false,
           "format": "filepath"
         },
         {

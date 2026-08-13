@@ -5,7 +5,7 @@ method that fits your setup.
 
 | Method | Best for | Requires server? |
 |--------|----------|-----------------|
-| [Post-commit hook](#1-post-commit-git-hook) | Solo developers, local repos | No |
+| [Post-commit hook](#1-post-commit-git-hook-recommended) | Solo developers, local repos | No |
 | [File watcher](#2-file-watcher) | Local development, rapid iteration | No |
 | [GitHub webhook](#3-github-webhook) | Teams, CI/CD, hosted repos | Yes |
 | [GitLab webhook](#4-gitlab-webhook) | Teams, CI/CD, hosted repos | Yes |
@@ -94,7 +94,7 @@ server, which triggers an incremental update.
 ### Prerequisites
 
 - repowise server running and reachable from the internet (or GitHub's network)
-- A webhook secret (**required** — unsigned requests are rejected)
+- A webhook secret (**strongly recommended** for any server exposed beyond localhost)
 
 ### Start the server
 
@@ -130,14 +130,19 @@ Recent Deliveries). You should see a `200` response with:
 }
 ```
 
-### Security
+### Security (GitHub)
 
-`REPOWISE_GITHUB_WEBHOOK_SECRET` is **required**. Every incoming request must
+When `REPOWISE_GITHUB_WEBHOOK_SECRET` is set, every incoming GitHub request must
 carry a valid HMAC-SHA256 signature in the `X-Hub-Signature-256` header.
-Requests with an invalid signature are rejected with `401 Unauthorized`.
-Requests with **no** signature — including those sent without a secret
-configured on your server — are rejected with `403 Forbidden`. There is no
-unsigned mode.
+A missing `sha256=` prefix or a signature that doesn't match is rejected with
+`401 Unauthorized`.
+
+When the secret is **not** set, the server falls back to a dev-mode check:
+requests from a local/loopback caller are accepted, and everything else is
+rejected with `403 Forbidden`. This keeps `repowise serve` usable out of the
+box for local testing, but it means an unset secret is not a safe posture for
+a server reachable from the internet or GitHub's network. Always set
+`REPOWISE_GITHUB_WEBHOOK_SECRET` before exposing the server.
 
 ---
 
@@ -159,11 +164,16 @@ export REPOWISE_GITLAB_WEBHOOK_TOKEN="your-token-here"
 4. **Trigger:** enable **Push events**
 5. Click **Add webhook**
 
-### Security
+### Security (GitLab)
 
 When `REPOWISE_GITLAB_WEBHOOK_TOKEN` is set, the server compares it against
 the `X-Gitlab-Token` header using constant-time comparison. Invalid tokens are
 rejected with `401 Unauthorized`.
+
+When the token is **not** set, GitLab behaves exactly like GitHub above:
+local/loopback callers are accepted as a dev convenience, and every other
+caller is rejected with `403 Forbidden`. Set the token before exposing the
+server.
 
 ---
 
@@ -272,14 +282,17 @@ Nothing to do.
 **Hook doesn't fire** -- Make sure the hook file is executable:
 `chmod +x .git/hooks/post-commit`
 
-**Webhook returns 401** -- Check that the secret/token matches between your
-git hosting provider and the environment variable on the server.
+**Webhook returns 401** -- A secret/token is configured on the server but the
+incoming signature did not match it (or, for GitHub, the `sha256=` prefix was
+missing). Check that the value matches between your git hosting provider and
+the environment variable on the server.
 
-**Webhook returns 403** -- The server received a request with no signature at
-all. This usually means `REPOWISE_GITHUB_WEBHOOK_SECRET` (or
-`REPOWISE_GITLAB_WEBHOOK_TOKEN`) is not set on the server. Set the environment
-variable, restart the server, and re-deliver the payload from your provider's
-webhook settings page. Unsigned requests are never accepted.
+**Webhook returns 403** -- No secret/token is configured on the server and the
+request came from a non-local caller. The unset-secret path only accepts
+loopback callers, so a remote provider hitting it is refused. Set
+`REPOWISE_GITHUB_WEBHOOK_SECRET` (or `REPOWISE_GITLAB_WEBHOOK_TOKEN`), restart
+the server, and re-deliver the payload from your provider's webhook settings
+page.
 
 **Update is slow** -- If you're catching up on many commits, the first update
 may take longer. Subsequent single-commit updates are fast (~30-60s).

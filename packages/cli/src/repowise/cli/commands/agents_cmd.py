@@ -24,6 +24,7 @@ test that checks the projection by itself.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from typing import Any
 import click
 
 from repowise.cli.agent_targets.registry import default_selection, describe_agents
+from repowise.cli.agent_targets.types import FileAction
 from repowise.cli.helpers import console, resolve_command_target
 from repowise.cli.output import emit_json, format_option, notice_console
 
@@ -126,11 +128,53 @@ def _write_payload(
       written, or ``doctor --repair`` buys a global config write with a local
       detection.
     """
-    from repowise.cli.agent_targets.registry import select_install_method
-    from repowise.cli.agent_targets.types import Scope
+    from repowise.cli.agent_targets.registry import removing
     from repowise.cli.editor_setup import is_editor_setup_disabled
 
     user_scope_disabled = is_editor_setup_disabled()
+
+    # Declared for the whole batch, before the first uninstall runs. A file two
+    # agents share is kept on behalf of an agent that is staying, never on
+    # behalf of one this same command is also removing -- which otherwise
+    # deadlocks `--target=all` on AGENTS.md and tells the user to remove an
+    # agent they just removed.
+    with removing(t.id for t in targets) if remove else contextlib.nullcontext():
+        agents = _run_writes(
+            targets,
+            repo_path,
+            scope,
+            remove=remove,
+            refresh_only=refresh_only,
+            user_scope_disabled=user_scope_disabled,
+        )
+
+    changed = any(
+        f["action"] in ("created", "updated", "removed")
+        for agent in agents
+        for write in agent["writes"].values()
+        for f in write["files"]
+    )
+    return {
+        "action": action,
+        "repo": str(repo_path),
+        "scope": scope,
+        "changed": changed,
+        "agents": agents,
+    }
+
+
+def _run_writes(
+    targets: list[Any],
+    repo_path: Path,
+    scope: str,
+    *,
+    remove: bool,
+    refresh_only: bool,
+    user_scope_disabled: bool,
+) -> list[dict]:
+    """The per-target loop of :func:`_write_payload`. See its docstring."""
+    from repowise.cli.agent_targets.registry import select_install_method
+    from repowise.cli.agent_targets.types import Scope
 
     agents: list[dict] = []
     for target in targets:
@@ -187,19 +231,7 @@ def _write_payload(
             entry["writes"][target_scope.value] = result.as_dict()
         agents.append(entry)
 
-    changed = any(
-        f["action"] in ("created", "updated", "removed")
-        for agent in agents
-        for write in agent["writes"].values()
-        for f in write["files"]
-    )
-    return {
-        "action": action,
-        "repo": str(repo_path),
-        "scope": scope,
-        "changed": changed,
-        "agents": agents,
-    }
+    return agents
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +283,18 @@ def _render_writes(payload: dict) -> None:
     for agent in payload["agents"]:
         for scope, write in agent["writes"].items():
             for entry in write["files"]:
-                table.add_row(agent["id"], scope, entry["action"], entry["path"])
+                # The reason rides on the row rather than in the notes block
+                # below the table. A bare "kept" is indistinguishable from a
+                # bug: the user asked for a file to go, it is still there, and
+                # the row says nothing about whether that was deliberate. Only
+                # three targets ever emitted a note, so for the other three the
+                # answer was invisible.
+                file_cell = entry["path"]
+                if entry.get("reason"):
+                    file_cell = f"{entry['path']}\n[dim]{entry['reason']}[/dim]"
+                elif entry["action"] == FileAction.KEPT.value:
+                    file_cell = f"{entry['path']}\n[dim]no reason recorded[/dim]"
+                table.add_row(agent["id"], scope, entry["action"], file_cell)
         # Every skip gets its own row. Folding them into one "skipped" line
         # per agent hid the reason whenever a second scope had written
         # something, which is the common case rather than the edge one.

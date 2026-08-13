@@ -57,7 +57,7 @@ Repowise writes hooks to `.codex/hooks.json`, not inline `[hooks]` tables. The d
 
 - `SessionStart` to add Repowise MCP workflow guidance.
 - `UserPromptSubmit` to remind Codex when Repowise context is available.
-- `PostToolUse` for `Bash` to detect git operations that make the wiki stale.
+- `PostToolUse` for `Bash|shell_command` to detect git operations that make the wiki stale. On current Codex the shell calls arrive as `shell_command`; `Bash` is kept in the set for older and future builds. See [HOOKS.md](HOOKS.md) for why `exec` is deliberately excluded.
 - `PostToolUse` for `apply_patch`, `Edit`, and `Write` to remind Codex after edits.
 
 Claude Code has its own search-result enrichment hook path for `Grep` and `Glob`. Codex setup stays focused on lifecycle guidance and freshness checks instead of trying to reuse that Claude-specific search enrichment.
@@ -82,7 +82,7 @@ The provider runs:
 codex exec --ephemeral --sandbox read-only --json --cd /absolute/path/to/repo -
 ```
 
-Repowise sends the prompt on stdin, parses Codex JSONL output, records token usage from `turn.completed.usage`, and treats `codex_cli/*` cost as `$0.00` because subscription billing happens outside Repowise API pricing. `--model` is passed to Codex only when you explicitly configure a model. `--reasoning minimal` maps to Codex `model_reasoning_effort="low"`; `low`, `medium`, `high`, and `xhigh` pass through when the selected Codex model advertises those levels. `off`/`none` is not supported by the Codex CLI provider.
+Repowise sends the prompt on stdin, parses Codex JSONL output, records token usage from `turn.completed.usage`, and treats `codex_cli/*` cost as `$0.00` because subscription billing happens outside Repowise API pricing. `--model` is passed to Codex only when you explicitly configure a model. `--reasoning minimal` maps to Codex `model_reasoning_effort="minimal"` when the selected model advertises a `minimal` level, and falls back to `"low"` when it does not; `low`, `medium`, `high`, and `xhigh` pass through when the model advertises those levels. `off`/`none` maps to `model_reasoning_effort="none"`. `auto` sends no effort at all and lets Codex pick.
 
 Smoke check:
 
@@ -110,11 +110,25 @@ codex
 /plugins
 ```
 
-The plugin bundles Repowise MCP, lifecycle hooks, and Codex-neutral skills for exploration, pre-modification checks, architectural decisions, and dead-code cleanup. It does not add Claude-style slash commands. Plugin-bundled hooks are opt-in in current Codex releases; enable them with `[features] plugin_hooks = true` if you want hooks loaded from an installed plugin.
+The plugin bundles Repowise MCP, lifecycle hooks, and Codex-neutral skills for exploration, pre-modification checks, architectural decisions, and dead-code cleanup. Plugin-bundled hooks are opt-in in current Codex releases; enable them with `[features] plugin_hooks = true` if you want hooks loaded from an installed plugin.
+
+## Slash commands
+
+The plugin does not carry these, and cannot: a Codex plugin manifest has no slot for commands. Codex reads slash commands from `~/.codex/prompts/`, which is global and which only the CLI can write, so Repowise installs them there:
+
+```bash
+repowise agents add --target=codex
+```
+
+That writes one `repowise-*.md` per command, and `repowise agents remove --target=codex` takes them back out, along with `.codex/config.toml`, `.codex/hooks.json` and the managed block in `AGENTS.md`. To remove every agent at once, see [`repowise uninstall`](../reference/CLI_REFERENCE.md#repowise-uninstall-path). Invoke them as `/prompts:repowise-risk`, `/prompts:repowise-ask` and so on. They are rendered from the same `plugins/shared/` source as the Claude Code plugin's commands, so the two hosts cannot drift.
+
+Note this is the mirror image of Claude Code, where the commands come from the plugin and `repowise init` never writes any.
 
 ## AGENTS.md
 
 `repowise init --codex` generates a managed `AGENTS.md` by default. `repowise update` refreshes it when `editor_files.agents_md` is enabled, or when `--agents` is passed. The Repowise section is bounded by managed markers and user content outside the markers is preserved.
+
+`AGENTS.md` is a host-neutral convention rather than a Codex-only file: [OpenCode](OPENCODE.md) and [Hermes](HERMES.md) read the same path and manage the same section. All of them writing it is safe, because the section is idempotent. Removing one agent while another is still wired leaves the section in place and reports that it did, so the agent still using it does not silently lose its instructions.
 
 Controls:
 

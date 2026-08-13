@@ -456,3 +456,177 @@ function g() {
         names = {s.name for s in syms}
         assert "localConst" not in names
         assert "inner" not in names
+
+
+class TestTypeScriptCallExpressionBindings:
+    """``const X = someCall(...)`` is a symbol.
+
+    The whole React/Firebase idiom lives in this shape — forwardRef, memo,
+    styled(), createContext(), zod schemas, ``export const f = onCall(...)``.
+    Until the value allowlist admitted ``call_expression`` none of it was
+    indexed at all, so such a file read as having almost no symbols.
+    """
+
+    TSX_SOURCE = b"""
+import * as React from "react";
+import { onCall } from "firebase-functions/v2/https";
+import styled from "styled-components";
+import { z } from "zod";
+
+const AccordionItem = React.forwardRef((props, ref) => {
+  return null;
+});
+const Memoized = React.memo(function Inner() { return null; });
+const Ctx = createContext(null);
+const KlassExpr = class Foo {};
+const fnExpr = function named() { return 1; };
+const wrapped = (makeThing());
+const asserted = makeThing()!;
+export const myFunction = onCall(async (req) => {
+  return { ok: true };
+});
+export const Button = styled.button`color: red;`;
+export const schema = z.object({ a: z.string() });
+export const loaded = await loadThing();
+
+function outer() {
+  const memo = useMemo(() => 1, []);
+  return memo;
+}
+"""
+
+    def _names(self, parser: ASTParser, path: str = "src/accordion.tsx") -> set[str]:
+        fi = _make_file_info(path, "typescript")
+        return {s.name for s in parser.parse_file(fi, self.TSX_SOURCE).symbols}
+
+    def test_forward_ref_component_is_indexed(self, parser: ASTParser) -> None:
+        assert "AccordionItem" in self._names(parser)
+
+    def test_memo_component_is_indexed(self, parser: ASTParser) -> None:
+        assert "Memoized" in self._names(parser)
+
+    def test_exported_firebase_handler_is_indexed(self, parser: ASTParser) -> None:
+        assert "myFunction" in self._names(parser)
+
+    def test_factory_and_schema_bindings_are_indexed(self, parser: ASTParser) -> None:
+        assert {"Ctx", "Button", "schema"} <= self._names(parser)
+
+    def test_class_and_function_expression_bindings_are_indexed(self, parser: ASTParser) -> None:
+        assert {"KlassExpr", "fnExpr"} <= self._names(parser)
+
+    def test_wrapped_call_bindings_are_indexed(self, parser: ASTParser) -> None:
+        """Parenthesised / non-null / awaited calls unwrap to the same shape."""
+        assert {"wrapped", "asserted", "loaded"} <= self._names(parser)
+
+    def test_function_local_call_binding_is_not_indexed(self, parser: ASTParser) -> None:
+        """The (program …) anchor is what keeps ``useMemo`` out of the index."""
+        assert "memo" not in self._names(parser)
+
+    def test_plain_ts_grammar_variant_agrees_with_tsx(self, parser: ASTParser) -> None:
+        assert self._names(parser, "src/accordion.ts") == self._names(parser)
+
+
+class TestTypeScriptCallBindingKinds:
+    """A call binding is classified by its value, not by its name.
+
+    ``constant``/``variable`` is a naming rule, and it is the wrong answer for
+    a component or a handler: kind drives page-selection weight (0.3 for a
+    variable against 1.0 for a function), Key Concepts eligibility and symbol
+    ranking, so a forwardRef component indexed as data gets scored as data.
+
+    A value that literally is a function or a class settles itself. A call
+    does not, and only the callee settles it: whether a call returns something
+    callable is a fact about the callee, not about its arguments.
+    """
+
+    SOURCE = b"""
+const AccordionItem = React.forwardRef((props, ref) => null);
+const Memoized = React.memo(function Inner() { return null; });
+const cb = useCallback(() => {}, []);
+const KlassExpr = class Foo {};
+const fnExpr = function named() { return 1; };
+const parenArrow = ((x) => x);
+export const myFunction = onCall(async (req) => 1);
+export const schema = z.object({ a: 1 });
+export const Button = styled.button`color: red;`;
+const Ctx = createContext(null);
+const KEYS = [...a, ...b].filter((key) => key !== "x");
+const prepared = z.preprocess((val) => val, rawSchema);
+const MAX_ITEMS = 100;
+const apiBase = "https://api.example.com";
+"""
+
+    def _kinds(self, parser: ASTParser) -> dict[str, str]:
+        fi = _make_file_info("src/kinds.tsx", "typescript")
+        return {s.name: s.kind for s in parser.parse_file(fi, self.SOURCE).symbols}
+
+    def test_hoc_wrapped_component_is_a_function(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["AccordionItem"] == "function"
+        assert kinds["Memoized"] == "function"
+
+    def test_handler_factory_binding_is_a_function(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["myFunction"] == "function"
+        assert kinds["cb"] == "function"
+
+    def test_class_expression_is_a_class(self, parser: ASTParser) -> None:
+        assert self._kinds(parser)["KlassExpr"] == "class"
+
+    def test_function_expression_and_wrapped_arrow_are_functions(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["fnExpr"] == "function"
+        # A parenthesised arrow misses the bare-arrow pattern, so without the
+        # value check it would land as data purely for having brackets.
+        assert kinds["parenArrow"] == "function"
+
+    def test_value_shaped_factories_are_not_functions(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["schema"] == "variable"
+        assert kinds["Ctx"] == "variable"
+        # Known ceiling: an unlisted callee falls back to the naming rule, so
+        # a tagged-template component stays data.
+        assert kinds["Button"] == "variable"
+
+    def test_a_call_taking_a_function_can_still_bind_data(self, parser: ASTParser) -> None:
+        """Why the callee decides and the arguments do not.
+
+        Both of these hand a function to the call and both bind data. A rule
+        keyed on "the call receives a function" promotes them, which is how
+        this one was corrected — these two shapes were found mislabelled in a
+        real TypeScript tree.
+        """
+        kinds = self._kinds(parser)
+        assert kinds["KEYS"] == "constant"
+        assert kinds["prepared"] == "variable"
+
+    def test_naming_rule_still_decides_the_rest(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["MAX_ITEMS"] == "constant"
+        assert kinds["apiBase"] == "variable"
+
+
+class TestJavaScriptCallExpressionBindings:
+    """JavaScript was strictly worse than TypeScript: its allowlist also
+    omitted ``member_expression``, so even a plain alias yielded no symbol."""
+
+    JS_SOURCE = b"""
+const AccordionItem = React.forwardRef((props, ref) => null);
+const Accordion = AccordionPrimitive.Root;
+const KlassExpr = class Foo {};
+const fnExpr = function named() { return 1; };
+export const handler = onCall(async () => 1);
+"""
+
+    def _names(self, parser: ASTParser) -> set[str]:
+        fi = _make_file_info("src/accordion.js", "javascript")
+        return {s.name for s in parser.parse_file(fi, self.JS_SOURCE).symbols}
+
+    def test_call_bindings_are_indexed(self, parser: ASTParser) -> None:
+        assert {"AccordionItem", "handler"} <= self._names(parser)
+
+    def test_member_expression_alias_is_indexed(self, parser: ASTParser) -> None:
+        assert "Accordion" in self._names(parser)
+
+    def test_class_and_function_expression_bindings_are_indexed(self, parser: ASTParser) -> None:
+        assert {"KlassExpr", "fnExpr"} <= self._names(parser)

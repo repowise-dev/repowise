@@ -14,6 +14,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.generation.entry_points import orientation_entry_points
 from repowise.core.ids import file_path_of, kg_file_path_of
 
 logger = structlog.get_logger(__name__)
@@ -236,7 +237,7 @@ def _build_layer_naming_prompt(
     repo_structure: Any,
 ) -> str:
     tech_names = [t.get("name", "") for t in tech_stack[:10] if t.get("name")]
-    entry_points = list(repo_structure.entry_points)[:5] if repo_structure else []
+    entry_points = orientation_entry_points(repo_structure, limit=5)
 
     lines = [
         "Assign a concise semantic name (2-4 words) and a one-sentence description "
@@ -282,7 +283,7 @@ async def _generate_tour(
 ) -> list[dict]:
     """Generate guided tour from enriched layers + entry points."""
     pagerank = graph_builder.pagerank()
-    entry_points = list(repo_structure.entry_points)[:10] if repo_structure else []
+    entry_points = orientation_entry_points(repo_structure, limit=10)
     top_files = sorted(pagerank.keys(), key=lambda p: pagerank.get(p, 0.0), reverse=True)[:15]
 
     layer_summaries = []

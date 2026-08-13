@@ -153,6 +153,12 @@ namespaces = true
 # core (the neutral home shared by cli + server). Kept in sync with the
 # canonical docs/CHANGELOG.md by a drift-guard test (see tests/unit/upgrade).
 "repowise.core.upgrade" = ["_data/CHANGELOG.md"]
+# Codex slash commands. A Codex plugin manifest has no slot for commands, so
+# ~/.codex/prompts is the only surface that yields one and the CLI is the only
+# thing that can write it, which means the content has to be in the wheel.
+# Generated from plugins/shared/commands/ by scripts/gen_plugin_content.py and
+# pinned by tests/unit/cli/test_plugin_content.py.
+"repowise.cli.agent_targets" = ["_data/codex_prompts/*.md"]
 
 # ---------------------------------------------------------------------------
 # uv workspace (kept for local development)

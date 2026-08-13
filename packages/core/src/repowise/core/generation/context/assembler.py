@@ -9,10 +9,16 @@ from typing import Any
 
 import structlog
 
+from repowise.core.analysis.dead_code.file_reachability import (
+    ReachabilityRescues,
+    file_dependency_neighbors,
+    is_file_reachable,
+)
 from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
+from ..entry_points import orientation_entry_points
 from ..models import GenerationConfig
 from .contexts import (
     ApiContractContext,
@@ -41,22 +47,11 @@ from .token_budget import (
 log = structlog.get_logger(__name__)
 
 
-def _is_foreign_edge(node: str, path: str) -> bool:
-    """Whether a graph neighbour is a real dependency rather than this file itself.
-
-    Graph node ids are either a file path or ``<file path>::<symbol>``. Both
-    spellings of "this file" are dropped so a dependency list only ever names
-    other files.
-    """
-    if is_external(node):
-        return False
-    return node != path and file_path_of(node) != path
-
-
 # Maximum imports to include before truncating
 _MAX_IMPORTS = 30
 # Maximum top-files to include in repo overview
 _MAX_TOP_FILES = 20
+
 # How many rows the concept index may carry. A module page groups directories,
 # so a wide one can reach several hundred public symbols and the table would
 # then be longer than the page it is attached to. Rows past this are counted
@@ -202,31 +197,31 @@ def build_concept_index(
     return rows, total - len(rows)
 
 
-def _file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list[str]:
-    """Return structural file neighbors in the requested direction.
+def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues) -> bool:
+    """Can anything actually get to this flow's entry point?
 
-    The file graph treats every file-to-file edge except ``co_changes`` as a
-    dependency. This keeps import, type-use, framework, and future structural
-    edge types while excluding symbol containment and historical association.
+    Execution-flow scoring treats zero inbound calls as its strongest positive
+    signal, because a symbol nothing calls looks like a front door. File-level
+    reachability reads the same evidence in the opposite direction: a file
+    nothing imports is ``unreachable_file``. So a file with no importers was
+    promoted to Primary Execution Flow #1 *and* reported as dead code, from
+    the same fact, on the same index.
+
+    Dead code is right in that argument and the flow is wrong, so drop the
+    flow. Which files that argument spares is not decided here: it is
+    :func:`is_file_reachable`, the same predicate the dead-code pass asks, so
+    the two cannot drift. This function only resolves a flow to a file path.
+
+    An unresolvable entry point stays. That is the one rescue local to this
+    caller, and it runs in the forgiving direction for the reason the caller's
+    own comment gives: a missed drop leaves one wrong flow on the page, while
+    an over-eager drop silently empties the section.
     """
-    if path not in graph:
-        return []
-
-    edges = graph.in_edges(path, data=True) if incoming else graph.out_edges(path, data=True)
-    neighbors: list[str] = []
-    for source, target, edge_data in edges:
-        neighbor = source if incoming else target
-        neighbor_data = graph.nodes[neighbor]
-        if not _is_foreign_edge(neighbor, path):
-            continue
-        if neighbor_data.get("node_type", "file") != "file":
-            continue
-        if neighbor_data.get("language") == "external":
-            continue
-        if edge_data.get("edge_type", "imports") == "co_changes":
-            continue
-        neighbors.append(neighbor)
-    return neighbors
+    node = graph.nodes.get(flow.entry_point_id, {})
+    path = node.get("file_path") or file_path_of(flow.entry_point_id) or ""
+    if not path:
+        return True
+    return is_file_reachable(path, graph, rescues)
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +320,8 @@ class ContextAssembler:
 
         # Structural file dependencies only. The full graph also contains
         # file→symbol containment and historical co-change edges.
-        in_edges = _file_dependency_neighbors(graph, path, incoming=True)
-        out_edges = _file_dependency_neighbors(graph, path, incoming=False)
+        in_edges = file_dependency_neighbors(graph, path, incoming=True)
+        out_edges = file_dependency_neighbors(graph, path, incoming=False)
 
         # Decoded to derive the vocabulary below, and deliberately not carried on
         # the returned context. The context used to hold a ``file_source_snippet``
@@ -773,6 +768,32 @@ class ContextAssembler:
                         flow_report.flows,
                         key=lambda f: (-f.entry_point_score, f.entry_point_id),
                     )
+                    flow_graph = graph_builder.graph()
+                    # No package map, deliberately: an unchecked Go / JVM /
+                    # C-C++ file answers "reachable", so this section keeps
+                    # being more forgiving than the dead-code pass for exactly
+                    # those languages. Measured on test-repos/, supplying
+                    # ``build_package_file_map(flow_graph)`` here would flip
+                    # 0-43% of their files to unreachable (43% on
+                    # nlohmann-json, 29% on openclaw, 27% on Crow), and an
+                    # over-eager drop empties the section. Ceiling, not
+                    # oversight: closing it is one argument, and wants its own
+                    # measurement of what the overview actually loses.
+                    kept = [
+                        f
+                        for f in ranked
+                        if _flow_entry_is_reachable(f, flow_graph, ReachabilityRescues())
+                    ]
+                    if len(kept) != len(ranked):
+                        # The section disappears when this empties it, and a
+                        # silently empty section is the failure the comment
+                        # below was written to end. Say how many and why.
+                        log.info(
+                            "overview_flows_dropped_unreachable",
+                            dropped=len(ranked) - len(kept),
+                            kept=len(kept),
+                        )
+                    ranked = kept
                     for flow in ranked[:5]:
                         execution_flows_list.append(
                             {
@@ -805,7 +826,11 @@ class ContextAssembler:
             language_distribution=repo_structure.root_language_distribution,
             total_files=repo_structure.total_files,
             total_loc=repo_structure.total_loc,
-            entry_points=repo_structure.entry_points,
+            # Ranked, not filtered, and ranked by the helper every other
+            # orientation surface now calls so they cannot name different
+            # front doors. Why it is ranked at all is on
+            # ``orientation_entry_points``.
+            entry_points=orientation_entry_points(repo_structure),
             top_files_by_pagerank=top_files,
             circular_dependency_count=circular_count,
             communities=communities_list,

@@ -256,6 +256,12 @@ def dead_code_command(
             safe = " (cleanup-ready)" if f.safe_to_delete else ""
             name = f"`{f.symbol_name}`" if f.symbol_name else f"`{f.file_path}`"
             click.echo(f"- [{f.kind.value}] {name} — {f.reason} ({f.confidence:.0%}){safe}")
+        if report.hidden_below_threshold:
+            click.echo(
+                f"\n> {report.hidden_below_threshold} finding(s) hidden below threshold "
+                f"(confidence < {min_confidence:.2g}); "
+                f"pass `--min-confidence 0.0` to see them."
+            )
         return
 
     # Table format (default)
@@ -292,3 +298,9 @@ def dead_code_command(
         f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold]"
         + (f" ({tiers} confidence)" if tiers else "")
     )
+    if report.hidden_below_threshold:
+        console.print(
+            f"[dim]{report.hidden_below_threshold} finding(s) hidden below "
+            f"threshold (confidence < {min_confidence:.2g}); "
+            f"pass --min-confidence 0.0 to see them.[/dim]"
+        )

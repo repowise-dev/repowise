@@ -187,6 +187,72 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     return resolve_db_url(repo_path)
 
 
+#: Busy timeout for the reconcile's own connection. The engine default is 30s,
+#: sized for bulk graph-edge writes; inheriting it here is a trap, because a
+#: read command opens several engines (``status`` four, ``doctor`` five) and a
+#: store locked by a concurrent ``repowise update`` would stall each one in
+#: turn — measured at 133s of silence for ``status`` before this was bounded.
+#: The reconcile is a best-effort secondary write, so it takes the same lever
+#: issue #326 gave the cost tracker: fail fast and be dropped rather than block.
+_RECONCILE_BUSY_TIMEOUT_MS = 2000
+
+
+async def reconcile_schema_best_effort(db_url: str) -> None:
+    """Back-fill additive schema drift on the store at *db_url*, best-effort.
+
+    An index built by an older repowise is missing whatever columns the models
+    have gained since, and the ORM then fails with a raw ``no such column`` on
+    the first query — which for a read command means every read. ``init_db``
+    back-fills those columns in place and is idempotent, so the CLI pairs it
+    with ``create_engine`` everywhere it opens a store, the way the MCP server,
+    the workspace registry and the FastAPI app already do in their lifespans.
+
+    Opportunistic, not a precondition, which is the part worth having in one
+    place. Reconciling needs a write, and a store can be read-only or
+    exclusively locked by a concurrent ``repowise update``. Aborting there would
+    be a regression twice over: a store already on the current schema needs no
+    DDL and would have read fine, and where the drift is real the following
+    query fails with the ``no such column`` that the failure shield turns into
+    "this index predates the installed repowise, run repowise update" — a
+    better answer than whichever write error stopped the repair.
+
+    Takes a URL rather than an engine so the repair runs on its own short-timeout
+    connection: the caller's engine keeps the full 30s window for the work it was
+    opened to do, and a contended repair gives up in two seconds instead of
+    stalling the command behind it.
+
+    Never CREATES a store. ``init_db`` on a fresh path would materialise a
+    42-table file, so a read command run in a repo that was never indexed would
+    leave a database behind where the user expects "not indexed yet".
+    """
+    from repowise.core.persistence import create_engine, init_db
+
+    if _missing_sqlite_file(db_url):
+        return
+
+    engine = create_engine(db_url, busy_timeout_ms=_RECONCILE_BUSY_TIMEOUT_MS)
+    try:
+        with contextlib.suppress(Exception):
+            await init_db(engine)
+    finally:
+        with contextlib.suppress(Exception):
+            await engine.dispose()
+
+
+def _missing_sqlite_file(db_url: str) -> bool:
+    """True when *db_url* names a SQLite file that does not exist yet.
+
+    Only SQLite is checked: a server-backed URL has no file to create, and the
+    caller is not the component that decides whether that database should exist.
+    """
+    if not db_url.startswith("sqlite"):
+        return False
+    _, sep, tail = db_url.partition(":///")
+    if not sep or not tail or tail.startswith(":memory:"):
+        return False
+    return not Path(tail).exists()
+
+
 def db_configured() -> bool:
     """True when ``REPOWISE_DB_URL`` or ``REPOWISE_DATABASE_URL`` is set.
 

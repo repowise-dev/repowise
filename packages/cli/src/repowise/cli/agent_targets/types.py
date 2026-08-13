@@ -57,16 +57,16 @@ class Scope(StrEnum):
 class FileAction(StrEnum):
     """What an install or uninstall did to one file.
 
-    Taken from codegraph's installer, which reports one of these per file and
-    renders a log line from it. ``UNCHANGED`` is the one that earns its keep:
-    it means the file was inspected and already held exactly what we would
-    write, which is what makes a re-run byte-identical and stops an idempotent
+    One per file, which is what lets an installer render a real per-file log
+    instead of a summary. ``UNCHANGED`` is the value that earns its keep: it
+    means the file was inspected and already held exactly what we would write,
+    which is what makes a re-run byte-identical and stops an idempotent
     re-install from printing a misleading "updated".
 
-    (The plan called this a 7-value enum; codegraph ships six, and six is what
-    the actions actually are. Its marker-block helper has a seventh internal
-    ``appended`` state, but it is folded into ``updated`` before it reaches a
-    result, so it is not an action a caller can observe.)
+    Six values, not seven. Appending a managed block to a file that did not
+    carry one looks like a distinct action and is not: it is folded into
+    ``UPDATED`` before it reaches a result, because from the caller's side the
+    file existed and now differs.
     """
 
     CREATED = "created"
@@ -75,6 +75,12 @@ class FileAction(StrEnum):
     REMOVED = "removed"
     NOT_FOUND = "not-found"
     KEPT = "kept"
+    #: We tried and could not. Distinct from ``KEPT``, which is a decision, and
+    #: the distinction only earns its keep on the destructive verb: "I chose not
+    #: to touch this" and "I failed to remove this" look identical in a report
+    #: that has one value for both, and they need opposite things from the user.
+    #: Only ``repowise uninstall`` produces it today.
+    FAILED = "failed"
 
 
 class Capability(StrEnum):
@@ -108,9 +114,9 @@ class Tier(StrEnum):
 class DoctorStatus(StrEnum):
     """The four states a target's health can be in.
 
-    Borrowed from tokenjuice's instruction doctor, which is better than
-    codegraph's two-state version for one reason: ``STALE`` is distinct from
-    ``BROKEN``. A hook whose matcher names a tool the host has since renamed is
+    Four rather than the obvious two, for one reason: ``STALE`` has to be
+    distinct from ``BROKEN``. A hook whose matcher names a tool the host has
+    since renamed is
     installed, parses fine, and will never fire — reporting that as "ok" is how
     it stays invisible, and reporting it as "broken" sends the user to fix a
     file that is not damaged.
@@ -169,10 +175,18 @@ class Registration:
 
 @dataclass(frozen=True)
 class FileWrite:
-    """What happened to one file."""
+    """What happened to one file.
+
+    *reason* exists for one action in particular. ``KEPT`` on its own is
+    indistinguishable from a bug: the user asked for a file to go, it is still
+    there, and the row says nothing about whether that was a deliberate refusal
+    or a silent failure. Every ``KEPT`` carries one. The other actions speak for
+    themselves and leave it ``None``.
+    """
 
     path: Path
     action: FileAction
+    reason: str | None = None
 
 
 @dataclass
@@ -189,8 +203,8 @@ class WriteResult:
     #: One-line notes surfaced verbatim, e.g. "Restart the editor to apply."
     notes: list[str] = field(default_factory=list)
 
-    def record(self, path: Path, action: FileAction) -> None:
-        self.files.append(FileWrite(path=path, action=action))
+    def record(self, path: Path, action: FileAction, reason: str | None = None) -> None:
+        self.files.append(FileWrite(path=path, action=action, reason=reason))
 
     def note(self, message: str) -> None:
         self.notes.append(message)
@@ -212,7 +226,10 @@ class WriteResult:
         checks the projection alone.
         """
         return {
-            "files": [{"path": str(f.path), "action": f.action.value} for f in self.files],
+            "files": [
+                {"path": str(f.path), "action": f.action.value, "reason": f.reason}
+                for f in self.files
+            ],
             "notes": list(self.notes),
         }
 
@@ -230,6 +247,15 @@ class DoctorReport:
     status: DoctorStatus
     issues: tuple[str, ...] = ()
     fix_command: str | None = None
+    #: Whether ``doctor --repair`` can actually resolve this, i.e. whether
+    #: *fix_command* is something the repair pass performs. False for anything
+    #: whose fix is a host command or a different repowise command.
+    #:
+    #: Without it, ``--repair`` fires a global refresh for a condition refresh
+    #: provably cannot touch, and then prints its "nothing moved" advice, which
+    #: names two conditions the user does not have and omits the one command
+    #: that works. A repair that cannot help should decline, not try.
+    repairable: bool = True
 
     def as_dict(self) -> dict:
         return {
@@ -237,6 +263,7 @@ class DoctorReport:
             "status": self.status.value,
             "issues": list(self.issues),
             "fix_command": self.fix_command,
+            "repairable": self.repairable,
         }
 
 
@@ -245,11 +272,12 @@ class AgentTarget(Protocol):
     """One agent repowise can wire up.
 
     Implementations compose the helpers in :mod:`.formats` rather than
-    inheriting from a base class. codegraph states the rationale and our own
-    evidence agrees: Codex needs TOML plus a hooks JSON, VS Code needs two JSON
-    files one of which may carry comments, and a future Cursor target needs a
-    frontmattered rules file. A base class would need an override hook for each
-    and would force that shape on every target that does not want it.
+    inheriting from a base class. The targets differ too much for one to fit:
+    Codex needs TOML plus a hooks JSON, VS Code needs two JSON files one of
+    which may carry comments, and Cursor needs a JSON config plus a rules file
+    with YAML frontmatter that repowise creates outright. A base class would
+    need an override hook for each and would force that shape on every target
+    that does not want it.
 
     Every method must be safe to call when nothing was ever installed.
     """
@@ -376,6 +404,14 @@ class InstallLifecycle(Protocol):
     checklist rather than one hand-written question per agent, which is what
     stops a fourth agent from meaning a fourth prompt in a fourth module.
     """
+
+    #: The :class:`AgentTarget` id this integration writes for. Declared here
+    #: because the checklist reads it to answer "can ``init`` act on this
+    #: agent", which is a question the registry alone cannot: a target can be
+    #: registered without ``init`` having a writer for it. Two of the three
+    #: implementations already carried it; the third did not, and the gap was
+    #: invisible until something asked all of them at once.
+    integration_id: str
 
     def write_project_files(
         self, console_obj: object, repo_path: Path, options: object

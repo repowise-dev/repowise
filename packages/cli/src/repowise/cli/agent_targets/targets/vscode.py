@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..formats.server_entry import RemoteServerEntryError
 from ..types import (
     Capability,
     DoctorReport,
@@ -87,6 +88,7 @@ def write_mcp_config(repo_path: Path) -> FileWrite:
         merge_server_entries,
         write_json_config,
     )
+    from ..formats.server_entry import is_remote_entry
 
     config_path = mcp_config_path(repo_path)
     new_entry = {"repowise": server_entry(repo_path)}
@@ -97,6 +99,14 @@ def write_mcp_config(repo_path: Path) -> FileWrite:
         if not isinstance(servers, dict):
             raise ValueError("mcp.json 'servers' must be a JSON object")
         servers = dict(servers)
+        stored = servers.get("repowise")
+        if isinstance(stored, dict) and is_remote_entry(stored, local_type="stdio"):
+            # VS Code documents ``"type": "http"`` in this file, so a hand-wired
+            # remote repowise server is a shape that really turns up. See
+            # ``formats.server_entry``: the merge would force ``type`` back to
+            # ``stdio`` and keep the ``url`` beside it, leaving an entry that is
+            # neither.
+            raise RemoteServerEntryError("mcp.json 'repowise' is wired to a remote server")
         merge_server_entries(servers, new_entry)
         existing["servers"] = servers
         merged = existing
@@ -130,44 +140,96 @@ def write_extensions_config(repo_path: Path) -> FileWrite:
     return FileWrite(path=config_path, action=write_json_config(config_path, merged))
 
 
-def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction]:
+def _remove_server_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
     """Drop ``servers.repowise``, preserving sibling servers."""
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
     if not config_path.exists():
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     try:
         existing = load_json_object_or_value_error(config_path, "mcp.json")
     except ValueError:
         # Same reason install declines: it is far more likely to be JSONC than
         # damaged, and rewriting it would silently delete the user's comments.
-        return config_path, FileAction.KEPT
+        return config_path, FileAction.KEPT, "not strict JSON, so removing our entry would drop comments"
 
     servers = existing.get("servers")
     if not isinstance(servers, dict) or "repowise" not in servers:
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     servers.pop("repowise")
+
+    # Prune the wrapper and then the file, matching Cursor. Deleting on an empty
+    # *parse* is only sound because the parse above is strict JSON: a file that
+    # got here cannot have held comments, so an empty object really is an empty
+    # file. The YAML and TOML targets must not copy this shortcut, and do not.
+    if not servers:
+        existing.pop("servers", None)
+    if not existing:
+        try:
+            config_path.unlink()
+        except OSError:
+            # Swallowing this would report REMOVED over a file that still holds
+            # our entry. Fall through to the rewrite so the failure stays loud,
+            # from the same os.replace the previous code used.
+            write_json_config(config_path, existing)
+        return config_path, FileAction.REMOVED, None
+
     write_json_config(config_path, existing)
-    return config_path, FileAction.REMOVED
+    return config_path, FileAction.REMOVED, None
 
 
-def _remove_extension_recommendation(config_path: Path) -> tuple[Path, FileAction]:
+def _remove_extension_recommendation(config_path: Path) -> tuple[Path, FileAction, str | None]:
     """Drop our id from ``recommendations``, preserving everyone else's."""
     from ..formats.json_merge import load_json_object_or_value_error, write_json_config
 
     if not config_path.exists():
-        return config_path, FileAction.NOT_FOUND
+        return config_path, FileAction.NOT_FOUND, None
     try:
         existing = load_json_object_or_value_error(config_path, "extensions.json")
     except ValueError:
-        return config_path, FileAction.KEPT
+        return (
+            config_path,
+            FileAction.KEPT,
+            "not strict JSON, so removing our entry would drop comments",
+        )
 
     recommendations = existing.get("recommendations")
     if not isinstance(recommendations, list) or EXTENSION_ID not in recommendations:
-        return config_path, FileAction.NOT_FOUND
-    existing["recommendations"] = [r for r in recommendations if r != EXTENSION_ID]
+        return config_path, FileAction.NOT_FOUND, None
+    remaining = [r for r in recommendations if r != EXTENSION_ID]
+
+    # Same prune, same justification. `extensions.json` holding an empty
+    # recommendations array is a file we created and the user never asked for.
+    if remaining:
+        existing["recommendations"] = remaining
+    else:
+        existing.pop("recommendations", None)
+    if not existing:
+        try:
+            config_path.unlink()
+        except OSError:
+            write_json_config(config_path, existing)
+        return config_path, FileAction.REMOVED, None
+
     write_json_config(config_path, existing)
-    return config_path, FileAction.REMOVED
+    return config_path, FileAction.REMOVED, None
+
+
+def _prune_project_dir(repo_path: Path) -> None:
+    """Remove ``.vscode/`` once uninstall emptied it, and never otherwise.
+
+    ``rmdir`` rather than a recursive delete, so a directory still holding
+    anything at all, ours or the user's ``settings.json``, is left exactly as it
+    is. The symlink guard is Cursor's: following a junction to delete something
+    outside the repo is not a risk worth a tidy directory.
+    """
+    directory = mcp_config_path(repo_path).parent
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    try:
+        directory.rmdir()
+    except OSError:
+        return
 
 
 def detect(repo_path: Path | None = None) -> list[Registration]:
@@ -183,9 +245,14 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
         return []
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         # A JSONC workspace file is unparseable here but may well be wired up.
         # Reporting "not configured" would be a guess, so report nothing.
+        #
+        # ``ValueError`` rather than ``json.JSONDecodeError`` so a file that is
+        # not UTF-8 lands here too. It is a ``UnicodeDecodeError``, which is a
+        # ``ValueError`` and not a ``JSONDecodeError``, so it used to escape a
+        # probe contracted never to raise.
         return []
     servers = data.get("servers")
     if not isinstance(servers, dict) or "repowise" not in servers:
@@ -241,23 +308,55 @@ class VSCodeTarget:
         if repo_path is None:
             raise ValueError("project-scope install needs a repo_path")
 
+        # ``OSError`` alongside ``ValueError`` because the read and the parent
+        # ``mkdir`` both live inside these writers, and neither failure is
+        # exotic: ``.vscode`` can be a plain file, and a config in a shared
+        # checkout can be unreadable. Nothing wraps ``install`` — ``agents
+        # add``, ``agents refresh`` and ``doctor --repair`` all call it bare —
+        # so an escape aborts the run after other agents' configs have already
+        # been written, and prints a traceback instead of the summary naming
+        # them.
         try:
             written = write_mcp_config(repo_path)
             result.record(written.path, written.action)
-        except ValueError:
-            result.record(mcp_config_path(repo_path), FileAction.KEPT)
+        except RemoteServerEntryError:
+            # Before the broader handler below, which it would otherwise reach
+            # as a ``ValueError`` and be described as an unreadable file. It is
+            # a perfectly readable file holding a deliberate choice.
+            result.record(
+                mcp_config_path(repo_path),
+                FileAction.KEPT,
+                'its "repowise" entry names a remote server',
+            )
             result.note(
-                ".vscode/mcp.json left unchanged (not valid JSON; it may contain "
-                'comments). Add a "repowise" server under "servers" manually.'
+                '.vscode/mcp.json left unchanged: its "repowise" entry names a remote '
+                "server, and converting it in place would leave an entry that is "
+                "neither. Run 'repowise agents remove --target=vscode' first if you "
+                "want the local server instead."
+            )
+        except (ValueError, OSError):
+            result.record(
+                mcp_config_path(repo_path),
+                FileAction.KEPT,
+                "unreadable, or not strict JSON, so rewriting it would lose text",
+            )
+            result.note(
+                ".vscode/mcp.json left unchanged (unreadable, or not valid JSON; it "
+                'may contain comments). Add a "repowise" server under "servers" manually.'
             )
         try:
             written = write_extensions_config(repo_path)
             result.record(written.path, written.action)
-        except ValueError:
-            result.record(extensions_config_path(repo_path), FileAction.KEPT)
+        except (ValueError, OSError):
+            result.record(
+                extensions_config_path(repo_path),
+                FileAction.KEPT,
+                "unreadable, or not strict JSON, so rewriting it would lose text",
+            )
             result.note(
-                ".vscode/extensions.json left unchanged (not valid JSON; it may "
-                f'contain comments). Add "{EXTENSION_ID}" to "recommendations" manually.'
+                ".vscode/extensions.json left unchanged (unreadable, or not valid JSON; "
+                f'it may contain comments). Add "{EXTENSION_ID}" to "recommendations" '
+                "manually."
             )
         return result
 
@@ -275,6 +374,11 @@ class VSCodeTarget:
             return result
         result.record(*_remove_server_entry(mcp_config_path(repo_path)))
         result.record(*_remove_extension_recommendation(extensions_config_path(repo_path)))
+        # Only when something of ours actually went, matching Cursor. Pruning
+        # unconditionally deleted a `.vscode/` that happened to be empty and
+        # that this uninstall had just reported finding nothing in.
+        if any(written.action is FileAction.REMOVED for written in result.files):
+            _prune_project_dir(repo_path)
         return result
 
     def print_config(self, scope: Scope, *, repo_path: Path | None = None) -> str:
