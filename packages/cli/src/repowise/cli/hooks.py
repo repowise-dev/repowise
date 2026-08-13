@@ -105,6 +105,16 @@ def _hooks_dir(repo_path: Path) -> Path | None:
     metadata dir — so ``root / ".git" / "hooks"`` is ``NotADirectoryError``
     territory. Ask git for the real hooks path so both layouts work, and fall
     back to the ``.git/hooks`` heuristic when git is unavailable or not a repo.
+
+    ``git rev-parse --git-path hooks`` also honours ``core.hooksPath``, which
+    husky and lefthook both set. A *global* ``core.hooksPath`` (say
+    ``~/.githooks``) resolves outside any repo, so the hook is shared:
+    ``status`` then reports installed from every repo, and ``uninstall`` run
+    in one repo removes it for all of them. Following the config is still
+    correct, because that directory is genuinely where git looks, and the
+    hook body is repo-scoped at runtime -- it resolves its own ``$ROOT`` and
+    returns early unless ``$ROOT/.repowise`` exists -- so a shared hook is
+    inert in repos with no index rather than wrong.
     """
     try:
         result = subprocess.run(
@@ -116,15 +126,38 @@ def _hooks_dir(repo_path: Path) -> Path | None:
         )
         if result.returncode == 0:
             p = Path(result.stdout.strip())
-            if p.is_absolute():
-                return p
-            return repo_path / p
+            if not p.is_absolute():
+                p = repo_path / p
+            return _husky_user_hook_dir(p)
     except Exception:
         pass
     root = _git_root(repo_path)
     if root is None:
         return None
     return root / ".git" / "hooks"
+
+
+def _husky_user_hook_dir(hooks_dir: Path) -> Path:
+    """Redirect husky's generated shim directory to its user-hook directory.
+
+    husky points ``core.hooksPath`` at ``.husky/_``, which it regenerates on
+    every install and gitignores wholesale (``.husky/_/.gitignore`` is ``*``), so
+    a hook written there is deleted by the next ``npm install``. husky's shim
+    dispatches to ``.husky/<hook-name>`` one level up, which is the committed,
+    durable location.
+    """
+    if hooks_dir.name != "_":
+        return hooks_dir
+    # Only remap a directory that really is husky's, not any directory named
+    # "_". The generated helpers are the strongest signal, but they are absent
+    # in a fresh worktree where husky has not been installed yet; there the
+    # parent being a ``.husky`` directory is what identifies the layout.
+    is_husky = any((hooks_dir / marker).exists() for marker in ("h", "husky.sh"))
+    if not (is_husky or hooks_dir.parent.name == ".husky"):
+        return hooks_dir
+    return hooks_dir.parent
+
+
 
 
 def _strip_legacy_block(content: str) -> tuple[str, bool]:
