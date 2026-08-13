@@ -8,17 +8,17 @@
 {#- ``default(..., true)`` so an absent *or* empty title both fall back: the
     caller names the whole set at once and a caller that does not is still
     entitled to a page. #}
-# {{ page_title | default("Circular Dependency: " ~ ctx.scc_id, true) }}
+# {{ page_title | default(labels.circular_dependency ~ ": " ~ ctx.scc_id, true) }}
 
-{{ ctx.files | length }} files import each other in a loop, directly or transitively. Nothing in this group can be loaded, tested or extracted without the rest of it.
+{{ labels.cycle_overview.format(count=ctx.files | length) }}
 
 {#- The id is no longer in the heading, and it is what logs, links and the
     dependency tooling call this cycle, so it is stated once rather than being
     findable only in the URL. #}
 
-**Cycle id:** `{{ ctx.scc_id }}`
+**{{ labels.cycle_id }}:** `{{ ctx.scc_id }}`
 
-## Files in the cycle
+## {{ labels.files_in_cycle }}
 {# Capped, here and in the two listings below: a test-suite cycle routed
    through a shared conftest can run to 80+ files and 200+ edges, and a page
    that dumps all of them is 50KB of noise. The decouple ranking is the part
@@ -27,25 +27,25 @@
 - `{{ f }}`
 {% endfor %}
 {%- if ctx.files | length > 30 %}
-- ...and {{ ctx.files | length - 30 }} more.
+- ...{{ labels.and_more.format(count=ctx.files | length - 30) }}
 {% endif %}
 
 {% if ctx.cross_imports %}
-## The loop
+## {{ labels.the_loop }}
 {% for edge in ctx.cross_imports[:40] %}
 - `{{ edge.from }}` → `{{ edge.to }}`
 {% endfor %}
 {%- if ctx.cross_imports | length > 40 %}
-- ...and {{ ctx.cross_imports | length - 40 }} more edges.
+- ...{{ labels.and_more_edges.format(count=ctx.cross_imports | length - 40) }}
 {% endif %}
 {% endif %}
 
 {% if decouple_ranking %}
-## Where to break it
+## {{ labels.where_to_break }}
 
-Ranked by how many of the cycle's edges each file carries. The file at the top is the most entangled, so it is usually where an extracted interface or a moved import buys the most.
+{{ labels.decouple_ranking_description }}
 
-| File | Imports in cycle | Imported by | Total |
+| {{ labels.file }} | {{ labels.imports_in_cycle }} | {{ labels.imported_by }} | {{ labels.total }} |
 | --- | --- | --- | --- |
 {% for r in decouple_ranking -%}
 | `{{ r.path }}` | {{ r.out }} | {{ r["in"] }} | {{ r.total }} |
@@ -53,7 +53,7 @@ Ranked by how many of the cycle's edges each file carries. The file at the top i
 {% endif %}
 
 {% if ctx.member_symbols %}
-## Symbols defined in the cycle
+## {{ labels.symbols_defined_in_cycle }}
 {% for m in ctx.member_symbols[:20] %}
 ### `{{ m.file_path }}`
 {% for s in m.symbols[:15] %}
@@ -61,9 +61,9 @@ Ranked by how many of the cycle's edges each file carries. The file at the top i
 {% endfor %}
 {% endfor %}
 {% if ctx.member_symbols | length > 20 %}
-*Symbols for the remaining {{ ctx.member_symbols | length - 20 }} files are on their own file pages.*
+*{{ labels.remaining_symbols.format(count=ctx.member_symbols | length - 20) }}*
 {% endif %}
 {% endif %}
 
-**Total symbols in cycle:** {{ ctx.total_symbols }}
+**{{ labels.total_symbols_in_cycle }}:** {{ ctx.total_symbols }}
 {% include "_footer.j2" %}

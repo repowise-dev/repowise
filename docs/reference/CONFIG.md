@@ -247,8 +247,12 @@ regenerates the wiki). Power users can define their own style under
 Note: hand-editing `wiki_style` here and running `update` does not regenerate
 existing pages, use `restyle`.
 
-`language` controls the natural language of generated wiki content (prose only;
-code, file paths, and symbol names stay untranslated). Set it with
+`language` controls the natural language of generated wiki content (code, file
+paths, and symbol names stay untranslated). It reaches both the model-written
+pages and the headings and fixed sentences of the template-rendered ones — file,
+symbol, infrastructure, cycle and API-contract pages — for the languages that
+have a label catalog. A language without one keeps the English headings on those
+pages while the model-written prose is still translated. Set it with
 `init --language <code>` or pick it in advanced interactive mode; it persists
 here so `update` regenerates changed pages in the same language. Unknown codes
 fall back to English with a warning. As with `wiki_style`, changing it later

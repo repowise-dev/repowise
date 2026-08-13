@@ -27,6 +27,7 @@ from repowise.core.generation.page_generator.structural import (
     oneline,
     signature,
 )
+from repowise.core.generation.structural_labels import resolve_structural_labels
 from repowise.core.persistence.crud import upsert_page, upsert_repository
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.search import FullTextSearch
@@ -54,6 +55,7 @@ def jinja_env() -> jinja2.Environment:
     env.filters.setdefault("oneline", oneline)
     env.filters.setdefault("as_markdown", as_markdown)
     env.filters.setdefault("signature", signature)
+    env.globals["labels"] = resolve_structural_labels(None)
     return env
 
 

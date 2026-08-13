@@ -21,16 +21,17 @@
 {%- set public_syms = ctx.symbols | selectattr("visibility", "equalto", "public") | list -%}
 # {{ ctx.file_path }}
 
-## Overview
+## {{ labels.overview }}
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` is a {{ ctx.language }} {% if ctx.is_entry_point %}entry-point {% endif %}{% if ctx.is_test %}test {% endif %}source file{% if ctx.kg_layer_name %} in the {{ ctx.kg_layer_name }} layer{% endif %}{% if ctx.community_label %}, part of the {{ ctx.community_label }} module cluster{% endif %}.{% endif %}
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` {{ labels.is_a }} {{ ctx.language }} {% if ctx.is_entry_point %}{{ labels.entry_point }} {% endif %}{% if ctx.is_test %}{{ labels.test }} {% endif %}{{ labels.source_file }}{% if ctx.kg_layer_name %} {{ labels.in_layer.format(layer=ctx.kg_layer_name) }}{% endif %}{% if ctx.community_label %}, {{ labels.part_of_module_cluster_intro.format(community=ctx.community_label) }}{% endif %}.{% endif %}
 {%- if public_syms %}
+{%- set symbol_word = labels.public_symbol_plural if public_syms | length != 1 else labels.public_symbol_singular %}
 
-It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | length != 1 else "" }}{% if ctx.dependencies %} and depends on {{ ctx.dependencies | length }} other file{{ "s" if ctx.dependencies | length != 1 else "" }}{% endif %}.
+{% if ctx.dependencies %}{{ labels.exposes_symbols_and_depends.format(symbol_count=public_syms | length, symbol_word=symbol_word, file_count=ctx.dependencies | length, file_word=labels.other_file_plural if ctx.dependencies | length != 1 else labels.other_file_singular) }}{% else %}{{ labels.exposes_symbols.format(symbol_count=public_syms | length, symbol_word=symbol_word) }}{% endif %}
 
-## Public API
+## {{ labels.public_api }}
 
-| Symbol | Kind | Signature |
+| {{ labels.symbol }} | {{ labels.kind }} | {{ labels.signature }} |
 | --- | --- | --- |
 {%- for s in public_syms %}
 | `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
@@ -38,36 +39,36 @@ It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | lengt
 {%- endif %}
 {%- if ctx.dependencies %}
 
-## Depends on
+## {{ labels.depends_on }}
 {% for dep in ctx.dependencies[:25] %}
 - `{{ dep }}`
 {%- endfor %}
 {%- if ctx.dependencies | length > 25 %}
 
-_and {{ ctx.dependencies | length - 25 }} more._
+_{{ labels.and_more.format(count=ctx.dependencies | length - 25) }}_
 {%- endif %}
 {%- endif %}
 {%- if ctx.dependents %}
 
-## Used by
+## {{ labels.used_by }}
 
-Imported by {{ ctx.dependents | length }} file{{ "s" if ctx.dependents | length != 1 else "" }} in this repository.
+{{ labels.imported_by_files.format(count=ctx.dependents | length, file_word=labels.file_plural if ctx.dependents | length != 1 else labels.file_singular) }}
 {% for dep in ctx.dependents[:25] %}
 - `{{ dep }}`
 {%- endfor %}
 {%- if ctx.dependents | length > 25 %}
 
-_and {{ ctx.dependents | length - 25 }} more._
+_{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
 {%- endif %}
 {%- endif %}
 {%- if ctx.community_label or ctx.kg_layer_name %}
 
-## Usage Notes
+## {{ labels.usage_notes }}
 {% if ctx.community_label %}
-Part of the **{{ ctx.community_label }}** module cluster.
+{{ labels.part_of_module_cluster.format(community=ctx.community_label) }}
 {%- endif %}
 {%- if ctx.kg_layer_name %}
-**Layer:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **Role:** {{ ctx.kg_layer_role }}{% endif %}
+**{{ labels.layer }}:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **{{ labels.role }}:** {{ ctx.kg_layer_role }}{% endif %}
 {%- endif %}
 {%- endif %}
 {#- Question-shaped text, built from structure rather than prose.
@@ -89,18 +90,18 @@ Part of the **{{ ctx.community_label }}** module cluster.
 -#}
 {%- set questions = [] -%}
 {%- if public_syms -%}
-{%- set _ = questions.append("What does `" ~ ctx.file_path ~ "` export?") -%}
-{%- set _ = questions.append("Where is `" ~ public_syms[0].name ~ "` defined?") -%}
+{%- set _ = questions.append(labels.question_exports.format(path=ctx.file_path)) -%}
+{%- set _ = questions.append(labels.question_where_defined.format(symbol=public_syms[0].name)) -%}
 {%- endif -%}
 {%- if ctx.dependents -%}
-{%- set _ = questions.append("What imports `" ~ ctx.file_path ~ "`?") -%}
+{%- set _ = questions.append(labels.question_what_imports.format(path=ctx.file_path)) -%}
 {%- endif -%}
 {%- if ctx.dependencies -%}
-{%- set _ = questions.append("What does `" ~ ctx.file_path ~ "` depend on?") -%}
+{%- set _ = questions.append(labels.question_depends_on.format(path=ctx.file_path)) -%}
 {%- endif -%}
 {%- if questions %}
 
-## Questions this page answers
+## {{ labels.questions_heading }}
 {% for q in questions[:3] %}
 - {{ q }}
 {%- endfor %}
@@ -125,7 +126,7 @@ Part of the **{{ ctx.community_label }}** module cluster.
 -#}
 {%- if ctx.file_vocabulary %}
 
-## In the code
+## {{ labels.in_the_code }}
 
 {{ ctx.file_vocabulary }}
 {%- endif %}

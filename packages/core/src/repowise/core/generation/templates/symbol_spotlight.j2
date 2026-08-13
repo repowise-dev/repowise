@@ -17,7 +17,7 @@
 -#}
 # {{ ctx.qualified_name }}
 
-**Kind:** {{ ctx.kind }}{% if ctx.is_async %} (async){% endif %} | **Defined in:** `{{ ctx.file_path }}`{% if ctx.complexity_estimate %} | **Estimated complexity:** {{ ctx.complexity_estimate }}{% endif %}
+**{{ labels.kind }}:** {{ ctx.kind }}{% if ctx.is_async %} ({{ labels.async_marker }}){% endif %} | **{{ labels.defined_in }}:** `{{ ctx.file_path }}`{% if ctx.complexity_estimate %} | **{{ labels.estimated_complexity }}:** {{ ctx.complexity_estimate }}{% endif %}
 {%- if ctx.signature %}
 
 ```
@@ -25,28 +25,28 @@
 ```
 {%- endif %}
 
-## Overview
+## {{ labels.overview }}
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.symbol_name }}` is {{ "an" if ctx.kind and ctx.kind[0] in "aeiou" else "a" }} {{ ctx.kind or "symbol" }} defined in `{{ ctx.file_path }}`. It carries no docstring.{% endif %}
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}{{ labels.symbol_overview.format(symbol=ctx.symbol_name, article=labels.article_an if ctx.kind and ctx.kind[0] in "aeiou" else labels.article_a, kind=ctx.kind or labels.symbol_kind_fallback, path=ctx.file_path) }}{% endif %}
 {%- if ctx.decorators %}
 
-## Decorators
+## {{ labels.decorators }}
 {% for d in ctx.decorators %}
 - `{{ d }}`
 {%- endfor %}
 {%- endif %}
 {%- if ctx.callers %}
 
-## Where it is used
+## {{ labels.where_used }}
 
-{{ ctx.callers | length }} file{{ "s" if ctx.callers | length != 1 else "" }} import{{ "" if ctx.callers | length != 1 else "s" }} the module that defines it. These are import-level references, not confirmed call sites.
+{{ labels.importers_summary.format(count=ctx.callers | length, file_word=labels.file_plural if ctx.callers | length != 1 else labels.file_singular, import_verb=labels.import_verb_plural if ctx.callers | length != 1 else labels.import_verb_singular) }}
 {% for c in ctx.callers %}
 - `{{ c }}`
 {%- endfor %}
 {%- endif %}
 {%- if ctx.source_body %}
 
-## Implementation
+## {{ labels.implementation }}
 
 ```
 {{ ctx.source_body }}
@@ -63,12 +63,12 @@
     importers — fewer than the file page, and honest rather than padded.
 #}
 
-## Questions this page answers
+## {{ labels.questions_heading }}
 
-- Where is `{{ ctx.symbol_name }}` defined?
-- What is `{{ ctx.qualified_name }}`?
+- {{ labels.question_where_defined.format(symbol=ctx.symbol_name) }}
+- {{ labels.question_what_is.format(symbol=ctx.qualified_name) }}
 {%- if ctx.callers %}
-- Which files import the module that defines `{{ ctx.symbol_name }}`?
+- {{ labels.question_which_files_import.format(symbol=ctx.symbol_name) }}
 {%- endif %}
 
 {% include "_footer.j2" %}

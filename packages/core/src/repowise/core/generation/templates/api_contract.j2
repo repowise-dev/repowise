@@ -6,30 +6,30 @@
     accept, return or do. Listing the shapes and the source is the most this
     page can truthfully offer until a model rewrites it.
 -#}
-# API Contract: {{ ctx.file_path }}
+# {{ labels.api_contract }}: {{ ctx.file_path }}
 
-**Language:** {{ ctx.language }} | **Operations:** {{ ctx.endpoints | length }} | **Types:** {{ ctx.schemas | length }}
+**{{ labels.language }}:** {{ ctx.language }} | **{{ labels.operations }}:** {{ ctx.endpoints | length }} | **{{ labels.types }}:** {{ ctx.schemas | length }}
 
-## Overview
+## {{ labels.overview }}
 
-`{{ ctx.file_path }}` was classified as an API surface. It declares {{ ctx.endpoints | length }} callable{{ "s" if ctx.endpoints | length != 1 else "" }} and {{ ctx.schemas | length }} type{{ "s" if ctx.schemas | length != 1 else "" }}. The list below is taken from the parsed symbols, so it reflects what the file *declares*; request and response semantics are not derivable from structure alone.
+{{ labels.api_contract_overview.format(path=ctx.file_path, endpoint_count=ctx.endpoints | length, endpoint_word=labels.callable_plural if ctx.endpoints | length != 1 else labels.callable_singular, schema_count=ctx.schemas | length, schema_word=labels.type_plural if ctx.schemas | length != 1 else labels.type_singular) }}
 
 {% if ctx.endpoints %}
-## Operations
+## {{ labels.operations }}
 {% for e in ctx.endpoints %}
 - `{{ e | oneline(160) }}`
 {% endfor %}
 {% endif %}
 
 {% if ctx.schemas %}
-## Types
+## {{ labels.types }}
 {% for s in ctx.schemas %}
 - `{{ s }}`
 {% endfor %}
 {% endif %}
 
 {% if ctx.raw_content %}
-## Source
+## {{ labels.source }}
 
 ```{{ ctx.language }}
 {{ ctx.raw_content }}

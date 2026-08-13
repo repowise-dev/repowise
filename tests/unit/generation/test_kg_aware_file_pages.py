@@ -311,6 +311,7 @@ class TestFilePageTemplate:
             oneline,
             signature,
         )
+        from repowise.core.generation.structural_labels import resolve_structural_labels
 
         template_dir = (
             Path(__file__).resolve().parents[3]
@@ -328,6 +329,7 @@ class TestFilePageTemplate:
         env.filters["oneline"] = oneline
         env.filters["as_markdown"] = as_markdown
         env.filters["signature"] = signature
+        env.globals["labels"] = resolve_structural_labels(None)
         return env
 
     def test_file_page_renders_kg_layer(self, jinja_env):

@@ -33,6 +33,7 @@ from ..context.evidence import (
 )
 from ..context_assembler import ContextAssembler, FilePageContext
 from ..house_vocabulary import cell
+from ..languages import sanitize_language_code
 from ..models import (
     MODEL_PAGE_CONFIDENCE,
     GeneratedPage,
@@ -41,6 +42,7 @@ from ..models import (
     compute_source_hash,
 )
 from ..report import reset_house_terms
+from ..structural_labels import resolve_structural_labels, structural_page_title
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
@@ -208,6 +210,13 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # quotes a shell pipeline. Without this every column to the right of
         # one shifts.
         self._jinja_env.filters.setdefault("table_cell", cell)
+        # Fixed copy for the deterministic templates, in the configured
+        # language. A global rather than a per-render kwarg because every
+        # structural render path would otherwise have to remember to pass it,
+        # and under StrictUndefined the one that forgot would raise. Assigned,
+        # not setdefault-ed: an env handed to two generators must end up with
+        # the language of the one rendering through it.
+        self._jinja_env.globals["labels"] = resolve_structural_labels(self._language)
 
     # ------------------------------------------------------------------
     # generate_all — orchestration (delegates to orchestrate.py)
@@ -310,7 +319,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         page = self._structural_page(
             page_type="file_page",
             target_path=parsed.file_info.path,
-            title=f"File: {parsed.file_info.path}",
+            title=structural_page_title(self._language, "file_page", parsed.file_info.path),
             template="file_page.j2",
             subject_hash=parsed.content_hash or "",
             ctx=ctx,
@@ -403,11 +412,10 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         base_system = base_system + self._style.system_prompt_suffix(
             is_onboarding=page_type == ONBOARDING_PAGE_TYPE
         )
-        # Sanitize the configured language code: lower, strip, drop anything that isn't
-        # alphanumeric or underscore. Prevents user-supplied config from injecting
-        # newlines or extra instructions into the system prompt.
-        raw = (self._language or "en").lower().strip()
-        lang_code = "".join(ch for ch in raw if ch.isalnum() or ch == "_")
+        # Sanitized before it reaches the prompt: user-supplied config must not be
+        # able to inject newlines or extra instructions here. Shared with the
+        # structural-label lookup so both paths agree on what " DE " means.
+        lang_code = sanitize_language_code(self._language)
         if lang_code not in SUPPORTED_LANGUAGES:
             if lang_code != "en":
                 log.warning("unknown_language_code", code=lang_code, fallback="en")

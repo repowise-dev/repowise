@@ -11,7 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.generation.context_assembler import ApiContractContext, ContextAssembler
+from repowise.core.generation.context_assembler import (
+    ApiContractContext,
+    ContextAssembler,
+    FilePageContext,
+    InfraPageContext,
+    SccPageContext,
+    SymbolSpotlightContext,
+)
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.onboarding.subkinds.active_landscape import (
     ActiveLandscapeContext,
@@ -23,12 +30,26 @@ from repowise.core.generation.onboarding.subkinds.getting_started import (
     ReadmeSection,
 )
 from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.generation.structural_labels import structural_page_title
 from repowise.core.providers.llm.template import TemplateProvider
 
 
 @pytest.fixture
 def generator() -> PageGenerator:
     config = GenerationConfig(deterministic=True)
+    return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+
+
+@pytest.fixture
+def german_generator() -> PageGenerator:
+    config = GenerationConfig(deterministic=True, language="de")
+    return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
+
+
+@pytest.fixture
+def klingon_generator() -> PageGenerator:
+    """A configured language with no label catalog of its own."""
+    config = GenerationConfig(deterministic=True, language="tlh")
     return PageGenerator(TemplateProvider(), ContextAssembler(config), config)
 
 
@@ -357,3 +378,205 @@ def test_module_page_of_root_files_says_so(generator):
 
     assert "Repository root" in page.content
     assert "`.`" not in page.content
+
+
+# ---------------------------------------------------------------------------
+# Localization (#1092). These pages are rendered from a template with no model
+# in the loop, so the ``language`` setting reaches them through the label
+# catalog or not at all.
+# ---------------------------------------------------------------------------
+
+
+def _file_ctx() -> FilePageContext:
+    return FilePageContext(
+        file_path="src/service/parser.py",
+        language="python",
+        docstring=None,
+        symbols=[
+            {
+                "name": "parse_file",
+                "kind": "function",
+                "visibility": "public",
+                "signature": "def parse_file(p: str) -> Parsed",
+            }
+        ],
+        imports=[],
+        exports=[],
+        pagerank_score=0.0,
+        betweenness_score=0.0,
+        community_id=0,
+        dependents=["src/pipeline.py"],
+        dependencies=["src/models.py"],
+        is_api_contract=False,
+        is_entry_point=True,
+        is_test=False,
+        parse_errors=[],
+        estimated_tokens=0,
+        community_label="parsing",
+        kg_layer_name="ingestion",
+        kg_layer_role="parses source",
+        file_vocabulary="tokenizer visitor",
+    )
+
+
+def _symbol_ctx() -> SymbolSpotlightContext:
+    return SymbolSpotlightContext(
+        symbol_name="parse_file",
+        qualified_name="parser.ASTParser.parse_file",
+        kind="method",
+        signature="def parse_file(self, fi, src) -> ParsedFile",
+        docstring=None,
+        file_path="src/parser.py",
+        decorators=["@lru_cache"],
+        is_async=True,
+        complexity_estimate=7,
+        callers=["src/pipeline.py"],
+        source_body="def parse_file(self):\n    return ...",
+    )
+
+
+def _scc_ctx() -> SccPageContext:
+    return SccPageContext(
+        scc_id="scc-001",
+        files=["src/a.py", "src/b.py"],
+        cycle_description="",
+        total_symbols=2,
+        member_symbols=[{"file_path": "src/a.py", "symbols": [{"name": "f", "signature": ""}]}],
+        cross_imports=[{"from": "src/a.py", "to": "src/b.py"}],
+    )
+
+
+def test_file_page_renders_german_headings_and_prose(german_generator):
+    ctx = _file_ctx()
+    page = german_generator._structural_page(
+        page_type="file_page",
+        target_path=ctx.file_path,
+        title=structural_page_title("de", "file_page", ctx.file_path),
+        template="file_page.j2",
+        ctx=ctx,
+    )
+
+    assert page.title == "Datei: src/service/parser.py"
+    for heading in (
+        "## Überblick",
+        "## Öffentliche API",
+        "## Abhängigkeiten",
+        "## Wird verwendet von",
+        "## Nutzungshinweise",
+        "## Fragen, die diese Seite beantwortet",
+        "## Im Code",
+    ):
+        assert heading in page.content, heading
+    assert "Sie stellt 1 öffentliches Symbol bereit" in page.content
+    assert "Importiert von 1 Datei in diesem Repository." in page.content
+    # Identifiers are never translated, in any language.
+    assert "`src/service/parser.py`" in page.content
+    assert "`parse_file`" in page.content
+    assert "| `src/models.py`" not in page.content and "- `src/models.py`" in page.content
+
+
+def test_symbol_spotlight_renders_german(german_generator):
+    page = german_generator._structural_symbol_spotlight(
+        _symbol_ctx(),
+        "src/parser.py::parse_file",
+        structural_page_title("de", "symbol_spotlight", "parser.ASTParser.parse_file"),
+    )
+
+    assert page.title == "Symbol: parser.ASTParser.parse_file"
+    assert "**Art:** method (asynchron)" in page.content
+    assert "## Wo es verwendet wird" in page.content
+    assert "## Implementierung" in page.content
+    assert "keine bestätigten Aufrufstellen" in page.content
+
+
+def test_infra_and_api_contract_pages_render_german(german_generator):
+    infra = german_generator._structural_infra_page(
+        InfraPageContext(
+            file_path="Dockerfile", language="dockerfile", raw_content="FROM x\n", targets=["build"]
+        ),
+        "Dockerfile",
+        structural_page_title("de", "infra_page", "Dockerfile"),
+    )
+    assert infra.title == "Infrastruktur: Dockerfile"
+    assert infra.content.startswith("# Infrastruktur: Dockerfile")
+    assert "## Deklarierte Ziele" in infra.content
+    assert "Sie deklariert 1 benanntes Ziel, unten aufgeführt." in infra.content
+    assert "## Quelltext" in infra.content
+
+    api = german_generator._structural_api_contract(
+        ApiContractContext(
+            file_path="api/routes.py",
+            language="python",
+            raw_content="",
+            endpoints=["def create() -> Response"],
+            schemas=["Payload"],
+        ),
+        "api/routes.py",
+        structural_page_title("de", "api_contract", "api/routes.py"),
+    )
+    assert api.title == "API-Vertrag: api/routes.py"
+    assert "## Operationen" in api.content
+    assert "## Typen" in api.content
+    assert "1 aufrufbare Operation und 1 Typ" in api.content
+
+
+def test_scc_page_renders_german(german_generator):
+    page = german_generator._structural_scc_page(
+        _scc_ctx(), "scc-001", structural_page_title("de", "scc_page", "scc-001")
+    )
+
+    assert page.title == "Zyklische Abhängigkeit: scc-001"
+    assert "**Zyklus-ID:** `scc-001`" in page.content
+    assert "## Dateien im Zyklus" in page.content
+    assert "## Die Schleife" in page.content
+    assert "**Symbole insgesamt im Zyklus:** 2" in page.content
+
+
+def test_the_footer_is_localized_on_every_structural_page(german_generator):
+    ctx = _file_ctx()
+    page = german_generator._structural_page(
+        page_type="file_page",
+        target_path=ctx.file_path,
+        title="x",
+        template="file_page.j2",
+        ctx=ctx,
+    )
+    assert "Aus dem Code selbst erstellt" in page.content
+    assert "Built from the code itself" not in page.content
+
+
+def test_an_unsupported_language_renders_exactly_what_english_does(generator, klingon_generator):
+    """The acceptance criterion from #1092: never a partial mix, never a raise."""
+    ctx = _file_ctx()
+    english = generator._structural_page(
+        page_type="file_page",
+        target_path=ctx.file_path,
+        title="x",
+        template="file_page.j2",
+        ctx=ctx,
+    )
+    klingon = klingon_generator._structural_page(
+        page_type="file_page",
+        target_path=ctx.file_path,
+        title="x",
+        template="file_page.j2",
+        ctx=ctx,
+    )
+    assert klingon.content == english.content
+    assert structural_page_title("tlh", "file_page", "src/a.py") == structural_page_title(
+        None, "file_page", "src/a.py"
+    )
+
+
+def test_a_template_change_re_renders_structural_pages_for_the_right_reason(
+    generator, german_generator
+):
+    """Language is folded into the structural fingerprint, so switching it
+    marks the page as rendered by an older configuration and ``update``
+    redoes it. Asserted here so a future reuse-hash change cannot quietly make
+    a German repository keep its English pages."""
+    english_key = generator._structural_content_hash("file_page.j2", "subject-hash")
+    german_key = german_generator._structural_content_hash("file_page.j2", "subject-hash")
+
+    assert english_key and german_key
+    assert english_key != german_key
