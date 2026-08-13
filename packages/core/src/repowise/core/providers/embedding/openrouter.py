@@ -19,6 +19,8 @@ import math
 import os
 from typing import ClassVar
 
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
+
 
 class OpenRouterEmbedder:
     """OpenRouter embedding adapter implementing the repowise Embedder protocol.
@@ -48,7 +50,7 @@ class OpenRouterEmbedder:
         self,
         api_key: str | None = None,
         model: str = "google/gemini-embedding-001",
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = None,
         dimensions: int | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
@@ -65,7 +67,9 @@ class OpenRouterEmbedder:
                 f"or pick a known model: {known}."
             )
         self._model = model
-        self._timeout = timeout
+        self._timeout = resolve_embedding_timeout(
+            timeout, self._DEFAULT_TIMEOUT, provider_env="OPENROUTER_EMBEDDING_TIMEOUT"
+        )
         # Resolve declared width: explicit arg > REPOWISE_EMBEDDING_DIMS > _DIMS table.
         if dimensions is None:
             env = os.environ.get("REPOWISE_EMBEDDING_DIMS")

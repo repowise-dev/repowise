@@ -32,6 +32,8 @@ import math
 import os
 from typing import Any, ClassVar
 
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
+
 
 class OpenAIEmbedder:
     """OpenAI embedding model adapter implementing the repowise Embedder protocol.
@@ -53,14 +55,15 @@ class OpenAIEmbedder:
         "text-embedding-ada-002": 1536,
     }
 
-    # Default timeout for embedding API calls (seconds).
+    # Also bounds the query path, where the SDK retries twice — a bigger default
+    # would triple into the caller's budget. Local endpoints raise it by env.
     _DEFAULT_TIMEOUT: float = 10.0
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str = "text-embedding-3-small",
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = None,
         base_url: str | None = None,
         dimensions: int | None = None,
     ) -> None:
@@ -71,7 +74,9 @@ class OpenAIEmbedder:
             )
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._model = model
-        self._timeout = timeout
+        self._timeout = resolve_embedding_timeout(
+            timeout, self._DEFAULT_TIMEOUT, provider_env="OPENAI_EMBEDDING_TIMEOUT"
+        )
         # When the user overrides the width, request that width from the API too,
         # so the returned vectors match the declaration instead of the model's
         # default — otherwise the store is sized to a width the vectors never

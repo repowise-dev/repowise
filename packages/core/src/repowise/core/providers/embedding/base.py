@@ -12,7 +12,51 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 from typing import Protocol, runtime_checkable
+
+import structlog
+
+log = structlog.get_logger(__name__)
+
+
+def resolve_embedding_timeout(
+    explicit: float | None, default: float, *, provider_env: str | None = None
+) -> float:
+    """Seconds allowed per embedding request.
+
+    Precedence: explicit arg > ``provider_env`` > ``REPOWISE_EMBEDDING_TIMEOUT``
+    > *default*. Raisable because against a local endpoint one request is GPU
+    work, and an expired batch is not retried — it surfaces only as "N/N items
+    failed to embed".
+
+    A malformed *env* value warns and falls back; raising would reach
+    ``build_embedder``'s ``except Exception`` and downgrade the run to a keyless
+    8-wide index. An invalid *explicit* argument is a caller bug and raises.
+    """
+    if explicit is not None:
+        if isinstance(explicit, bool) or not isinstance(explicit, int | float):
+            raise ValueError("timeout must be a positive number")
+        if not math.isfinite(explicit) or explicit <= 0:
+            raise ValueError("timeout must be a positive number")
+        return float(explicit)
+    names = [provider_env] if provider_env else []
+    names.append("REPOWISE_EMBEDDING_TIMEOUT")
+    for name in names:
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        # isfinite also rejects "inf" — a plausible way to ask for no limit, and
+        # the one value that hangs a stalled endpoint forever.
+        if math.isfinite(value) and value > 0:
+            return value
+        log.warning("embedding_timeout_invalid", var=name, value=raw, using=default)
+        return default
+    return default
 
 
 @runtime_checkable

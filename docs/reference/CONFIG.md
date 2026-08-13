@@ -632,10 +632,13 @@ The `.repowise/.env` file is gitignored automatically.
 | `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, `ollama`, `openrouter`, or `mock` |
 | `REPOWISE_EMBEDDING_MODEL` | Embedding model, applies to any embedder |
 | `REPOWISE_EMBEDDING_DIMS` | Embedding output dimensions (optional; inferred from the model otherwise) |
-| `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout in seconds |
+| `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout in seconds (default: `30` for `ollama`, `10` elsewhere). Raise it for a local endpoint — one request embeds a whole batch, and an expired batch is reported only as `N/N items failed to embed`. An unparseable value warns and keeps the default |
+| `OPENAI_EMBEDDING_TIMEOUT` | As above, `openai` only; takes precedence over the shared variable |
+| `GEMINI_EMBEDDING_TIMEOUT` | As above, `gemini` only |
+| `OPENROUTER_EMBEDDING_TIMEOUT` | As above, `openrouter` only |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
-| `OLLAMA_EMBEDDING_TIMEOUT` | Ollama embed request timeout in seconds (default: `30`); raise it for long pages on slow local models |
+| `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only; raise it for long pages on slow local models |
 
 ### Server and database
 
