@@ -10,6 +10,7 @@ import pytest
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.ts_workspace import (
+    _normalize_repo_rel,
     build_ts_workspace_index,
     build_workspace_map,
     resolve_via_workspaces,
@@ -99,6 +100,22 @@ class TestWorkspaceMap:
 
     def test_empty_when_no_root_package(self, tmp_path: Path) -> None:
         assert build_workspace_map(tmp_path) == {}
+
+    def test_empty_workspaces_entry_drops_itself_not_the_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        # ``Path.glob("")`` raises ValueError. Unlike the pnpm reader, which
+        # drops blank entries before they reach the globber, the ``workspaces``
+        # field passes every string straight through — so the guard in
+        # ``_expand_member_dirs`` is what keeps one blank entry from costing
+        # the whole map.
+        (tmp_path / "package.json").write_text(
+            json.dumps({"workspaces": ["", "packages/*"]})
+        )
+        pkg = tmp_path / "packages" / "a"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"name": "@org/a"}))
+        assert build_workspace_map(tmp_path) == {"@org/a": "packages/a"}
 
 
 class TestPnpmWorkspaceMap:
@@ -217,6 +234,21 @@ class TestPnpmWorkspaceMap:
         (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - [unclosed\n")
         assert build_workspace_map(tmp_path) == {}
 
+    @pytest.mark.parametrize("bad", ["/abs/packages/*", "!/abs/*"])
+    def test_unglobbable_entry_drops_itself_not_the_workspace(
+        self, tmp_path: Path, bad: str
+    ) -> None:
+        # ``Path.glob`` refuses an absolute pattern (NotImplementedError). The
+        # strings are manifest-supplied and this path runs unguarded under
+        # ``resolve_via_workspaces``, so a bad entry must cost its own member
+        # rather than every member. Both the include and the exclude loop.
+        self._root(tmp_path)
+        (tmp_path / "pnpm-workspace.yaml").write_text(
+            f'packages:\n  - "packages/*"\n  - "{bad}"\n'
+        )
+        self._pkg(tmp_path, "packages/a", "@org/a")
+        assert build_workspace_map(tmp_path) == {"@org/a": "packages/a"}
+
     def test_resolves_import_through_pnpm_member(self, tmp_path: Path) -> None:
         # The end-to-end claim: a member found only via pnpm-workspace.yaml
         # still resolves through its own ``exports`` map, so a cross-package
@@ -273,6 +305,33 @@ class TestRootPackageResolution:
         ctx = _ctx(tmp_path, ["src/lib/a.ts", "src/lib/b.ts", "src/other.ts"])
         index = build_ts_workspace_index(ctx)
         assert index.exports_entry_paths == {"src/lib/a.ts", "src/lib/b.ts"}
+
+    def test_root_exports_wildcard_at_repo_root_expands(self, tmp_path: Path) -> None:
+        """A root package whose wildcard target has NO directory prefix.
+
+        ``{"./*": "./*.ts"}`` on a ``dir == "."`` member joins to ``"./"``,
+        which collapses entirely to the repo root. The sibling test above
+        cannot see this: its ``./src/lib/*.ts`` target keeps a non-empty
+        ``src/lib/`` prefix, so the join never reaches the degenerate case.
+        Left unguarded the prefix stayed ``"./"``, no repo-relative path
+        started with it, and every wildcard-exported root file dropped out of
+        ``exports_entry_paths`` — a false-positive dead-code source.
+        """
+        (tmp_path / "package.json").write_text(
+            json.dumps({"name": "@org/root", "exports": {"./*": "./*.ts"}})
+        )
+        (tmp_path / "pnpm-workspace.yaml").write_text("packages: []\n")
+        ctx = _ctx(tmp_path, ["index.ts", "util.ts", "notes.md"])
+        index = build_ts_workspace_index(ctx)
+        assert index.exports_entry_paths == {"index.ts", "util.ts"}
+
+    def test_normalize_repo_rel_collapses_bare_root(self) -> None:
+        """The unit under the case above — ``"./"`` is the repo root, i.e. ``""``."""
+        assert _normalize_repo_rel("./") == ""
+        # Unchanged for every non-degenerate shape.
+        assert _normalize_repo_rel("./src/lib/") == "src/lib/"
+        assert _normalize_repo_rel("./src/index.ts") == "src/index.ts"
+        assert _normalize_repo_rel("pkgs/a/src/") == "pkgs/a/src/"
 
 
 class TestWorkspaceResolution:

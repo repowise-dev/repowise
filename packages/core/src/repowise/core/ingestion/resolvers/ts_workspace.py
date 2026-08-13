@@ -29,6 +29,7 @@ flattened to the first plausible source target. Packages without an
 
 from __future__ import annotations
 
+import contextlib
 import json
 import posixpath
 import re
@@ -303,15 +304,23 @@ def _expand_member_dirs(repo_path: Path, declared: _WorkspaceDeclaration) -> lis
     matcher) does for these forms.
 
     The root, when it is a member, is never subject to the negated patterns.
+
+    Both loops tolerate a pattern ``Path.glob`` refuses: the strings come from
+    a hand-written manifest, and an absolute entry raises ``NotImplementedError``
+    while an empty one raises ``ValueError``. A bad entry drops itself rather
+    than the whole workspace, which is how every other manifest read in this
+    module already behaves.
     """
     excluded: set[Path] = set()
     for pattern in declared.excludes:
-        excluded.update(p for p in repo_path.glob(pattern) if p.is_dir())
+        with contextlib.suppress(NotImplementedError, ValueError):
+            excluded.update(p for p in repo_path.glob(pattern) if p.is_dir())
 
     dirs: list[Path] = [repo_path] if declared.include_root else []
     for pattern in declared.includes:
-        globbed = [repo_path] if pattern == "." else repo_path.glob(pattern)
-        dirs.extend(p for p in globbed if p.is_dir() and p not in excluded)
+        with contextlib.suppress(NotImplementedError, ValueError):
+            globbed = [repo_path] if pattern == "." else repo_path.glob(pattern)
+            dirs.extend(p for p in globbed if p.is_dir() and p not in excluded)
     return dirs
 
 
@@ -390,10 +399,20 @@ def _normalize_repo_rel(base: str) -> str:
     A trailing slash survives: one caller uses the result as a ``startswith``
     prefix, where dropping it would let ``src/locales`` also match
     ``src/locales-old``.
+
+    A path that collapses ENTIRELY to the root (``"./"`` — the root package's
+    ``"."`` joined with an empty subpath) normalizes to ``""``, not ``"./"``:
+    ``posixpath.normpath("./")`` is ``"."``, and re-appending the slash would
+    leave a prefix no repo-relative path starts with. That case is reachable
+    from ``_expand_exports_wildcard`` whenever a root package's wildcard
+    target sits at the repo root (``{"./*": "./*.ts"}``) rather than under a
+    subdirectory, and it silently dropped every match.
     """
     if not (base.startswith("./") or "/./" in base):
         return base
     normalized = posixpath.normpath(base)
+    if normalized == ".":
+        return ""
     return f"{normalized}/" if base.endswith("/") and not normalized.endswith("/") else normalized
 
 
