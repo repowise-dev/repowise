@@ -46,9 +46,16 @@ def _fake_home(tmp_path: Path) -> dict[str, str]:
     finds anything to migrate, and ``Path.home()`` reads ``USERPROFILE`` on
     Windows and ``HOME`` elsewhere. Both are redirected. What is under test is
     the import graph, which is identical either way.
+
+    ``REPOWISE_SKIP_EDITOR_SETUP`` is dropped rather than inherited: the
+    session-wide guard in ``conftest.py`` sets it for every test, but this one
+    measures the *default* user's import graph. Under that variable the stamp is
+    never written, so every call falls through to the ``is_editor_setup_disabled``
+    check and imports ``editor_setup`` — the exact thing this asserts against.
     """
     env = dict(os.environ)
     env["HOME"] = env["USERPROFILE"] = str(tmp_path)
+    env.pop("REPOWISE_SKIP_EDITOR_SETUP", None)
     return env
 
 

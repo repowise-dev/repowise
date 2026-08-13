@@ -190,6 +190,13 @@ def baseline_env(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("HOMEPATH", str(home)[len(home.drive) :])
     monkeypatch.setattr(Path, "home", lambda: home)
 
+    # The session-wide guard in conftest.py stops every test writing global
+    # editor config. This baseline exists to capture exactly those writes, and
+    # the redirects above (including ``Path.home``) mean they land in the fake
+    # home, so it opts out — otherwise the user scope loses the Claude Desktop
+    # entry and the golden no longer matches.
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+
     # Claude Desktop only registers when its config directory already exists,
     # so create it — the baseline should cover that write where the platform
     # supports it at all.
