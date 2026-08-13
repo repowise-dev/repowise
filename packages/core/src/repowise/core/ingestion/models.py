@@ -277,8 +277,9 @@ EdgeType = Literal[
     "method_implements",
     "co_changes",
     "framework",
-    # Symbol-level data reference rather than a call: Express route/middleware
-    # wiring and C# member reads. Emitted by two `_add_reads_edge` helpers.
+    # A data reference rather than a call. Two `_add_reads_edge` helpers emit
+    # it at different layers: C# member access file → file, Express
+    # route/middleware wiring symbol → symbol.
     "reads",
     # Dynamic-dispatch hints. `dynamic_hints` extractors emit a `DynamicKind`
     # sub-type and `EdgesMixin.add_dynamic_edges` prefixes it, so `url_route`
