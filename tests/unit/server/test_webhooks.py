@@ -346,10 +346,58 @@ async def test_push_webhook_matches_clone_url_without_git_suffix(
     assert config["trigger"] == "webhook"
 
 
+@pytest.mark.asyncio
+async def test_push_webhook_matches_mixed_case_path(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    """Registered URL and webhook clone_url may differ only in path casing.
+
+    GitHub/GitLab resolve paths case-insensitively; SQLite ``contains`` did
+    too. A case-sensitive normalizer would return 200 without enqueueing.
+    """
+    async with session_factory() as session:
+        session.add(
+            Repository(
+                name="RepoWise",
+                url="https://github.com/org/RepoWise",
+                local_path="/tmp/RepoWise",
+                default_branch="main",
+            )
+        )
+        await session.commit()
+
+    payload = {
+        "ref": "refs/heads/main",
+        "before": "b",
+        "after": "a",
+        "repository": {"clone_url": "https://github.com/org/repowise.git"},
+    }
+    with patch("repowise.server.routers.webhooks._launch_webhook_job"):
+        response = await client.post(
+            "/api/webhooks/github",
+            content=json.dumps(payload),
+            headers={
+                "X-GitHub-Event": "push",
+                "X-GitHub-Delivery": "case-ok",
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200
+    async with session_factory() as session:
+        job = (await session.execute(select(GenerationJob))).scalar_one()
+        config = json.loads(job.config_json)
+    assert config["trigger"] == "webhook"
+
+
 def test_normalize_scm_url_variants() -> None:
     from repowise.server.routers.webhooks import _normalize_scm_url
 
-    assert _normalize_scm_url("https://github.com/Org/Repo.git") == "github.com/Org/Repo"
-    assert _normalize_scm_url("https://github.com/Org/Repo/") == "github.com/Org/Repo"
-    assert _normalize_scm_url("git@github.com:Org/Repo.git") == "github.com/Org/Repo"
+    assert _normalize_scm_url("https://github.com/Org/Repo.git") == "github.com/org/repo"
+    assert _normalize_scm_url("https://github.com/Org/Repo/") == "github.com/org/repo"
+    assert _normalize_scm_url("git@github.com:Org/Repo.git") == "github.com/org/repo"
+    assert _normalize_scm_url("https://github.com/org/RepoWise") == (
+        _normalize_scm_url("https://github.com/org/repowise.git")
+    )
     assert _normalize_scm_url("") == ""

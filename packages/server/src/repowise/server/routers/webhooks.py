@@ -29,9 +29,10 @@ def _normalize_scm_url(url: str) -> str:
     """Collapse clone / web URL variants to a comparable host/path key.
 
     Strips scheme, userinfo, ``.git`` suffix, trailing slashes, and lowercases
-    the host. Used so ``https://github.com/org/repo.git`` matches a stored
-    ``https://github.com/org/repo`` without falling back to a substring
-    ``contains`` match (which let a short forged URL hit the wrong repo).
+    the **whole** key (host and path). GitHub and GitLab resolve repo paths
+    case-insensitively; the previous ``contains`` match was also case-insensitive
+    under SQLite, so preserving path case would silently stop syncing when a
+    hand-registered URL differed only in casing from the webhook's ``clone_url``.
     """
     raw = (url or "").strip()
     if not raw:
@@ -47,7 +48,7 @@ def _normalize_scm_url(url: str) -> str:
     path = path.strip("/")
     if path.endswith(".git"):
         path = path[: -len(".git")]
-    return f"{host.lower()}/{path}".rstrip("/")
+    return f"{host}/{path}".rstrip("/").lower()
 
 
 async def _find_repo_by_scm_url(session: AsyncSession, url: str) -> Repository | None:
