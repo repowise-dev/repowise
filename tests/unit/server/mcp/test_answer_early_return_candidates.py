@@ -71,6 +71,10 @@ def test_no_post_retrieval_return_bypasses_the_candidates_helper():
         if node.lineno <= pool_line:
             continue  # fires before retrieval; there is no pool to hand over
         value = node.value
+        # ``_degraded_payload`` builds evidence off disk, so it is awaited; the
+        # covering call is the awaited expression, not the ``await`` node.
+        if isinstance(value, ast.Await):
+            value = value.value
         if isinstance(value, ast.Name) and value.id == _MAINLINE_RETURN:
             continue
         covered = (

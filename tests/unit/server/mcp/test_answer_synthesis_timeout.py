@@ -370,8 +370,8 @@ async def test_whitespace_only_completion_counts_as_empty():
 HITS = [{"target_path": "pkg/mod.py", "title": "mod", "summary": "s", "score": 1.0}]
 
 
-def _payload(reason="synthesis-failed", note="DEGRADED: boom"):
-    return _degraded_payload(
+async def _payload(reason="synthesis-failed", note="DEGRADED: boom"):
+    return await _degraded_payload(
         reason=reason,
         note=note,
         hits=HITS,
@@ -381,17 +381,17 @@ def _payload(reason="synthesis-failed", note="DEGRADED: boom"):
     )
 
 
-def test_degraded_reason_is_mirrored_into_meta():
+async def test_degraded_reason_is_mirrored_into_meta():
     """The failure path set only the top-level key, so _meta watchers missed it."""
-    payload = _payload()
+    payload = await _payload()
     assert payload["degraded"] == "synthesis-failed"
     assert payload["_meta"]["degraded"] == "synthesis-failed"
 
 
 @pytest.mark.parametrize("reason", ["no-llm-provider", "synthesis-failed"])
-def test_both_failure_modes_return_the_same_payload_shape(reason):
+async def test_both_failure_modes_return_the_same_payload_shape(reason):
     """An agent should not have to diff key sets to tell why synthesis is missing."""
-    assert set(_payload(reason=reason)) == {
+    assert set(await _payload(reason=reason)) == {
         "answer",
         "citations",
         "confidence",
@@ -404,23 +404,23 @@ def test_both_failure_modes_return_the_same_payload_shape(reason):
     }
 
 
-def test_degraded_payload_still_hands_back_usable_retrieval():
+async def test_degraded_payload_still_hands_back_usable_retrieval():
     """Retrieval succeeded; losing it too would waste the work already done."""
-    payload = _payload()
+    payload = await _payload()
     assert payload["confidence"] == "low"
     assert payload["fallback_targets"] == ["pkg/mod.py"]
     assert len(payload["retrieval"]) == 1
     assert payload["retrieval"][0]["path"] == "pkg/mod.py"
 
 
-def test_degraded_answer_describes_the_payload_instead_of_being_empty():
+async def test_degraded_answer_describes_the_payload_instead_of_being_empty():
     """An empty ``answer`` beside working retrieval reads as a failed call.
 
     The field is the first thing a reader looks at, so leaving it blank while
     ``retrieval``/``candidates`` are populated invites throwing the whole
     result away. It must name what survived and where to find it.
     """
-    payload = _payload()
+    payload = await _payload()
     answer = payload["answer"]
     assert answer, "degraded answer must not be empty"
     assert "synthesis-failed" in answer, "the reason belongs in the visible field"
@@ -428,14 +428,14 @@ def test_degraded_answer_describes_the_payload_instead_of_being_empty():
         assert field in answer, f"{field} is populated but never mentioned"
 
 
-def test_degraded_answer_does_not_promise_hits_it_does_not_have():
+async def test_degraded_answer_does_not_promise_hits_it_does_not_have():
     """The other direction: no hits must not produce a 'this is usable' claim.
 
     A sentence assembled from a template rather than from the payload would
     advertise ranked hits on an empty retrieval, which is the failure mode that
     would make the wording worse than the blank field it replaced.
     """
-    payload = _degraded_payload(
+    payload = await _degraded_payload(
         reason="no-llm-provider",
         note="DEGRADED",
         hits=[],
