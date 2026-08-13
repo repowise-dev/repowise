@@ -188,32 +188,44 @@ type NormalizedRiskTarget = {
 function normalizeRiskTargets(data: RiskReportArtifactData): NormalizedRiskTarget[] {
   const raw = data.targets;
   if (!raw) return [];
-  const rows = Array.isArray(raw)
-    ? raw
+
+  const rows: Array<{
+    file_path: string;
+    hotspot_score?: number;
+    churn_percentile?: number;
+    is_hotspot?: boolean;
+    risk_type?: string;
+    trend?: string;
+    risk_summary?: string;
+  }> = Array.isArray(raw)
+    ? raw.map((t) => ({
+        ...t,
+        file_path: t.file_path ?? t.target ?? "",
+      }))
     : Object.entries(raw).map(([key, value]) => ({
-        file_path:
-          (value as { file_path?: string; target?: string }).file_path ??
-          (value as { target?: string }).target ??
-          key,
-        ...(value as object),
+        ...value,
+        file_path: value.file_path ?? value.target ?? key,
       }));
-  return rows.map((t) => {
-    const score =
-      typeof t.hotspot_score === "number"
-        ? t.hotspot_score
-        : typeof t.churn_percentile === "number"
-          ? t.churn_percentile
-          : null;
-    return {
-      file_path: t.file_path,
-      score,
-      is_hotspot: Boolean(t.is_hotspot) || (typeof score === "number" && score >= 80),
-      risk_type: typeof t.risk_type === "string" ? t.risk_type : undefined,
-      trend: typeof t.trend === "string" ? t.trend : undefined,
-      risk_summary:
-        typeof t.risk_summary === "string" ? t.risk_summary : undefined,
-    };
-  });
+
+  return rows
+    .filter((t) => t.file_path.length > 0)
+    .map((t) => {
+      const score =
+        typeof t.hotspot_score === "number"
+          ? t.hotspot_score
+          : typeof t.churn_percentile === "number"
+            ? t.churn_percentile
+            : null;
+      const out: NormalizedRiskTarget = {
+        file_path: t.file_path,
+        score,
+        is_hotspot: Boolean(t.is_hotspot) || (typeof score === "number" && score >= 80),
+      };
+      if (typeof t.risk_type === "string") out.risk_type = t.risk_type;
+      if (typeof t.trend === "string") out.trend = t.trend;
+      if (typeof t.risk_summary === "string") out.risk_summary = t.risk_summary;
+      return out;
+    });
 }
 
 function normalizeGlobalHotspots(data: RiskReportArtifactData): Array<{

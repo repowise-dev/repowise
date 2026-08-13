@@ -127,7 +127,10 @@ export interface ContextArtifact {
 
 /** `get_risk` / `get_change_risk` — modification or commit-range risk report. */
 export interface RiskTargetRow {
-  file_path: string;
+  /** Path key; optional on MCP dict values that use `target` instead. */
+  file_path?: string;
+  /** MCP per-target id when `targets` is a path-keyed object. */
+  target?: string;
   /** MCP `get_risk` hotspot score (0–100 churn percentile). */
   hotspot_score?: number;
   /** Legacy chat fixture field. */
@@ -144,9 +147,7 @@ export interface RiskReportArtifactData {
    * MCP `get_risk` returns a path-keyed object; legacy fixtures used an array.
    * Renderers normalize either shape.
    */
-  targets?:
-    | RiskTargetRow[]
-    | Record<string, RiskTargetRow & { target?: string }>;
+  targets?: RiskTargetRow[] | Record<string, RiskTargetRow>;
   global_hotspots?: Array<{
     /** MCP wire. */
     file_path?: string;
