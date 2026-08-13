@@ -453,3 +453,36 @@ class TestCycleNaming:
         titles = _scc_titles([("scc-aaa", ["main.py"])])
 
         assert titles["scc-aaa"] == "Circular Dependency: scc-aaa"
+
+
+class TestTruncatedNamingIsVisible:
+    """A ceiling hit must be said out loud.
+
+    Truncation and a model that simply returned nothing produce the identical
+    outline — the deterministic fallback — so without this the two are
+    indistinguishable in a log, and the fixable one looks like the normal one.
+    """
+
+    class TruncatingProvider:
+        async def generate(self, *, system_prompt, user_prompt, **kwargs):
+            class R:
+                content = '{"names": {"g1": {"title": "Half A'  # cut mid-JSON
+                stop_reason = "max_tokens"
+                provider_stop_reason = "length"
+
+            return R()
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_reply_is_logged(self):
+        from structlog.testing import capture_logs
+
+        with capture_logs() as logs:
+            _outline, report = await plan_outline(
+                _inputs(), provider=self.TruncatingProvider(), params=TINY, repair=False
+            )
+
+        events = [entry["event"] for entry in logs]
+        assert "concept_outline_naming_truncated" in events
+        # The outline is still complete — this is a visibility fix, not a
+        # behaviour change.
+        assert report.coverage == 1.0

@@ -396,6 +396,19 @@ async def name_groups(
                 temperature=0.2,
                 **_reasoning_kwargs(reasoning),
             )
+        # A reply cut at the ceiling parses to {} and decodes to the full
+        # deterministic fallback: no exception, no warning, and the only trace
+        # is named_by_model=0 on the planned line. The provider already reports
+        # it — validate_generated_response treats the same signal as fatal for a
+        # page — and the outline can proceed without the model, but not without
+        # saying why. Reasoning tokens are charged to this ceiling too, so a
+        # thinking model can hit it while emitting no answer at all.
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            logger.warning(
+                "concept_outline_naming_truncated",
+                groups=len(groups),
+                provider_stop_reason=getattr(response, "provider_stop_reason", None),
+            )
         data = parse_json_object(getattr(response, "content", "") or "")
     except Exception as exc:
         logger.warning("concept_outline_naming_failed", error=str(exc))
