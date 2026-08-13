@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -48,9 +49,20 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
+        # Drop the temporal relation only. A ``co_changes`` edge records that
+        # two files move together in history, so leaving it in makes it a free
+        # hop and the tool reports a "dependency path" no code creates.
+        #
+        # Containment stays, unlike in the consumers that answer "what depends
+        # on this file". ``defines`` is the only bridge from the file layer to
+        # the symbol layer, and no edge points back the other way, so excluding
+        # it cannot suppress a false file-to-file path — there is none to
+        # suppress — while it does delete the real ones: a --defines--> a::foo
+        # --calls--> b::bar is how a caller asks which file reaches a function.
         edge_result = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repository.id,
+                GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
             )
         )
         edges = edge_result.scalars().all()
@@ -75,6 +87,12 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
     # ancestors, shared neighbors, and bridges never route through excluded files.
     allowed = {n.node_id for n in nodes} if exclude_spec else None
     graph = nx.DiGraph()
+    # Seed every surviving node, not just the endpoints of surviving edges. A
+    # file whose only edges were temporal is still indexed, and the "no direct
+    # path" branch below has a co-change fallback written precisely for it —
+    # unreachable if the node never entered the graph, which also made the
+    # "not found in graph" message untrue.
+    graph.add_nodes_from(n.node_id for n in nodes)
     for e in edges:
         if allowed is not None and (
             e.source_node_id not in allowed or e.target_node_id not in allowed

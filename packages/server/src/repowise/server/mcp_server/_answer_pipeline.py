@@ -27,11 +27,13 @@ Pipeline (each stage is a pure function over hit dicts):
                                   peripheral ones at similar retrieval score.
                                   This is what rescues "how does X work"
                                   questions from peripheral consumers of X.
-    4. ``expand_via_graph``     — for top-N hits, walk 1 hop through imports
+    4. ``expand_via_graph``     — for top-N hits, walk 1 hop through the graph
                                   and pull in neighbors that have a wiki
                                   page. Rescues near-misses where retrieval
                                   landed in the right module but on a wrong
-                                  file (consumer vs. orchestrator).
+                                  file (consumer vs. orchestrator). Reference
+                                  and co-change edges both qualify; see the
+                                  note on the queries for why.
 
 Stages downstream of this module (term coverage, intersection boost, domain
 penalty) live in ``tool_answer`` for now — they're tightly coupled to the
@@ -51,6 +53,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
+from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.providers.embedding import store_has_semantic_vectors
@@ -718,7 +721,18 @@ async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
     degree: dict[str, int] = {}
     for column in (GraphEdge.source_node_id, GraphEdge.target_node_id):
         res = await session.execute(
-            select(column, func.count()).where(column.in_(nodes)).group_by(column)
+            select(column, func.count())
+            .where(
+                column.in_(nodes),
+                # Count over the same edges the walk above traverses. Counting
+                # containment too inflates a file's degree by the number of
+                # symbols it declares, so a symbol-rich file reads as a hub on
+                # its own size, and the p99 cutoff moves with how many symbol
+                # nodes happen to be in the candidate set rather than with how
+                # connected the files are.
+                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
+            )
+            .group_by(column)
         )
         for node_id, count in res.all():
             degree[node_id] = degree.get(node_id, 0) + int(count or 0)
@@ -761,25 +775,37 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
     existing = {h.get("target_path") for h in hits}
 
     async with get_session(ctx.session_factory) as session:
-        # Importers (someone → seed) and importees (seed → someone) in one
-        # query each. Two queries are fine — both hit the same indexed edge
-        # table and run in <10ms on the corpus this is tuned for.
-        importer_res = await session.execute(
-            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+        # Inbound (someone → seed) and outbound (seed → someone) in one query
+        # each. Two queries are fine — both hit the same indexed edge table and
+        # run in <10ms on the corpus this is tuned for.
+        #
+        # Not import edges only, despite the naming this code used to carry:
+        # ``co_changes`` neighbours stay in on purpose, because "this file
+        # moves with yours" is a genuine read-this-too signal, and expansion
+        # surfaces what it adds neutrally as ``[graph-expanded]`` rather than
+        # as an import claim. Containment edges are excluded because they can
+        # never contribute: their endpoint is a ``path::Name`` symbol node, and
+        # the page lookup below matches ``target_path`` against ``file_page``
+        # rows, so every such neighbour was fetched only to be discarded.
+        neighbor_cols = (GraphEdge.source_node_id, GraphEdge.target_node_id)
+        inbound_res = await session.execute(
+            select(*neighbor_cols).where(
                 GraphEdge.target_node_id.in_(seed_paths),
+                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
             )
         )
-        importee_res = await session.execute(
-            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+        outbound_res = await session.execute(
+            select(*neighbor_cols).where(
                 GraphEdge.source_node_id.in_(seed_paths),
+                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
             )
         )
 
         neighbors: set[str] = set()
-        for src, _tgt in importer_res.all():
+        for src, _tgt in inbound_res.all():
             if src and src not in existing:
                 neighbors.add(src)
-        for _src, tgt in importee_res.all():
+        for _src, tgt in outbound_res.all():
             if tgt and tgt not in existing:
                 neighbors.add(tgt)
 
