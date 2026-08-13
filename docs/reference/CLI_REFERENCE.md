@@ -148,7 +148,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `openrouter`, `ollama`, `mock` (default: auto-detect) |
-| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, layer and cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. Fill or refill that prose later with [`repowise generate`](#repowise-generate-path). |
+| `--prose` / `--no-prose` | The single knob over LLM spend. The file, symbol, cycle (SCC), API and infra pages are rendered from structure either way, with no key and no cost. The model-written set is the subsystem (concept) tree plus the repo overview, the architecture diagram, and the onboarding collection: `--prose` writes those as model prose and needs a key; `--no-prose` leaves them as structural stubs, so the whole wiki is keyless and free. Default: prose when a key is available. Full-text search works either way; semantic search needs an embedder. Fill or refill that prose later with [`repowise generate`](#repowise-generate-path). |
 | `--index-only` | Deprecated hidden alias for `--no-prose`. |
 | `--docs` | Deprecated hidden alias: `--docs llm` == `--prose`, `--docs deterministic` == `--no-prose`. Prefer `--prose` / `--no-prose`. |
 | `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only, no per-file blame/co-change, no LLM docs, for very large repos; upgrade later with `update --full`) |
@@ -297,7 +297,7 @@ is an actionable error naming the key-setup path.
 `generate` writes the model-written pages, and only those: the numbered concept
 tree above the file level plus the repo overview, the architecture diagram, and
 the onboarding collection. Every structural page (file, symbol, API, infra,
-cycle, layer) is rendered from structure and refreshes on `repowise update`, so
+cycle) is rendered from structure and refreshes on `repowise update`, so
 naming one with `--page` is an actionable error rather than a silent LLM
 re-render.
 
