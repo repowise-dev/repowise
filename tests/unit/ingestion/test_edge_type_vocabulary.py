@@ -242,6 +242,31 @@ def test_edge_verb_covers_the_vocabulary() -> None:
     )
 
 
+def test_edge_type_map_covers_the_vocabulary() -> None:
+    """The knowledge-graph export must map every dependency edge type.
+
+    `build_knowledge_graph_skeleton` drops an unmapped type silently, and six
+    real ones were missing — framework and the dynamic_* family among them —
+    so those relations never reached the graph at all.
+    """
+    from repowise.core.analysis.knowledge_graph import _EDGE_TYPE_MAP
+    from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+
+    # Temporal edges are excluded on purpose; see the comment on _EDGE_TYPE_MAP.
+    expected = EDGE_TYPE_VALUES - TEMPORAL_EDGE_TYPES
+    assert not (expected - _EDGE_TYPE_MAP.keys()), (
+        "edge type(s) silently dropped from the knowledge-graph export: "
+        f"{sorted(expected - _EDGE_TYPE_MAP.keys())}"
+    )
+    assert not (_EDGE_TYPE_MAP.keys() - EDGE_TYPE_VALUES), (
+        f"export mapping keyed on a type nothing emits: {sorted(_EDGE_TYPE_MAP.keys() - EDGE_TYPE_VALUES)}"
+    )
+    assert not (_EDGE_TYPE_MAP.keys() & TEMPORAL_EDGE_TYPES), (
+        "a temporal edge reached the dependency export — that is how a co-change"
+        " partner starts looking like an import"
+    )
+
+
 @pytest.mark.parametrize("phantom", ["has_property", "method_overrides", "dynamic"])
 def test_the_removed_phantoms_stay_removed(phantom: str) -> None:
     """Each measured at 0 rows across 42 local indexes with no producer in the tree.

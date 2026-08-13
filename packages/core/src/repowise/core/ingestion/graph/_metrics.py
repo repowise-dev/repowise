@@ -20,6 +20,7 @@ import networkx as nx
 import structlog
 
 from ..cohesion import is_cohesion_edge
+from ..models import SYMBOL_USE_EDGE_TYPES
 
 log = structlog.get_logger(__name__)
 
@@ -163,7 +164,10 @@ class MetricsMixin:
             edges_to_remove = [
                 (u, v)
                 for u, v, d in sub.edges(data=True)
-                if d.get("edge_type") not in ("calls", "extends", "implements")
+                # Was ("calls", "extends", "implements"), which dropped
+                # method_implements — so Go structural interface satisfaction
+                # never contributed to symbol centrality.
+                if d.get("edge_type") not in SYMBOL_USE_EDGE_TYPES
             ]
             sub.remove_edges_from(edges_to_remove)
             self._symbol_subgraph_cache = sub
