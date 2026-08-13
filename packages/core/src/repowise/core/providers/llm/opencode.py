@@ -433,6 +433,9 @@ class OpenCodeProvider(BaseProvider):
             )
 
         content, usage, session_id = _parse_jsonl(stdout)
+        if session_id:
+            await _archive_opencode_session_best_effort(session_id)
+
         if not content:
             raise ProviderError(
                 "opencode",
