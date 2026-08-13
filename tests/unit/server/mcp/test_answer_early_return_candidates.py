@@ -30,8 +30,11 @@ from repowise.server.mcp_server.tool_answer.answer import _with_candidates
 
 # Returns that route through this are covered: the helper attaches the block
 # itself. ``_degraded_payload`` is the shared shape for both synthesis-less
-# paths and calls ``_with_candidates`` internally.
-_COVERING_CALLS = {"_with_candidates", "_degraded_payload"}
+# paths and calls ``_with_candidates`` internally. ``_degrade`` is the local
+# binding of ``_degraded_payload`` inside ``get_answer``, which exists so the
+# two synthesis-less returns name only what differs between them; it forwards
+# ``resolved_pool`` like any other call to it.
+_COVERING_CALLS = {"_with_candidates", "_degraded_payload", "_degrade"}
 
 # The mainline return. It attaches ``candidates`` a few lines above itself
 # rather than through the helper, because it also has to build the block after
