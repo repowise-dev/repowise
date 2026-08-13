@@ -203,6 +203,67 @@ def collect_cjs_requires(stmt_node: Node, src: str) -> list[str]:
     return out
 
 
+# Wrapper nodes that sit between a declarator and the call it really binds,
+# each unwrapped through its single named child. ``as_expression`` and
+# ``satisfies_expression`` put the expression first and the type second, so
+# the same rule holds; neither exists in the JavaScript grammar, which simply
+# means those entries never match there.
+_VALUE_WRAPPER_NODE_TYPES = frozenset(
+    {
+        "await_expression",
+        "parenthesized_expression",
+        "non_null_expression",
+        "as_expression",
+        "satisfies_expression",
+    }
+)
+
+
+def declarator_value_is_module_ref(declarator: Node, src: str) -> bool:
+    """True when a ``const x = …`` value binds a module rather than a symbol.
+
+    ``require('./svc')``, ``import('./lazy')`` and ``await import('./lazy')``
+    bind a module, so the declarator must not be indexed as a symbol. The
+    symbol query cannot make this call itself: a tree-sitter predicate can
+    only test a capture it can name, and the callee hides behind ``await`` /
+    parentheses / ``!`` / ``as T`` / a member pick. Unwrapping here keeps the
+    decision in one place.
+
+    The member pick is unwrapped one level only, deliberately. One level is
+    exactly what the CommonJS import patterns match
+    (``value: (member_expression object: (call_expression …))``), so
+    ``require('./x').y`` is suppressed here *and* carries an import edge.
+    ``require('./x').y.z`` matches no import pattern, and suppressing it too
+    would leave the file advertising neither a binding nor a dependency.
+    Ceiling: the two stay in step by construction rather than by a shared
+    definition. Upgrade path is to widen the import patterns to unwrap the
+    same shells, at which point this can unwrap without a depth limit.
+    """
+    if declarator.type != "variable_declarator":
+        return False
+    value = declarator.child_by_field_name("value")
+
+    while value is not None and value.type in _VALUE_WRAPPER_NODE_TYPES:
+        value = value.named_children[0] if value.named_children else None
+    if value is not None and value.type == "member_expression":
+        value = value.child_by_field_name("object")
+        while value is not None and value.type in _VALUE_WRAPPER_NODE_TYPES:
+            value = value.named_children[0] if value.named_children else None
+
+    if value is None or value.type != "call_expression":
+        return False
+    fn = value.child_by_field_name("function")
+    if fn is None:
+        return False
+    # ``import(...)`` is its own node type in both grammars; ``require`` is a
+    # plain identifier, so the text check must not accept ``obj.require``.
+    # Ceiling: the match is textual, so a locally shadowed ``const require =
+    # …`` suppresses its callers' bindings. The import query's ``#eq?``
+    # predicate is blind the same way, so the two agree; a scope-aware fix
+    # would have to change both.
+    return fn.type == "import" or (fn.type == "identifier" and node_text(fn, src) == "require")
+
+
 def cjs_statement_is_reexport(stmt_node: Node, src: str) -> bool:
     """True when a CJS require statement re-exports through ``module.exports``.
 

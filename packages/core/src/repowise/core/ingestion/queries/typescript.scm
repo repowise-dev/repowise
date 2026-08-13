@@ -76,11 +76,20 @@
   name: (property_identifier) @symbol.name
 ) @symbol.def
 
-; Top-level const/let with a non-function value — module constants. The
-; declarator (not the lexical_declaration) is @symbol.def so the kind map
-; can distinguish it from the arrow-function pattern above. Anchored at
-; (program …) — directly or under an export_statement — so function-local
-; declarations never match.
+; Top-level const/let bindings — module constants and call-expression
+; bindings. The declarator (not the lexical_declaration) is @symbol.def so
+; the kind map can distinguish it from the arrow-function pattern above.
+; Anchored at (program …) — directly or under an export_statement — so
+; function-local declarations never match; without that anchor every
+; module-internal ``const x = useMemo(...)`` would flood the index.
+;
+; (call_expression) is what makes forwardRef / memo / styled() /
+; createContext() / zod schemas / Firebase ``export const f = onCall(...)``
+; indexable at all. CommonJS declarators (``const svc = require('./svc')``,
+; ``await import('./lazy')``) match this too but are module references, not
+; symbols — the parser drops them via ``declarator_value_is_module_ref``,
+; which unwraps the await / paren / non-null / member-pick shells that a
+; query predicate cannot see through.
 (program
   (lexical_declaration
     (variable_declarator
@@ -89,6 +98,8 @@
         (string) (template_string) (number) (true) (false) (null) (undefined)
         (array) (object) (unary_expression) (binary_expression)
         (new_expression) (member_expression) (as_expression) (satisfies_expression)
+        (call_expression) (function_expression) (class)
+        (await_expression) (parenthesized_expression) (non_null_expression)
       ]
     ) @symbol.def
   )
@@ -103,6 +114,8 @@
           (string) (template_string) (number) (true) (false) (null) (undefined)
           (array) (object) (unary_expression) (binary_expression)
           (new_expression) (member_expression) (as_expression) (satisfies_expression)
+          (call_expression) (function_expression) (class)
+          (await_expression) (parenthesized_expression) (non_null_expression)
         ]
       ) @symbol.def
     )
