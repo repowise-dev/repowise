@@ -400,11 +400,11 @@ async def name_groups(
         # fallback an empty one does, so without this the two are
         # indistinguishable. Reasoning tokens count against the ceiling too, so
         # a thinking model can exhaust it having emitted no answer at all.
-        if getattr(response, "stop_reason", None) == "max_tokens":
+        if response.stop_reason == "max_tokens":
             logger.warning(
                 "concept_outline_naming_truncated",
                 groups=len(groups),
-                provider_stop_reason=getattr(response, "provider_stop_reason", None),
+                provider_stop_reason=response.provider_stop_reason,
             )
         data = parse_json_object(getattr(response, "content", "") or "")
     except Exception as exc:

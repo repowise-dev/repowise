@@ -250,8 +250,8 @@ async def test_embed_raises_when_api_returns_wrong_width_from_dims_table():
             await emb.embed(["hello"])
 
     msg = str(exc_info.value)
-    assert "3" in msg                   # actual width named
-    assert "_DIMS" in msg               # points at the table, not the user
+    assert "3" in msg  # actual width named
+    assert "_DIMS" in msg  # points at the table, not the user
 
 
 async def test_embed_raises_when_api_returns_wrong_width_with_user_override(monkeypatch):
@@ -259,7 +259,7 @@ async def test_embed_raises_when_api_returns_wrong_width_with_user_override(monk
     # message should reference REPOWISE_EMBEDDING_DIMS so they know what to change.
     monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "512")
     emb = OpenAIEmbedder(api_key="k", model="text-embedding-3-small")
-    assert emb.dimensions == 512        # from env override
+    assert emb.dimensions == 512  # from env override
 
     with patch("openai.OpenAI") as mock_client:
         mock_client.return_value.embeddings.create.return_value = _make_mock_response(
@@ -278,4 +278,3 @@ async def test_embed_width_check_is_skipped_for_empty_response():
     # must not fire on the empty list itself.
     emb = OpenAIEmbedder(api_key="k")
     assert await emb.embed([]) == []
-

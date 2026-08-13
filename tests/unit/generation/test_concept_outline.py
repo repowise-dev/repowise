@@ -380,6 +380,8 @@ def test_a_trailing_number_stays_with_its_word():
     )
 
     assert deterministic_title(group) == "C4 Nodes"
+
+
 class TestCycleNaming:
     """A cycle page was titled by the hash of its members, which nothing searches for."""
 

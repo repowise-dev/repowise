@@ -571,8 +571,9 @@ store would be rebuilt from scratch, discarding what the reindex just built.
 
 `REPOWISE_EMBEDDING_MODEL` overrides the model for whichever embedder is
 active. `REPOWISE_EMBEDDING_DIMS` and `REPOWISE_EMBEDDING_TIMEOUT` apply the
-same way; the `OLLAMA_EMBEDDING_*` variants below are Ollama-specific
-equivalents.
+same way; the provider-prefixed variants below (`OPENAI_*`, `GEMINI_*`,
+`OLLAMA_*`, `OPENROUTER_*`) narrow a setting to one embedder and take
+precedence over the shared name.
 
 ---
 

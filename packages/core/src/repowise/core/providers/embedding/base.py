@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import sys
 from typing import Protocol, runtime_checkable
 
 import structlog
@@ -54,9 +55,26 @@ def resolve_embedding_timeout(
         # the one value that hangs a stalled endpoint forever.
         if math.isfinite(value) and value > 0:
             return value
-        log.warning("embedding_timeout_invalid", var=name, value=raw, using=default)
-        return default
+        # A value that failed to parse is not a value, so it must not consume
+        # the narrower variable's precedence over the shared one.
+        _report_invalid_timeout(name, raw, default)
     return default
+
+
+def _report_invalid_timeout(var: str, raw: str, default: float) -> None:
+    """Say it where the user will actually see it.
+
+    The CLI pins structlog to ERROR unless ``-v``, so a warning here reaches
+    nobody on the path that matters — and the symptom this variable exists to
+    cure ("N/N items failed to embed") is exactly what a silently-ignored value
+    produces. stderr matches how ``build_embedder`` reports the same class of
+    misconfiguration.
+    """
+    log.warning("embedding_timeout_invalid", var=var, value=raw, using=default)
+    print(
+        f"{var}={raw!r} is not a positive number of seconds; using {default}s.",
+        file=sys.stderr,
+    )
 
 
 @runtime_checkable
