@@ -13,6 +13,7 @@ from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
+from ..entry_points import entry_point_rank_key
 from ..models import GenerationConfig
 from .contexts import (
     ApiContractContext,
@@ -57,6 +58,28 @@ def _is_foreign_edge(node: str, path: str) -> bool:
 _MAX_IMPORTS = 30
 # Maximum top-files to include in repo overview
 _MAX_TOP_FILES = 20
+
+# Languages whose imports name a package rather than a file, so most files in a
+# live package carry no file-level in-edge. The dead-code analyzer delegates
+# these to per-language reachability helpers.
+_PACKAGE_GRANULAR_SUFFIXES = re.compile(r"\.(go|java|kt|c|cc|cpp|cxx|h|hh|hpp|hxx)$", re.I)
+# Deliberate copy of ``dead_code.analyzer._BARREL_FILENAMES``. Importing the
+# analyzer would drag the whole dead-code stack into generation for one
+# frozenset. The real fix is a shared reachability predicate both call; until
+# then this must be kept in step by hand.
+_BARREL_FILENAMES: frozenset[str] = frozenset(
+    {
+        "__init__.py",
+        "index.ts",
+        "index.tsx",
+        "index.js",
+        "index.jsx",
+        "index.mts",
+        "index.cts",
+        "index.mjs",
+        "index.cjs",
+    }
+)
 # How many rows the concept index may carry. A module page groups directories,
 # so a wide one can reach several hundred public symbols and the table would
 # then be longer than the page it is attached to. Rows past this are counted
@@ -227,6 +250,50 @@ def _file_dependency_neighbors(graph: Any, path: str, *, incoming: bool) -> list
             continue
         neighbors.append(neighbor)
     return neighbors
+
+
+def _flow_entry_is_reachable(flow: Any, graph: Any) -> bool:
+    """Can anything actually get to this flow's entry point?
+
+    Execution-flow scoring treats zero inbound calls as its strongest positive
+    signal, because a symbol nothing calls looks like a front door. File-level
+    reachability reads the same evidence in the opposite direction: a file
+    nothing imports is ``unreachable_file``. So a file with no importers was
+    promoted to Primary Execution Flow #1 *and* reported as dead code, from
+    the same fact, on the same index.
+
+    Dead code is right in that argument and the flow is wrong, so drop the
+    flow. A conventional entry point is exempt for the same reason the
+    dead-code pass exempts it: nothing imports ``main.py`` either.
+
+    Deliberately more forgiving than ``unreachable_file``, in one direction
+    only. The analyzer rescues a zero-in-degree file through a dozen further
+    checks, several of which need state built during analysis (bundler alias
+    targets, never-flag whitelists, per-language package maps) and are not
+    reachable from here. Rather than reimplement a second, subtly different
+    reachability, this bails out wherever the analyzer is known to be kinder:
+    an unresolvable entry point, a barrel, and the languages whose imports are
+    package-granular rather than file-granular. A missed drop leaves a wrong
+    flow on the page; an over-eager one silently empties the section, which is
+    the failure the caller's own comment exists to prevent. See the backlog:
+    the real fix is one shared predicate.
+    """
+    node = graph.nodes.get(flow.entry_point_id, {})
+    path = node.get("file_path") or file_path_of(flow.entry_point_id) or ""
+    if not path or path not in graph:
+        return True
+    if graph.nodes[path].get("is_entry_point"):
+        return True
+    # Go, JVM and C/C++ resolve imports per package, so most files in a live
+    # package carry no file-level in-edge at all. The analyzer delegates to a
+    # per-language helper here; without one, this check would drop nearly
+    # every flow on such a repository.
+    if _PACKAGE_GRANULAR_SUFFIXES.search(path):
+        return True
+    # A barrel is reached by the names it forwards, never by its own path.
+    if PurePosixPath(path).name in _BARREL_FILENAMES:
+        return True
+    return bool(_file_dependency_neighbors(graph, path, incoming=True))
 
 
 # ---------------------------------------------------------------------------
@@ -773,6 +840,18 @@ class ContextAssembler:
                         flow_report.flows,
                         key=lambda f: (-f.entry_point_score, f.entry_point_id),
                     )
+                    flow_graph = graph_builder.graph()
+                    kept = [f for f in ranked if _flow_entry_is_reachable(f, flow_graph)]
+                    if len(kept) != len(ranked):
+                        # The section disappears when this empties it, and a
+                        # silently empty section is the failure the comment
+                        # below was written to end. Say how many and why.
+                        log.info(
+                            "overview_flows_dropped_unreachable",
+                            dropped=len(ranked) - len(kept),
+                            kept=len(kept),
+                        )
+                    ranked = kept
                     for flow in ranked[:5]:
                         execution_flows_list.append(
                             {
@@ -805,7 +884,16 @@ class ContextAssembler:
             language_distribution=repo_structure.root_language_distribution,
             total_files=repo_structure.total_files,
             total_loc=repo_structure.total_loc,
-            entry_points=repo_structure.entry_points,
+            # Ranked, not filtered. ``is_entry_point`` is a filename heuristic
+            # whose generic stem set includes ``index``, so a buried re-export
+            # barrel arrived here indistinguishable from a real front door and
+            # could lead the list. Dropping glue outright is what the KG
+            # curator does, but it would also drop ``packages/cli/src/index.ts``,
+            # a genuine package front door in exactly the monorepo shape this
+            # product targets. Ranking demotes glue below every real entry
+            # without losing one, and ``entry_point_rank_key`` already encodes
+            # that order for the KG's answer to the same question.
+            entry_points=sorted(repo_structure.entry_points, key=entry_point_rank_key),
             top_files_by_pagerank=top_files,
             circular_dependency_count=circular_count,
             communities=communities_list,
