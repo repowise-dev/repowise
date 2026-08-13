@@ -393,7 +393,7 @@ workspace overlays, MCP responses, and CLI output.
 | Dead-code status | `open`, `acknowledged`, `resolved`, `false_positive` |
 | Security severity | `high`, `med`, `low` |
 | Security kind | `eval_call`, `exec_call`, `pickle_loads`, `subprocess_shell_true`, `os_system`, `hardcoded_password`, `hardcoded_secret`, `fstring_sql`, `concat_sql`, `tls_verify_false`, `weak_hash`, `security_sensitive_symbol` |
-| Edge type | `imports`, `defines`, `calls`, `has_method`, `has_property`, `extends`, `implements`, `method_overrides`, `method_implements`, `co_changes`, `framework`, `dynamic`, plus dynamic subtypes such as `dynamic_uses`, `dynamic_imports`, `dynamic_url_route` |
+| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `co_changes`, `framework`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route` — the complete list, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py` |
 | Node type | `file`, `symbol`, `external` |
 | Search type | `vector`, `fulltext` |
 | Contract type | `http`, `grpc`, `topic` |

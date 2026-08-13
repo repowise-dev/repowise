@@ -21,7 +21,7 @@ from typing import Any
 
 import structlog
 
-from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES, is_dynamic_edge
+from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from .constants import (
     _DEFAULT_DYNAMIC_PATTERNS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
@@ -988,12 +988,16 @@ class DeadCodeAnalyzer:
             # Was ("dynamic_uses", "dynamic", "framework"): the bare "dynamic"
             # matched nothing and dynamic_imports was absent, so a file reached
             # only by a dynamic import was never rescued here.
-            inbound_types = (
-                self.graph.get_edge_data(pred, node, {}).get("edge_type")
-                for pred in self.graph.predecessors(node)
-            )
+            # Deliberately NOT `is_dynamic_edge`: `dynamic_imports` and
+            # `dynamic_url_route` mean the module gets loaded, which is what a
+            # plain `imports` edge means, and that is not rescued here either.
+            # Only `dynamic_uses` carries "the runtime reached a member".
+            # Widening this to every dynamic_* hides an unused export in any
+            # package.json `main` target or Django INSTALLED_APPS module.
             file_dynamically_loaded = any(
-                is_dynamic_edge(t) or t == "framework" for t in inbound_types
+                self.graph.get_edge_data(pred, node, {}).get("edge_type")
+                in ("dynamic_uses", "framework")
+                for pred in self.graph.predecessors(node)
             )
             if file_dynamically_loaded:
                 continue

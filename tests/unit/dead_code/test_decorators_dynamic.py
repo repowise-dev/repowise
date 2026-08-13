@@ -155,7 +155,7 @@ def test_dynamic_edge_clamps_unreachable_confidence():
             },
         },
         edges=[
-            ("pkg/dispatcher.py", "pkg/handler.py", {"edge_type": "dynamic"}),
+            ("pkg/dispatcher.py", "pkg/handler.py", {"edge_type": "dynamic_uses"}),
         ],
     )
 

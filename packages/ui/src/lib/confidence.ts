@@ -99,11 +99,8 @@ export function languageColor(lang: string): string {
 export const EDGE_COLORS: Record<string, string> = {
   imports: "#F59520",
   calls: "#34D399",
-  // "extends" is the token the extractors emit; the "inherits" that used to be
-  // here never was one, so inheritance edges fell through to the imports color.
-  extends: "#A98FC4",
+  inherits: "#A98FC4",
   implements: "#C85AA0",
-  // Singular is the workspace SystemGraph's kind, plural the code graph's.
   co_change: "#7C5CC4",
   co_changes: "#7C5CC4",
 };

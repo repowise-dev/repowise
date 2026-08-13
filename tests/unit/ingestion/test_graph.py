@@ -915,7 +915,10 @@ class TestDynamicEdgeExcludeFilter:
         return DynamicEdge(
             source="src/main.py",
             target=target,
-            edge_type="co_change",
+            # Incidental to this test, but it has to be a real DynamicKind:
+            # anything else is minted as `dynamic_<kind>` and lands in the
+            # graph as an edge type nothing declares.
+            edge_type="dynamic_uses",
             hint_source="git",
             weight=1.0,
         )

@@ -361,16 +361,20 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
         "dynamic_uses",
         "dynamic_imports",
         "dynamic_url_route",
+        # C# member access (`var x = new T(); x.Prop`) resolves to the file
+        # declaring the type, so this is a real file-level reference. See the
+        # note on SYMBOL_USE_EDGE_TYPES: `reads` is emitted at both layers.
+        "reads",
     }
 )
 
 # Symbol → symbol references. "Something reaches this symbol", so containment
 # is excluded: a class containing a method is not the method being used.
 #
-# `reads` is the one type that spans both layers — the Express extractor emits
-# it file → file (596 rows) and the C# member-read extractor symbol → symbol
-# (1 row). It is listed here because reachability is the question it was added
-# for; a file-level consumer gets nothing from it either way.
+# `reads` is the one type that spans both layers, which is why it is the one
+# member of both sets. Two extractors share the name: `csharp_member_reads`
+# emits it file → file (596 rows locally) and `framework_edges/express` emits
+# it symbol → symbol from a `path::__module__` node (1 row).
 SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
     {
         "calls",
@@ -389,25 +393,6 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
 REACHABILITY_USE_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES | {"type_use"}
 
 
-def is_dependency_edge(edge_type: str | None) -> bool:
-    """Whether *edge_type* is a code dependency — the "what depends on this?" view.
-
-    Excludes containment and history. ``None`` is not a dependency: the column
-    is nullable in the schema, though it has 0 nulls in 1.52M local rows.
-    """
-    return edge_type is not None and edge_type not in NON_DEPENDENCY_EDGE_TYPES
-
-
-def is_containment_edge(edge_type: str | None) -> bool:
-    """Whether *edge_type* is structural containment rather than a reference."""
-    return edge_type in CONTAINMENT_EDGE_TYPES
-
-
-def is_temporal_edge(edge_type: str | None) -> bool:
-    """Whether *edge_type* is history evidence rather than a code reference."""
-    return edge_type in TEMPORAL_EDGE_TYPES
-
-
 def is_dynamic_edge(edge_type: str | None) -> bool:
     """Whether *edge_type* is a dynamic-dispatch hint.
 
@@ -415,9 +400,10 @@ def is_dynamic_edge(edge_type: str | None) -> bool:
     mints ``dynamic_<kind>`` from whatever a hint extractor reports — so a set
     membership test here is what goes stale when a new hint kind lands, and
     three separate consumers matching a bare ``"dynamic"`` is how that failure
-    already shipped.
+    already shipped. The trailing underscore is load bearing: without it a
+    future ``dynamically_*`` type would match by accident.
     """
-    return edge_type is not None and edge_type.startswith("dynamic")
+    return edge_type is not None and edge_type.startswith("dynamic_")
 
 
 @dataclass

@@ -20,12 +20,20 @@ from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
 # File->file edge types that constitute a structural dependency cycle.
 # ``imports`` is the actionable, invertible edge; the others are carried so a
-# cycle that closes through a framework/type edge is still reported. Today the
-# only file-level edge type the graph emits is ``imports`` (the rest are
-# symbol-level), so this closely tracks ``GraphBuilder.file_subgraph`` (which
-# drops only git ``co_changes``) and the persisted ``graph_node_membership``
-# rows; the two could drift only if a new file-level edge type is added to one
-# definition but not the other.
+# cycle that closes through a framework/type edge is still reported.
+#
+# This used to be a hand-written tuple, with a comment claiming ``imports`` was
+# the only file-level type the graph emits. That was wrong in both directions:
+# the tuple held a bare ``dynamic`` no producer writes, so every real
+# ``dynamic_*`` edge was invisible to cycle detection, and it carried
+# ``extends``/``implements``, which are symbol-to-symbol and cannot close a
+# file cycle. Sharing ``FILE_DEPENDENCY_EDGE_TYPES`` is what stops the next
+# file-level type from being added to one definition and not the other.
+#
+# It stays deliberately different from ``GraphBuilder.file_subgraph``, which is
+# an exclusion list (drop ``co_changes``) rather than an allowlist. Both reach
+# the same set today; the allowlist is the safer shape here because a new
+# non-dependency type defaults to "not a cycle" instead of silently closing one.
 #
 # Edge *type* is not sufficient on its own: the resolver passes synthesise
 # ``imports`` and ``type_use`` edges to express that two files are one
@@ -33,11 +41,6 @@ from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 # header/impl pair). Those are not dependencies and must not close a cycle, so
 # both definitions additionally reject ``is_cohesion_edge``. See
 # repowise.core.ingestion.cohesion.
-#
-# Was a hand-written tuple holding a bare ``dynamic`` that no producer emits,
-# so every real ``dynamic_*`` edge was invisible to cycle detection, plus
-# ``extends``/``implements``, which are symbol-to-symbol and cannot close a
-# file cycle.
 _CYCLE_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
 
 

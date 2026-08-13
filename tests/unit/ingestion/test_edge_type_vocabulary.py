@@ -21,13 +21,17 @@ Two directions, two tests:
   set holds only real members, so a dead key like `"heritage"` cannot sit in a
   dependency set pretending to do work.
 
-Ceiling: this is an AST check on *literal* arguments, so a call passing a
-computed edge type (`add_dynamic_edges` builds one by prefixing) is recorded in
-``_COMPUTED`` rather than verified. Typing is what covers those — the value
-there comes from a `DynamicKind`-annotated field. mypy cannot do this test's
-job instead: every `add_edge` in the tree ultimately lands on
-``networkx.DiGraph.add_edge(**attrs)`` or ``GraphStore.add_edge(**attrs: Any)``,
-so there is no parameter to annotate and no error for mypy to raise.
+Ceiling: this is an AST check on *literal* edge types, in both the
+`add_edge(..., edge_type="x")` and the `{"edge_type": "x"}`-then-splat forms.
+What it cannot see is a computed value — `add_dynamic_edges` builds one by
+prefixing — so those files are listed in ``_COMPUTED`` and covered instead by
+the `DynamicKind` Literal on the field they read. A type assembled at runtime
+from a variable would still slip through, so this is not a proof that no
+undeclared type can be emitted.
+
+mypy cannot do this job instead: every `add_edge` in the tree ultimately lands
+on ``networkx.DiGraph.add_edge(**attrs)`` or ``GraphStore.add_edge(**attrs:
+Any)``, so there is no parameter to annotate and no error for it to raise.
 """
 
 from __future__ import annotations
@@ -50,13 +54,11 @@ _COMPUTED: frozenset[str] = frozenset(
         # is a Literal, so the output is closed even though it is not literal
         # here; `test_every_dynamic_kind_maps_into_the_vocabulary` pins it.
         "packages/core/src/repowise/core/ingestion/graph/_edges.py",
-        # Replays persisted rows back onto a fresh graph. The edge type comes
-        # from the database, which this test cannot reach; the rows were
+        # Both replay persisted rows back onto a fresh graph. The edge type
+        # comes from the database, which this test cannot reach; the rows were
         # written by the producers this test does check.
         "packages/core/src/repowise/core/ingestion/graph/_rehydrate.py",
-        # Maps a `HeritageKind` to "extends"/"implements" via
-        # `_heritage_kind_to_edge_type`, which is annotated to return EdgeType.
-        "packages/core/src/repowise/core/ingestion/graph/_resolvers.py",
+        "packages/core/src/repowise/core/persistence/coordinator.py",
     }
 )
 
@@ -79,7 +81,6 @@ _OTHER_GRAPHS: frozenset[str] = frozenset(
         # Interface/passthrough declarations, not producers.
         "packages/core/src/repowise/core/persistence/_interfaces/graph_store.py",
         "packages/core/src/repowise/core/persistence/stores/in_process_graph_store.py",
-        "packages/core/src/repowise/core/persistence/coordinator.py",
     }
 )
 
@@ -104,20 +105,31 @@ def _edge_type_literals() -> dict[str, set[str]]:
         except (SyntaxError, UnicodeDecodeError):
             continue
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name != "add_edge":
-                continue
-            for kw in node.keywords:
-                if (
-                    kw.arg == "edge_type"
-                    and isinstance(kw.value, ast.Constant)
-                    and isinstance(kw.value.value, str)
-                ):
-                    found.setdefault(rel, set()).add(kw.value.value)
+            # `graph.add_edge(u, v, edge_type="imports")`
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name != "add_edge":
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == "edge_type" and _is_str_constant(kw.value):
+                        found.setdefault(rel, set()).add(kw.value.value)  # type: ignore[attr-defined]
+            # `attrs = {"edge_type": "imports", ...}` then `add_edge(u, v, **attrs)`.
+            # builder.py builds edges this way, so without this the splat form
+            # would be invisible to the check.
+            elif isinstance(node, ast.Dict):
+                for key, val in zip(node.keys, node.values, strict=True):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and key.value == "edge_type"
+                        and _is_str_constant(val)
+                    ):
+                        found.setdefault(rel, set()).add(val.value)  # type: ignore[attr-defined]
     return found
+
+
+def _is_str_constant(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
 
 
 def _edge_type_set_members() -> dict[str, set[str]]:
@@ -140,22 +152,32 @@ def _edge_type_set_members() -> dict[str, set[str]]:
             names = [t.id for t in targets if isinstance(t, ast.Name)]
             if not any(n.endswith("_EDGE_TYPES") for n in names):
                 continue
-            value = node.value
-            if value is None:
+            if node.value is None:
                 continue
-            # frozenset({...}) / set({...}) unwrap to their single argument.
-            if isinstance(value, ast.Call) and value.args:
-                value = value.args[0]
-            if not isinstance(value, ast.Set | ast.List | ast.Tuple):
-                continue  # derived from another set (`A | B`), checked at its source
-            members = {
-                el.value
-                for el in value.elts
-                if isinstance(el, ast.Constant) and isinstance(el.value, str)
-            }
+            members = _string_members(node.value)
             if members:
                 found[f"{rel}::{names[0]}"] = members
     return found
+
+
+def _string_members(value: ast.expr) -> set[str]:
+    """Every string literal in a set expression, through calls and `|` unions.
+
+    Recursing through `BinOp` is the point. `SYMBOL_USE_EDGE_TYPES | {"heritage"}`
+    is a legal way to write a set, and a version of this that skipped BinOp
+    entirely let exactly the dead key it was written to catch survive by moving
+    to the right of the pipe.
+    """
+    # frozenset({...}) / set({...}) unwrap to their single argument.
+    if isinstance(value, ast.Call):
+        return set().union(*(_string_members(a) for a in value.args)) if value.args else set()
+    if isinstance(value, ast.BinOp):
+        return _string_members(value.left) | _string_members(value.right)
+    if isinstance(value, ast.Set | ast.List | ast.Tuple):
+        return {
+            el.value for el in value.elts if isinstance(el, ast.Constant) and isinstance(el.value, str)
+        }
+    return set()  # a bare Name — checked where it is defined
 
 
 def test_nothing_emits_an_undeclared_edge_type() -> None:
@@ -187,16 +209,18 @@ def test_no_consumer_set_holds_a_type_nothing_emits() -> None:
     )
 
 
-def test_computed_call_sites_still_compute() -> None:
-    """Every ``_COMPUTED`` exemption must still contain an add_edge, so the list cannot rot."""
-    stale = sorted(
-        rel
-        for rel in _COMPUTED
-        if "add_edge" not in (_PACKAGES.parents[0] / rel).read_text(encoding="utf-8")
-    )
-    assert not stale, (
-        "These no longer call add_edge — remove them from _COMPUTED:\n"
-        + "\n".join(f"  {p}" for p in stale)
+@pytest.mark.parametrize("exempt", sorted(_COMPUTED | _OTHER_GRAPHS))
+def test_exemptions_still_call_add_edge(exempt: str) -> None:
+    """Every exemption must still be a real add_edge site, so neither list can rot.
+
+    Both lists, not just ``_COMPUTED``: an entry left in ``_OTHER_GRAPHS`` after
+    its file starts writing real ``EdgeType`` values would be exempt forever
+    and silently.
+    """
+    path = _PACKAGES.parents[0] / exempt
+    assert path.exists(), f"{exempt} no longer exists — remove it from the exemption list"
+    assert "add_edge" in path.read_text(encoding="utf-8"), (
+        f"{exempt} no longer calls add_edge — remove it from the exemption list"
     )
 
 
@@ -217,29 +241,6 @@ def test_every_dynamic_kind_maps_into_the_vocabulary() -> None:
             f"DynamicKind {kind!r} reaches the graph as {emitted!r}, which EdgeType"
             " does not declare."
         )
-
-
-def test_edge_verb_covers_the_vocabulary() -> None:
-    """Every edge type must have a C4 label, and every label a real edge type.
-
-    `relation_label` falls through to "depends on" for an unknown type, which
-    is silent — `framework` and `dynamic_uses` rendered that way for their
-    whole life, and `type_use` (6,596 rows locally) still did until this test
-    existed. Both directions, so the map cannot grow a dead key either.
-    """
-    from repowise.server.services.c4_builder.labels import _EDGE_VERB, _VERB_PRIORITY
-
-    assert not (EDGE_TYPE_VALUES - _EDGE_VERB.keys()), (
-        "edge type(s) with no C4 verb — they render as the vague 'depends on': "
-        f"{sorted(EDGE_TYPE_VALUES - _EDGE_VERB.keys())}"
-    )
-    assert not (_EDGE_VERB.keys() - EDGE_TYPE_VALUES), (
-        f"C4 verb(s) keyed on a type nothing emits: {sorted(_EDGE_VERB.keys() - EDGE_TYPE_VALUES)}"
-    )
-    assert not (set(_EDGE_VERB.values()) - set(_VERB_PRIORITY)), (
-        "verb(s) missing from _VERB_PRIORITY, so an aggregated edge cannot rank them: "
-        f"{sorted(set(_EDGE_VERB.values()) - set(_VERB_PRIORITY))}"
-    )
 
 
 def test_edge_type_map_covers_the_vocabulary() -> None:

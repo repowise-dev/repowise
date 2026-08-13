@@ -38,7 +38,7 @@ def _orphan_graph() -> nx.DiGraph:
             # pkg_b: orphan sits in a package with NO dynamic edge at all
             "pkg_b/orphan.py": {"symbol_count": 5, "symbols": []},
         },
-        edges=[("pkg_a/dispatcher.py", "pkg_a/handler.py", {"edge_type": "dynamic"})],
+        edges=[("pkg_a/dispatcher.py", "pkg_a/handler.py", {"edge_type": "dynamic_uses"})],
     )
 
 
@@ -110,7 +110,7 @@ def test_repo_root_dynamic_import_clamps_other_root_files():
             "orphan.py": {"symbol_count": 5, "symbols": []},
             "pkg_c/orphan.py": {"symbol_count": 5, "symbols": []},
         },
-        edges=[("loader.py", "main.py", {"edge_type": "dynamic"})],
+        edges=[("loader.py", "main.py", {"edge_type": "dynamic_uses"})],
     )
     analyzer = DeadCodeAnalyzer(
         graph, git_meta_map=_stale_meta("orphan.py", "pkg_c/orphan.py")

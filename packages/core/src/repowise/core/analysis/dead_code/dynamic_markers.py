@@ -20,6 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from repowise.core.ids import is_external
+from repowise.core.ingestion.models import is_dynamic_edge
 
 
 def read_source_text(
@@ -515,8 +516,7 @@ def find_dynamic_edge_files(graph) -> set[str]:
     result: set[str] = set()
     try:
         for u, v, data in graph.edges(data=True):
-            etype = data.get("edge_type", "")
-            if etype != "dynamic" and not etype.startswith("dynamic_"):
+            if not is_dynamic_edge(data.get("edge_type", "")):
                 continue
             for endpoint in (u, v):
                 if endpoint is None:
