@@ -21,6 +21,7 @@ from typing import Any
 
 import structlog
 
+from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES, is_dynamic_edge
 from .constants import (
     _DEFAULT_DYNAMIC_PATTERNS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
@@ -984,9 +985,12 @@ class DeadCodeAnalyzer:
             # any public member. Treat the whole file as live so we
             # don't flag e.g. ``BasketService`` (registered via
             # ``MapGrpcService<BasketService>()``) as an unused export.
+            # Was ("dynamic_uses", "dynamic", "framework"): the bare "dynamic"
+            # matched nothing and dynamic_imports was absent, so a file reached
+            # only by a dynamic import was never rescued here.
             file_dynamically_loaded = any(
-                self.graph.get_edge_data(pred, node, {}).get("edge_type")
-                in ("dynamic_uses", "dynamic", "framework")
+                is_dynamic_edge(edge_type := self.graph.get_edge_data(pred, node, {}).get("edge_type"))
+                or edge_type == "framework"
                 for pred in self.graph.predecessors(node)
             )
             if file_dynamically_loaded:
@@ -1184,8 +1188,7 @@ class DeadCodeAnalyzer:
                 # padding bases like ``BoundedLocalCache.BLCHeader``,
                 # Kotlin sealed parents, Scala typeclass traits).
                 if self.graph.has_node(sym_id) and any(
-                    self.graph[pred][sym_id].get("edge_type")
-                    in ("calls", "method_implements", "reads", "extends", "implements", "type_use")
+                    self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
                     for pred in self.graph.predecessors(sym_id)
                 ):
                     continue

@@ -23,19 +23,29 @@ from collections.abc import Iterable
 # and `dynamic_uses`, which between them covered 1,351 of the 13,165 file-level
 # edges on a live index (10%) and rendered as "depends on" for their whole life.
 # `extends` is the token the extractors emit; `inherits` never was one.
+# Total over EdgeType, and `test_edge_verb_covers_the_vocabulary` keeps it that
+# way — the fall-through this comment describes is silent, so the only reliable
+# fix is for a missing key to fail a test rather than render as "depends on".
+# Dropped: "inherits", "references" and "contains", none of which is an edge
+# type ("contains" and "tested_by" are knowledge-graph export labels).
 _EDGE_VERB: dict[str, str] = {
     "imports": "imports",
     "dynamic_imports": "imports",
     "calls": "calls",
     "extends": "inherits from",
-    "inherits": "inherits from",
     "implements": "implements",
+    "method_implements": "implements",
     # A lazy/registry import and a framework-convention link (a test file to its
     # conftest) are both real dependencies that no static import expresses.
     "dynamic_uses": "uses",
+    "dynamic_url_route": "uses",
     "framework": "uses",
-    "references": "references",
-    "contains": "contains",
+    "reads": "uses",
+    # A type reference without an import: named, but not imported.
+    "type_use": "references",
+    # Containment. Only reachable when the view includes symbol nodes.
+    "defines": "contains",
+    "has_method": "contains",
     "co_changes": "co-changes",
 }
 

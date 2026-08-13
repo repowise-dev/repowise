@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from ....ingestion.cohesion import is_cohesion_edge
+from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
 # File->file edge types that constitute a structural dependency cycle.
 # ``imports`` is the actionable, invertible edge; the others are carried so a
@@ -32,7 +33,12 @@ from ....ingestion.cohesion import is_cohesion_edge
 # header/impl pair). Those are not dependencies and must not close a cycle, so
 # both definitions additionally reject ``is_cohesion_edge``. See
 # repowise.core.ingestion.cohesion.
-_CYCLE_EDGE_TYPES = ("imports", "framework", "dynamic", "type_use", "extends", "implements")
+#
+# Was a hand-written tuple holding a bare ``dynamic`` that no producer emits,
+# so every real ``dynamic_*`` edge was invisible to cycle detection, plus
+# ``extends``/``implements``, which are symbol-to-symbol and cannot close a
+# file cycle.
+_CYCLE_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
 
 
 def _is_cycle_edge(data: Any) -> bool:

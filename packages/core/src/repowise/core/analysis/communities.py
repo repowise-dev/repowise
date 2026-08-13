@@ -21,6 +21,7 @@ import networkx as nx
 import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
 from repowise.core.test_paths import is_test_related_path
 
 log = structlog.get_logger(__name__)
@@ -32,15 +33,16 @@ log = structlog.get_logger(__name__)
 _MAX_COMMUNITY_FRACTION = 0.30
 _MIN_SPLIT_SIZE = 20
 
-# Edge types to include when building file-level community subgraph
-_FILE_COMMUNITY_EDGE_TYPES = frozenset({
-    "imports", "framework", "dynamic", "extends", "implements",
-})
+# Edge types to include when building file-level community subgraph.
+# Was {imports, framework, dynamic, extends, implements}: "dynamic" matched no
+# real edge, and extends/implements are symbol-to-symbol so they never joined
+# two files.
+_FILE_COMMUNITY_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
 
-# Edge types to include when building symbol-level community subgraph
-_SYMBOL_COMMUNITY_EDGE_TYPES = frozenset({
-    "calls", "extends", "implements", "has_method",
-})
+# Edge types to include when building symbol-level community subgraph.
+# Containment is kept here on purpose: a class and its methods belong in one
+# community.
+_SYMBOL_COMMUNITY_EDGE_TYPES = SYMBOL_USE_EDGE_TYPES | {"has_method"}
 
 # Generic directory segments excluded from heuristic labeling — the shared
 # organisational-container vocabulary lives in kg_curation next to its

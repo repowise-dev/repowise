@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.ids import ExternalSystemId, file_path_of, render
+from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
 from repowise.core.persistence import (
     ExternalSystem,
     GraphEdge,
@@ -58,13 +59,10 @@ _ENTRY_POINT_NAMES = frozenset(
     }
 )
 
-_SYMBOL_EDGE_TYPES = frozenset(
-    {
-        "contains",
-        "defines",
-        "has_method",
-    }
-)
+# "contains" used to sit here too. It is a knowledge-graph *export* label
+# derived from defines/has_method, never a persisted edge_type, so it matched
+# nothing.
+_SYMBOL_EDGE_TYPES = CONTAINMENT_EDGE_TYPES
 
 _EXT_MAP = {
     ".py": "python",

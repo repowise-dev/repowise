@@ -251,19 +251,42 @@ class HeritageRelation:
 # Edge types used in the symbol-level dependency graph
 # ---------------------------------------------------------------------------
 
+# The vocabulary is exhaustive and *true*: every member is emitted by some
+# producer, and no producer emits anything outside it. Both halves are load
+# bearing. A declared-but-never-emitted member is what let a dozen consumers
+# each write a set against a type that does not exist, and an emitted-but-
+# undeclared type is what made every one of those sets silently incomplete.
+#
+# `tests/unit/ingestion/test_edge_type_vocabulary.py` holds both directions
+# shut: it AST-walks every `add_edge` call in the packages and fails on a
+# literal that is not a member here.
+#
+# Removed 2026-08-14, each measured at 0 rows across 42 local indexes with no
+# producer anywhere in the tree: `has_property` (only `defines` and
+# `has_method` are emitted for containment), `method_overrides` (a
+# `HeritageKind`, never an edge type — the TS mirror in
+# `packages/types/src/symbols.ts` still declares it as a heritage kind, which
+# is correct), and bare `dynamic`.
 EdgeType = Literal[
     "imports",
     "defines",
     "calls",
     "has_method",
-    "has_property",
     "extends",
     "implements",
-    "method_overrides",
     "method_implements",
     "co_changes",
     "framework",
-    "dynamic",
+    # Symbol-level data reference rather than a call: Express route/middleware
+    # wiring and C# member reads. Emitted by two `_add_reads_edge` helpers.
+    "reads",
+    # Dynamic-dispatch hints. `dynamic_hints` extractors emit a `DynamicKind`
+    # sub-type and `EdgesMixin.add_dynamic_edges` prefixes it, so `url_route`
+    # reaches the graph as `dynamic_url_route` and never as itself. Consumers
+    # matching bare `"dynamic"` — three of them did — match none of these.
+    "dynamic_uses",
+    "dynamic_imports",
+    "dynamic_url_route",
     # Synthesised file-to-file edge emitted from constructor / method /
     # delegate / record parameter type references in statically-typed
     # languages (currently C#; see type_ref_resolution.py). Distinct
@@ -272,12 +295,24 @@ EdgeType = Literal[
     "type_use",
 ]
 
+# Runtime mirror of the Literal, for the places that must test membership
+# rather than annotate. Derived, never hand-written — a second hand-written
+# copy is the exact failure this phase exists to remove.
+EDGE_TYPE_VALUES: frozenset[str] = frozenset(get_args(EdgeType))
+
+# What a dynamic-hint extractor reports, *before* `add_dynamic_edges` prefixes
+# it. Deliberately a separate vocabulary from `EdgeType`: `url_route` is a
+# legal hint kind and never a legal graph edge type, and conflating the two is
+# what put `url_route` in the plan for this phase as an edge type to declare
+# when the graph has never held one.
+DynamicKind = Literal["dynamic_uses", "dynamic_imports", "url_route"]
+
 # Structural containment, not reference. ``defines`` is file → symbol and
-# ``has_method`` / ``has_property`` are class symbol → member symbol, so both
-# endpoints describe the same code rather than one depending on the other.
-# Their target is a ``path::Name`` symbol node, which is why a consumer that
-# keys on file paths gets nothing usable out of them.
-CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method", "has_property"})
+# ``has_method`` is class symbol → member symbol, so both endpoints describe
+# the same code rather than one depending on the other. Their target is a
+# ``path::Name`` symbol node, which is why a consumer that keys on file paths
+# gets nothing usable out of them.
+CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
 
 # Evidence from history rather than from code: two files move together in
 # commits, not one referencing the other. This is the one that bites, because
@@ -296,6 +331,93 @@ TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 # to the functions it declares, so anything traversing the graph wants
 # ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
 NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+
+# ---------------------------------------------------------------------------
+# The named views. Ask for the one that matches your question.
+# ---------------------------------------------------------------------------
+#
+# Before these existed, thirteen modules each kept a private set answering some
+# version of "which edges count as a dependency", and no two were identical:
+# `type_use` was a dependency in five and absent from four, `reads` appeared in
+# one of thirteen, and three tested for a bare `"dynamic"` that no producer has
+# ever emitted — so they matched none of the 6,153 real `dynamic_*` edges.
+#
+# The split below is not a taste call. Measured across 42 local indexes, every
+# edge type lands on one side 100% of the time, with a single exception noted
+# on `reads`. Add a member here, not a set of your own, and say which view you
+# want at the call site.
+
+# File → file code references: static imports, C#-style type references,
+# synthesised framework wiring, and dispatch the parser cannot see statically.
+# This is the right view for anything building a *file*-level subgraph —
+# communities, dependency cycles, coupling. Note what is absent: `co_changes`
+# is history rather than code, and symbol-level types put both endpoints on
+# nodes a file-keyed consumer cannot resolve.
+FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        "imports",
+        "type_use",
+        "framework",
+        "dynamic_uses",
+        "dynamic_imports",
+        "dynamic_url_route",
+    }
+)
+
+# Symbol → symbol references. "Something reaches this symbol", so containment
+# is excluded: a class containing a method is not the method being used.
+#
+# `reads` is the one type that spans both layers — the Express extractor emits
+# it file → file (596 rows) and the C# member-read extractor symbol → symbol
+# (1 row). It is listed here because reachability is the question it was added
+# for; a file-level consumer gets nothing from it either way.
+SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        "calls",
+        "extends",
+        "implements",
+        "method_implements",
+        "reads",
+    }
+)
+
+
+# "Does anything use this symbol at all?" — the reachability view. Adds
+# ``type_use`` to the symbol set: a C#-style type reference is a real use, and
+# the dead-code analyzer and the C/C++ reachability pass both asked for exactly
+# this union with their own private copy.
+REACHABILITY_USE_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES | {"type_use"}
+
+
+def is_dependency_edge(edge_type: str | None) -> bool:
+    """Whether *edge_type* is a code dependency — the "what depends on this?" view.
+
+    Excludes containment and history. ``None`` is not a dependency: the column
+    is nullable in the schema, though it has 0 nulls in 1.52M local rows.
+    """
+    return edge_type is not None and edge_type not in NON_DEPENDENCY_EDGE_TYPES
+
+
+def is_containment_edge(edge_type: str | None) -> bool:
+    """Whether *edge_type* is structural containment rather than a reference."""
+    return edge_type in CONTAINMENT_EDGE_TYPES
+
+
+def is_temporal_edge(edge_type: str | None) -> bool:
+    """Whether *edge_type* is history evidence rather than a code reference."""
+    return edge_type in TEMPORAL_EDGE_TYPES
+
+
+def is_dynamic_edge(edge_type: str | None) -> bool:
+    """Whether *edge_type* is a dynamic-dispatch hint.
+
+    Prefix-matched on purpose. The sub-type is open — ``add_dynamic_edges``
+    mints ``dynamic_<kind>`` from whatever a hint extractor reports — so a set
+    membership test here is what goes stale when a new hint kind lands, and
+    three separate consumers matching a bare ``"dynamic"`` is how that failure
+    already shipped.
+    """
+    return edge_type is not None and edge_type.startswith("dynamic")
 
 
 @dataclass

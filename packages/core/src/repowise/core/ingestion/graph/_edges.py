@@ -85,10 +85,15 @@ class EdgesMixin:
                 if self._exclude.patterns and self._exclude.match_file(e.target):
                     continue
                 self._graph.add_node(e.target)
-            sub_type = e.edge_type or "dynamic"
-            graph_edge_type = (
-                sub_type if sub_type.startswith("dynamic") else f"dynamic_{sub_type}"
-            )
+            # `DynamicEdge.edge_type` is a `DynamicKind`, so there is no empty
+            # case to fall back on. The `or "dynamic"` that used to sit here
+            # was the only writer of a bare `"dynamic"` edge — unreachable in
+            # practice (0 rows in 42 indexes) but enough to keep `"dynamic"`
+            # in the declared vocabulary, which in turn is what three
+            # consumers wrote their sets against and why none of them matched
+            # a real `dynamic_*` edge.
+            sub_type = e.edge_type
+            graph_edge_type = sub_type if sub_type.startswith("dynamic") else f"dynamic_{sub_type}"
             self._graph.add_edge(
                 e.source,
                 e.target,

@@ -118,7 +118,9 @@ def _graph_mode(dominant_lang: str, lang_by_path: dict[str, str], graph_builder:
     external_targets = 0
     try:
         for src, dst, data in graph_builder.graph().edges(data=True):
-            if (data or {}).get("edge_type") in ("imports", "tested_by") and src in dom_files:
+            # "tested_by" was a second member here; it is a knowledge-graph
+            # export label, never a raw edge type, so it never matched.
+            if (data or {}).get("edge_type") == "imports" and src in dom_files:
                 edge_count += 1
                 if isinstance(dst, str) and is_external(dst):
                     external_targets += 1
@@ -1087,7 +1089,10 @@ def _import_groups(
 # The harness signal is "this test file *depends on* that one" — type
 # references and inheritance (a base test class) are exactly that evidence;
 # raw-graph type_use/heritage edges surface as plain imports in the export.
-_DEPENDENCY_EDGE_TYPES = frozenset({"imports", "type_use", "heritage"})
+# Deliberately narrower than FILE_DEPENDENCY_EDGE_TYPES: framework and dynamic
+# wiring is not harness evidence. "heritage" used to be a third member and was
+# never an edge type — inheritance reaches the graph as extends/implements.
+_DEPENDENCY_EDGE_TYPES = frozenset({"imports", "type_use"})
 
 
 def _import_pairs_excluding_fanout(graph_builder: Any) -> list[tuple[str, str]]:
