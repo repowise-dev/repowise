@@ -6,6 +6,7 @@ import asyncio
 
 from sqlalchemy import select
 
+from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -77,10 +78,16 @@ async def get_risk(
         repository = await _get_repo(session)
         repo_id = repository.id
 
-        # Pre-load edges
+        # Pre-load edges. Dependency edges only: everything below reads these as
+        # "X depends on Y", and the graph also carries containment and co-change
+        # edges. Leaving co_changes in made the relation circular: a co-change
+        # partner was fed back in as an import link, so every partner that
+        # cleared the count floor was annotated ``(imports)``, including the
+        # markdown and JSON files that are graph nodes but import nothing.
         res = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
             )
         )
         all_edges = res.scalars().all()

@@ -272,6 +272,20 @@ EdgeType = Literal[
     "type_use",
 ]
 
+# Edge types that are *not* code dependencies, and so must be excluded by any
+# consumer answering "what depends on this?".
+#
+# ``defines`` (file → symbol) and ``has_method`` / ``has_property``
+# (class symbol → member symbol) are containment: a file "depends on" the
+# symbols it declares only in a sense nobody asks about.
+# ``co_changes`` is temporal: evidence that two files move together in history,
+# not evidence that one references the other. It is also the one that bites,
+# because a co-change edge fed back in as a dependency makes every co-change
+# partner look like an import of its own subject.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
+    {"defines", "has_method", "has_property", "co_changes"}
+)
+
 
 @dataclass
 class TypeReference:
