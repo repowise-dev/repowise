@@ -164,9 +164,15 @@ def test_conventional_entry_point_survives_having_no_importers(
     ],
 )
 def test_filter_bails_out_where_dead_code_is_kinder(sample_config, sample_repo_structure, path):
-    """The analyzer rescues these from unreachable_file through checks this
-    filter cannot reach. Over-dropping empties the section silently, so where
-    the two models are known to diverge the flow is kept."""
+    """The analyzer rescues these from unreachable_file, so the flow stays.
+
+    The barrels are rescued by the shared predicate outright. The
+    package-granular languages are rescued because this caller passes no
+    package map, which the predicate reads as "not checked" and answers
+    reachable — the forgiving direction, chosen at the call site rather than
+    falling out of what state happened to be available. Over-dropping empties
+    the section silently, which is the failure being avoided.
+    """
     graph = _graph_with({path: {"is_entry_point": False}}, imports=[])
     flows = [_flow(f"{path}::f", 0.95, ["a", "b"])]
 
@@ -176,6 +182,38 @@ def test_filter_bails_out_where_dead_code_is_kinder(sample_config, sample_repo_s
     )
 
     assert [f["entry_point"] for f in ctx.execution_flows] == [f"{path}::f"]
+
+
+@pytest.mark.parametrize("attr", ["is_api_contract", "is_never_flag"])
+def test_flow_survives_the_rescues_the_analyzer_already_applied(
+    sample_config, sample_repo_structure, attr
+):
+    """Both flags live on the graph node, so this caller always had them and
+    never asked. Sharing the predicate means it does now, and the two passes
+    stop disagreeing about a published API contract with no importer."""
+    graph = _graph_with({"src/contract.py": {"is_entry_point": False, attr: True}}, imports=[])
+    flows = [_flow("src/contract.py::f", 0.95, ["a", "b"])]
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_Builder(flows, graph)
+    )
+
+    assert [f["entry_point"] for f in ctx.execution_flows] == ["src/contract.py::f"]
+
+
+def test_self_import_does_not_rescue_a_flow_entry_point(sample_config, sample_repo_structure):
+    """A file importing itself is not evidence anything else reaches it."""
+    graph = _graph_with({"src/orphan.py": {"is_entry_point": False}}, imports=[])
+    graph.add_edge("src/orphan.py", "src/orphan.py", edge_type="imports")
+    flows = [_flow("src/orphan.py::f", 0.95, ["a", "b"])]
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_Builder(flows, graph)
+    )
+
+    assert ctx.execution_flows == []
 
 
 def test_dropping_a_flow_is_logged(sample_config, sample_repo_structure):

@@ -31,18 +31,16 @@ from .constants import (
     _is_fixture_path,
 )
 from .contract_methods import is_contract_method
-from .cpp_reachability import (
-    build_cpp_package_files,
-    is_cpp_file_reachable,
-    is_cpp_path,
-)
 from .dynamic_markers import (
     find_dynamic_edge_files,
     find_dynamic_import_files,
     read_source_text,
 )
-from .go_reachability import build_go_package_files, is_go_file_reachable
-from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
+from .file_reachability import (
+    ReachabilityRescues,
+    build_package_file_map,
+    is_file_reachable,
+)
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .risk_factors import RISK_CAP_CONFIDENCE, path_risk_factors, risk_evidence
 
@@ -339,26 +337,6 @@ _CPP_BUILTIN_MACROS: frozenset[str] = frozenset(
 
 logger = structlog.get_logger(__name__)
 
-# Re-export barrel filenames. Skipped in the *unreachable-file* pass only:
-# a barrel aggregates other modules' symbols and is reached by importing
-# those names (or, for a package's public entry, via package.json
-# ``exports``/``main``), so a barrel with no inbound graph edge is not dead.
-# They are NOT skipped in the unused-export pass — a genuine symbol defined
-# in a barrel that nobody imports should still be flagged.
-_BARREL_FILENAMES: frozenset[str] = frozenset(
-    {
-        "__init__.py",
-        "index.ts",
-        "index.tsx",
-        "index.js",
-        "index.jsx",
-        "index.mts",
-        "index.cts",
-        "index.mjs",
-        "index.cjs",
-    }
-)
-
 
 def _find_jsx_namespace_files(
     parsed_files: dict,
@@ -652,32 +630,20 @@ class DeadCodeAnalyzer:
         self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
             parsed_files or {}, source_map
         )
-        # Lazily-built ``.go`` package-directory → file-node map, used by the
-        # Go package-granular reachability hook (see ``go_reachability``).
-        self._go_package_files: dict[str, list[str]] | None = None
-        # Lazily-built JVM (``.java`` + ``.kt``) package-directory map; see
-        # :mod:`jvm_reachability`.
-        self._jvm_package_files: dict[str, list[str]] | None = None
-        # Lazily-built C/C++ directory map; see :mod:`cpp_reachability`.
-        self._cpp_package_files: dict[str, list[str]] | None = None
+        # Lazily-built rescue state for the shared reachability predicate: the
+        # package-directory maps for Go / JVM / C-C++ plus the bundler-alias
+        # targets found above. Built on first use so a graph that never
+        # reaches the unreachable-files pass never pays for it.
+        self._rescues: ReachabilityRescues | None = None
 
-    def _go_packages(self) -> dict[str, list[str]]:
-        """Return the cached Go package map, building it on first use."""
-        if self._go_package_files is None:
-            self._go_package_files = build_go_package_files(self.graph)
-        return self._go_package_files
-
-    def _jvm_packages(self) -> dict[str, list[str]]:
-        """Return the cached JVM package map, building it on first use."""
-        if self._jvm_package_files is None:
-            self._jvm_package_files = build_jvm_package_files(self.graph)
-        return self._jvm_package_files
-
-    def _cpp_packages(self) -> dict[str, list[str]]:
-        """Return the cached C/C++ directory map, building it on first use."""
-        if self._cpp_package_files is None:
-            self._cpp_package_files = build_cpp_package_files(self.graph)
-        return self._cpp_package_files
+    def _reachability_rescues(self) -> ReachabilityRescues:
+        """Return the cached rescue state, building it on first use."""
+        if self._rescues is None:
+            self._rescues = ReachabilityRescues(
+                bundler_alias_targets=frozenset(self._bundler_alias_targets),
+                package_files=build_package_file_map(self.graph),
+            )
+        return self._rescues
 
     def analyze(
         self,
@@ -772,40 +738,13 @@ class DeadCodeAnalyzer:
                 continue
             if self._should_never_flag(str(node), whitelist):
                 continue
-            # Re-export barrels (index.* / __init__.py) are reached by the
-            # names they forward or via package ``exports``/``main`` — a barrel
-            # with no inbound graph edge is not dead code.
-            if Path(str(node)).name in _BARREL_FILENAMES:
-                continue
-            if self._is_api_contract(node_data):
-                continue
-            # Bundler ``resolve.alias`` targets are reached through the
-            # aliased package name; only the config references them by path.
-            if str(node) in self._bundler_alias_targets:
-                continue
 
-            # Go reachability is package-granular: a file with no direct
-            # importer can still be live (entry-package sibling next to
-            # main.go, or a package whose siblings carry the import). Delegate
-            # to the Go helper instead of the raw file-level in_degree check.
-            node_str = str(node)
-            if node_str.endswith(".go"):
-                if is_go_file_reachable(node_str, self.graph, self._go_packages()):
-                    continue
-            elif node_str.endswith(".java") or node_str.endswith(".kt"):
-                # JVM reachability is package-aware too: sibling-rescued
-                # packages plus stereotype-annotated / ``main``-carrying
-                # files surface as live even with no direct importer.
-                if is_jvm_file_reachable(node_str, self.graph, self._jvm_packages()):
-                    continue
-            elif is_cpp_path(node_str):
-                # C/C++ reachability rescues public-API headers, ``main``-
-                # bearing TUs (apps/demos/benchmarks/fuzzers), internal
-                # headers next to their implementation files, and
-                # conditional-compile alternates that share a stem prefix.
-                if is_cpp_file_reachable(node_str, self.graph, self._cpp_packages()):
-                    continue
-            elif self.graph.in_degree(node) > 0:
+            # Barrels, API contracts, bundler-alias shims and the
+            # package-granular languages (Go / JVM / C-C++) are all rescued
+            # inside the shared predicate, which the overview assembler calls
+            # with the same state so the two passes cannot disagree about what
+            # "reachable" means. See :mod:`file_reachability`.
+            if is_file_reachable(str(node), self.graph, self._reachability_rescues()):
                 continue
 
             finding = self._make_unreachable_finding(str(node), node_data, dynamic_patterns)
@@ -1597,9 +1536,6 @@ class DeadCodeAnalyzer:
             return True
         # __init__.py is a re-export barrel
         return Path(path).name == "__init__.py"
-
-    def _is_api_contract(self, node_data: dict) -> bool:
-        return node_data.get("is_api_contract", False)
 
     def _file_has_implementors(self, file_node: Any) -> bool:
         """Return True iff any ``implements`` / ``method_implements`` /
