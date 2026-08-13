@@ -400,8 +400,9 @@ def _effective_safe(f: Any) -> bool:
     """Re-derive deletion-readiness for a DeadCodeFinding ORM row.
 
     Mirrors the API/CLI: the persisted boolean is only ever downgraded, never
-    trusted blindly, so config/bootstrap/database/environment/script files (and
-    findings written before risk factors existed) never read as safe-to-delete.
+    trusted blindly, so config/bootstrap/database/environment/script/asset
+    files (and findings written before risk factors existed) never read as
+    safe-to-delete.
     """
     return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
 

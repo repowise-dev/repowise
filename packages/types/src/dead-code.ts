@@ -57,7 +57,8 @@ export interface DeadCodeFinding {
   safe_to_delete: boolean;
   /**
    * Runtime-load risk factors (config / bootstrap / database / environment /
-   * script). Non-empty means a review candidate, never deletion-ready.
+   * script / asset). Non-empty means a review candidate, never
+   * deletion-ready.
    */
   risk_factors?: string[];
   primary_owner: string | null;

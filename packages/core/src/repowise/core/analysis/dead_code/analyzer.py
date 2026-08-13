@@ -922,7 +922,7 @@ class DeadCodeAnalyzer:
             confidence = min(confidence, 0.4)
 
         # Runtime-load risk factors (config / bootstrap / database /
-        # environment / script). These are files the never-flag allowlist
+        # environment / script / asset). These are files the never-flag allowlist
         # didn't catch but that are commonly referenced outside static
         # imports, so "in_degree=0" is weak evidence. Cap confidence below the
         # deletion-ready threshold and surface the factors as evidence — the
@@ -1278,7 +1278,7 @@ class DeadCodeAnalyzer:
                     confidence = min(confidence, 0.4)
 
                 # Runtime-load risk factors for the defining file (config /
-                # bootstrap / database / environment / script): symbols in
+                # bootstrap / database / environment / script / asset): symbols in
                 # such files are often wired up reflectively, so cap below the
                 # deletion-ready threshold and tag the finding for review.
                 risk_factors = path_risk_factors(str(node))
