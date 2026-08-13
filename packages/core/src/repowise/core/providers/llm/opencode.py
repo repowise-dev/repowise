@@ -20,10 +20,10 @@ import re
 import shutil
 import subprocess
 import time
-from urllib import request
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib import request
 
 import structlog
 
