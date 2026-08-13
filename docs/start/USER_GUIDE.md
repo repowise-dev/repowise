@@ -197,7 +197,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | Command | What it is for |
 |---|---|
 | `repowise reindex` | Rebuild the vector store from existing pages (embedding calls only, no LLM). |
-| `repowise restyle` | Re-render the wiki in a different [style](../layers/WIKI_STYLES.md). |
+| `repowise restyle` | Re-render the wiki in a different [style](../layers/WIKI.md#styles). |
 | `repowise export` | Export the wiki, for static hosting or archival. |
 | `repowise costs` | What indexing has cost you, by provider and operation. |
 | `repowise generate-claude-md` | Regenerate `CLAUDE.md` / `AGENTS.md` on demand. |

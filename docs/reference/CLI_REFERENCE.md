@@ -162,7 +162,7 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--coverage-report` | Test-coverage report to ingest (LCOV / Cobertura / Clover). Repeatable. Auto-discovered when omitted. This is test coverage for code-health, not a documentation-breadth knob: every code file is documented either way. |
 | `--onboarding` / `--no-onboarding` | Generate the curated Onboarding collection (up to 8 overview pages). Default: on; slots without enough signal are skipped. |
 | `--harvest-decisions` / `--no-harvest-decisions` | Harvest architectural decisions during page generation (verified against source before storage). Default: on. |
-| `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI_STYLES.md](../layers/WIKI_STYLES.md). |
+| `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI.md](../layers/WIKI.md#styles). |
 | `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
 | `--resume` | Continue a previous run instead of redoing it: completed phases (indexing, analysis) are skipped, the earlier run's git tier is kept, and generation writes only the pages this repo does not have yet. Use it after an interrupted run, and after one that finished with failed pages (a provider outage, rate limiting) — pages already written are skipped with no model call, so nothing is paid for twice. Matching is per page, not per model, so switching provider still keeps what the old one wrote. |
 | `--force` | Regenerate all pages even if they exist |
@@ -378,7 +378,7 @@ With no `STYLE`, prints the current style and the available choices.
 
 Styles only differ in voice and density; the markdown structure (headings,
 sections) stays the same, so search, the table of contents, and cross-links keep
-working. See [WIKI_STYLES.md](../layers/WIKI_STYLES.md).
+working. See [WIKI.md](../layers/WIKI.md#styles).
 
 **Options:**
 

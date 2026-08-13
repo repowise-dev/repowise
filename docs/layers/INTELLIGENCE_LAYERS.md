@@ -121,6 +121,8 @@ upgrades the prose rather than enabling the layer.
 A typical single-commit update regenerates only the handful of pages your change
 actually touched.
 
+Reference: [`WIKI.md`](WIKI.md).
+
 ---
 
 ## Decision Intelligence

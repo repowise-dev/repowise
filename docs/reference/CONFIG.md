@@ -243,7 +243,7 @@ the partial page instead of saving it.
 `wiki_style` controls the voice and density of generated wiki pages. Set it with
 `init --wiki-style` or switch later with `repowise restyle <style>` (which also
 regenerates the wiki). Power users can define their own style under
-`.repowise/styles/<name>/style.yaml`. Full guide: [WIKI_STYLES.md](../layers/WIKI_STYLES.md).
+`.repowise/styles/<name>/style.yaml`. Full guide: [WIKI.md](../layers/WIKI.md#styles).
 Note: hand-editing `wiki_style` here and running `update` does not regenerate
 existing pages, use `restyle`.
 
