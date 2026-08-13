@@ -35,6 +35,12 @@ items"`` and ``v-slot``/``#default``. They *parse* as JS — ``item in items`` i
 the ``in`` operator — but mean something else, and a parse that succeeds with
 the wrong meaning is worse than a skip. The names they bind are declarations,
 not reads, so keeping them would mint phantom identifier references.
+
+:func:`prepare_source` is also where a language registers a byte-preserving
+sanitizer for a grammar gap that has nothing to do with multi-language files —
+Pascal's project-file ``uses X in 'path'`` clauses being the current example,
+handled by ``prepare_pascal_source`` in ``parser_helpers.py``. Same contract as
+a :class:`Locator`, no-op unless the language matches.
 """
 
 from __future__ import annotations
@@ -486,14 +492,26 @@ def component_call_sites(language: str, source: bytes, symbols: list) -> list:
     return calls
 
 
-def prepare_source(language: str, source: bytes) -> bytes:
+def prepare_source(language: str, source: bytes, *, path: str | None = None) -> bytes:
     """Return *source* as the bytes the tree-sitter pipeline should parse.
 
-    A no-op for every language without a registered locator. Call this at each
-    point that hands raw file bytes to a tree-sitter ``Parser`` — the ingestion
-    parser and the three code-health walkers — so all of them see the same
-    TypeScript projection of a component at the same offsets.
+    A no-op for every language without a registered locator or sanitizer.
+    Call this at each point that hands raw file bytes to a tree-sitter
+    ``Parser`` — the ingestion parser and the three code-health walkers —
+    so all of them see the same projection at the same offsets.
+
+    ``path`` only matters for a sanitizer that needs it (currently just
+    Pascal, which gates its project-file ``uses X in 'path'`` sanitizer on
+    the extension): every call site already has it in scope from its own
+    file read, so threading it through here costs callers nothing and lets
+    ``_LOCATORS``-style languages ignore it entirely.
     """
-    if language not in _LOCATORS or not source:
-        return source
-    return _blank(source, scan(language, source))
+    if language in _LOCATORS:
+        if not source:
+            return source
+        return _blank(source, scan(language, source))
+    if language == "pascal" and source:
+        from .parser_helpers import prepare_pascal_source
+
+        return prepare_pascal_source(source, path)
+    return source

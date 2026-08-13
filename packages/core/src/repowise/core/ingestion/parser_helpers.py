@@ -206,49 +206,42 @@ def _sanitize_pascal_project_source(source: bytes) -> bytes:
     return bytes(out)
 
 
-_PASCAL_ANON_RECORD_ARRAY_ELEMENT_RE = re.compile(rb"\bof\s+record\b.*?\bend\b", re.DOTALL)
+_PASCAL_PROJECT_EXTENSIONS = (".dpr", ".dpk", ".lpr")
 
 
-def _sanitize_pascal_source(source: bytes) -> bytes:
-    """Blank Pascal constructs tree-sitter-pascal's grammar can't parse at
-    all, where hitting one corrupts everything downstream in the same
-    ``declType``/``declClass`` body. Runs on every ``.pas``/``.pp`` file
-    (unlike ``_sanitize_pascal_project_source``, which is ``.dpr``/``.dpk``/
-    ``.lpr``-only), byte-preserving so line numbers stay correct.
+def prepare_pascal_source(source: bytes, path: str | None) -> bytes:
+    """Single entry point for every Pascal byte-preserving sanitizer.
 
-    Currently handles one construct: ``array[...] of record ... end`` --
-    an anonymous record type used inline as an array element type (e.g.
-    ``FTotals: array[TSide] of record Valid: Boolean; Bytes: Int64; end;``).
-    The grammar has no rule for a bare ``record`` following ``of``, and
-    unlike a *named* ``TFoo = record ... end`` type declaration (which
-    parses fine — ``declClass`` covers ``class``/``record``/``object``
-    alike), hitting this one doesn't stay contained: on the one real file
-    this was found in, the class's ``declType`` closed early at the error
-    and every member declared afterward (methods included) got reparented
-    to the *unit's* interface section instead of the class -- silently
-    breaking parent resolution, not just losing the anonymous record's own
-    field types (which were never extracted as symbols anyway; record
-    fields aren't a captured node type).
+    Called from :func:`~.sfc_source.prepare_source` -- the same
+    registry-dispatched hook every other tree-sitter consumer (the
+    ingestion parser, plus the complexity/dataflow/duplication health
+    walkers) already calls before handing bytes to a ``Parser`` -- rather
+    than parser.py special-casing Pascal in its own if-blocks. That keeps
+    ``docs/architecture/language-support.md``'s "zero changes to
+    parser.py" promise for a new language, and means the health walkers
+    get the same clean projection the ingestion parser does instead of
+    parsing raw bytes.
 
-    Scanned against this repo's own ~150-file test codebase: exactly one
-    occurrence, in one file, so this is deliberately narrow rather than a
-    general "handle every record shape" pass -- extend the pattern if a
-    second real-world shape shows up rather than guessing at variants now.
+    Only wraps ``_sanitize_pascal_project_source`` (``.dpr``/``.dpk``/
+    ``.lpr`` ``in '...'`` clauses), gated on *path*'s extension since that
+    syntax is invalid in a plain unit file. An earlier revision of this
+    function also blanked whatever an anonymous ``array[...] of record``
+    element type's parse errors touched, discovered via ERROR-node spans
+    from a throwaway parse. Dropped after review (PR #1353): tree-sitter's
+    error recovery for that construct doesn't cleanly wrap the bad
+    construct in one ERROR node -- on the reviewer's repro, one of the
+    spans it found was the class's own legitimate closing ``end;``, and
+    blanking it produced the exact same broken structure (the following
+    method detached from its class) as running no sanitizer at all. A
+    correct fix needs a nesting-aware nested-record/variant-part scanner,
+    which is more surface area than one occurrence in one file (see the
+    dropped function's own docstring) justifies; the anon-record case is
+    left to degrade to a wrong parent for that one class, same as any
+    other unhandled grammar gap.
     """
-    if not _PASCAL_ANON_RECORD_ARRAY_ELEMENT_RE.search(source):
-        return source
-
-    def _blank_anon_record(m: re.Match[bytes]) -> bytes:
-        span = m.group(0)
-        placeholder = b"of Byte"
-        out = bytearray(len(span))
-        out[: len(placeholder)] = placeholder
-        for i in range(len(placeholder), len(span)):
-            b = span[i]
-            out[i] = b if b in (0x0A, 0x0D) else 0x20
-        return bytes(out)
-
-    return _PASCAL_ANON_RECORD_ARRAY_ELEMENT_RE.sub(_blank_anon_record, source)
+    if path and path.lower().endswith(_PASCAL_PROJECT_EXTENSIONS):
+        return _sanitize_pascal_project_source(source)
+    return source
 
 
 def _dedupe_pascal_interface_symbols(

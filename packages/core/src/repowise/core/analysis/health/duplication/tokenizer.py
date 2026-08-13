@@ -140,11 +140,14 @@ def _tokenize_leaf(node: Node, source: bytes) -> Token | None:
     )
 
 
-def tokenize_file(language: str, source: bytes) -> list[Token]:
+def tokenize_file(language: str, source: bytes, path: str | None = None) -> list[Token]:
     """Parse *source* and return its normalized token stream.
 
     Returns an empty list when the language is unsupported or parsing
     fails — callers treat that as "no clone candidates from this file".
+    ``path`` is only used by languages whose sanitizer needs it (Pascal,
+    to gate its project-file sanitizer on the extension); omit it for
+    everything else.
     """
     try:
         from tree_sitter import Parser
@@ -160,8 +163,9 @@ def tokenize_file(language: str, source: bytes) -> list[Token]:
         from repowise.core.ingestion.sfc_source import prepare_source
 
         parser = Parser(grammar)
-        # Markup-blanked TS buffer for SFCs, identical offsets. No-op else.
-        source = prepare_source(language, source)
+        # Markup-blanked TS buffer for SFCs, identical offsets; Pascal's
+        # project-file sanitizer for that language. No-op else.
+        source = prepare_source(language, source, path=path)
         tree = parser.parse(source)
     except Exception:
         return []

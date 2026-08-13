@@ -363,7 +363,7 @@ def _collect_windows(
                 for h, si, sl, el in window_tuples
             ]
         else:
-            toks = tokenize_file(language, source)
+            toks = tokenize_file(language, source, path)
             if len(toks) > limits.max_tokens_per_file:
                 diag.skipped_token_cap += 1
                 continue

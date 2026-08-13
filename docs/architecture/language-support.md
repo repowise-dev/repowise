@@ -332,9 +332,23 @@ the original file. That single property is what makes the rest free: the spec
 declares `shares_grammar_with="typescript"` and `scm_file="typescript.scm"`, the
 `LanguageConfig` is an alias of TypeScript's, and the three health dialect
 registries alias the TS entries. Each consumer that hands raw bytes to a
-tree-sitter `Parser` calls `prepare_source(language, source)` first — the
-ingestion parser plus the complexity, dataflow, and duplication walkers. It is
-a no-op for every language without a registered locator.
+tree-sitter `Parser` calls `prepare_source(language, source, path=abs_path)`
+first — the ingestion parser plus the complexity, dataflow, and duplication
+walkers. It is a no-op for every language without a registered locator or
+sanitizer.
+
+`prepare_source` also carries per-language byte-preserving sanitizers that
+aren't about multi-language files at all — a construct a grammar can't parse,
+where hitting it corrupts everything downstream. Object Pascal is the current
+example: `.dpr`/`.dpk`/`.lpr` project files write `unit in 'path.pas'` clauses
+in their `uses` list, a syntax tree-sitter-pascal has no rule for, and hitting
+one used to corrupt every unit named after it in the same clause. Its
+sanitizer (`prepare_pascal_source` in `ingestion/parser_helpers.py`) is gated
+on `path`'s extension — that syntax is invalid in a plain `.pas`/`.pp` unit
+file — and is a no-op everywhere else, same contract as the `_LOCATORS` path.
+Registering a sanitizer this way, rather than as an if-block in `parser.py`,
+means it stays "zero changes to `parser.py`" for a new language and the health
+walkers get the same clean projection the ingestion parser does.
 
 ### The locator registry
 

@@ -74,8 +74,6 @@ from .parser_helpers import (
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _run_query,
-    _sanitize_pascal_project_source,
-    _sanitize_pascal_source,
 )
 from .python_local_refs import extract_python_local_refs
 from .sfc_source import component_call_sites, prepare_source
@@ -286,27 +284,15 @@ class ASTParser:
         # ``prepare_source`` blanks the markup and <style> so what reaches the
         # TypeScript grammar is valid TS at byte-identical offsets — no offset
         # translation is needed anywhere downstream. A no-op for every other
-        # language.
+        # language without a registered locator/sanitizer -- Pascal's
+        # sanitizers (project-file `in '...'` clauses, ERROR-node blanking)
+        # live behind the same hook; see prepare_pascal_source in
+        # parser_helpers.py for why they're wired in here rather than as
+        # ad-hoc if-blocks.
         # ``content_hash`` above deliberately hashes the ORIGINAL bytes, so
         # incremental update still tracks the real file.
         original_source = source
-        source = prepare_source(lang, source)
-
-        # Delphi/FPC project files (.dpr/.dpk/.lpr) map units to source
-        # paths right in `uses` (`MyUnit in 'src\MyUnit.pas'`) -- syntax
-        # tree-sitter-pascal's grammar doesn't have a rule for at all, so
-        # error recovery corrupts everything after the first `in` clause.
-        # See _sanitize_pascal_project_source for what that looks like
-        # unfixed. Byte-preserving, like prepare_source above.
-        if lang == "pascal" and file_info.path.lower().endswith((".dpr", ".dpk", ".lpr")):
-            source = _sanitize_pascal_project_source(source)
-
-        # Constructs the grammar has no rule for at all and that corrupt
-        # parent resolution for everything declared after them in the same
-        # class body -- see _sanitize_pascal_source. Applies to every
-        # .pas/.pp file, not just project files.
-        if lang == "pascal":
-            source = _sanitize_pascal_source(source)
+        source = prepare_source(lang, source, path=file_info.path)
 
         parser = Parser(language)
         tree = parser.parse(source)
@@ -714,6 +700,7 @@ class ASTParser:
     ) -> list[Import]:
         imports: list[Import] = []
         seen_raws: set[str] = set()
+        seen_pascal_units: set[str] = set()
 
         for capture_dict in matches:
             stmt_nodes = capture_dict.get("import.statement", [])
@@ -735,10 +722,17 @@ class ASTParser:
             # different unit despite the identical raw statement text --
             # dedup-by-raw would keep only the first and silently drop the
             # rest, which is exactly the bug this branch fixes.
+            #
+            # Deduped separately by unit name (case-insensitive -- Pascal
+            # identifiers are): a unit named in both the ``interface`` and
+            # ``implementation`` ``uses`` clauses of the same file is a
+            # single logical dependency and must not become two Import
+            # entries for it.
             if file_info.language == "pascal":
                 raw = _node_text(stmt_node, src).strip()
                 unit_name = _node_text(module_nodes[0], src).strip()
-                if unit_name:
+                if unit_name and unit_name.lower() not in seen_pascal_units:
+                    seen_pascal_units.add(unit_name.lower())
                     imports.append(
                         Import(
                             raw_statement=raw,

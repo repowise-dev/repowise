@@ -216,20 +216,29 @@ end.
         assert len(matches) == 1
         assert matches[0].end_line > matches[0].start_line
 
-    def test_anon_record_array_field_does_not_corrupt_the_rest_of_the_class(
+    def test_anon_record_array_field_orphans_one_duplicate_but_keeps_the_real_method(
         self, parser: ASTParser
     ) -> None:
         # `array[...] of record ... end` -- an anonymous record type used
         # inline as an array element type -- has no grammar rule at all
         # (unlike a *named* `TFoo = record ... end` declaration, which
         # parses fine). Found on this repo's own uDualPanelWindow.pas: the
-        # class's declType closed early at the error, and every member
-        # declared after the field (Run included) got reparented to the
-        # unit's interface section instead of the class -- surfacing as a
-        # duplicate Run (one correctly parented, one an orphaned
-        # `kind="function", parent_name=None`).
-        # _sanitize_pascal_source blanks the anonymous record before
-        # parsing so the class body stays intact.
+        # class's declType closes early at the error, and every member
+        # declared after the field (Run included) gets reparented to the
+        # unit's interface section instead of the class.
+        #
+        # A regex-based sanitizer originally blanked the anonymous record
+        # before parsing to keep the class body intact. Dropped on review
+        # (PR #1353): an AST-driven replacement that blanks whatever ERROR
+        # nodes the grammar produces here isn't safe either -- on this
+        # exact input, one of the ERROR spans tree-sitter-pascal's error
+        # recovery reports is the class's own legitimate closing `end;`,
+        # and blanking it produces the identical broken structure. A
+        # correct fix needs a nesting-aware scanner for the record's own
+        # `end` (out of scope for one construct seen in one file); this
+        # documents the accepted degradation instead: Run appears twice,
+        # once correctly parented and once as an orphan, rather than
+        # asserting a fix that doesn't hold up.
         src = b"""\
 unit Foo;
 interface
@@ -249,9 +258,10 @@ end.
 """
         result = parser.parse_file(_pas(), src)
         matches = [s for s in result.symbols if s.name == "Run"]
-        assert len(matches) == 1
-        assert matches[0].kind == "method"
-        assert matches[0].parent_name == "TFoo"
+        assert len(matches) == 2
+        parented = [s for s in matches if s.parent_name == "TFoo"]
+        assert len(parented) == 1
+        assert parented[0].kind == "method"
 
 
 class TestPascalImports:
@@ -291,6 +301,28 @@ end.
         result = parser.parse_file(_pas(), src)
         modules = {i.module_path for i in result.imports}
         assert modules == {"SysUtils", "Classes", "Windows", "Messages"}
+
+    def test_unit_named_in_both_uses_clauses_dedupes_to_one_import(
+        self, parser: ASTParser
+    ) -> None:
+        # Review feedback on PR #1353: a unit named in both the interface
+        # and implementation `uses` clauses of the same file produced two
+        # identical Import entries -- the Pascal branch in
+        # `_extract_imports` returns before the `seen_raws` dedup because
+        # every moduleName match legitimately carries a different unit
+        # *within* one clause (see that branch's own comment), but two
+        # clauses naming the same unit is a real duplicate, not that case.
+        src = b"""\
+unit Foo;
+interface
+uses SysUtils, Classes;
+implementation
+uses SysUtils, Windows;
+end.
+"""
+        result = parser.parse_file(_pas(), src)
+        modules = [i.module_path for i in result.imports]
+        assert sorted(modules) == ["Classes", "SysUtils", "Windows"]
 
     def test_dpr_unit_in_path_clause(self, parser: ASTParser) -> None:
         # Delphi/FPC project files map units to source paths right in
