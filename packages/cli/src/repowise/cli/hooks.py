@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 _HOOK_MARKER = "# repowise-hook-start"
@@ -94,6 +95,72 @@ def _git_root(path: Path) -> Path | None:
         if (parent / ".git").exists():
             return parent
     return None
+
+
+def _hooks_dir(root: Path) -> Path:
+    """Return the hooks directory git will actually run for *root*.
+
+    ``root / ".git" / "hooks"`` is wrong in three common layouts:
+
+    * In a linked worktree (and in a submodule) ``.git`` is a *file* holding a
+      gitdir pointer, so ``mkdir`` on it raises ``NotADirectoryError`` and the
+      command dies.
+    * When ``core.hooksPath`` is set, git ignores ``.git/hooks`` entirely. husky
+      and lefthook both set it, which covers most JS repos. Writing there
+      "succeeds" and reports installed, but git never runs the hook -- a silent
+      no-op, which is worse than the crash.
+    * A worktree's hooks live in the repository's *common* directory rather than
+      in its own gitdir.
+
+    ``git rev-parse --git-path hooks`` resolves all three, because it is the
+    resolution git itself performs. It answers relative to the process cwd,
+    hence ``cwd=root`` and the join below.
+    """
+    resolved: Path | None = None
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if completed.returncode == 0:
+            raw = completed.stdout.strip()
+            if raw:
+                candidate = Path(raw)
+                resolved = candidate if candidate.is_absolute() else (root / candidate)
+    except (OSError, subprocess.SubprocessError):
+        resolved = None
+
+    if resolved is None:
+        # No usable git binary. Fall back to the historical guess rather than
+        # refusing to install; it is correct for a plain, non-worktree checkout.
+        resolved = root / ".git" / "hooks"
+
+    return _husky_user_hook_dir(resolved)
+
+
+def _husky_user_hook_dir(hooks_dir: Path) -> Path:
+    """Redirect husky's generated shim directory to its user-hook directory.
+
+    husky points ``core.hooksPath`` at ``.husky/_``, which it regenerates on
+    every install and gitignores wholesale (``.husky/_/.gitignore`` is ``*``), so
+    a hook written there is deleted by the next ``npm install``. husky's shim
+    dispatches to ``.husky/<hook-name>`` one level up, which is the committed,
+    durable location.
+    """
+    if hooks_dir.name != "_":
+        return hooks_dir
+    # Only remap a directory that really is husky's, not any directory named
+    # "_". The generated helpers are the strongest signal, but they are absent
+    # in a fresh worktree where husky has not been installed yet; there the
+    # parent being a ``.husky`` directory is what identifies the layout.
+    is_husky = any((hooks_dir / marker).exists() for marker in ("h", "husky.sh"))
+    if not (is_husky or hooks_dir.parent.name == ".husky"):
+        return hooks_dir
+    return hooks_dir.parent
 
 
 def _strip_legacy_block(content: str) -> tuple[str, bool]:
@@ -186,8 +253,10 @@ def install(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hooks_dir = root / ".git" / "hooks"
-    hooks_dir.mkdir(exist_ok=True)
+    hooks_dir = _hooks_dir(root)
+    # parents=True: the resolved directory (a worktree common dir, or .husky)
+    # is not guaranteed to have an existing parent chain.
+    hooks_dir.mkdir(parents=True, exist_ok=True)
     hook_path = hooks_dir / "post-commit"
 
     migrated_legacy = False
@@ -239,7 +308,7 @@ def uninstall(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hook_path = root / ".git" / "hooks" / "post-commit"
+    hook_path = _hooks_dir(root) / "post-commit"
     if not hook_path.exists():
         return "no post-commit hook found"
 
@@ -268,7 +337,7 @@ def status(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hook_path = root / ".git" / "hooks" / "post-commit"
+    hook_path = _hooks_dir(root) / "post-commit"
     if not hook_path.exists():
         return "not installed"
 
