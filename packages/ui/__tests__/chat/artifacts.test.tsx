@@ -69,6 +69,47 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText("src/other.ts")).toBeInTheDocument();
   });
 
+  it("RiskReportRenderer accepts MCP dict targets and hotspot_score", () => {
+    render(
+      <RiskReportRenderer
+        data={{
+          targets: {
+            "src/auth.py": {
+              target: "src/auth.py",
+              hotspot_score: 91,
+              risk_type: "churn-heavy",
+              trend: "increasing",
+            },
+          },
+          global_hotspots: [
+            { file_path: "src/db.py", hotspot_score: 85 },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("src/auth.py")).toBeInTheDocument();
+    expect(screen.getByText("hotspot")).toBeInTheDocument();
+    expect(screen.getByText("src/db.py")).toBeInTheDocument();
+    expect(screen.getByText(/91th pct/)).toBeInTheDocument();
+  });
+
+  it("RiskReportRenderer renders get_change_risk score cards", () => {
+    render(
+      <RiskReportRenderer
+        data={{
+          ref: "HEAD",
+          score: 7.2,
+          risk_percentile: 82,
+          review_priority: "Elevated",
+          classification: "Above typical recent changes.",
+        }}
+      />,
+    );
+    expect(screen.getByText("HEAD")).toBeInTheDocument();
+    expect(screen.getByText("Elevated")).toBeInTheDocument();
+    expect(screen.getByText("p82")).toBeInTheDocument();
+  });
+
   it("SearchResultsRenderer lists results with snippets", () => {
     render(
       <SearchResultsRenderer
