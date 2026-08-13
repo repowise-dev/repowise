@@ -21,6 +21,7 @@ from typing import Literal
 
 import structlog
 
+from ...entry_points import orientation_entry_points
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_HOW_IT_WORKS, SLOT_TITLES
@@ -217,7 +218,7 @@ def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
         archetype=archetype,
         archetype_evidence=evidence,
         flows=flows,
-        entry_points=list(getattr(signals.repo_structure, "entry_points", []))[:5],
+        entry_points=orientation_entry_points(signals.repo_structure, limit=5),
         kg_tour_steps=kg_tour[:8],
     )
 

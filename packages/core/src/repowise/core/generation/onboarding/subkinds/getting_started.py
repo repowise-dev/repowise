@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from ...entry_points import orientation_entry_points
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_GETTING_STARTED, SLOT_TITLES
@@ -176,7 +177,7 @@ def _build(signals: OnboardingSignals) -> GettingStartedContext | None:
         runtime_dependencies=runtime,
         dev_dependencies=dev,
         readme_sections=readme_sections,
-        entry_points=list(getattr(signals.repo_structure, "entry_points", []))[:6],
+        entry_points=orientation_entry_points(signals.repo_structure, limit=6),
     )
 
 

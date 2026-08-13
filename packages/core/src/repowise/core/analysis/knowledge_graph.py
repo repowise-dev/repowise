@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from repowise.core.generation.entry_points import orientation_entry_points
+
 _log = logging.getLogger(__name__)
 
 #: Schema version of the ``knowledge-graph.json`` artifact. Bump whenever a
@@ -243,7 +245,7 @@ def build_knowledge_graph_skeleton(
         "name": repo_path.name if repo_path else "",
         "is_monorepo": repo_structure.is_monorepo if repo_structure else False,
         "total_files": repo_structure.total_files if repo_structure else len(parsed_files),
-        "entry_points": list(repo_structure.entry_points) if repo_structure else [],
+        "entry_points": orientation_entry_points(repo_structure),
         "tech_stack": tech_stack[:20],
     }
 

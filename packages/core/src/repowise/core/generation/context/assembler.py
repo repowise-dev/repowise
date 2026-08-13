@@ -13,7 +13,7 @@ from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
-from ..entry_points import entry_point_rank_key
+from ..entry_points import orientation_entry_points
 from ..models import GenerationConfig
 from .contexts import (
     ApiContractContext,
@@ -884,16 +884,11 @@ class ContextAssembler:
             language_distribution=repo_structure.root_language_distribution,
             total_files=repo_structure.total_files,
             total_loc=repo_structure.total_loc,
-            # Ranked, not filtered. ``is_entry_point`` is a filename heuristic
-            # whose generic stem set includes ``index``, so a buried re-export
-            # barrel arrived here indistinguishable from a real front door and
-            # could lead the list. Dropping glue outright is what the KG
-            # curator does, but it would also drop ``packages/cli/src/index.ts``,
-            # a genuine package front door in exactly the monorepo shape this
-            # product targets. Ranking demotes glue below every real entry
-            # without losing one, and ``entry_point_rank_key`` already encodes
-            # that order for the KG's answer to the same question.
-            entry_points=sorted(repo_structure.entry_points, key=entry_point_rank_key),
+            # Ranked, not filtered, and ranked by the helper every other
+            # orientation surface now calls so they cannot name different
+            # front doors. Why it is ranked at all is on
+            # ``orientation_entry_points``.
+            entry_points=orientation_entry_points(repo_structure),
             top_files_by_pagerank=top_files,
             circular_dependency_count=circular_count,
             communities=communities_list,
