@@ -988,10 +988,12 @@ class DeadCodeAnalyzer:
             # Was ("dynamic_uses", "dynamic", "framework"): the bare "dynamic"
             # matched nothing and dynamic_imports was absent, so a file reached
             # only by a dynamic import was never rescued here.
-            file_dynamically_loaded = any(
-                is_dynamic_edge(edge_type := self.graph.get_edge_data(pred, node, {}).get("edge_type"))
-                or edge_type == "framework"
+            inbound_types = (
+                self.graph.get_edge_data(pred, node, {}).get("edge_type")
                 for pred in self.graph.predecessors(node)
+            )
+            file_dynamically_loaded = any(
+                is_dynamic_edge(t) or t == "framework" for t in inbound_types
             )
             if file_dynamically_loaded:
                 continue
