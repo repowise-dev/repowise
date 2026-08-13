@@ -59,6 +59,13 @@ def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            # git writes utf-8. ``text=True`` alone decodes with the locale
+            # codec, so on a default Windows install a commit subject holding
+            # an em dash raised UnicodeDecodeError. That is a ValueError, which
+            # the handler below does not catch, so the scan died rather than
+            # degrading to "".
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):

@@ -209,7 +209,10 @@ class TestOnboardingTablesAreRead:
         return [
             path
             for path in PACKAGES_ROOT.rglob("*.py")
-            if path != SLOTS_PATH and name in path.read_text()
+            # Explicit utf-8: this sweeps every source file in the repo, and a
+            # bare read_text() decodes with the locale codec, so on Windows the
+            # first module holding a non-cp1252 byte failed the whole test.
+            if path != SLOTS_PATH and name in path.read_text(encoding="utf-8")
         ]
 
     def test_every_table_has_a_reader(self):

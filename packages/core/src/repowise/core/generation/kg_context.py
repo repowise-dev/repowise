@@ -73,9 +73,14 @@ class KnowledgeGraphContext:
 
     def _load(self, path: Path, repo_root: Path | None = None) -> None:
         try:
-            with open(path) as f:
-                kg = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+            # Explicit utf-8: a bare open() decodes with the locale codec,
+            # which is cp1252 on a default Windows install. An undefined byte
+            # (0x81/0x8D/0x8F/0x90/0x9D) raises UnicodeDecodeError, and since
+            # that is a ValueError rather than an OSError it escaped the
+            # handler below and took the whole generation run down. Matches
+            # analysis/knowledge_graph.py, which loads the same artifact.
+            kg = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             logger.warning("kg_context_load_failed", path=str(path), error=str(e))
             return
 
