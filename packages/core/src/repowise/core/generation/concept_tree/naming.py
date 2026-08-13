@@ -346,7 +346,15 @@ def deterministic_scope(group: ConceptGroup) -> str:
     if len(dirs) == 1:
         where = dirs[0] or "the repository root"
     else:
-        where = f"{len(dirs)} directories under {group.target_path or 'the repository root'}"
+        # Relative to what the directories share, not to ``target_path``. The
+        # target is one of the group's directories and is not always a prefix
+        # of the others — ``_assign_targets`` falls through to the first sorted
+        # member when the true ancestor is not itself a member — so naming it
+        # here produced "4 directories under src/lib/a" directly above a
+        # membership line holding three directories that are not under it. The
+        # sentence falsified itself against the line above.
+        common = _common_prefix(dirs)
+        where = f"{len(dirs)} directories" + (f" under {common}" if common else "")
     return (
         f"Covers the {group.file_count} source files in {where}. "
         "Does not cover code outside those directories, which is documented on "
