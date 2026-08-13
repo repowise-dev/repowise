@@ -526,6 +526,86 @@ function outer() {
         assert self._names(parser, "src/accordion.ts") == self._names(parser)
 
 
+class TestTypeScriptCallBindingKinds:
+    """A call binding is classified by its value, not by its name.
+
+    ``constant``/``variable`` is a naming rule, and it is the wrong answer for
+    a component or a handler: kind drives page-selection weight (0.3 for a
+    variable against 1.0 for a function), Key Concepts eligibility and symbol
+    ranking, so a forwardRef component indexed as data gets scored as data.
+
+    A value that literally is a function or a class settles itself. A call
+    does not, and only the callee settles it: whether a call returns something
+    callable is a fact about the callee, not about its arguments.
+    """
+
+    SOURCE = b"""
+const AccordionItem = React.forwardRef((props, ref) => null);
+const Memoized = React.memo(function Inner() { return null; });
+const cb = useCallback(() => {}, []);
+const KlassExpr = class Foo {};
+const fnExpr = function named() { return 1; };
+const parenArrow = ((x) => x);
+export const myFunction = onCall(async (req) => 1);
+export const schema = z.object({ a: 1 });
+export const Button = styled.button`color: red;`;
+const Ctx = createContext(null);
+const KEYS = [...a, ...b].filter((key) => key !== "x");
+const prepared = z.preprocess((val) => val, rawSchema);
+const MAX_ITEMS = 100;
+const apiBase = "https://api.example.com";
+"""
+
+    def _kinds(self, parser: ASTParser) -> dict[str, str]:
+        fi = _make_file_info("src/kinds.tsx", "typescript")
+        return {s.name: s.kind for s in parser.parse_file(fi, self.SOURCE).symbols}
+
+    def test_hoc_wrapped_component_is_a_function(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["AccordionItem"] == "function"
+        assert kinds["Memoized"] == "function"
+
+    def test_handler_factory_binding_is_a_function(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["myFunction"] == "function"
+        assert kinds["cb"] == "function"
+
+    def test_class_expression_is_a_class(self, parser: ASTParser) -> None:
+        assert self._kinds(parser)["KlassExpr"] == "class"
+
+    def test_function_expression_and_wrapped_arrow_are_functions(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["fnExpr"] == "function"
+        # A parenthesised arrow misses the bare-arrow pattern, so without the
+        # value check it would land as data purely for having brackets.
+        assert kinds["parenArrow"] == "function"
+
+    def test_value_shaped_factories_are_not_functions(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["schema"] == "variable"
+        assert kinds["Ctx"] == "variable"
+        # Known ceiling: an unlisted callee falls back to the naming rule, so
+        # a tagged-template component stays data.
+        assert kinds["Button"] == "variable"
+
+    def test_a_call_taking_a_function_can_still_bind_data(self, parser: ASTParser) -> None:
+        """Why the callee decides and the arguments do not.
+
+        Both of these hand a function to the call and both bind data. A rule
+        keyed on "the call receives a function" promotes them, which is how
+        this one was corrected — these two shapes were found mislabelled in a
+        real TypeScript tree.
+        """
+        kinds = self._kinds(parser)
+        assert kinds["KEYS"] == "constant"
+        assert kinds["prepared"] == "variable"
+
+    def test_naming_rule_still_decides_the_rest(self, parser: ASTParser) -> None:
+        kinds = self._kinds(parser)
+        assert kinds["MAX_ITEMS"] == "constant"
+        assert kinds["apiBase"] == "variable"
+
+
 class TestJavaScriptCallExpressionBindings:
     """JavaScript was strictly worse than TypeScript: its allowlist also
     omitted ``member_expression``, so even a plain alias yielded no symbol."""

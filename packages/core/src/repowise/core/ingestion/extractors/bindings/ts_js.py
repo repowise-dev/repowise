@@ -264,6 +264,72 @@ def declarator_value_is_module_ref(declarator: Node, src: str) -> bool:
     return fn.type == "import" or (fn.type == "identifier" and node_text(fn, src) == "require")
 
 
+_CALLABLE_VALUE_NODE_TYPES = frozenset({"arrow_function", "function_expression"})
+
+# Wrappers whose RESULT is callable, keyed on the last segment of the callee
+# (``React.forwardRef`` and a bare imported ``forwardRef`` both match).
+#
+# A structural rule cannot do this job, and trying one is how this list was
+# arrived at. "The call receives a function" looks like it separates
+# ``forwardRef(fn)`` from ``z.object({…})``, but measured against real
+# TypeScript it also promotes ``[...a, ...b].filter(key => …)`` and
+# ``z.preprocess(val => …, schema)`` — both hand over a function and both bind
+# data. Whether a call returns something callable is a fact about the callee,
+# not about its arguments, so the only honest options are to name the callees
+# or to say nothing.
+#
+# Ceiling: incomplete by construction, and deliberately biased. An unlisted
+# wrapper falls back to the naming rule and is classified as data, which is
+# the pre-existing behaviour; nothing is newly mislabelled by an omission.
+# Upgrade path is to add names here as they show up.
+_CALLABLE_RETURNING_CALLEES = frozenset(
+    {
+        # React and friends: wrappers that return a component.
+        "forwardRef",
+        "memo",
+        "lazy",
+        "observer",
+        "useCallback",
+        # Firebase Cloud Functions: handler factories.
+        "onCall",
+        "onRequest",
+    }
+)
+
+
+def declarator_binds_callable(declarator: Node, src: str) -> str | None:
+    """Kind for a ``const x = …`` that binds something callable.
+
+    Returns ``"class"``, ``"function"``, or None to leave the naming-based
+    constant/variable rule in place. Only meaningful for TS/JS module-anchored
+    declarators, and only after the module-reference guard has run.
+
+    Two cases. A value that literally *is* a function or a class
+    (``const f = function(){}``, ``const C = class {}``, a parenthesised
+    arrow) is unambiguous. A call is not: ``const C = forwardRef(fn)`` binds a
+    component and ``const schema = z.object({…})`` binds data, and only the
+    callee says which. Hence ``_CALLABLE_RETURNING_CALLEES``.
+    """
+    value = declarator.child_by_field_name("value")
+    while value is not None and value.type in _VALUE_WRAPPER_NODE_TYPES:
+        value = value.named_children[0] if value.named_children else None
+    if value is None:
+        return None
+
+    if value.type == "class":
+        return "class"
+    if value.type in _CALLABLE_VALUE_NODE_TYPES:
+        return "function"
+    if value.type != "call_expression":
+        return None
+
+    fn = value.child_by_field_name("function")
+    if fn is None:
+        return None
+    callee = node_text(fn, src).rsplit(".", 1)[-1].strip()
+    return "function" if callee in _CALLABLE_RETURNING_CALLEES else None
+
+
 def cjs_statement_is_reexport(stmt_node: Node, src: str) -> bool:
     """True when a CJS require statement re-exports through ``module.exports``.
 
