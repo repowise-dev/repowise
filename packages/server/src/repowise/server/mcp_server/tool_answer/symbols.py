@@ -470,9 +470,11 @@ def attach_truncation_contract(
 
     ``indexed_end`` is the end line the index recorded, ``end_served`` the last
     line actually inlined. A falsy ``indexed_end`` means the index recorded no
-    end, which can never be a cut.
+    end at all, which is never a cut: it is tested explicitly rather than left
+    to ``indexed_end > end_served``, which would only agree with it while
+    ``end_served`` stays non-negative.
     """
-    if indexed_end > end_served:
+    if indexed_end and indexed_end > end_served:
         entry["truncated"] = True
         entry["continuation"] = f"{entry['path']}:{end_served + 1}-{indexed_end}"
         withheld = withheld_definitions(repo_root, entry["continuation"])
