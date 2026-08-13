@@ -24,19 +24,16 @@ so deleted files age out naturally.
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import hashlib
-import os
 import pickle
-import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from repowise.core.cache_seal import seal, unseal
+from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
 from . import models
 from .models import FileInfo, ParsedFile
@@ -131,7 +128,7 @@ class ParseCache:
         try:
             # HMAC-verify *before* unpickling — the cache lives inside the
             # indexed repo and is attacker-writable (see cache_seal).
-            payload = pickle.loads(unseal(self._path.read_bytes()))
+            payload = load_sealed_pickle(self._path, domain=_CACHE_FILENAME)
             if (
                 payload.get("version") != _CACHE_VERSION
                 or payload.get("fingerprint") != self._fingerprint
@@ -146,24 +143,12 @@ class ParseCache:
     def save(self) -> None:
         """Atomically persist the entries used or created this run."""
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "version": _CACHE_VERSION,
                 "fingerprint": self._fingerprint,
                 "files": self._fresh,
             }
-            sealed = seal(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(self._path.parent), prefix=_CACHE_FILENAME, suffix=".tmp"
-            )
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(sealed)
-                os.replace(tmp_name, self._path)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_name)
-                raise
+            dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
             log.debug("parse_cache_save_failed", error=str(exc))
 

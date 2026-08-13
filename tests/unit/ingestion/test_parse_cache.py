@@ -19,6 +19,9 @@ from repowise.core.cache_seal import seal, unseal
 from repowise.core.ingestion import compute_content_hash
 from repowise.core.ingestion.parse_cache import ParseCache, parser_fingerprint
 
+_CACHE_DOMAIN = "parse_cache.pkl"
+
+
 
 def _write_fixture(repo) -> None:
     (repo / "util.py").write_text(
@@ -131,10 +134,10 @@ def test_corrupt_cache_falls_back_to_full_parse(repo):
 def test_fingerprint_mismatch_invalidates(repo, tmp_path):
     _build(repo)
     cache_file = _cache_path(repo)
-    payload = pickle.loads(unseal(cache_file.read_bytes()))
+    payload = pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))
     assert payload["fingerprint"] == parser_fingerprint()
     payload["fingerprint"] = "stale-fingerprint"
-    cache_file.write_bytes(seal(pickle.dumps(payload)))
+    cache_file.write_bytes(seal(pickle.dumps(payload), domain=_CACHE_DOMAIN))
 
     cache = ParseCache(repo / ".repowise")
     cache.load()
@@ -158,7 +161,10 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
 
     _build(repo)  # populate the cache under the current fingerprint
     cache_file = _cache_path(repo)
-    assert pickle.loads(unseal(cache_file.read_bytes()))["fingerprint"] == parser_fingerprint()
+    assert (
+        pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))["fingerprint"]
+        == parser_fingerprint()
+    )
 
     # Simulate a release that adds a field to ParsedFile.
     @dataclasses.dataclass
@@ -171,7 +177,9 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
     try:
         assert (
             parser_fingerprint()
-            != pickle.loads(unseal(cache_file.read_bytes()))["fingerprint"]
+            != pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))[
+                "fingerprint"
+            ]
         )
 
         cache = ParseCache(repo / ".repowise")
@@ -232,7 +240,7 @@ def test_deleted_files_age_out_of_cache(repo):
     _build(repo)
     (repo / "other.py").unlink()
     _build(repo)  # rewrite keeps only entries touched this run
-    payload = pickle.loads(unseal(_cache_path(repo).read_bytes()))
+    payload = pickle.loads(unseal(_cache_path(repo).read_bytes(), domain=_CACHE_DOMAIN))
     cached_paths = {path for path, _hash in payload["files"]}
     assert "other.py" not in cached_paths
     assert "main.py" in cached_paths

@@ -21,17 +21,13 @@ values — deterministic where the status quo was not.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
-import os
-import pickle
-import tempfile
 import threading
 from pathlib import Path
 
 import structlog
 
-from repowise.core.cache_seal import seal, unseal
+from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
 log = structlog.get_logger(__name__)
 
@@ -92,7 +88,7 @@ class CentralityCache:
             return
         self._loaded = True
         try:
-            payload = pickle.loads(unseal(self._path.read_bytes()))
+            payload = load_sealed_pickle(self._path, domain=_CACHE_FILENAME)
             if payload.get("version") != _CACHE_VERSION:
                 return
             self._entries = payload.get("entries", {})
@@ -115,19 +111,7 @@ class CentralityCache:
             self._ensure_loaded()
             self._entries[kind] = (signature, dict(values))
             try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
                 payload = {"version": _CACHE_VERSION, "entries": self._entries}
-                sealed = seal(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
-                fd, tmp_name = tempfile.mkstemp(
-                    dir=str(self._path.parent), prefix=_CACHE_FILENAME, suffix=".tmp"
-                )
-                try:
-                    with os.fdopen(fd, "wb") as fh:
-                        fh.write(sealed)
-                    os.replace(tmp_name, self._path)
-                except BaseException:
-                    with contextlib.suppress(OSError):
-                        os.unlink(tmp_name)
-                    raise
+                dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
             except Exception as exc:
                 log.debug("centrality_cache_save_failed", error=str(exc))
