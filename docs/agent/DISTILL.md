@@ -222,8 +222,8 @@ was silent. Now every drop goes through the same omission store:
 
 `get_symbol` resolves omission refs as well as symbol ids — the
 `repowise#<12-hex>` shape is unambiguous next to `path/to/file.py::Name`, and
-the optional `query` parameter searches within the stored content. Tool count
-stays at nine. See [MCP_TOOLS.md](MCP_TOOLS.md).
+the optional `query` parameter searches within the stored content. Resolving
+refs adds no new tool to the surface. See [MCP_TOOLS.md](MCP_TOOLS.md).
 
 > **Note:** MCP tool calls now record a *counterfactual* saving — what raw file
 > exploration the curated answer replaced — as `mcp:<tool>` rows in the same

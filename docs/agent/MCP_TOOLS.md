@@ -18,6 +18,35 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 
 ---
 
+## Contents
+
+**Default tools (single-repo, 11)**
+[get_overview](#get_overview) &middot;
+[get_answer](#get_answer) &middot;
+[get_context](#get_context) &middot;
+[get_symbol](#get_symbol) &middot;
+[search_codebase](#search_codebase) &middot;
+[get_risk](#get_risk) &middot;
+[get_change_risk](#get_change_risk) &middot;
+[get_why](#get_why) &middot;
+[get_dead_code](#get_dead_code) &middot;
+[get_health](#get_health) &middot;
+[list_repos](#list_repos)
+
+**Workspace-only tools (added automatically, 2)**
+[get_architecture](#get_architecture) &middot;
+[get_blast_radius](#get_blast_radius)
+
+**Opt-in tools (off by default everywhere, 4)**
+[get_dependency_path](#get_dependency_path) &middot;
+[get_execution_flows](#get_execution_flows) &middot;
+[generate_refactoring_code](#generate_refactoring_code) &middot;
+[get_conformance](#get_conformance)
+
+Also see [Configuring the tool surface](#configuring-the-tool-surface) and [Reversible truncation](#reversible-truncation-_metaomitted).
+
+---
+
 ## The ten flagship tools
 
 | Tool | Purpose | Typical use |

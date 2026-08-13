@@ -4,6 +4,61 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 
 ---
 
+## Contents
+
+**Files and `config.yaml`**
+[The `.repowise/` directory](#the-repowise-directory) ·
+[`config.yaml`](#configyaml) ·
+[Grounded generation context](#grounded-generation-context) ·
+[The `distill:` block](#the-distill-block) ·
+[The `hooks:` block](#the-hooks-block) ·
+[The `mcp:` block](#the-mcp-block) ·
+[The `decisions:` block](#the-decisions-block) ·
+[The `refactoring:` block](#the-refactoring-block)
+
+**Code health rules**
+[The `health-rules.json` file](#the-health-rulesjson-file)
+
+**LLM providers**
+[Overview](#llm-providers) ·
+[Anthropic](#anthropic-claude) ·
+[OpenAI](#openai-gpt) ·
+[OpenRouter](#openrouter) ·
+[Gemini](#gemini-google) ·
+[DeepSeek](#deepseek) ·
+[Kimi](#kimi) ·
+[Ollama](#ollama-local-no-api-key) ·
+[LiteLLM](#litellm-100-providers) ·
+[Provider auto-detection](#provider-auto-detection)
+
+**Embeddings and keys**
+[Embeddings (for semantic search)](#embeddings-for-semantic-search) ·
+[BYOK (Bring Your Own Key)](#byok-bring-your-own-key)
+
+**Environment variables**
+[Overview](#environment-variables) ·
+[Provider API keys](#provider-api-keys) ·
+[Provider base URLs](#provider-base-urls) ·
+[Provider and model overrides](#provider-and-model-overrides) ·
+[Embeddings](#embeddings) ·
+[Server and database](#server-and-database) ·
+[Telemetry](#telemetry) ·
+[Misc](#misc)
+
+**Repo scope**
+[Exclude patterns](#exclude-patterns) ·
+[Submodules](#submodules) ·
+[PostgreSQL](#postgresql)
+
+**Workspace**
+[Workspace config (`.repowise-workspace.yaml`)](#workspace-config-repowise-workspaceyaml) ·
+[The `conformance:` block](#the-conformance-block)
+
+**Reference**
+[Deprecated / legacy aliases](#deprecated--legacy-aliases)
+
+---
+
 ## The `.repowise/` directory
 
 Everything repowise knows about your repository lives here. It's created at the

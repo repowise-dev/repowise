@@ -86,20 +86,36 @@ This is the payoff: your agent reads the index instead of your codebase.
 
 <details open><summary><b>Claude Code</b></summary>
 
-The plugin wires up the MCP server, the hooks and the slash commands together:
+**`repowise init` already did this.** It writes a repo-root `.mcp.json`
+unconditionally, and unless you passed `--no-editor-setup` or set
+`REPOWISE_SKIP_EDITOR_SETUP=1`, it also registers repowise with
+`~/.claude/settings.json`. A Claude Code session opened in this repo already
+sees the MCP server. Check with `repowise agents` (Claude Code should show as
+wired) or `repowise doctor`.
+
+Skipped editor setup, or setting up a machine where you did? Wire it up now:
+
+```bash
+repowise agents add --target=claude-code
+```
+
+**The plugin** additionally installs hooks and slash commands, which `init`
+never writes because the plugin route is host-managed and only the plugin can
+install it:
 
 ```text
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
 ```
 
-Or wire just the MCP server:
+**A different MCP client, or wiring the server by hand:**
 
 ```bash
 claude mcp add repowise -- repowise mcp
 ```
 
-Or commit a project `.mcp.json` so your whole team gets it:
+Or edit the project `.mcp.json` `init` already wrote (commit it if your team
+should share it):
 
 ```json
 { "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }

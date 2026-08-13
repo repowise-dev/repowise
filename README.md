@@ -503,19 +503,34 @@ already rendered from structure at index time.
 Or pick the provider for the first index directly with `repowise init --provider
 gemini|anthropic|openai`.
 
-**3. Connect your agent.** The MCP server is `repowise mcp`, served from the repo directory.
+**3. Connect your agent.** Step 2 already did this for Claude Code: `init`
+writes a repo-root `.mcp.json` unconditionally and, unless you passed
+`--no-editor-setup`, also registers repowise with `~/.claude/settings.json`.
+Open a session in this repo and it is already wired; check with `repowise
+agents`.
 
 <details><summary><b>Claude Code</b></summary>
 
+Skipped editor setup, or setting up another machine?
+
 ```bash
-# Plugin (adds the tools, slash commands and skills):
+repowise agents add --target=claude-code
+```
+
+The plugin additionally adds slash commands and skills, which `init` does not
+install:
+
+```bash
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
+```
 
-# ...or wire the MCP server directly:
+Or wire the MCP server by hand:
+
+```bash
 claude mcp add repowise -- repowise mcp
 ```
-Or commit a project `.mcp.json`:
+Or edit the project `.mcp.json` `init` already wrote:
 ```json
 { "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }
 ```

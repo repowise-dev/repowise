@@ -57,7 +57,7 @@ Repowise writes hooks to `.codex/hooks.json`, not inline `[hooks]` tables. The d
 
 - `SessionStart` to add Repowise MCP workflow guidance.
 - `UserPromptSubmit` to remind Codex when Repowise context is available.
-- `PostToolUse` for `Bash` to detect git operations that make the wiki stale.
+- `PostToolUse` for `Bash|shell_command` to detect git operations that make the wiki stale. On current Codex the shell calls arrive as `shell_command`; `Bash` is kept in the set for older and future builds. See [HOOKS.md](HOOKS.md) for why `exec` is deliberately excluded.
 - `PostToolUse` for `apply_patch`, `Edit`, and `Write` to remind Codex after edits.
 
 Claude Code has its own search-result enrichment hook path for `Grep` and `Glob`. Codex setup stays focused on lifecycle guidance and freshness checks instead of trying to reuse that Claude-specific search enrichment.
@@ -82,7 +82,7 @@ The provider runs:
 codex exec --ephemeral --sandbox read-only --json --cd /absolute/path/to/repo -
 ```
 
-Repowise sends the prompt on stdin, parses Codex JSONL output, records token usage from `turn.completed.usage`, and treats `codex_cli/*` cost as `$0.00` because subscription billing happens outside Repowise API pricing. `--model` is passed to Codex only when you explicitly configure a model. `--reasoning minimal` maps to Codex `model_reasoning_effort="low"`; `low`, `medium`, `high`, and `xhigh` pass through when the selected Codex model advertises those levels. `off`/`none` is not supported by the Codex CLI provider.
+Repowise sends the prompt on stdin, parses Codex JSONL output, records token usage from `turn.completed.usage`, and treats `codex_cli/*` cost as `$0.00` because subscription billing happens outside Repowise API pricing. `--model` is passed to Codex only when you explicitly configure a model. `--reasoning minimal` maps to Codex `model_reasoning_effort="minimal"` when the selected model advertises a `minimal` level, and falls back to `"low"` when it does not; `low`, `medium`, `high`, and `xhigh` pass through when the model advertises those levels. `off`/`none` maps to `model_reasoning_effort="none"`. `auto` sends no effort at all and lets Codex pick.
 
 Smoke check:
 

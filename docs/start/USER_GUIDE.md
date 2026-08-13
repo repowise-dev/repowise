@@ -119,10 +119,17 @@ your-repo/
 │   ├── config.yaml       # provider, model, embedder, excludes
 │   ├── .env              # saved API keys (gitignored)
 │   └── lancedb/          # vector store for semantic search
+├── .mcp.json             # MCP server entry, so Claude Code and other clients find it
 ├── .claude/CLAUDE.md     # generated Claude Code context
 ├── AGENTS.md             # generated Codex context, when enabled
 └── .codex/               # project-local Codex MCP/hooks config, with --codex
 ```
+
+`init` also registers repowise machine-wide by default: the Claude Code
+(`~/.claude/settings.json`) and Claude Desktop MCP entry, plus the Claude Code
+PostToolUse/SessionStart hooks. `--no-editor-setup` (or setting
+`REPOWISE_SKIP_EDITOR_SETUP=1`) skips that machine-wide registration; every
+project-local file above is still written.
 
 `.repowise/` is safe to delete and rebuild, and safe to gitignore. Committing it
 is a reasonable choice for a team that wants everyone on the same index without

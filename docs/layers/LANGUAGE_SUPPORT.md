@@ -10,6 +10,12 @@ the wiki. This page is the "what works for my language today" reference.
 > a language needs one `.scm` query file and one config entry, with no changes
 > to the parser core.
 
+**Contents:** [Tiers at a glance](#tiers-at-a-glance) ·
+[Full tier](#full-tier) · [Good tier](#good-tier) · [SQL + dbt](#sql--dbt) ·
+[Lightweight, Partial, Structural](#lightweight-partial-and-structural-tiers) ·
+[Code-health coverage](#code-health-coverage) · [Roadmap](#roadmap) ·
+[See also](#see-also)
+
 ---
 
 ## Tiers at a glance
@@ -19,14 +25,14 @@ produce meaningful output.
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
-| **Good** | C · Swift · PHP · Dart | Everything above except code-health markers (C, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
-| **SQL / dbt** | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
+| [**Full**](#full-tier) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
+| [**Good**](#good-tier) | C · Swift · PHP · Dart | Everything above except code-health markers (C, Swift, PHP; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language |
+| [**SQL / dbt**](#sql--dbt) | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
 | **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
-| **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | File-level import graph only (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
-| **Partial** | Luau / Roblox | AST symbols + `require()` resolution (Rojo / `.luaurc` aware); no health markers yet |
-| **Structural** | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only (blame, hotspots, co-change). No AST parsing |
+| [**Lightweight**](#lightweight-partial-and-structural-tiers) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | File-level import graph only (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
+| [**Partial**](#lightweight-partial-and-structural-tiers) | Luau / Roblox | AST symbols + `require()` resolution (Rojo / `.luaurc` aware); no health markers yet |
+| [**Structural**](#lightweight-partial-and-structural-tiers) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only (blame, hotspots, co-change). No AST parsing |
 
 **Pipeline stage coverage:**
 
@@ -76,7 +82,7 @@ extractors, and code-health markers.
 | **Scala** | `.scala` | `import pkg.Foo`, brace/wildcard/package imports via the shared JVM index (cross-language with Java/Kotlin); SBT / Mill build parsing as fallback (partial import resolution¹) |
 | **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, RSpec mirror edges, Rails / Zeitwerk autoloading |
 
-All twelve also support three-tier call resolution (same-file, cross-file,
+All thirteen also support three-tier call resolution (same-file, cross-file,
 global stem match) and docstring extraction (Python, Ruby comments, JSDoc,
 GoDoc, Rustdoc, Javadoc, Scaladoc, Doxygen, XML doc).
 
