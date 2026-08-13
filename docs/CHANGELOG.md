@@ -9,6 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.42.0] — 2026-08-13
+
+repowise shipped real integrations for exactly three agents — Claude Code, Codex and VS Code — with no cheap way to add a fourth. The wiring lived in four unrelated places, each carrying its own copy of what a given agent needs, and the two plugins had already forked from one another with nothing detecting the skew. This cycle puts every agent behind one descriptor seam and then proves it by adding three: **Cursor, OpenCode and Hermes**. A new `repowise agents` command group lists what is wired, adds and removes targets, and prints a config snippet for hosts we write nothing for. A support tier is derived from what a target actually wires rather than declared, so the docs cannot claim more than the code delivers.
+
+The seam paid for itself immediately in a place that was not the point of it. Removal was never really implemented: `init` wrote to six surfaces and nothing took them away, so uninstalling repowise left MCP servers registered, hooks firing, and instruction blocks in files repowise did not own. There is a `repowise uninstall` now, and every removal path reports what it actually removed instead of calling a half-refused removal clean.
+
+The other theme is a group of correctness fixes in ingestion and retrieval that all have the same shape: a signal was being read as something it is not. Co-change partners were being served as dependency edges, so "what does this import" answered with files that merely change alongside it. A TS/JS binding was classified by its name rather than its value. Large source files were dropped silently. Dead code called runtime-loaded web assets safe to delete.
+
+### Added
+- **`repowise agents`.** Lists every agent repowise knows, with its support tier, whether it looks installed, and every place it is currently wired — including duplicates, because "configured" is the wrong answer when the truth is "configured three times". Subcommands `add`, `remove`, `refresh` and `print-config`, each with `--format json` that reports what changed, so an agent can wire itself up and read back the result. (#1448)
+- **Cursor, OpenCode and Hermes as agent targets.** Each is a descriptor file and a registry line. Cursor writes `.cursor/mcp.json` (it does not read `.vscode/mcp.json`) plus a rules file; OpenCode and Hermes read the same host-neutral `AGENTS.md` that Codex does, so the instruction block is shared rather than owned. Hermes also writes YAML and registers into its toolset list. (#1457, #1459, #1460)
+- **`repowise uninstall`.** Removes repowise from everything it wired: MCP registrations, hooks, instruction-file blocks, and the local index, in either scope. Shared surfaces are left alone while another agent still reads them, and the user is told who. (#1467)
+- **Codex slash commands**, built from the same shared source as the skills rather than forked a second time. A Codex plugin manifest has no slot for commands, so they install from package data into `~/.codex/prompts/`; Claude Code gets its commands from the plugin and never from `init`. Both hosts' skills now render from one body, with a drift report when they diverge. (#1450)
+- **A generated agent support matrix** in the docs, built from the registry so it cannot drift from the code. The published MCP tool count is generated from the same place — six artifacts had been asserting a number that was wrong. (#1455)
+
+### Changed
+- **The three existing integrations were rewritten onto the new seam, not extended.** Claude Code, Codex and VS Code all resolve through one `AgentTarget` protocol with composable format helpers rather than a base class, because the targets genuinely differ: Codex writes a TOML server table, a TOML feature flag and a JSON hooks file for one install; VS Code writes two JSON files, one of which may carry comments. Every file the old path wrote is reproduced byte for byte. (#1446)
+- **When a host-managed plugin is already registered, direct wiring stands down.** Claude Code is reachable both through its plugin and by repowise writing the config, and the host merges both without complaint — leaving two process spawns per matched tool call and a duplicate set of tool schemas resident in every session. Measured on a live machine: three repowise MCP servers at once, roughly 36 tool schemas for one product. (#1446)
+- **A dead-code CLI walkthrough** was added to the examples. (#1384)
+
+### Fixed
+- **`get_risk` and `get_context` no longer serve co-change partners as dependencies.** Both read a graph edge set that mixed the two, so a file that merely changes alongside another was reported as importing it. Dependency edges are read on their own now. (#1462, #1470)
+- **Large source files are indexed instead of silently dropped**, and when one genuinely is too large to parse, the run says so and counts it rather than leaving a gap the user cannot see. (#1443, #1237)
+- **TS/JS bindings are classified by their value, not their name.** A `const` whose value is a call was not indexed at all, and a binding was typed from its identifier, so factory results and configured instances went missing from the graph. (#1468, #1469)
+- **TypeScript workspace members resolve from `pnpm-workspace.yaml`**, not only from the `package.json` `workspaces` field, so pnpm monorepos link across packages. (#1454)
+- **Files are decoded as UTF-8 rather than the platform locale**, which on Windows silently mangled any source with non-ASCII bytes. (#1466)
+- **`get_answer` caps its confidence when a cited symbol body was truncated**, instead of reporting high confidence on a partial read, and validates the withheld `symbol_id` it hands back. It also stops reading backtick strings as code. (#1444, #1445, #1451, #1461)
+- **Reachability is answered in one place.** Two callers each had their own notion of "is this file reachable", so the overview page could contradict the dead-code pass about the same file. Barrel files also rank down rather than dominating. (#1487, #1464)
+- **Dead code stops calling runtime-loaded web assets safe to delete**, and the CLI now indicates when low-confidence findings are being hidden rather than presenting a filtered list as the whole answer. (#1463, #1434)
+- **Deterministic structural wiki pages are localized.** With `--language` set, the model-written pages were translated while every structural page stayed English, so a non-English wiki was mixed. (#1092, #1102)
+- **Orientation entry points rank the same way on every surface** — the CLI, the MCP tools and the web UI each had their own ordering. (#1488)
+- **Concept pages stay local and are named for the directory they are actually under.** Unrelated top-level directories could be merged into one concept group, which then took a name from neither. (#1280, #1465)
+- **`repowise mcp` keeps an older index readable** instead of failing on the first query, and caps confidence on a truncated symbol lookup. (#1458)
+- **MCP tools emit `index_behind` and `embedder_degraded` when false**, not only when true. A caller cannot distinguish "not degraded" from "this build does not report it" when the key is simply absent. (#1449)
+- **A failing CLI command names the real error** rather than a generic wrapper, and pytest runs are flagged. (#1447)
+- **Webhooks match repositories by normalized URL** instead of a `contains` prefix, which matched the wrong repo when one name was a prefix of another. (#1440)
+- **The test suite no longer repoints the developer's global editor config.** Running the suite could overwrite the real `~/.claude` MCP registration, breaking the developer's own tooling. (#1481)
+
+### Documentation
+- The documentation layer has its own reference, with the wiki style guidance folded into it. (#1493)
+- Claims that contradicted the code were corrected across the reference docs, and the long ones were made navigable. (#1479)
+
+### Plugins
+- Claude Code plugin at 0.42.0; Codex plugin to 0.5.0 — both skill sets now render from one shared source (#1450).
+
+### Internal
+- The internal prerelease publish is idempotent, so a re-run no longer fails on an already-published version. (#1494)
+
+---
+
 ## [0.41.0] — 2026-08-11
 
 This cycle closes the gap between what an agent can ask over MCP and what it can ask from a terminal. `get_answer`, `get_context`, `get_symbol` and `get_why` had no CLI form at all, so anyone driving repowise from a shell or a CI job could search the wiki but could not ask it a question, read a triage card, pull one verified symbol body, or ask why the code is shaped the way it is. Those four are commands now. `search` and `risk` were rebuilt as thin adapters over the same tool functions, so a CLI answer and an MCP answer are the same answer, and thirteen more commands gained a machine-readable mode under one flag spelling.

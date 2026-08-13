@@ -2,6 +2,14 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.42.0
+
+### Changed
+- The six skills now render from a source shared with the Codex plugin rather
+  than being maintained as two hand-kept copies that had already drifted in
+  wording, headings and one directory name. A drift report fails when the two
+  hosts diverge (#1450).
+
 ## 0.41.0
 
 ### Added
