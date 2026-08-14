@@ -356,7 +356,13 @@ def _write_state(repo_path: Path, state: dict, provider: Any, outcome: Any) -> N
     upgrade leaves a mixed wiki, so it keeps its current mode rather than
     over-claiming that everything is written.
     """
-    state["last_sync_commit"] = get_head_commit(repo_path)
+    # Only stamp the base commit when git actually resolves HEAD. get_head_commit
+    # returns None on any git failure; unconditionally overwriting last_sync_commit
+    # with None would clobber the previously recorded base, so the next `update`
+    # treats the repo as never-indexed and hard-fails (update_cmd base_ref None).
+    head = get_head_commit(repo_path)
+    if head is not None:
+        state["last_sync_commit"] = head
     state["total_pages"] = outcome.total_pages
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
