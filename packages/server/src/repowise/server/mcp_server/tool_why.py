@@ -63,7 +63,8 @@ async def get_why(
 
     Args:
         query: question, file/module path, or omit for the dashboard.
-        targets: optional file paths to anchor the search.
+        targets: optional file paths to anchor the search, or to ask about on
+            their own when there is no query.
         repo: usually omitted.
     """
     # --- repo="all": search decisions across ALL repos ---
@@ -72,8 +73,14 @@ async def get_why(
             return _unsupported_repo_all("get_why (health dashboard)")
         return await _why_workspace_search(query)
 
-    # --- Mode 1: No query → health dashboard ---
+    # --- Mode 1: No query → the targets, or the health dashboard ---
+    # Targets first: a caller who named files and asked nothing has asked about
+    # those files. Reaching the dashboard from here returned the same bytes for
+    # every target and for no arguments at all, so the answer never mentioned
+    # what was asked about.
     if not query:
+        if targets:
+            return await _why_targets(list(targets), repo)
         return await _why_health_dashboard(repo)
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
@@ -844,8 +851,14 @@ async def _why_no_match(
     return result
 
 
-async def _why_search(query: str, targets: list[str] | None, repo: str | None) -> dict:
-    """Mode 3: natural-language, target-aware decision + documentation search."""
+async def _load_corpus(repo: str | None, targets: list[str] | None) -> tuple:
+    """Repo context, the rankable decision corpus, and git metadata for targets.
+
+    The prologue both target-aware modes open with. Shared so the corpus is
+    filtered once: a record anchored entirely in excluded paths is noise for
+    every mode downstream, and a mode that skipped the filter would answer from
+    a different store than its neighbour.
+    """
     from repowise.core.persistence.crud import list_decisions as _list_decisions
 
     ctx = await _resolve_repo_context(repo)
@@ -854,12 +867,40 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         all_decisions = await _list_decisions(
             session, repository.id, include_proposed=True, limit=_DECISION_CORPUS_LIMIT
         )
-        # Records anchored entirely in excluded paths (vendored venvs mined
-        # before exclude rules changed) are noise for every mode downstream.
         _spec = _get_exclude_spec(ctx.path)
         all_decisions = [d for d in all_decisions if not decision_is_excluded(d, _spec)]
         # Load git metadata for targets (for origin context in results)
         target_git = await _load_target_git(session, repository.id, targets)
+    return ctx, repository, all_decisions, target_git
+
+
+async def _why_targets(targets: list[str], repo: str | None) -> dict:
+    """Mode 2b: targets and no query — the paths themselves are the question.
+
+    One target is path mode outright: its lineage walk, alignment score and
+    origin story are the fullest answer this tool has about a file, and that
+    content is why the mode exists. Several get the per-target card instead —
+    the same evidence a target already earns in search mode — because running
+    path mode once per target would mean a corpus scan and a currency
+    subprocess each, for a shape no caller renders.
+    """
+    if len(targets) == 1:
+        return await _why_path(targets[0], repo)
+
+    ctx, repository, all_decisions, target_git = await _load_corpus(repo, targets)
+    return {
+        "mode": "path",
+        "paths": targets,
+        "target_context": await _build_target_context(
+            ctx, repository, all_decisions, target_git, targets
+        ),
+        "_meta": _build_meta(repository=repository, targets=targets),
+    }
+
+
+async def _why_search(query: str, targets: list[str] | None, repo: str | None) -> dict:
+    """Mode 3: natural-language, target-aware decision + documentation search."""
+    ctx, repository, all_decisions, target_git = await _load_corpus(repo, targets)
 
     target_set = set(targets) if targets else set()
     # Rank wide, collapse restatements, then cap — so the cap spends its slots on
