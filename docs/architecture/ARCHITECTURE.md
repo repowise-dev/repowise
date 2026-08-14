@@ -926,11 +926,17 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 - `zombie_package` — monorepo package with no incoming `inter_package` edges
 
 **Confidence scoring (conservative — when in doubt, do NOT flag):**
-- Unreachable + no commits in 90d + last commit > 6 months → 1.0
-- Unreachable + no commits in 90d → 0.7
+- Unreachable + no commits in 90d + last commit > 1 year → 1.0
+- Unreachable + no commits in 90d + last commit > 6 months → 0.9
+- Unreachable + no commits in 90d + last commit > 90 days → 0.8
+- Unreachable + no commits in 90d + file under 30 days old → 0.55
+- Unreachable + no commits in 90d, no commit date to age it by → 0.7
 - Unreachable but recently touched → 0.4
-- `safe_to_delete` only set at confidence >= 0.7, and NOT for files matching
-  dynamic patterns (`*Plugin*`, `*Handler*`, `*Adapter*`, `*Middleware*`)
+- `safe_to_delete` only set at confidence >= `SAFE_CONFIDENCE_THRESHOLD` (0.7),
+  and NOT for files matching dynamic patterns (`*Plugin*`, `*Handler*`,
+  `*Adapter*`, `*Middleware*`), and NOT for paths carrying a runtime-load risk
+  factor. The rungs above are an evidence scale, not the tier boundaries; the
+  boundaries live in `core/analysis/dead_code/risk_factors.py`
 
 **Never flagged as dead:**
 - `__init__.py` public re-exports
