@@ -616,7 +616,7 @@ class CallResolver:
             # receiver_name might be a submodule (e.g. `from pkg import submodule`).
             # In that case, the actual receiver file is `pkg/submodule.py` or `pkg/submodule/__init__.py`.
             if self._is_python(file_path) and source_file.endswith("__init__.py"):
-                base_dir = source_file[:-12]  # remove "__init__.py"
+                base_dir = source_file[:-11]  # remove "__init__.py"
                 candidate1 = f"{base_dir}{receiver_name}.py"
                 candidate2 = f"{base_dir}{receiver_name}/__init__.py"
                 for cand in (candidate1, candidate2):
