@@ -133,7 +133,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
+| `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `orcarouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
 | `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
@@ -536,6 +536,23 @@ repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
 repowise init --provider openrouter --model x-ai/grok-4 --reasoning off
 ```
 
+### OrcaRouter
+
+```bash
+export ORCAROUTER_API_KEY="sk-orca-..."
+repowise init --provider orcarouter --model anthropic/claude-haiku-4.5 --reasoning minimal
+repowise init --provider orcarouter --model openai/gpt-5.4-mini --reasoning off
+```
+
+[OrcaRouter](https://www.orcarouter.ai) is a multi-vendor routing gateway:
+one API key reaches 180+ models (Claude, GPT, Gemini, Qwen, DeepSeek, …) via
+the OpenAI-compatible endpoint at `https://api.orcarouter.ai/v1`. Model
+identifiers use the `vendor/model` form, the same convention as OpenRouter.
+Reasoning requests are sent as OpenAI-style `reasoning_effort` and routed to
+the underlying vendor. It also runs gateway-level, zero-trust security for AI
+agents on the same endpoint — screening every prompt/response and governing
+every tool call on a default-deny basis, with no application code changes.
+
 ### Gemini (Google)
 
 ```bash
@@ -596,7 +613,7 @@ order:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
+3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `ORCAROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
 
 ---
 

@@ -128,6 +128,7 @@ def test_every_builtin_provider_has_a_deliberate_budget():
         "anthropic": 60.0,
         "openai": 60.0,
         "openrouter": 60.0,
+        "orcarouter": 60.0,
         "gemini": 60.0,
         "deepseek": 60.0,
         "kimi": 60.0,

@@ -44,7 +44,7 @@ repowise init [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
+| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `orcarouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | string | — | Model override (e.g., `claude-sonnet-4-6`, `gpt-4.1`) |
 | `--embedder` | choice | auto | Embedding provider: `gemini`, `openai`, `mock` |
 | `--prose` / `--no-prose` | flag | prose if a key | Write the subsystem (concept) pages as model prose (`--prose`, needs a key), or render the whole wiki from structure with no model and no spend (`--no-prose`). Every other page is structural either way. |

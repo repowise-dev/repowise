@@ -441,6 +441,21 @@ class TestValidateProviderConfig:
 
         assert validate_provider_config() == []
 
+    def test_orcarouter_missing_key(self, monkeypatch):
+        monkeypatch.delenv("ORCAROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "orcarouter")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "orcarouter" in warnings[0]
+        assert "ORCAROUTER_API_KEY" in warnings[0]
+
+    def test_orcarouter_valid_key(self, monkeypatch):
+        monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-test")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "orcarouter")
+
+        assert validate_provider_config() == []
+
     def test_gemini_with_gemini_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         monkeypatch.setenv("REPOWISE_PROVIDER", "gemini")
@@ -549,6 +564,32 @@ class TestResolveProviderBaseUrl:
             "model": "kimi-k2.6",
             "api_key": "sk-kimi-test",
             "base_url": "https://kimi.example/v1",
+        }
+
+    @staticmethod
+    def test_orcarouter_key_model_and_base_url_forwarded(monkeypatch, tmp_path):
+        captured: dict[str, Any] = {}
+
+        def fake_get_provider(name: str, **kwargs: Any):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return "provider"
+
+        monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
+        monkeypatch.setattr(
+            "repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: []
+        )
+        monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-test")
+        monkeypatch.setenv("ORCAROUTER_BASE_URL", "https://orcarouter.example/v1")
+
+        result = resolve_provider("orcarouter", "anthropic/claude-haiku-4.5", repo_path=tmp_path)
+
+        assert result == "provider"
+        assert captured["name"] == "orcarouter"
+        assert captured["kwargs"] == {
+            "model": "anthropic/claude-haiku-4.5",
+            "api_key": "sk-orca-test",
+            "base_url": "https://orcarouter.example/v1",
         }
 
     @staticmethod
