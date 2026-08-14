@@ -198,6 +198,37 @@ _COLLECTOR_HEADROOM_CHARS = 600
 _PATH_STATUS_ORDER = {"active": 0, "proposed": 1, "deprecated": 2, "superseded": 3}
 
 
+# --- Search-mode caps -------------------------------------------------------
+#
+# Search mode had no caps at all: it served eight whole records with their file
+# arrays inlined, measuring 27 640 - 34 917 chars over five probe questions
+# against a 32 000 budget, so two of the five went over the ceiling outright.
+# The cost was not only transport. On a question the store does answer ("why
+# ruff check and not ruff format", held by two active records) it returned eight
+# records, none of them those, three restating one unrelated decision. A long
+# low-relevance answer teaches an agent that the tool is not worth calling,
+# which is more expensive than a miss.
+#
+# So this mode gets few records served whole rather than many served thin: a
+# padded answer is the failure mode, and thinning every record to keep eight of
+# them is padding with extra steps.
+
+#: Records kept by search mode. Three whole beats eight thinned: past the third
+#: hit the ranking is not trustworthy enough to spend an agent's context on.
+_MAX_SEARCH_DECISIONS = 3
+
+#: Nearest pages pulled for the *one* semantic lookup search mode makes. Both
+#: lanes (decisions, documentation) are partitioned out of this single window,
+#: so the depth is the old decision lane's rather than the sum of the two.
+_SEMANTIC_WINDOW = 50
+
+#: Keyword candidates scored before restatements are collapsed. Wider than the
+#: serving cap on purpose: the worst cluster here is fourteen phrasings of one
+#: decision, so a pool cut to three first would serve one decision three times.
+#: Bounded because the lineage walk after the collapse costs a query per record.
+_KEYWORD_POOL = 24
+
+
 def _path_decision_sort_key(d: Any) -> tuple[int, float, float]:
     return (
         _PATH_STATUS_ORDER.get(d.status, 4),
@@ -500,53 +531,82 @@ async def _load_target_git(
 
 
 def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str]) -> list:
-    """Score decisions by weighted keyword overlap and return the top 8."""
+    """Score decisions by weighted keyword overlap, best-first.
+
+    Score first, then status: a record someone confirmed wins a tie against one
+    an extractor proposed, but never outranks a better-matching record. Ordering
+    by status *first* was tried and measured worse, and the reason generalises —
+    only 69 of this repo's 614 records are active, so a hard status gate serves
+    three weakly-matching confirmed records ahead of the only relevant ones. The
+    four records that answer "why is entry-point candidacy decided at ingestion"
+    are all proposed, and status-first ordering made them unreachable.
+
+    Returns a pool wider than the serving cap because restatements are collapsed
+    downstream, and a pool cut to the cap first would let three phrasings of one
+    decision fill every slot.
+    """
     query_words = set(query.lower().split()) - _QUERY_STOP_WORDS
-    scored_decisions: list[tuple[float, Any]] = []
+    scored_decisions: list[tuple[float, int, Any]] = []
     for d in all_decisions:
         score = _score_decision(d, query_words, target_set)
         if score > 0:
-            scored_decisions.append((score, d))
-    scored_decisions.sort(key=lambda t: t[0], reverse=True)
-    return [d for _, d in scored_decisions[:8]]
+            scored_decisions.append((-score, _PATH_STATUS_ORDER.get(d.status, 4), d))
+    scored_decisions.sort(key=lambda t: (t[0], t[1]))
+    return [d for _, _, d in scored_decisions[:_KEYWORD_POOL]]
 
 
-async def _semantic_decision_results(ctx: Any, query: str) -> list:
-    """Semantic search of the page store, filtered to the decision: namespace.
+async def _fts_doc_results(ctx: Any, query: str) -> list:
+    """Documentation hits from the lexical index.
 
-    Empty on a keyless index: there is no lexical fallback here, and a window of
-    arbitrary decisions is worse than none for a tool whose whole job is
-    explaining why a specific thing is the way it is.
+    The keyless path, and the fallback whenever the vector store is present but
+    unusable: a store that cannot rank gives the same answer as no store.
     """
-    decision_results: list = []
+    doc_results: list = []
     with contextlib.suppress(Exception):
-        if ctx.vector_store is not None and store_has_semantic_vectors(ctx.vector_store):
-            _raw = await ctx.vector_store.search(query, limit=50)
-            decision_results = [
-                r for r in _raw if getattr(r, "page_id", "").startswith(DECISION_VECTOR_PREFIX)
-            ][:5]
-    return decision_results
+        doc_results = await ctx.fts.search(query, limit=3)
+    return doc_results
 
 
-async def _semantic_doc_results(ctx: Any, query: str) -> list:
-    """Semantic search over documentation, falling back to FTS.
+async def _semantic_lanes(ctx: Any, query: str) -> tuple[list, list]:
+    """``(decision_hits, doc_hits)`` from **one** embedding of *query*.
 
-    A keyless index takes the FTS path directly rather than going through a
-    vector store that cannot rank, which is the same answer the ``except``
-    branch already produces for an unusable store.
+    These were two awaits embedding the same string back to back, so every
+    search-mode call paid two network round trips to ask one question. One
+    ``embed_texts`` plus ``search_by_vector`` is the documented way to spend one
+    (see ``vector_store._base``), and ``search`` remains the fallback for a
+    backend that cannot search by raw vector.
+
+    Partitioning one window also fixes a quieter bug: the doc lane took the
+    nearest three pages *of any kind*, so decision records were being served
+    back as "related documentation" beside the decisions list they came from.
+    Splitting by namespace gives each lane only what belongs to it.
+
+    The decision lane stays empty on a keyless index, deliberately: there is no
+    lexical fallback for it, because a window of arbitrary decisions is worse
+    than none for a tool whose whole job is explaining one specific thing.
     """
     if not store_has_semantic_vectors(getattr(ctx, "vector_store", None)):
-        doc_results: list = []
-        with contextlib.suppress(Exception):
-            doc_results = await ctx.fts.search(query, limit=3)
-        return doc_results
-    try:
-        return await ctx.vector_store.search(query, limit=3)
-    except Exception:
-        doc_results = []
-        with contextlib.suppress(Exception):
-            doc_results = await ctx.fts.search(query, limit=3)
-        return doc_results
+        return [], await _fts_doc_results(ctx, query)
+
+    raw: list | None = None
+    with contextlib.suppress(Exception):
+        vectors = await ctx.vector_store.embed_texts([query])
+        if vectors:
+            raw = await ctx.vector_store.search_by_vector(vectors[0], limit=_SEMANTIC_WINDOW)
+        if raw is None:
+            # Backend holds no embedder, or cannot search by raw vector.
+            raw = await ctx.vector_store.search(query, limit=_SEMANTIC_WINDOW)
+    if raw is None:
+        return [], await _fts_doc_results(ctx, query)
+
+    decision_hits, doc_hits = [], []
+    for r in raw:
+        page_id = getattr(r, "page_id", "")
+        if page_id.startswith(DECISION_VECTOR_PREFIX):
+            decision_hits.append(r)
+        else:
+            doc_hits.append(r)
+    return decision_hits[:_MAX_SEARCH_DECISIONS], doc_hits[:3]
 
 
 async def _lineage_for_matches(ctx: Any, keyword_matches: list) -> dict[str, list[dict]]:
@@ -563,33 +623,91 @@ async def _lineage_for_matches(ctx: Any, keyword_matches: list) -> dict[str, lis
     return lineage_by_id
 
 
+def _evidence_key(d: Any) -> tuple[str, str] | None:
+    """The evidence a record cites, as a merge key, or ``None`` when it cites none.
+
+    Re-extraction paraphrases a record's prose but not its provenance. The
+    fourteen records on this repo that all restate one LIKE-escaping decision
+    carry fourteen titles and fourteen ids and the same single
+    ``evidence_commits`` entry; comment-sourced restatements repeat an
+    ``evidence_file`` instead. Store-wide, 478 of 614 records sit in a cluster
+    like that, which is why one query could return five phrasings of one
+    decision.
+
+    So the key is the cited evidence plus the extractor that read it, never the
+    text. Normalising titles would need a tuned similarity threshold, and a
+    wrong merge there hides a human-confirmed record. Keeping ``source`` in the
+    key also means two extractors that independently found the same commit stay
+    separate, which is the provenance-accretion case ``decision_evidence``
+    already models.
+    """
+    commits = json.loads(getattr(d, "evidence_commits_json", None) or "[]")
+    if commits:
+        return (d.source or "", f"commit:{commits[0]}")
+    if d.evidence_file:
+        return (d.source or "", f"file:{d.evidence_file}")
+    return None
+
+
+def _collapse_restatements(records: list) -> list[tuple[Any, list[str]]]:
+    """``(kept, folded_ids)`` per distinct decision, input order preserved.
+
+    Runs on records rather than on the projected dicts so the collapse happens
+    *before* the lineage walk, which costs a query per surviving record. Records
+    citing no evidence at all cannot be compared this way and are always kept.
+    """
+    by_evidence: dict[tuple[str, str], int] = {}
+    out: list[tuple[Any, list[str]]] = []
+    for d in records:
+        key = _evidence_key(d)
+        if key is not None and key in by_evidence:
+            out[by_evidence[key]][1].append(d.id)
+            continue
+        if key is not None:
+            by_evidence[key] = len(out)
+        out.append((d, []))
+    return out
+
+
 def _merge_decisions(
-    keyword_matches: list,
+    keyword_matches: list[tuple[Any, list[str]]],
     decision_results: list,
     lineage_by_id: dict[str, list[dict]],
 ) -> list[dict]:
-    """Merge keyword and semantic decision hits, deduplicated by id."""
+    """Project collapsed keyword hits, then append semantic hits not already in.
+
+    *keyword_matches* arrives from :func:`_collapse_restatements`, so the folded
+    ids ride along on ``restates``: nothing becomes unaddressable and the store
+    is untouched.
+    """
     seen_ids: set[str] = set()
     merged_decisions: list[dict] = []
-    for d in keyword_matches:
+    for d, folded in keyword_matches:
         if d.id in seen_ids:
             continue
-        seen_ids.add(d.id)
-        merged_decisions.append(
-            {
-                "id": d.id,
-                "title": d.title,
-                "status": d.status,
-                "decision": _decision_body(d),
-                "rationale": d.rationale,
-                "context": d.context,
-                "consequences": json.loads(d.consequences_json),
-                "affected_files": json.loads(d.affected_files_json),
-                "source": d.source,
-                "confidence": d.confidence,
-                "lineage": lineage_by_id.get(d.id, []),
-            }
-        )
+        seen_ids.update([d.id, *folded])
+        affected_files = json.loads(d.affected_files_json)
+        entry = {
+            "id": d.id,
+            "title": d.title,
+            "status": d.status,
+            "decision": _decision_body(d),
+            "rationale": d.rationale,
+            "context": d.context,
+            "consequences": json.loads(d.consequences_json),
+            # Whole arrays reached 83 paths and 4 812 chars, 36% of the payload
+            # across the eight records served. A head plus a total answers "how
+            # wide is this decision" as well, and path mode already says so.
+            "affected_files": affected_files[:_MAX_AFFECTED_FILES],
+            "source": d.source,
+            "confidence": d.confidence,
+            "lineage": lineage_by_id.get(d.id, []),
+        }
+        if len(affected_files) > _MAX_AFFECTED_FILES:
+            entry["affected_files_total"] = len(affected_files)
+        if folded:
+            entry["restates"] = folded
+        merged_decisions.append(entry)
 
     for r in decision_results:
         # Strip the "decision:" prefix so the returned id matches the SQL primary key.
@@ -673,16 +791,22 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         target_git = await _load_target_git(session, repository.id, targets)
 
     target_set = set(targets) if targets else set()
-    keyword_matches = _rank_keyword_matches(all_decisions, query, target_set)
-    decision_results = await _semantic_decision_results(ctx, query)
-    doc_results = await _semantic_doc_results(ctx, query)
-    lineage_by_id = await _lineage_for_matches(ctx, keyword_matches)
-    merged_decisions = _merge_decisions(keyword_matches, decision_results, lineage_by_id)
+    # Rank wide, collapse restatements, then cap — so the cap spends its slots on
+    # distinct decisions — and only walk lineage for what survives.
+    ranked = _rank_keyword_matches(all_decisions, query, target_set)
+    collapsed = _collapse_restatements(ranked)[:_MAX_SEARCH_DECISIONS]
+    decision_results, doc_results = await _semantic_lanes(ctx, query)
+    lineage_by_id = await _lineage_for_matches(ctx, [d for d, _ in collapsed])
+    merged_decisions = _merge_decisions(collapsed, decision_results, lineage_by_id)
 
+    # No further slice: the cap is on *bodies*, applied to ``collapsed`` above.
+    # Semantic hits append as id-plus-snippet at roughly 200 chars each, so
+    # dropping them to fit a record count would cost the lane that carries a
+    # calibrated relevance score for the sake of no measurable payload.
     result_data: dict[str, Any] = {
         "mode": "search",
         "query": query,
-        "decisions": merged_decisions[:8],
+        "decisions": merged_decisions,
         "related_documentation": [
             {
                 "page_id": r.page_id,
@@ -745,7 +869,16 @@ def _score_decision(
     if not query_words:
         return 1.0 if target_files else 0.0
 
-    # Build weighted text fields
+    # Build weighted text fields.
+    #
+    # ``affected_files`` is deliberately absent. Joining a record's whole path
+    # list into one haystack and substring-matching a question against it scores
+    # by *breadth*: the record here governing 83 files matched almost every
+    # question asked, because ordinary query words ("index", "page", "format")
+    # occur somewhere in 83 paths, and it became the top hit for three of five
+    # probe questions including one about ruff. A scope is not question text.
+    # The legitimate use of that field — does this record govern the file the
+    # caller named — is the exact set membership in the target boost below.
     fields = [
         (3.0, d.title.lower()),
         (2.0, d.decision.lower()),
@@ -753,7 +886,6 @@ def _score_decision(
         (1.5, d.context.lower()),
         (1.0, " ".join(json.loads(d.consequences_json)).lower()),
         (1.0, " ".join(json.loads(d.tags_json)).lower()),
-        (1.5, " ".join(json.loads(d.affected_files_json)).lower()),
         (1.0, (d.evidence_file or "").lower()),
     ]
 
