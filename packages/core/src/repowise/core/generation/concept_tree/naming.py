@@ -9,11 +9,15 @@ plausible-looking paths — have nowhere to enter through. A group the model
 forgets to name keeps a deterministic name; a group id it invents is discarded.
 Coverage is therefore unchanged by anything the model does or fails to do.
 
-The payload conveys breadth, never importance. Ranking the input by PageRank
-and sampling the top files produced 12.7% coverage against 91.7% for the full
-inventory, because hub files are infrastructure — ``models.py``, ``client.ts``,
-``__init__.py`` — and an outline built around them describes the plumbing
-rather than the product.
+The file inventory conveys breadth, never importance. Ranking the input by
+PageRank and sampling the top files produced 12.7% coverage against 91.7% for
+the full inventory, because hub files are infrastructure — ``models.py``,
+``client.ts``, ``__init__.py`` — and an outline built around them describes the
+plumbing rather than the product. Every truncated field in the payload is
+nonetheless ordered for what its truncation should keep — filenames round-robin
+across directories, entry points by execution-start evidence — because the sort
+in front of a ``[:n]`` decides what the model sees, and none of those orders is
+centrality.
 
 Repo docs do not come in here as prose. Nine thousand characters of README
 injected alongside a 145-directory structural task collapsed the outline to
@@ -32,6 +36,7 @@ from typing import Any
 
 import structlog
 
+from ..entry_points import rank_entry_point_paths
 from ..onboarding.grounding import check_grounding
 from .grouping import ConceptGroup
 
@@ -528,9 +533,14 @@ def build_payload(
         hint = hints.get(gid)
         if hint:
             entry["suggested_name"] = hint
-        group_entries = sorted(e.rsplit("/", 1)[-1] for e in entries if e in set(group.members))
+        # Ranked, not alphabetical by basename: this is truncated to three, so
+        # the sort decides which three the namer ever sees. Basenames are taken
+        # after ranking for the reason the docstring gives — a full path is
+        # something the model would quote back as a citation.
+        members = set(group.members)
+        group_entries = rank_entry_point_paths(e for e in entries if e in members)
         if group_entries:
-            entry["entry_points"] = group_entries[:3]
+            entry["entry_points"] = [e.rsplit("/", 1)[-1] for e in group_entries[:3]]
         entries_out.append(entry)
 
     return {"repo": "", "groups": entries_out}, index

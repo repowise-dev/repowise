@@ -199,7 +199,14 @@ async def test_fetch_entry_points(session, repo, tmp_path):
     assert "src/utils.py" not in data.entry_points
 
 
-async def test_fetch_entry_points_sorted_by_pagerank(session, repo, tmp_path):
+async def test_fetch_entry_points_breaks_ties_on_pagerank(session, repo, tmp_path):
+    """PageRank is the tiebreak, and only that.
+
+    Both names are neutral and both sit at depth 1, so nothing above centrality
+    in the shared rank key separates them and the more central file still leads.
+    Renamed from ``..._sorted_by_pagerank``: PageRank used to be the whole
+    ordering here, and the name outlived it by one commit.
+    """
     await _add_graph_node(session, repo.id, "src/low.py", is_entry_point=True, pagerank=0.1)
     await _add_graph_node(session, repo.id, "src/high.py", is_entry_point=True, pagerank=0.9)
     await session.commit()
@@ -208,6 +215,22 @@ async def test_fetch_entry_points_sorted_by_pagerank(session, repo, tmp_path):
     data = await fetcher.fetch()
 
     assert data.entry_points[0] == "src/high.py"
+
+
+async def test_fetch_entry_points_ranks_execution_start_above_pagerank(session, repo, tmp_path):
+    """The fallback's own defect: centrality rewards fan-in, so a widely
+    imported barrel outranked the real front door precisely because everything
+    depends on it. ``ORDER BY pagerank DESC`` led with ``types/index.ts``."""
+    await _add_graph_node(
+        session, repo.id, "src/types/index.ts", is_entry_point=True, pagerank=0.99
+    )
+    await _add_graph_node(session, repo.id, "src/main.py", is_entry_point=True, pagerank=0.01)
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.entry_points == ["src/main.py", "src/types/index.ts"]
 
 
 async def test_fetch_entry_points_prefers_curated_list(session, repo, tmp_path):

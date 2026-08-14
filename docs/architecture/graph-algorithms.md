@@ -163,7 +163,7 @@ If co-change edges fed into PageRank, files that happen to change alongside many
 1. **Documentation priority**: High PageRank files get wiki pages generated first. If budget is limited, the most depended-on files are documented.
 2. **Generation depth**: Low PageRank + low git churn → "minimal" docs (saves LLM tokens and cost).
 3. **Significant file selection**: Files above the PageRank threshold get detailed Level 2 wiki pages. Files below get summarized in module-level pages.
-4. **CLAUDE.md generation**: When generating editor context files, files are sorted by PageRank descending — the most important files appear first for AI coding assistants.
+4. **CLAUDE.md generation**: When generating editor context files, the key-modules list is sorted by PageRank descending — the most depended-on modules appear first for AI coding assistants. The entry-point list is the exception and is ranked on execution-start evidence, because centrality rewards fan-in and would float a sink above the front door.
 
 ---
 

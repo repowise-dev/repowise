@@ -69,7 +69,9 @@ CLAUDE.md written to repo root
 - Best-effort in `repowise update` — never fails the command
 - Instant — no LLM calls, typically < 200ms
 - Idempotent — re-running produces identical output if data hasn't changed
-- Deterministic — lists sorted by stable keys (PageRank desc, path asc as tiebreaker)
+- Deterministic — lists sorted by stable keys, with path asc as the final
+  tiebreaker. Most lists lead on PageRank desc; entry points deliberately do
+  not, and rank on execution-start evidence instead.
 
 ---
 
@@ -125,7 +127,7 @@ Auto-generated from indexed data. Updates on every `repowise update`.
 |-------------|--------|-----|
 | Architecture summary | First 4 sentences from `repo_overview` wiki page | 4 sentences |
 | Key Modules | `module_page` pages sorted by PageRank desc, joined with git_metadata for owner | Top 10 |
-| Entry Points | `graph_nodes` where `is_entry_point=True`, sorted by PageRank desc | Top 10 |
+| Entry Points | The curated `kg_project_meta` list; otherwise `graph_nodes` where `is_entry_point=True`, ranked on execution-start evidence | Top 10 |
 | Tech Stack | Filesystem scan (package.json, pyproject.toml, Cargo.toml, go.mod, etc.) | All detected |
 | Hotspots | `git_metadata` where `is_hotspot=True`, sorted by `churn_percentile` desc | Top 5 |
 
@@ -173,12 +175,21 @@ LIMIT 10
 ```
 
 **Entry points** (`_get_entry_points`)
+
+The curated `kg_project_meta.entry_points_json` list wins when the curation
+pass has run. Otherwise the raw flag is read unbounded and ranked in Python,
+because the ordering cannot be expressed as an `ORDER BY`:
+
 ```python
-SELECT node_id FROM graph_nodes
+SELECT node_id, pagerank, betweenness FROM graph_nodes
 WHERE repository_id = :repo_id AND is_entry_point = TRUE
-ORDER BY pagerank DESC
-LIMIT 10
+# then rank_entry_points(...): conventional entry name, then shallower path,
+# then centrality as a tiebreak; sliced to 10 after ranking.
 ```
+
+PageRank deliberately does **not** lead here. Centrality rewards fan-in, so it
+floats a widely-imported barrel above the real front door — see
+`generation/entry_points.py`.
 
 **Hotspots** (`_get_hotspots`)
 ```python

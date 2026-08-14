@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
+from repowise.core.entry_candidacy import conventional_entry_stems
+from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -146,13 +148,25 @@ class EditorFileDataFetcher:
     async def _get_entry_points(self) -> list[str]:
         """Curated orientation entry points (re-export barrels and sinks demoted).
 
-        Prefers the curated ``kg_project_meta`` list. The raw ``is_entry_point``
-        flag still tags shallow package-export files (a package-root ``cn.ts``
-        or ``types/index.ts``) — high fan-in sinks that are the opposite of
-        where a reader starts, and ordering them by PageRank floats those sinks
-        to the top. Ingestion's candidacy rule removed the deeper ones from the
-        flag, which narrows the gap without closing it. Falls back to the flag
-        (PageRank-ordered) only for indexes built before the curation pass.
+        Prefers the curated ``kg_project_meta`` list, and falls back to the raw
+        ``is_entry_point`` flag whenever that list is absent or empty — an
+        index written before the curation pass, a run with
+        ``REPOWISE_KG_CURATION=0``, or a repo whose candidates were all
+        filtered out.
+
+        The fallback used to read ``ORDER BY pagerank DESC``, which is the
+        ordering :mod:`repowise.core.generation.entry_points` exists to argue
+        against: centrality rewards fan-in, so a package-root ``types/index.ts``
+        floated above the real front door precisely because everything imports
+        it. It now ranks on execution-start evidence and keeps PageRank as the
+        tiebreak the shared key already defines.
+
+        Ranking has to happen after the read, not in the ``ORDER BY``, so the
+        query is bounded by the flag rather than by ``LIMIT``. Measured over 42
+        local indexes the widest flag set is 9,644 rows of one path and two
+        floats. That is per call, and the call is not once per run: the CLI
+        makes one per editor file, and ``GET /repos/{id}/claude-md`` makes one
+        per request.
         """
         meta = await crud.get_kg_project_meta(self._session, self._repo_id)
         if meta is not None:
@@ -164,15 +178,14 @@ class EditorFileDataFetcher:
                 return curated[:_MAX_ENTRY_POINTS]
 
         result = await self._session.execute(
-            select(GraphNode.node_id)
-            .where(
+            select(GraphNode.node_id, GraphNode.pagerank, GraphNode.betweenness).where(
                 GraphNode.repository_id == self._repo_id,
                 GraphNode.is_entry_point == True,  # noqa: E712
             )
-            .order_by(GraphNode.pagerank.desc())
-            .limit(_MAX_ENTRY_POINTS)
         )
-        return [row[0] for row in result.all()]
+        candidates = [(node_id, pr or 0.0, bt or 0.0) for node_id, pr, bt in result.all()]
+        ranked = rank_entry_points(candidates, conventional_entry_stems())
+        return ranked[:_MAX_ENTRY_POINTS]
 
     async def _get_hotspots(self) -> list[HotspotFile]:
         """Top attention-worthy files: bug-fix history first, churn as fallback.

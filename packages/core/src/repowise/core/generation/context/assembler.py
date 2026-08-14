@@ -18,7 +18,7 @@ from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
-from ..entry_points import orientation_entry_points
+from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
 from .contexts import (
     ApiContractContext,
@@ -466,7 +466,13 @@ class ContextAssembler:
         public_symbols = sum(
             sum(1 for s in fc.symbols if s.get("visibility") == "public") for fc in file_contexts
         )
-        entry_points = [fc.file_path for fc in file_contexts if fc.is_entry_point]
+        # ``module_page.j2`` renders these under a literal "Entry points"
+        # heading, so this is a displayed ordering and takes the shared rule.
+        # The input is ``file_contexts`` order, which is whatever the selector
+        # handed over.
+        entry_points = rank_entry_point_paths(
+            fc.file_path for fc in file_contexts if fc.is_entry_point
+        )
         files = [fc.file_path for fc in file_contexts]
 
         # Aggregate dependencies/dependents across all files in module

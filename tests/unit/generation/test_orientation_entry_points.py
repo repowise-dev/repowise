@@ -20,6 +20,7 @@ before that change hands it over.
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -187,6 +188,80 @@ def test_kg_project_block_is_ranked():
         external_systems=[],
     )
     assert result.project["entry_points"] == RANKED
+
+
+class _RecordingClient:
+    """Captures the user prompt and returns nothing the caller can parse.
+
+    Both LLM-backed surfaces below build their prompt, then fall back when the
+    response carries no usable key. Returning an empty object exercises the
+    prompt *and* the fallback in one call, without a provider.
+    """
+
+    def __init__(self):
+        self.prompts: list[str] = []
+
+    async def generate(self, _system, user_prompt, **_kwargs):
+        self.prompts.append(user_prompt)
+        return SimpleNamespace(content="{}")
+
+
+def _entry_points_line(prompt: str) -> list[str]:
+    for line in prompt.splitlines():
+        if line.startswith("Entry points: "):
+            return [p.strip() for p in line[len("Entry points: ") :].split(",")]
+    raise AssertionError("prompt carries no 'Entry points:' line")
+
+
+@pytest.mark.asyncio
+async def test_kg_layer_naming_prompt_is_ranked():
+    """``_build_layer_naming_prompt`` (via ``_enrich_layers``).
+
+    Untested until now, so reverting its call to a raw prefix of
+    ``repo_structure.entry_points`` was green everywhere. The prompt truncates
+    to 5, and the model is asked to name communities against it, so an unranked
+    list decides which front doors the namer is told the repo has.
+    """
+    from repowise.core.generation.knowledge_graph import _enrich_layers
+
+    client = _RecordingClient()
+    await _enrich_layers(
+        layers=[{"id": "L1", "name": "App", "nodeIds": [f"file:{p}" for p in RAW]}],
+        llm_client=client,
+        graph_builder=SimpleNamespace(pagerank=lambda: {}),
+        repo_structure=_structure(RAW),
+        tech_stack=[],
+    )
+
+    assert client.prompts, "the layer batch never reached the client"
+    assert _entry_points_line(client.prompts[0]) == RANKED[:5]
+
+
+@pytest.mark.asyncio
+async def test_kg_tour_prompt_is_ranked_and_so_is_its_fallback():
+    """``_generate_tour``. Also untested until now.
+
+    ``test_deterministic_kg_tour_starts_at_the_best_entry_point`` does not
+    cover this: it hands ``build_deterministic_tour`` an already-ranked list.
+    This asserts both halves of the real call — the prompt the model sees and
+    the deterministic tour built from the same list when the model's answer is
+    unusable.
+    """
+    from repowise.core.generation.knowledge_graph import _generate_tour
+
+    client = _RecordingClient()
+    layers = [{"name": "App", "nodeIds": [f"file:{p}" for p in RAW]}]
+    tour = await _generate_tour(
+        layers=layers,
+        llm_client=client,
+        graph_builder=SimpleNamespace(pagerank=lambda: {p: 0.1 for p in RAW}),
+        repo_structure=_structure(RAW),
+        kg_skeleton=None,
+    )
+
+    assert client.prompts, "the tour request never reached the client"
+    assert _entry_points_line(client.prompts[0]) == RANKED[:10]
+    assert tour and tour[0]["nodeIds"] == ["file:src/main.py"]
 
 
 def test_deterministic_kg_tour_starts_at_the_best_entry_point():

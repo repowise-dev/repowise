@@ -15,10 +15,28 @@ This module ranks candidates by execution-start evidence instead — a
 conventional entry filename and a shallow path — and uses centrality only to
 break ties. It is deliberately free of any DB/graph/LLM dependency so the
 ordering can be unit-tested directly.
+
+Three callable shapes, one rule: :func:`orientation_entry_points` for a
+``RepoStructure``, :func:`rank_entry_point_paths` for bare paths, and
+:func:`rank_entry_points` for callers holding centrality.
+
+One ordering of entry points is deliberately not this one:
+``tour.tour_landmark_paths`` orders by ``score_entry_points`` and truncates,
+because it answers a *selection* question — which files are guaranteed a page —
+and its score reads the ``is_entry_point`` flag itself, which this key never
+sees. Sharing the key there would decide page selection on filename, depth and
+centrality with the one direct piece of evidence dropped.
+
+**Ranking cannot rescue bad candidacy, and the corpus still shows it.** On
+``spring-petclinic`` the Spring stamper flags 24 entity and controller classes
+and never flags ``PetClinicApplication.java``, so no ordering over that set can
+name the front door: the best this key can do is pick a different wrong file.
+That is a candidacy gap, tracked separately.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -65,6 +83,19 @@ def entry_point_rank_key(
         -(pagerank + betweenness),
         path,
     )
+
+
+def rank_entry_point_paths(paths: Iterable[str]) -> list[str]:
+    """Rank bare paths, best entry first, with no centrality to break ties.
+
+    The sibling for callers that hold a set or a query result rather than a
+    ``RepoStructure``. Centrality is only a tiebreak between paths that already
+    agree on name and depth, and the path component keeps the order total, so
+    omitting it costs nothing but determinism-preserving arbitrariness.
+    Callers that do hold centrality should use :func:`rank_entry_points`.
+    """
+    stems = conventional_entry_stems()
+    return sorted(paths, key=lambda p: entry_point_rank_key(p, conventional_stems=stems))
 
 
 def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -> list[str]:
@@ -126,11 +157,7 @@ def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -
     so a React ``src/components/App.tsx`` is published as an execution entry
     point, as is any ``run.py`` / ``server.ts`` at any depth.
     """
-    paths = list(getattr(repo_structure, "entry_points", None) or [])
-    ranked = sorted(
-        paths,
-        key=lambda p: entry_point_rank_key(p, conventional_stems=conventional_entry_stems()),
-    )
+    ranked = rank_entry_point_paths(getattr(repo_structure, "entry_points", None) or [])
     return ranked if limit is None else ranked[:limit]
 
 

@@ -310,6 +310,36 @@ def test_assemble_module_page_public_symbols(
     assert ctx.public_symbols >= 0
 
 
+def test_assemble_module_page_ranks_its_entry_points(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """``module_page.j2`` renders these under an "Entry points" heading.
+
+    The input is ``file_contexts`` order — whatever the selector handed over —
+    so without ranking the heading led with whichever entry point happened to
+    be assembled first. Here that is a deep glue leaf.
+    """
+    from dataclasses import replace
+
+    assembler = ContextAssembler(sample_config)
+    base = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    contexts = [
+        replace(base, file_path="src/features/api/index.ts", is_entry_point=True),
+        replace(base, file_path="src/util.py", is_entry_point=False),
+        replace(base, file_path="src/main.py", is_entry_point=True),
+    ]
+    ctx = assembler.assemble_module_page("python_pkg", "python", contexts, sample_graph)
+
+    assert ctx.entry_points == ["src/main.py", "src/features/api/index.ts"]
+
+
 # ---------------------------------------------------------------------------
 # assemble_scc_page
 # ---------------------------------------------------------------------------
