@@ -6,6 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.models import (
+    FILE_DEPENDENCY_EDGE_TYPES,
+    SYMBOL_USE_EDGE_TYPES,
+)
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphNode
 from repowise.server.deps import get_db_session
@@ -48,7 +52,20 @@ async def get_graph_metrics(
     all_pr = [n.pagerank or 0.0 for n in all_files]
     all_bw = [n.betweenness or 0.0 for n in all_files]
 
-    degrees = await crud.get_node_degree_counts(session, repo_id, node_id)
+    # Scoped by layer. This endpoint feeds the same symbol component as
+    # /api/symbols/detail (the drawer, where that page is the drill-down), so
+    # an unscoped count here made one symbol report two different degrees
+    # depending on which of the two the user opened.
+    degrees = await crud.get_node_degree_counts(
+        session,
+        repo_id,
+        node_id,
+        edge_types=(
+            sorted(SYMBOL_USE_EDGE_TYPES)
+            if node.node_type == "symbol"
+            else sorted(FILE_DEPENDENCY_EDGE_TYPES)
+        ),
+    )
     meta = parse_community_meta(node)
 
     return GraphMetricsResponse(
@@ -149,7 +166,7 @@ async def get_callers_callees(
             if other
             else (other_id.split("::")[0] if "::" in other_id else other_id),
             start_line=other.start_line if other else None,
-            edge_type=e.edge_type or "calls",
+            edge_type=e.edge_type,
             confidence=round(e.confidence or 0.0, 3),
         )
 

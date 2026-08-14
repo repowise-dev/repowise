@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import FileSignals, file_signals
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import WikiSymbol
 
@@ -20,7 +21,11 @@ async def _load_file_signals(session: AsyncSession, repo_id: str, file_path: str
     git_meta = await crud.get_git_metadata(session, repo_id, file_path)
     node = await crud.get_graph_node(session, repo_id, file_path)
     degrees = (
-        await crud.get_node_degree_counts(session, repo_id, file_path) if node is not None else None
+        await crud.get_node_degree_counts(
+            session, repo_id, file_path, edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES)
+        )
+        if node is not None
+        else None
     )
     return file_signals(git_meta, degrees)
 

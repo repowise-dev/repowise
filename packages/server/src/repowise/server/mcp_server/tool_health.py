@@ -20,6 +20,7 @@ from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_f
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_all_git_metadata,
     get_coverage_summary,
@@ -1229,7 +1230,10 @@ async def get_health(
                 session, repository.id, list(effective_targets)
             )
             degrees_by_path = await get_node_degree_counts_bulk(
-                session, repository.id, list(effective_targets)
+                session,
+                repository.id,
+                list(effective_targets),
+                edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
             )
             for path in effective_targets:
                 signals_by_path[path] = asdict(

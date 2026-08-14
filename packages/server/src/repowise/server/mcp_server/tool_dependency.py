@@ -101,7 +101,7 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
         graph.add_edge(
             e.source_node_id,
             e.target_node_id,
-            edge_type=getattr(e, "edge_type", None) or "imports",
+            edge_type=e.edge_type,
         )
 
     if source not in graph:

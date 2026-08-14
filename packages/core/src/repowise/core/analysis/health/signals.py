@@ -154,6 +154,14 @@ def file_signals(
     ``get_node_degree_counts`` (or ``None`` when the file is not a graph node).
     No DB access and no recompute — this is the single join the drawer, the
     file page, and MCP all reuse.
+
+    **Pass degrees scoped to** ``FILE_DEPENDENCY_EDGE_TYPES``. The UI states
+    these two fields as "N files depend on this" and "depends on N files", so
+    an unscoped count is a false claim: it adds one per symbol the file
+    declares, plus its co-change partners. Four call sites build this value
+    (the file page, the health drawer, ``get_context`` and ``get_health``), and
+    they render into one panel, so a producer that scopes differently from the
+    others is a visible contradiction rather than a private choice.
     """
     g = git_meta
     return FileSignals(

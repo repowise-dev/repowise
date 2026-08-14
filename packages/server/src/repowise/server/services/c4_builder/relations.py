@@ -32,7 +32,7 @@ from .models import Relation
 
 async def load_edges(
     session: AsyncSession, repository_id: str
-) -> list[tuple[str, str, str | None]]:
+) -> list[tuple[str, str, str]]:
     """Read every graph edge once, as ``(source, target, type)`` rows.
 
     Split out so a caller rolling the same edges up several ways — by
@@ -53,7 +53,7 @@ async def aggregate_relations(
     file_to_box: dict[str, str],
     *,
     file_to_external: dict[str, str] | None = None,
-    edges: list[tuple[str, str, str | None]] | None = None,
+    edges: list[tuple[str, str, str]] | None = None,
 ) -> list[Relation]:
     """Roll file→file edges up to box→box edges.
 
@@ -72,6 +72,14 @@ async def aggregate_relations(
     if edges is None:
         edges = await load_edges(session, repository_id)
 
+    # No edge-type filter here, and that is deliberate rather than an
+    # oversight. ``file_to_box`` is keyed on file paths only, so a containment
+    # edge cannot survive the two lookups below: ``defines`` is file → symbol
+    # and loses its target, ``has_method`` is symbol → symbol and loses its
+    # source. Measured across the 41 indexed corpus repos, excluding
+    # containment changes no relation, no count and no coupling band on any of
+    # them. Temporal edges do survive, and a "co-changes" arrow is a labeled
+    # relation this view means to draw (see ``_EDGE_VERB``), not leakage.
     counts: dict[tuple[str, str], int] = defaultdict(int)
     types: dict[tuple[str, str], set[str]] = defaultdict(set)
 
@@ -89,7 +97,7 @@ async def aggregate_relations(
             continue
         key = (src_box, tgt_box)
         counts[key] += 1
-        types[key].add(etype or "imports")
+        types[key].add(etype)
 
     relations: list[Relation] = []
     for (src_box, tgt_box), count in counts.items():

@@ -791,24 +791,31 @@ async def get_node_degree_counts(
     session: AsyncSession,
     repository_id: str,
     node_id: str,
+    *,
+    edge_types: list[str] | None = None,
 ) -> dict[str, int]:
-    """Return in-degree and out-degree for a node from edge counts."""
-    in_result = await session.execute(
-        select(func.count())
-        .select_from(GraphEdge)
-        .where(
-            GraphEdge.repository_id == repository_id,
-            GraphEdge.target_node_id == node_id,
-        )
+    """Return in-degree and out-degree for a node from edge counts.
+
+    ``edge_types`` narrows the count the same way it narrows
+    :func:`get_graph_edges_for_node`. A caller that presents degree beside a
+    list of neighbours should pass the view it used for that list, or the
+    count and the list describe different graphs — a file's unfiltered
+    in-degree is rendered as "Dependents (N)" above a dependents list, and
+    the two disagreed by the file's own symbol count.
+    """
+    in_q = select(func.count()).select_from(GraphEdge).where(
+        GraphEdge.repository_id == repository_id,
+        GraphEdge.target_node_id == node_id,
     )
-    out_result = await session.execute(
-        select(func.count())
-        .select_from(GraphEdge)
-        .where(
-            GraphEdge.repository_id == repository_id,
-            GraphEdge.source_node_id == node_id,
-        )
+    out_q = select(func.count()).select_from(GraphEdge).where(
+        GraphEdge.repository_id == repository_id,
+        GraphEdge.source_node_id == node_id,
     )
+    if edge_types:
+        in_q = in_q.where(GraphEdge.edge_type.in_(edge_types))
+        out_q = out_q.where(GraphEdge.edge_type.in_(edge_types))
+    in_result = await session.execute(in_q)
+    out_result = await session.execute(out_q)
     return {
         "in_degree": in_result.scalar() or 0,
         "out_degree": out_result.scalar() or 0,
@@ -819,12 +826,18 @@ async def get_node_degree_counts_bulk(
     session: AsyncSession,
     repository_id: str,
     node_ids: list[str],
+    *,
+    edge_types: list[str] | None = None,
 ) -> dict[str, dict[str, int]]:
     """Return ``node_id -> {in_degree, out_degree}`` for many nodes at once.
 
     Three queries total instead of three per node (existence, then one grouped
     count per direction). Callers that need degrees for a set of files were
     otherwise forced into an N+1.
+
+    ``edge_types`` narrows the count exactly as it does in
+    :func:`get_node_degree_counts`. The two must stay in step: they are the
+    single and bulk halves of one question, and both feed ``file_signals``.
 
     A node absent from the graph is absent from the result, mirroring
     ``get_graph_node`` returning ``None``: consumers distinguish "not a graph
@@ -855,14 +868,13 @@ async def get_node_degree_counts_bulk(
         (GraphEdge.source_node_id, "out_degree"),
     ):
         for i in range(0, len(present), _BATCH_SIZE):
-            rows = await session.execute(
-                select(column, func.count())
-                .where(
-                    GraphEdge.repository_id == repository_id,
-                    column.in_(present[i : i + _BATCH_SIZE]),
-                )
-                .group_by(column)
+            q = select(column, func.count()).where(
+                GraphEdge.repository_id == repository_id,
+                column.in_(present[i : i + _BATCH_SIZE]),
             )
+            if edge_types:
+                q = q.where(GraphEdge.edge_type.in_(edge_types))
+            rows = await session.execute(q.group_by(column))
             for node_id, count in rows.all():
                 counts[node_id][key] = count or 0
     return counts
