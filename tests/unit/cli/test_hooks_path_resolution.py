@@ -20,7 +20,14 @@ import subprocess
 
 import pytest
 
-from repowise.cli.hooks import _hooks_dir, _husky_user_hook_dir, install, status, uninstall
+from repowise.cli.hooks import (
+    _hooks_dir,
+    _husky_user_hook_dir,
+    husky_pending_reason,
+    install,
+    status,
+    uninstall,
+)
 
 
 def _git(*args: str, cwd) -> subprocess.CompletedProcess:
@@ -119,12 +126,60 @@ def test_install_in_linked_worktree_does_not_raise(committed_repo, tmp_path):
 def test_install_status_uninstall_agree_on_location(git_repo):
     """All three entry points must resolve the same directory."""
     _git("config", "core.hooksPath", ".husky/_", cwd=git_repo)
-    (git_repo / ".husky").mkdir()
+    # A fully set-up husky, so the status strings carry no pending-reason suffix.
+    generated = git_repo / ".husky" / "_"
+    generated.mkdir(parents=True)
+    (generated / "h").write_text("#!/usr/bin/env sh\n")
 
     assert install(git_repo) == "installed"
     assert status(git_repo) == "installed"
     assert uninstall(git_repo) == "removed"
     assert status(git_repo) == "not installed"
+
+
+def test_husky_dispatches_without_a_preexisting_user_hook(git_repo):
+    """A missing sibling user hook does not stop dispatch.
+
+    husky writes a shim for all 14 hook names on every install regardless of what
+    is in ``.husky/``, so ``post-commit`` is dispatched immediately -- there is no
+    need to wait for the next ``npm install``.
+    """
+    generated = git_repo / ".husky" / "_"
+    generated.mkdir(parents=True)
+    (generated / "h").write_text("#!/usr/bin/env sh\n")
+    (generated / "post-commit").write_text('#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n')
+    _git("config", "core.hooksPath", ".husky/_", cwd=git_repo)
+    # Only pre-commit exists as a user hook; post-commit does not.
+    (git_repo / ".husky" / "pre-commit").write_text("npm test\n")
+
+    assert install(git_repo) == "installed"
+    assert husky_pending_reason(git_repo / ".husky") is None
+    assert status(git_repo) == "installed"
+
+
+def test_husky_not_installed_is_reported_not_silent(git_repo):
+    """Without husky's generated dir, core.hooksPath points nowhere and git runs nothing.
+
+    The hook still belongs in ``.husky/`` because that survives, but claiming a
+    bare "installed" would repeat the very failure this resolver exists to fix.
+    """
+    _git("config", "core.hooksPath", ".husky/_", cwd=git_repo)
+    (git_repo / ".husky").mkdir()  # committed dir, but husky never ran
+
+    reason = husky_pending_reason(git_repo / ".husky")
+    assert reason is not None
+    assert "husky is not set up" in reason
+
+    result = install(git_repo)
+    assert result.startswith("installed (")
+    assert "no .husky/_" in result
+    assert (git_repo / ".husky" / "post-commit").exists()
+    assert "husky is not set up" in status(git_repo)
+
+
+def test_pending_reason_is_silent_for_non_husky_layouts(git_repo):
+    assert husky_pending_reason(git_repo / ".git" / "hooks") is None
+    assert husky_pending_reason(git_repo / "my-hooks") is None
 
 
 def test_falls_back_when_git_unavailable(git_repo, monkeypatch):
