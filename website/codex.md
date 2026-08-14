@@ -62,9 +62,8 @@ Codex hooks are written to `.codex/hooks.json`:
 
 | Event | Purpose |
 |-------|---------|
-| `SessionStart` | Add Repowise MCP workflow guidance |
-| `UserPromptSubmit` | Remind Codex that Repowise context is available |
-| `PostToolUse` `Bash` | Detect git operations and stale wiki state |
+| `SessionStart` | Add Repowise MCP workflow guidance and the session's standing decisions |
+| `PostToolUse` `Bash\|shell_command` | Detect git operations and stale wiki state |
 | `PostToolUse` `apply_patch\|Edit\|Write` | Remind after edits that context may need refresh |
 
 Repowise keeps Codex hooks focused on lifecycle guidance and freshness checks rather than trying to reuse Claude-specific search enrichment.

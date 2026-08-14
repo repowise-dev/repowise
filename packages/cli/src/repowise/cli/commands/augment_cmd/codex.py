@@ -1,8 +1,16 @@
-"""Codex lifecycle hooks: SessionStart/UserPromptSubmit + post-edit staleness.
+"""Codex lifecycle hooks: SessionStart context + post-edit staleness.
 
 SessionStart delivers a short MCP-usage context block plus the same
 relevance-ranked standing-decisions block that Claude Code receives
 (see :mod:`.decision_inject`), so decisions follow the user across agents.
+
+``UserPromptSubmit`` is still *answered* here but is no longer *registered* by
+anything we install — see ``_RETIRED_EVENTS`` in the Codex target. Nothing that
+ships routes this event any more, so the branch below exists for one population:
+an install whose ``.codex/hooks.json`` predates the retirement and has not yet
+been migrated. Handling it keeps that transition graceful rather than turning a
+stale config into a silent hook error, and the migration removes the
+registration the next time any repowise command touches the file.
 """
 
 from __future__ import annotations

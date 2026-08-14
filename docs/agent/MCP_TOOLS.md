@@ -902,7 +902,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 In addition to the MCP tools above, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
 - **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
-- **Codex SessionStart/UserPromptSubmit**: Codex receives concise repowise MCP workflow guidance when a session or prompt starts.
+- **Codex SessionStart**: Codex receives concise repowise MCP workflow guidance when a session starts.
 - **Codex PostToolUse**: after edits or git operations, Codex receives a freshness reminder when indexed context may be stale.
 
 Hooks are lightweight reminders. MCP tools are for deeper, on-demand investigation. See [Auto-Sync](../scale/AUTO_SYNC.md) and [Codex Integration](CODEX.md) for details.

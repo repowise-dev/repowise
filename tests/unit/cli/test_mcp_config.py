@@ -90,7 +90,10 @@ def test_generate_codex_hooks_config_uses_supported_events_only() -> None:
     config = mcp_config.generate_codex_hooks_config()
     hooks = config["hooks"]
 
-    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse"}
+    # UserPromptSubmit is retired: it registered an unmatched hook that fired on
+    # every prompt and returned the byte-identical static block SessionStart had
+    # already delivered.
+    assert set(hooks) == {"SessionStart", "PostToolUse"}
     assert hooks["SessionStart"][0]["matcher"] == "startup|resume|clear"
     # Derived from the adapter, never spelled here: Codex calls its shell tool
     # `shell_command` on current releases and `Bash` on older ones, and a
@@ -99,12 +102,14 @@ def test_generate_codex_hooks_config_uses_supported_events_only() -> None:
     assert hooks["PostToolUse"][0]["matcher"] == codex_adapter.SHELL_TOOL_MATCHER
     assert "shell_command" in hooks["PostToolUse"][0]["matcher"]
     assert hooks["PostToolUse"][1]["matcher"] == "apply_patch|Edit|Write"
+    # 10, matching the Claude Code entries. 30 was an unreconciled ceiling
+    # rather than a considered budget.
     assert [
         hook["timeout"]
         for entries in hooks.values()
         for entry in entries
         for hook in entry["hooks"]
-    ] == [30] * 4
+    ] == [10] * 3
 
 
 def test_save_codex_hooks_config_creates_hooks_json_and_feature_flag(
@@ -115,7 +120,8 @@ def test_save_codex_hooks_config_creates_hooks_json_and_feature_flag(
     assert hooks_path == tmp_path / ".codex" / "hooks.json"
     saved_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved_hooks["hooks"]
-    assert saved_hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == (
+    assert "UserPromptSubmit" not in saved_hooks["hooks"]
+    assert saved_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"] == (
         "repowise-augment --client codex"
     )
 
@@ -159,11 +165,125 @@ def test_save_codex_hooks_config_merges_without_duplicates(tmp_path: Path) -> No
         for hook in entry["hooks"]
         if hook["command"] == "repowise-augment --client codex"
     ]
-    assert len(repowise_commands) == 4
+    assert len(repowise_commands) == 3
 
     saved_config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["features"]["foo"] is True
     assert saved_config["features"]["hooks"] is True
+
+
+def _legacy_hooks_document() -> dict:
+    """A ``.codex/hooks.json`` exactly as installs before the retirement wrote it."""
+    return {
+        "hooks": {
+            "SessionStart": [
+                {
+                    "matcher": "startup|resume|clear",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "repowise-augment --client codex",
+                            "timeout": 30,
+                            "statusMessage": "Loading repowise context...",
+                        }
+                    ],
+                }
+            ],
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "repowise-augment --client codex",
+                            "timeout": 30,
+                            "statusMessage": "Loading repowise context...",
+                        }
+                    ]
+                }
+            ],
+        }
+    }
+
+
+def _write_hooks(tmp_path: Path, document: dict) -> Path:
+    hooks_path = tmp_path / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_path.write_text(json.dumps(document), encoding="utf-8")
+    return hooks_path
+
+
+def test_save_codex_hooks_config_retires_user_prompt_submit_in_place(
+    tmp_path: Path,
+) -> None:
+    """The merge is additive, so retiring an event needs a migration to reach disk.
+
+    Without one, every install that predates the retirement keeps firing a hook
+    on every prompt forever: reinstalling appends nothing (the matcher is already
+    ours) and reports success, so there is no repair a user could even attempt.
+    """
+    hooks_path = _write_hooks(tmp_path, _legacy_hooks_document())
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    assert "UserPromptSubmit" not in saved
+    assert set(saved) == {"SessionStart", "PostToolUse"}
+
+
+def test_save_codex_hooks_config_moves_shipped_timeout_but_not_a_user_raised_one(
+    tmp_path: Path,
+) -> None:
+    """30 was ours and moves; anything else was a choice and stays."""
+    document = _legacy_hooks_document()
+    document["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] = 120
+    hooks_path = _write_hooks(tmp_path, document)
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    assert saved["SessionStart"][0]["hooks"][0]["timeout"] == 120
+    assert [hook["timeout"] for entry in saved["PostToolUse"] for hook in entry["hooks"]] == [
+        10,
+        10,
+    ]
+
+
+def test_save_codex_hooks_config_migration_spares_a_user_hook_on_a_retired_event(
+    tmp_path: Path,
+) -> None:
+    """We remove our command from ``UserPromptSubmit``, never the user's event."""
+    document = _legacy_hooks_document()
+    document["hooks"]["UserPromptSubmit"].append(
+        {"hooks": [{"type": "command", "command": "echo mine"}]}
+    )
+    document["hooks"]["UserPromptSubmit"][0]["hooks"].append(
+        {"type": "command", "command": "echo alongside"}
+    )
+    hooks_path = _write_hooks(tmp_path, document)
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    remaining = [
+        hook["command"] for entry in saved["UserPromptSubmit"] for hook in entry["hooks"]
+    ]
+    assert remaining == ["echo alongside", "echo mine"]
+
+
+def test_save_codex_hooks_config_survives_shapes_we_did_not_write(tmp_path: Path) -> None:
+    """A file the user owns can hold anything; the migration answers, never raises."""
+    document = _legacy_hooks_document()
+    document["hooks"]["SessionStart"][0]["hooks"].append({"type": "command", "command": 7})
+    document["hooks"]["UserPromptSubmit"].append("not-an-entry")
+    document["hooks"]["Whatever"] = "not-a-list"
+    hooks_path = _write_hooks(tmp_path, document)
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    assert saved["Whatever"] == "not-a-list"
+    assert saved["UserPromptSubmit"] == ["not-an-entry"]
+    assert {"type": "command", "command": 7} in saved["SessionStart"][0]["hooks"]
 
 
 def test_save_codex_hooks_config_rejects_invalid_existing_file(tmp_path: Path) -> None:
