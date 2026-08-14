@@ -46,6 +46,7 @@ from repowise.cli.helpers import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
+from repowise.core.update_lock import try_acquire_update_lock
 
 
 def _gate_cost(
@@ -480,6 +481,30 @@ def upgrade_to_full(
             console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
             embedder_name = resolved
 
+    # A full upgrade is the same class of state/DB writer as an incremental
+    # update, so it must sit under the same single-flight lock: without it, a
+    # concurrent `repowise update` could race this run's save_state (the exact
+    # race the lock exists to prevent). If another update holds the lock, the
+    # full upgrade defers the same way update_cmd does — the running update
+    # will roll forward to HEAD.
+    existing_lock = try_acquire_update_lock(repo_path, head)
+    if existing_lock is not None:
+        from repowise.cli.helpers import write_update_pending
+
+        write_update_pending(repo_path, head)
+        raise click.ClickException(
+            "Another `repowise update` is already running on this repo. "
+            "The full upgrade is deferred; it will run on the next pass."
+        )
+
+    # We own the lock from here on; release it on every exit path (including
+    # the cost-gate Abort return below), mirroring the incremental update.
+    import atexit
+
+    from repowise.core.update_lock import release_update_lock
+
+    atexit.register(release_update_lock, repo_path)
+
     try:
         generated_pages, total_pages = run_async(
             _run_upgrade(
@@ -497,7 +522,7 @@ def upgrade_to_full(
         # Declined at the cost gate. The git backfill that ran before it is
         # kept (it costs nothing to keep and everything to redo), and the
         # persisted docs mode is left alone so the repo keeps whatever wiki it
-        # already had.
+        # already had. The atexit release above drops the lock on this return.
         console.print("[yellow]Nothing generated.[/yellow] The index is unchanged.")
         return
 
