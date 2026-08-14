@@ -51,6 +51,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
+from ...dead_code.file_reachability import BARREL_FILENAMES
 from ....test_paths import is_test_related_path
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
@@ -124,7 +125,7 @@ def _is_generated_path(path: str) -> bool:
         or ".generated." in base
         or base.endswith(".min.js")
         # Barrel / package-init re-export files: nothing of substance to split.
-        or base in ("__init__.py", "index.ts", "index.js", "mod.rs")
+        or base in BARREL_FILENAMES
     )
 
 

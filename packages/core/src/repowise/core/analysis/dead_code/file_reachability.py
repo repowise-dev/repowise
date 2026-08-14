@@ -68,6 +68,7 @@ BARREL_FILENAMES: frozenset[str] = frozenset(
         "index.cts",
         "index.mjs",
         "index.cjs",
+        "mod.rs",
     }
 )
 
