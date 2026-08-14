@@ -53,7 +53,10 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.cli.ui import (
     BRAND,
     BRAND_STYLE,
+    OK,
     OWL_SPINNER,
+    VALUE,
+    WARN,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -335,7 +338,7 @@ def _run_generation_phase(
     # Warn when a local provider runs with default concurrency
     if provider.provider_name in ("ollama", "codex_cli", "opencode") and concurrency > 4:
         console.print(
-            f"  [yellow]Warning:[/yellow] {provider.provider_name} is a local provider "
+            f"  [{WARN}]Warning:[/] {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
             f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
         )
@@ -367,7 +370,7 @@ def _run_generation_phase(
     concept_n = concept_page_count(plans)
     console.print(
         f"  Writing [bold]{concept_n:,}[/bold] subsystem pages with "
-        f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
     )
     structural = structural_page_summary(plans)
     if structural:
@@ -818,7 +821,7 @@ def init_command(
         )
         if seeded:
             console.print(
-                "[green]Worktree index seeded successfully. Delegating to update...[/green]"
+                f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]"
             )
             from repowise.cli.commands.update_cmd.command import run_update
 
@@ -945,7 +948,7 @@ def init_command(
         except EOFError:
             is_interactive = False
             console.print(
-                "\n[yellow]No answer available on stdin[/yellow] "
+                f"\n[{WARN}]No answer available on stdin[/] "
                 "[dim]- continuing with defaults. Pass --yes to skip the "
                 "questions, or --prose / --no-prose to choose directly.[/dim]"
             )
@@ -1105,7 +1108,7 @@ def init_command(
     _prior_docs_mode = resolve_docs_mode(_prior_state)
     if index_only and _prior_docs_mode == "llm" and not (force or yes):
         console.print(
-            "\n[yellow]This repo already has a model-written wiki.[/yellow] "
+            f"\n[{WARN}]This repo already has a model-written wiki.[/] "
             "Indexing without a model\nrewrites every page from templates; the "
             "written versions stay in page history."
         )
@@ -1154,7 +1157,7 @@ def init_command(
             console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
             if decision_provider:
                 console.print(
-                    f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
+                    f"Decision extraction provider: [{VALUE}]{decision_provider.provider_name}[/]"
                 )
     else:
         # No prompt here. ``is_interactive`` (line ~800) is already false only
@@ -1180,7 +1183,7 @@ def init_command(
             if not is_interactive:
                 console.print(f"[bold]repowise init[/bold] — {repo_path}")
             console.print(
-                "[yellow]No model configured.[/yellow] Building the wiki from "
+                f"[{WARN}]No model configured.[/] Building the wiki from "
                 "structure instead — no key, no spend.\n"
                 "[dim]Set a key (or pass --provider) and run [bold]repowise "
                 "update --full[/bold] to have a model write it.[/dim]"
@@ -1200,13 +1203,13 @@ def init_command(
             console.print(f"[bold]repowise init[/bold] — {repo_path}")
         if provider is not None:
             console.print(
-                f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
+                f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"
             )
-        console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]")
+        console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]")
         if language != "en":
-            console.print(f"  Language: [cyan]{language}[/cyan]")
+            console.print(f"  Language: [{VALUE}]{language}[/]")
         if resolved_reasoning != "auto":
-            console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]")
+            console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]")
 
         # Validate provider connection. Nothing to verify when there is no
         # provider: this run renders from templates and never calls a model.
@@ -1226,7 +1229,7 @@ def init_command(
                 except ProviderError as exc:
                     telemetry.add_command_outcome(failure_reason="provider_validation_failed")
                     raise click.ClickException(f"Provider validation failed: {exc}") from exc
-            console.print("  [green]✓[/green] Provider connection verified")
+            console.print(f"  [{OK}]✓[/] Provider connection verified")
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
     # Index-only generates too, it just renders templates instead of prompting
@@ -1257,7 +1260,7 @@ def init_command(
     # unanswered question rather than an answer (same call generation.py makes
     # for the generation bar).
     if llm_client is not None:
-        index_columns.append(TextColumn("[green]${task.fields[cost]:.3f}[/green]"))
+        index_columns.append(TextColumn("[" + OK + "]${task.fields[cost]:.3f}[/]"))
 
     with Progress(*index_columns, console=console) as progress_bar:
         rich_callback = RichProgressCallback(progress_bar, console, total_phases=total_phases)
@@ -1324,7 +1327,7 @@ def init_command(
             from repowise.cli.ui.mascot import EYES_SLEEPY, mini
 
             console.print(
-                f"\n{mini(EYES_SLEEPY)} [yellow]Interrupted.[/] Indexed work so far has been "
+                f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
                 "saved — run [bold]repowise init --resume[/] to continue where it stopped."
             )
             return
@@ -1448,7 +1451,7 @@ def init_command(
 
     with console.status("  Persisting to database…", spinner=OWL_SPINNER):
         run_async(persist_result(result, repo_path))
-    console.print("  [green]✓[/green] Database updated")
+    console.print(f"  [{OK}]✓[/] Database updated")
 
     # Persist the onboarding choice so subsequent `repowise update` runs
     # honor it without re-passing the flag. Default True is omitted to keep

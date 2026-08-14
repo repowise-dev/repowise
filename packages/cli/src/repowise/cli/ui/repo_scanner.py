@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.console import Console
-from rich.panel import Panel
 
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
@@ -214,13 +213,9 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
         f"~{render_min}-{render_max} min more to render and embed the wiki"
     )
 
-    body = f"  {header_line}\n  [dim]{lang_line}[/dim]\n  [dim]{eta_line}[/dim]"
-
-    console.print(
-        Panel(
-            body,
-            border_style="dim",
-            padding=(0, 1),
-        )
-    )
+    # A readout, so no border. It sits directly under the banner and used to be
+    # the first of five boxes a user crossed before anything was asked of them.
+    console.print(f"  {header_line}")
+    console.print(f"  [dim]{lang_line}[/dim]")
+    console.print(f"  [dim]{eta_line}[/dim]")
     console.print()
