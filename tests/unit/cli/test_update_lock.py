@@ -85,6 +85,44 @@ def test_acquire_replaces_stale_lock(tmp_path: Path) -> None:
     assert payload["pid"] == os.getpid()
 
 
+def test_loop_exhaustion_never_returns_acquired_without_a_lock_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: after two lost create-races against a stale lock, the
+    caller must not be handed ``None`` ("acquired") with no lock file on disk.
+
+    Both initial ``os.link`` calls raise ``FileExistsError`` against a stale
+    lock, exactly the interleaving that used to fall through to a bare
+    ``read_update_lock`` and return ``None`` with nothing on disk — letting a
+    concurrent update race on the same index. The function must make one final
+    exclusive create so ``None`` always implies the caller owns a lock.
+    """
+    _write_lock(
+        tmp_path,
+        {"pid": _dead_pid(), "target_commit": "crashed", "started_at": time.time()},
+    )
+
+    real_link = os.link
+    link_calls = 0
+
+    def _failing_link(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+        nonlocal link_calls
+        link_calls += 1
+        if link_calls <= 2:
+            raise FileExistsError(f"[Errno 17] File exists: '{dst}'")
+        real_link(src, dst)
+
+    monkeypatch.setattr(os, "link", _failing_link)
+
+    assert helpers.try_acquire_update_lock(tmp_path, "fresh") is None
+    assert (tmp_path / ".repowise" / ".update.lock").exists()
+    payload = helpers.read_update_lock(tmp_path)
+    assert payload is not None
+    assert payload["target_commit"] == "fresh"
+    assert payload["pid"] == os.getpid()
+    assert link_calls == 3
+
+
 def test_release_then_reacquire(tmp_path: Path) -> None:
     assert helpers.try_acquire_update_lock(tmp_path, "one") is None
     helpers.release_update_lock(tmp_path)
