@@ -285,8 +285,29 @@ def write_editor_project_files(
     options: EditorSetupOptions | None = None,
     disabled_project_files: Iterable[str] | None = None,
     integrations: tuple[InstallLifecycle, ...] | None = None,
-) -> None:
-    """Write common MCP config and project-local editor files."""
+    no_editor_setup: bool = False,
+) -> list[Path]:
+    """Write project-local editor files. Returns the paths written.
+
+    **``--no-editor-setup`` now covers this too.** It used to gate only
+    :func:`register_editor_clients`, the *global* half — so a user who read the
+    flag as "leave my repo alone" still got ``.mcp.json``, ``.claude/CLAUDE.md``
+    and two ``.vscode`` files written into their working tree, and there was no
+    combination of flags that indexed a repo without writing into it (VS Code
+    had no opt-out flag at all). The flag's own help text admitted the gap
+    rather than closing it. Now one switch means one thing.
+
+    ``.repowise/mcp.json`` is written either way, and is the one deliberate
+    exception. It lives in the directory the index already occupies, no editor
+    reads it unless pointed at it, and it is what ``repowise mcp .`` prints —
+    the escape hatch this flag's own message sends people to. Skipping it would
+    mean opting out of editor setup also opted out of ever opting back in.
+
+    The return value is the manifest the completion panel prints. It is
+    collected from the integrations rather than hardcoded so the list cannot
+    drift from the writes: an integration that stops writing a file stops
+    reporting it in the same edit.
+    """
 
     from repowise.cli.mcp_config import save_mcp_config
 
@@ -294,8 +315,42 @@ def write_editor_project_files(
     resolved_options = options or EditorSetupOptions(
         disabled_project_files=frozenset(disabled_project_files or ()),
     )
+
+    if is_editor_setup_disabled(no_editor_setup):
+        _persist_project_file_optouts(repo_path, resolved_options)
+        return []
+
+    written: list[Path] = []
     for integration in _resolve_integrations(integrations):
-        integration.write_project_files(console_obj, repo_path, resolved_options)
+        # ``or []`` rather than a required return: an integration that has
+        # nothing to report is not a broken one, and this keeps the protocol
+        # widening backwards-compatible for any out-of-tree implementation.
+        written.extend(
+            integration.write_project_files(console_obj, repo_path, resolved_options) or []
+        )
+    return written
+
+
+def _persist_project_file_optouts(repo_path: Path, options: EditorSetupOptions) -> None:
+    """Record ``--no-claude-md`` / ``--no-agents-md`` even when nothing is written.
+
+    Those flags mean "never generate this file", not "skip it this once", and
+    the only thing that ever wrote them to ``config.yaml`` was the generator
+    itself on its way to declining. Skipping the integrations therefore also
+    skipped the memory of the opt-out, so ``init --no-editor-setup
+    --no-claude-md`` wrote nothing now and then let the next ``repowise update``
+    generate the file the user had just refused.
+
+    A preference is not a write, so it survives the switch that turns writes
+    off. This mirrors the carve-out ``--no-distill-hook`` already has, for the
+    same reason.
+    """
+    from repowise.cli.editor_files import set_editor_file_enabled
+
+    for file_id in sorted(options.disabled_project_files):
+        set_editor_file_enabled(repo_path, file_id, False)
+    for file_id, enabled in sorted(options.project_file_overrides.items()):
+        set_editor_file_enabled(repo_path, file_id, enabled)
 
 
 def register_editor_clients(

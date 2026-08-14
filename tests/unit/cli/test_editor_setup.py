@@ -565,6 +565,10 @@ def test_write_editor_project_files_saves_common_mcp_before_integrations(
             raise AssertionError("not used")
 
     monkeypatch.setattr(mcp_config, "save_mcp_config", fake_save_mcp_config)
+    # conftest sets this suite-wide, and it now gates the project-local writes
+    # as well as the machine-wide registration. This test is about the dispatch
+    # loop, so it opts out the same way the other agent-target tests do.
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
 
     write_editor_project_files(
         _silent_console(),
@@ -607,6 +611,7 @@ def test_write_editor_project_files_uses_pre_resolved_options(
             calls.append(("fake-project", repo_path, received_options))
 
     monkeypatch.setattr(mcp_config, "save_mcp_config", fake_save_mcp_config)
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
 
     write_editor_project_files(
         _silent_console(),
@@ -1310,3 +1315,115 @@ def test_enable_tool_search_preserves_existing_settings(tmp_path: Path, monkeypa
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["env"] == {"FOO": "bar", "ENABLE_TOOL_SEARCH": "true"}
     assert data["mcpServers"] == {"repowise": {}}
+
+
+def test_no_editor_setup_writes_no_project_files(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """``--no-editor-setup`` now means what it says.
+
+    It used to gate only the machine-wide registration, so a run that asked to
+    be left alone still got `.mcp.json`, `.claude/CLAUDE.md` and two `.vscode`
+    files written into the working tree — and VS Code had no opt-out flag of its
+    own, so no combination of flags avoided it (issue #1499).
+    """
+    calls: list[str] = []
+
+    def fake_save_mcp_config(repo_path: Path) -> Path:
+        calls.append("mcp")
+        return repo_path / ".repowise" / "mcp.json"
+
+    class FakeIntegration:
+        integration_id = "fake"
+
+        def write_project_files(
+            self,
+            console_obj: object,
+            repo_path: Path,
+            options: EditorSetupOptions,
+        ) -> list[Path]:
+            calls.append("fake-project")
+            return [repo_path / "fake.json"]
+
+    monkeypatch.setattr(mcp_config, "save_mcp_config", fake_save_mcp_config)
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+
+    written = write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        integrations=(FakeIntegration(),),  # type: ignore[arg-type]
+        no_editor_setup=True,
+    )
+
+    assert written == []
+    # `.repowise/mcp.json` is the one deliberate exception: no editor reads it
+    # unless pointed at it, and it is what `repowise mcp .` prints, so skipping
+    # it would mean opting out of setup also opted out of opting back in.
+    assert calls == ["mcp"]
+
+
+def test_env_var_also_suppresses_project_files(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """``REPOWISE_SKIP_EDITOR_SETUP`` is documented as the same switch, so it
+    covers the same ground. Worth pinning because it is a live behaviour change
+    for any CI or benchmark harness that exports it: those runs now get no
+    project-local files either."""
+
+    class FakeIntegration:
+        integration_id = "fake"
+
+        def write_project_files(
+            self,
+            console_obj: object,
+            repo_path: Path,
+            options: EditorSetupOptions,
+        ) -> list[Path]:
+            raise AssertionError("integrations must not run when setup is skipped")
+
+    monkeypatch.setattr(mcp_config, "save_mcp_config", lambda p: p / ".repowise" / "mcp.json")
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+
+    assert (
+        write_editor_project_files(
+            _silent_console(),
+            tmp_path,
+            integrations=(FakeIntegration(),),  # type: ignore[arg-type]
+        )
+        == []
+    )
+
+
+def test_project_file_optouts_are_recorded_even_when_setup_is_off(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """``--no-editor-setup --no-claude-md`` still records the opt-out.
+
+    The flag means "never generate this file", not "skip it this run", and the
+    generator declining on its way past used to be the only thing that wrote the
+    preference down. Suppressing the writes without this would suppress the
+    memory of the refusal too, and the next ``repowise update`` would generate
+    the file the user had just refused.
+    """
+    from repowise.cli.helpers import load_config
+
+    (tmp_path / ".repowise").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_config, "save_mcp_config", lambda p: p / ".repowise" / "mcp.json")
+
+    write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        options=EditorSetupOptions(
+            disabled_project_files=frozenset({"claude_md"}),
+            project_file_overrides={"agents_md": False},
+        ),
+        integrations=(),
+        no_editor_setup=True,
+    )
+
+    editor_files = load_config(tmp_path).get("editor_files", {})
+    assert editor_files.get("claude_md") is False
+    assert editor_files.get("agents_md") is False

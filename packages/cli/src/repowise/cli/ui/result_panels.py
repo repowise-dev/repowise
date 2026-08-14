@@ -18,6 +18,7 @@ below it, where they were always supposed to live.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console, Group
@@ -237,3 +238,36 @@ def build_status_notes(setup: Any) -> list[str]:
         notes.extend(f"  [dim]{line}.[/dim]" for line in missing)
 
     return notes
+
+
+def print_files_written(console: Console, repo_path: Path, paths: list[Path]) -> None:
+    """List what init wrote into the working tree, below the panel and dim.
+
+    Init writes editor and MCP config outside ``.repowise/`` — ``.mcp.json``,
+    ``.claude/CLAUDE.md``, the two ``.vscode`` files — and until this existed it
+    named none of them at the end of a run. The only trace was a green tick per
+    file, printed minutes earlier and scrolled away, so the first time most
+    people saw the list was in ``git status``.
+
+    Deliberately the quietest thing on the screen: it is a receipt, not a
+    result, and the reader who does not care should be able to skip it in one
+    glance. It is also the reason the note names ``--no-editor-setup`` — that
+    flag now genuinely writes none of this, so the sentence has somewhere to
+    send anyone who does not want the files.
+    """
+    if not paths:
+        return
+
+    relative: list[str] = []
+    for path in paths:
+        try:
+            relative.append(path.relative_to(repo_path).as_posix())
+        except ValueError:
+            relative.append(str(path))
+
+    console.print()
+    console.print("  [dim]Written to your repo (not gitignored): " + ", ".join(relative) + "[/dim]")
+    console.print(
+        "  [dim]These wire your editor to the index. "
+        "[bold]repowise init --no-editor-setup[/bold] skips them.[/dim]"
+    )

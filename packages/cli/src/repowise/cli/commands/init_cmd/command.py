@@ -544,15 +544,16 @@ def _run_generation_phase(
     "editor_setup",
     default=True,
     help=(
-        "Register repowise with your machine-wide editor config: the Claude "
-        "Code / Claude Desktop MCP server entry, the Claude Code hooks, and "
-        "the distill rewrite-hook offer. Default: on. Use --no-editor-setup to "
-        "index a repo without touching anything outside it — there is one "
-        "global 'repowise' MCP key, so a second init would otherwise repoint "
-        "it at this repo. Project-local files are unaffected (see "
-        "--no-claude-md, --no-codex). REPOWISE_SKIP_EDITOR_SETUP=1 does the "
+        "Wire repowise into your editors. Covers both halves: the machine-wide "
+        "config (the Claude Code / Claude Desktop MCP entry, the Claude Code "
+        "hooks, the distill rewrite-hook offer) and the project-local files "
+        "(.mcp.json, .claude/CLAUDE.md, .vscode/mcp.json, "
+        ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
+        "a repo without writing anything into it or outside it; only "
+        ".repowise/ is touched, and 'repowise mcp .' still prints the config "
+        "to connect a client by hand. REPOWISE_SKIP_EDITOR_SETUP=1 does the "
         "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
-        "does not turn registration back on."
+        "does not turn setup back on."
     ),
 )
 @click.option(
@@ -1064,7 +1065,10 @@ def init_command(
     # either generating docs or customizing an index-only run (the latter
     # previously got no say). One checklist, pre-ticked from detection, in
     # place of the three sequential yes/no prompts each integration used to own.
-    if is_interactive and (generate_docs or customize):
+    # Not asked when editor setup is off: every answer would be discarded by
+    # `write_editor_project_files`, and a checklist whose result cannot act is
+    # worse than no checklist.
+    if editor_setup and is_interactive and (generate_docs or customize):
         editor_options = select_agents_interactively(console, repo_path, editor_options)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
@@ -1491,10 +1495,14 @@ def init_command(
     if commit_limit is not None:
         save_config_partial(repo_path, commit_limit=resolved_commit_limit)
 
-    write_editor_project_files(
+    # One flag, one meaning: --no-editor-setup now suppresses the project-local
+    # writes as well as the global registration. The paths come back so the
+    # completion panel can name what landed in the working tree.
+    files_written = write_editor_project_files(
         console,
         repo_path,
         options=editor_options,
+        no_editor_setup=not editor_setup,
     )
     register_editor_clients(console, repo_path, no_editor_setup=not editor_setup)
 
@@ -1648,4 +1656,5 @@ def init_command(
         run_mode=run_mode,
         provider=provider,
         setup=_setup_outcome,
+        files_written=files_written,
     )

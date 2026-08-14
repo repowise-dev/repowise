@@ -276,6 +276,10 @@ class _WorkspaceCtx:
     embedder_was_requested: bool
     resolved_commit_limit: int
     run_mode: str = "standard"
+    #: Mirrors the single-repo flag. A workspace writes project files per repo,
+    #: so --no-editor-setup has to reach every one of them, not just the
+    #: primary's client registration.
+    editor_setup: bool = True
 
 
 @dataclass
@@ -482,6 +486,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         console,
         repo.path,
         options=ctx.editor_options,
+        no_editor_setup=not ctx.editor_setup,
     )
 
     # Persist provider/model config per-repo when doing full generation
@@ -754,6 +759,7 @@ def _workspace_init(
         provider=provider,
         ws_config=ws_config,
         editor_options=editor_options,
+        editor_setup=editor_setup,
         index_only=index_only,
         dry_run=dry_run,
         force=force,

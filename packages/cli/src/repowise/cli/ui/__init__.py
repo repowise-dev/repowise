@@ -57,6 +57,7 @@ from repowise.cli.ui.result_panels import (
     build_contextual_next_steps,
     build_status_notes,
     print_analysis_summary,
+    print_files_written,
 )
 from repowise.cli.ui.workspace_selection import (
     interactive_primary_select,
@@ -98,6 +99,7 @@ __all__ = [
     "mini",
     "print_analysis_summary",
     "print_banner",
+    "print_files_written",
     "print_index_only_intro",
     "print_phase_header",
     "print_scan_summary",

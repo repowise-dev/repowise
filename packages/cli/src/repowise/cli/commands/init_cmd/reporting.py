@@ -8,6 +8,7 @@ happens here.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console
@@ -20,6 +21,7 @@ from repowise.cli.ui import (
     build_status_notes,
     format_elapsed,
     print_analysis_summary,
+    print_files_written,
 )
 
 
@@ -120,12 +122,17 @@ def show_completion(
     run_mode: str,
     provider: Any,
     setup: Any = None,
+    files_written: list[Path] | None = None,
 ) -> None:
     """Render the final completion panel (index-only or full mode).
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot, so the next-step panel and the MCP status note reflect what setup
     actually did. Passed as ``None`` only by callers with nothing to report.
+
+    *files_written* is what editor setup put in the working tree, straight from
+    the writers. Printed below the panel and dim: it is a receipt, and the run's
+    result is the panel above it.
     """
     elapsed = time.monotonic() - start
 
@@ -300,6 +307,8 @@ def show_completion(
         for _line in build_status_notes(setup):
             console.print(_line)
         console.print()
+
+    print_files_written(console, Path(repo_path), files_written or [])
 
     _show_generation_checks(result)
 

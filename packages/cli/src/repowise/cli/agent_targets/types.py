@@ -415,8 +415,16 @@ class InstallLifecycle(Protocol):
 
     def write_project_files(
         self, console_obj: object, repo_path: Path, options: object
-    ) -> None:
-        """Write project-local config or instruction files for this agent."""
+    ) -> list[Path]:
+        """Write project-local config or instruction files, returning the paths.
+
+        The return value is what ``init`` prints as its end-of-run manifest, so
+        it lists what was *written*, not what was intended: a file the
+        integration declined to touch (unparseable JSONC) or failed to generate
+        is left out. Reporting a path init did not write is worse than
+        reporting none at all, because the manifest exists to be checked
+        against ``git status``.
+        """
         ...
 
     def register_client(self, console_obj: object, repo_path: Path) -> None:

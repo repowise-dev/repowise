@@ -379,13 +379,25 @@ read project-local config, so theirs are no-ops.
 The distill command-rewrite hook is machine-wide too, but it is offered
 separately (`offer_distill_rewrite_hook`) because it is strictly opt-in.
 
-`--no-editor-setup` turns off that machine-wide group, including the rewrite
-hook offer, and leaves the project-local files alone:
+`--no-editor-setup` turns off **both** groups: the machine-wide registrations
+above, including the rewrite hook offer, *and* the project-local files
+(`.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`,
+`.vscode/extensions.json`). Only `.repowise/` is written.
 
 ```bash
-# Index the repo, leave everything outside it untouched
+# Index the repo, write nothing into it and nothing outside it
 repowise init --no-editor-setup --yes .
 ```
+
+It used to cover the machine-wide half only, and said so — which meant there
+was no combination of flags that indexed a repo without writing four files into
+the working tree, since VS Code had no opt-out flag of its own. Issue #1499 is
+the report of exactly that. One switch, one meaning.
+
+`.repowise/mcp.json` is the one deliberate exception and is written either way.
+No editor reads it unless pointed at it, and it is what `repowise mcp .` prints
+— so skipping it would mean opting out of editor setup also opted out of ever
+opting back in.
 
 Reach for it whenever the checkout or the binary running `init` is temporary:
 a scratch clone, a release smoke test from a throwaway venv, a git worktree, a
@@ -395,10 +407,18 @@ and the breakage only shows up later, when the path it now points at is gone
 and the MCP server quietly stops loading. `init` prints a notice when it is
 about to repoint an existing entry, but the flag is how you avoid it.
 
-One exception, so the two flags do not cancel each other out: `--no-editor-setup
+Two exceptions, so the flags do not cancel each other out. `--no-editor-setup
 --no-distill-hook` still records the `distill.commands.enabled: false` opt-out in
 this repo's `config.yaml`. That record is repo-local, and it is the only thing
 that gates an already-installed global rewrite hook off here.
+
+The same reasoning covers the instruction files: `--no-editor-setup
+--no-claude-md` still records `editor_files.claude_md: false`, and likewise for
+`--no-agents-md`. Those flags mean "never generate this file", not "skip it this
+once", and the generator declining on its way past used to be the only thing
+that wrote the preference down — so suppressing the writes would also have
+suppressed the memory of the refusal, and the next `repowise update` would have
+generated the file anyway. A preference is not a write.
 
 `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch as an env var, which is the
 better fit for CI and sandboxes where no one is passing flags by hand. Either
