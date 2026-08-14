@@ -938,7 +938,8 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 - Files matching `*migrations*`, `*schema*`, `*seed*`
 - TypeScript `.d.ts` files
 - Files where `is_api_contract == True`
-- Files in `.repowise/dead_code_whitelist.txt`
+- Files named in the `whitelist` key of the analyzer's config argument (an API
+  parameter; no CLI flag or config file populates it today)
 - Symbols matching `config.dead_code.dynamic_patterns`
 
 ### 8.2 Dead Code in Generation Prompts
@@ -1679,7 +1680,6 @@ dead_code:
     - "*Middleware"
     - "register_*"
     - "on_*"
-  whitelist_file: .repowise/dead_code_whitelist.txt
   analyze_on_update: true    # re-analyze dead code on incremental updates
 
 maintenance:

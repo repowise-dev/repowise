@@ -32,16 +32,21 @@ Repowise's dead code analyzer finds these automatically using **pure graph trave
 
 ```
 For each node in the dependency graph:
-    Skip if: external package, non-code language, entry point, test file,
-             fixture directory, __init__.py, config file, migration, etc.
+    Skip if: external package, non-code language, test file, fixture directory
 
-    if in_degree(node) == 0:
-        This file has zero importers → candidate for dead code
+    if not is_file_reachable(node):
+        Nothing can get to this file → candidate for dead code
 ```
 
-`in_degree` is just the count of incoming edges — files that import this one. If nobody imports it and it's not an entry point or test, it's suspicious.
+`is_file_reachable` is the single predicate for "can anything get to this file",
+shared with the repo-overview assembler so the two cannot disagree. It rescues
+entry points, API contracts, never-flag paths (`__init__.py`, config files,
+migrations, shell scripts), bundler-alias shims and the package-granular
+languages, and otherwise asks whether any *dependency* edge points at the file.
+That last part is not a raw `in_degree`: a co-change edge ("these two files were
+committed together"), a file's own symbols and a self-import are all excluded.
 
-**Why in_degree alone isn't enough:**
+**Why an import edge alone isn't enough:**
 
 Consider `plugin_auth.py`. Nothing imports it directly because the plugin framework loads it dynamically at runtime via `importlib.import_module()`. The graph doesn't capture dynamic imports as edges because they don't appear in the AST as static import statements.
 

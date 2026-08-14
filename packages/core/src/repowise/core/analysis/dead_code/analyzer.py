@@ -12,10 +12,9 @@ this package.
 from __future__ import annotations
 
 import fnmatch
-import os
 import re
+from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +25,10 @@ from .constants import (
     _DEFAULT_DYNAMIC_PATTERNS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
-    _NEVER_FLAG_PATTERNS,
     _NEVER_PACKAGE_DIRS,
     _NON_CODE_LANGUAGES,
     _is_fixture_path,
+    never_flag_match,
 )
 from .contract_methods import is_contract_method
 from .dynamic_markers import (
@@ -38,6 +37,7 @@ from .dynamic_markers import (
     read_source_text,
 )
 from .file_reachability import (
+    PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
     is_file_reachable,
@@ -593,94 +593,6 @@ def _is_synthetic_node(node: str) -> bool:
     return node.startswith("external:") or node.startswith("framework:")
 
 
-@lru_cache(maxsize=8)
-def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
-    """Compile *patterns* into one alternation regex equivalent to fnmatch.
-
-    ``fnmatch.fnmatch(path, p)`` normcases both sides and matches the
-    translated glob; doing that per (node x pattern) costs ~540 fnmatch
-    calls per node and dominated the whole dead-code pass (measured: 50s of
-    a 51s analyze() on a 13k-node graph, mostly Windows ``normcase``).
-    One pre-normcased alternation keeps the exact same match semantics at
-    one regex match per node.
-    """
-    return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
-
-
-@lru_cache(maxsize=8)
-def _never_flag_suffix_index(
-    patterns: tuple[str, ...],
-) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]], tuple[int, ...]]:
-    """Split *patterns* into suffix-keyed buckets that can be skipped wholesale.
-
-    ``_never_flag_regex`` puts all 579 patterns in one alternation, and
-    ``.match()`` tries every branch at position 0 — most of them beginning
-    ``.*``, so each branch scans the path. Measured cold on a 63k-node repo
-    that is 206 microseconds per unique path and 12.8s of an 18.1s dead-code
-    analysis, the single largest cost in the pass.
-
-    The filter is sound because ``fnmatch.translate`` ends *each* alternative
-    with ``\\Z`` and the join keeps that per-branch (``(?s:A)\\Z|(?s:B)\\Z``),
-    so every branch has to match the whole string. A pattern whose text after
-    its last ``*`` is the literal ``S`` can therefore only match a path ending
-    in ``S``: testing it against a path that does not end in ``S`` is wasted
-    work, never a dropped match. Patterns ending in ``*`` constrain nothing at
-    the tail and stay in one always-tried group.
-
-    Within a bucket the branches keep their original translated form, so the
-    atomic groups ``fnmatch`` emits for interior ``*literal`` runs — which
-    commit to the first occurrence and never retry a later one — behave
-    exactly as they did in the single alternation. Alternation order does not
-    matter to a boolean "did anything match".
-
-    Returns ``(always_tried_regex_or_None, {suffix: regex}, suffix_lengths)``.
-    """
-    always: list[str] = []
-    by_suffix: dict[str, list[str]] = {}
-    for pattern in patterns:
-        norm = os.path.normcase(pattern)
-        # No pattern in the set uses ``?`` or a character class (checked by
-        # test_never_flag_suffix_index_covers_pattern_shapes), so the text
-        # after the last ``*`` is a plain literal tail.
-        suffix = norm.rsplit("*", 1)[-1]
-        translated = fnmatch.translate(norm)
-        if suffix:
-            by_suffix.setdefault(suffix, []).append(translated)
-        else:
-            always.append(translated)
-    compiled = {s: re.compile("|".join(v)) for s, v in by_suffix.items()}
-    return (
-        re.compile("|".join(always)) if always else None,
-        compiled,
-        tuple(sorted({len(s) for s in compiled})),
-    )
-
-
-@lru_cache(maxsize=131072)
-def _never_flag_regex_match(path: str) -> bool:
-    """Memoized never-flag match for the default pattern set.
-
-    Equivalent to ``_never_flag_regex(_NEVER_FLAG_PATTERNS).match(...)``, and
-    pinned to it path-for-path by ``test_never_flag_regex.py``. Pure function
-    of *path*: the pattern set is a module constant, so process-wide
-    memoization is sound. The detector passes ask about the same node ids
-    repeatedly (every graph node is checked by the unreachable-files and the
-    unused-exports passes), which is what the cache is for; this function is
-    what the *first* ask of each id costs.
-    """
-    norm = os.path.normcase(path)
-    always, by_suffix, suffix_lengths = _never_flag_suffix_index(_NEVER_FLAG_PATTERNS)
-    if always is not None and always.match(norm):
-        return True
-    for length in suffix_lengths:
-        if length > len(norm):
-            break
-        bucket = by_suffix.get(norm[-length:])
-        if bucket is not None and bucket.match(norm):
-            return True
-    return False
-
-
 class DeadCodeAnalyzer:
     """Detects unreachable files, unused exports, unused internals, and
     zombie packages using the dependency graph and git metadata.
@@ -745,20 +657,23 @@ class DeadCodeAnalyzer:
         self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
             parsed_files or {}, source_map
         )
-        # Lazily-built rescue state for the shared reachability predicate: the
-        # package-directory maps for Go / JVM / C-C++ plus the bundler-alias
-        # targets found above. Built on first use so a graph that never
-        # reaches the unreachable-files pass never pays for it.
-        self._rescues: ReachabilityRescues | None = None
+        # Lazily-built package-directory maps for Go / JVM / C-C++, the one
+        # piece of the rescue state that costs a graph scan. Built on first use
+        # so a graph that never reaches the unreachable-files pass never pays
+        # for it. Cached here rather than on the ``ReachabilityRescues`` object
+        # because the whitelist arrives per ``analyze()`` call and the map does
+        # not.
+        self._package_files: PackageFileMap | None = None
 
-    def _reachability_rescues(self) -> ReachabilityRescues:
-        """Return the cached rescue state, building it on first use."""
-        if self._rescues is None:
-            self._rescues = ReachabilityRescues(
-                bundler_alias_targets=frozenset(self._bundler_alias_targets),
-                package_files=build_package_file_map(self.graph),
-            )
-        return self._rescues
+    def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
+        """Assemble the rescue state the shared predicate reads."""
+        if self._package_files is None:
+            self._package_files = build_package_file_map(self.graph)
+        return ReachabilityRescues(
+            bundler_alias_targets=frozenset(self._bundler_alias_targets),
+            whitelist=frozenset(whitelist),
+            package_files=self._package_files,
+        )
 
     def analyze(
         self,
@@ -835,31 +750,34 @@ class DeadCodeAnalyzer:
         dynamic_patterns: tuple[str, ...],
         whitelist: set[str],
     ) -> list[DeadCodeFindingData]:
-        """Detect files with in_degree == 0 that are not entry points, tests, or config."""
+        """Detect files nothing can reach that are not tests, fixtures, or config."""
         findings = []
+
+        # One object for the whole pass rather than one per node: the rescues
+        # do not vary by candidate.
+        rescues = self._reachability_rescues(whitelist)
 
         for node in self.graph.nodes():
             if _is_synthetic_node(str(node)):
                 continue
 
             node_data = self.graph.nodes[node]
+            # The three skips left here are *scoping*, not reachability: a test
+            # file is perfectly reachable, it is just not something this pass
+            # reports. Everything that answers "can anything get to this file"
+            # — entry points, API contracts, never-flag globs, the whitelist,
+            # barrels, bundler-alias shims and the package-granular languages
+            # (Go / JVM / C-C++) — lives in the predicate, which the overview
+            # assembler calls with the same state so the two cannot disagree.
+            # See :mod:`file_reachability`.
             if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
-                continue
-            if node_data.get("is_entry_point", False):
                 continue
             if node_data.get("is_test", False):
                 continue
             if _is_fixture_path(str(node)):
                 continue
-            if self._should_never_flag(str(node), whitelist):
-                continue
 
-            # Barrels, API contracts, bundler-alias shims and the
-            # package-granular languages (Go / JVM / C-C++) are all rescued
-            # inside the shared predicate, which the overview assembler calls
-            # with the same state so the two passes cannot disagree about what
-            # "reachable" means. See :mod:`file_reachability`.
-            if is_file_reachable(str(node), self.graph, self._reachability_rescues()):
+            if is_file_reachable(str(node), self.graph, rescues):
                 continue
 
             finding = self._make_unreachable_finding(str(node), node_data, dynamic_patterns)
@@ -1036,9 +954,14 @@ class DeadCodeAnalyzer:
             # Framework-instantiated files (Spring stereotypes, JAX-RS
             # resources, Quarkus components, Spring Data repos, …) have
             # no source-level caller; the runtime constructs them via
-            # classpath scanning. Mirror the entry-point skip the
-            # ``_detect_unreachable_files`` pass already does so an
-            # ``@RestController`` class isn't reported as unused.
+            # classpath scanning, so an ``@RestController`` class must not be
+            # reported as an unused export.
+            #
+            # Deliberately not ``is_file_reachable``, which the sibling
+            # unreachable-files pass uses: this pass asks about *symbols*, and
+            # the predicate's barrel rescue is scoped to files on purpose — a
+            # genuine symbol defined in a barrel nobody imports should still be
+            # flagged. See ``BARREL_FILENAMES``'s scope note.
             if node_data.get("is_entry_point", False):
                 continue
             if node_data.get("is_test", False):
@@ -1638,10 +1561,16 @@ class DeadCodeAnalyzer:
     # ------------------------------------------------------------------
 
     def _should_never_flag(self, path: str, whitelist: set[str]) -> bool:
-        """Return True if path should never be flagged as dead."""
+        """Return True if path should never be flagged as dead.
+
+        Used by the unused-export, unused-internal and zombie-package passes.
+        The unreachable-files pass does not call it: every limb below is also
+        asked by :func:`is_file_reachable`, which that pass calls anyway, and
+        two spellings of one rule is what this phase exists to remove.
+        """
         if path in whitelist:
             return True
-        if _never_flag_regex_match(path):
+        if never_flag_match(path):
             return True
         # Workspace-driven never-flag — set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo

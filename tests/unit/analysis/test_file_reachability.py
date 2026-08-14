@@ -257,17 +257,17 @@ def test_the_predicate_is_the_only_thing_deciding_reachability():
 
     What that set means, precisely: the analyzer's remaining skips are
     candidacy rules, "is this a file we would ever report", and the assembler
-    deliberately wants none of them applied to an execution flow. Note the
-    split is not clean the other way — ``is_entry_point``, ``is_never_flag``
-    and the ``__init__.py`` barrel are checked in *both* places, harmlessly,
-    since every one of them is idempotent. And ``_should_never_flag`` is a
-    reachability rule rather than a candidacy one (``*.sh`` is exempt because
-    CI invokes it by name), which is exactly why ``ReachabilityRescues``
-    records its glob set as a rescue the second caller is missing.
+    deliberately wants none of them applied to an execution flow. The split is
+    now clean both ways: nothing reachability-shaped is checked twice.
+    ``is_entry_point``, ``is_never_flag``, the never-flag globs, the whitelist
+    and the ``__init__.py`` barrel are asked once, by the predicate. The globs
+    in particular are a reachability rule rather than a candidacy one — ``*.sh``
+    is exempt because CI invokes it by name — which is why they moved.
 
-    Coverage ceiling: the fixture exercises the non-code-language,
-    ``is_entry_point`` and ``is_test`` skips. ``_is_synthetic_node``,
-    ``_is_fixture_path`` and the never-flag globs are not represented here.
+    Coverage ceiling: the fixture exercises the two analyzer skips that remain
+    reachable here, non-code-language and ``is_test``, plus the entry-point,
+    never-flag and whitelist rescues now inside the predicate.
+    ``_is_synthetic_node`` and ``_is_fixture_path`` are not represented.
     """
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer
     from repowise.core.analysis.dead_code.constants import _DEFAULT_DYNAMIC_PATTERNS
@@ -279,6 +279,7 @@ def test_the_predicate_is_the_only_thing_deciding_reachability():
             "src/orphan.py": {},
             "src/main.py": {"is_entry_point": True},
             "src/pkg/__init__.py": {},
+            "scripts/deploy.sh": {"language": "shell"},
             "tests/test_orphan.py": {"is_test": True},
             "docs/notes.md": {"language": "markdown"},
         },
@@ -289,16 +290,22 @@ def test_the_predicate_is_the_only_thing_deciding_reachability():
     )
 
     analyzer = DeadCodeAnalyzer(g)
-    rescues = analyzer._reachability_rescues()
+    whitelist = {"src/orphan.py"}
+    rescues = analyzer._reachability_rescues(whitelist)
     flagged = {
-        f.file_path for f in analyzer._detect_unreachable_files(_DEFAULT_DYNAMIC_PATTERNS, set())
+        f.file_path
+        for f in analyzer._detect_unreachable_files(_DEFAULT_DYNAMIC_PATTERNS, whitelist)
     }
     unreachable = {n for n in g.nodes() if not is_file_reachable(str(n), g, rescues)}
 
-    assert flagged == {"src/caller.py", "src/orphan.py"}
+    assert flagged == {"src/caller.py"}
     assert "src/service.py" not in flagged
     assert "src/main.py" not in flagged
     assert "src/pkg/__init__.py" not in flagged
+    # The whitelist and the never-flag globs now reach the predicate, so they
+    # rescue the file rather than being applied beside it.
+    assert "src/orphan.py" not in unreachable
+    assert "scripts/deploy.sh" not in unreachable
 
     # The gap between the two is candidacy and nothing else. A markdown file
     # and a test file are both unreachable and neither is dead code, and the

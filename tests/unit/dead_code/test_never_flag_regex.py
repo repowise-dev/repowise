@@ -8,11 +8,12 @@ import os
 import networkx as nx
 import pytest
 
-from repowise.core.analysis.dead_code.analyzer import (
-    DeadCodeAnalyzer,
+from repowise.core.analysis.dead_code.analyzer import DeadCodeAnalyzer
+from repowise.core.analysis.dead_code.constants import (
+    _NEVER_FLAG_PATTERNS,
     _never_flag_regex,
+    never_flag_match,
 )
-from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
 
 # Positives derived from the glob list plus negatives that brush close to it.
 _PROBE_PATHS = [
@@ -83,12 +84,10 @@ class TestMemoizedMatch:
         [*_PROBE_PATHS, "pkg/a.go::Handler", "cmd/main_test.go::TestX", "app/page.tsx::Page"],
     )
     def test_memoized_equals_direct(self, path):
-        from repowise.core.analysis.dead_code.analyzer import _never_flag_regex_match
-
         direct = bool(_never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)))
-        assert _never_flag_regex_match(path) == direct, path
+        assert never_flag_match(path) == direct, path
         # Second call exercises the cached branch.
-        assert _never_flag_regex_match(path) == direct, path
+        assert never_flag_match(path) == direct, path
 
 
 class TestShouldNeverFlag:
@@ -115,7 +114,7 @@ class TestShouldNeverFlag:
 
 
 class TestSuffixIndexEquivalence:
-    r"""``_never_flag_regex_match`` buckets the patterns by the literal text
+    r"""``never_flag_match`` buckets the patterns by the literal text
     after their last ``*`` and only tests the buckets a path's tail can reach.
     That is sound only because ``fnmatch.translate`` end-anchors every
     alternative, so these pin both the equivalence and the assumption.
@@ -163,19 +162,15 @@ class TestSuffixIndexEquivalence:
         ],
     )
     def test_matches_the_single_alternation(self, path):
-        from repowise.core.analysis.dead_code.analyzer import _never_flag_regex_match
-
         expected = bool(_never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)))
-        assert _never_flag_regex_match(path) == expected, path
+        assert never_flag_match(path) == expected, path
 
     def test_synthesized_probe_per_pattern_agrees(self):
         """One concrete path per glob, plus near-miss variants around it, run
         through the bucketed matcher rather than the raw regex."""
-        from repowise.core.analysis.dead_code.analyzer import _never_flag_regex_match
-
         regex = _never_flag_regex(_NEVER_FLAG_PATTERNS)
         for pat in _NEVER_FLAG_PATTERNS:
             base = pat.replace("**", "x").replace("*", "x")
             for probe in (base, base.upper(), f"prefix/{base}", f"{base}/trailing.py"):
                 expected = bool(regex.match(os.path.normcase(probe)))
-                assert _never_flag_regex_match(probe) == expected, (pat, probe)
+                assert never_flag_match(probe) == expected, (pat, probe)
