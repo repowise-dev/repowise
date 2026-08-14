@@ -163,6 +163,7 @@ def _run_workspace_generation(
         embedder_name_resolved=embedder_name_resolved,
         resume=resume,
         verbose=False,
+        test_run=test_run,
     )
 
 

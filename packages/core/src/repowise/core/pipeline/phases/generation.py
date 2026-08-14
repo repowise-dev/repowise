@@ -45,6 +45,7 @@ async def run_generation(
     kg_data: dict | None = None,
     only_page_ids: set[str] | None = None,
     preserved_page_ids: set[str] | None = None,
+    test_run: bool = False,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -61,6 +62,10 @@ async def run_generation(
     ``preserved_page_ids`` is an out-parameter filled by a ``resume`` run with
     the ids it skipped because a prior run already wrote them. Persistence
     needs it to keep those pages out of the stale sweep.
+
+    ``test_run`` limits generation to the top 10 files by PageRank, so a quick
+    validation run can exercise the whole generation path without paying for a
+    full index's worth of pages.
     """
     from repowise.core.generation import (
         ContextAssembler,
@@ -82,6 +87,26 @@ async def run_generation(
     base_config = generation_config if generation_config is not None else GenerationConfig()
     config = replace(base_config, max_concurrency=concurrency)
     assembler = ContextAssembler(config)
+
+    # Test-run: limit to top 10 files by PageRank for a fast validation run.
+    # Applied here rather than in the orchestrator so it works whether the
+    # pipeline ran with generate_docs=True or generation happened in a later,
+    # separate phase (init's generate_docs=False flow) — the flag's documented
+    # purpose is to cap the *generation* work, and this is where that happens.
+    if test_run:
+        try:
+            import networkx as nx
+
+            ranks = nx.pagerank(graph_builder.graph())
+        except Exception:
+            ranks = {}
+        parsed_files = sorted(
+            parsed_files,
+            key=lambda pf: ranks.get(pf.file_info.path, 0),
+            reverse=True,
+        )[:10]
+        if progress:
+            progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
     # Resolve embedder and vector store
     embedder_impl = embedder if embedder is not None else KeylessEmbedder()
