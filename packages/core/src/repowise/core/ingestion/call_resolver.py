@@ -821,10 +821,15 @@ class CallResolver:
 
         # --- Method call with receiver: receiver.method() ---
         if call.receiver_name:
-            return self._resolve_member_call(file_path, call, caller_id)
+            return self._with_props(self._resolve_member_call(file_path, call, caller_id), call)
 
         # --- Free function call: function() ---
-        return self._resolve_free_call(file_path, call, caller_id)
+        return self._with_props(self._resolve_free_call(file_path, call, caller_id), call)
+
+    def _with_props(self, res: ResolvedCall | None, call: CallSite) -> ResolvedCall | None:
+        if res is not None and call.supplied_props is not None:
+            return replace(res, supplied_props=call.supplied_props)
+        return res
 
     def _member_shaped_sites(self, file_path: str) -> set[tuple[int, str]]:
         """``(line, target)`` pairs at which this file also records a receiver.
