@@ -1,0 +1,1 @@
+public enum Disposition { OPEN, DECLINED, ACCEPTED }
