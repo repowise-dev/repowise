@@ -85,6 +85,11 @@ _DISALLOWED_TOOLS = (
 # process. Serializing turns a 68-page wiki into an hour; too much concurrency
 # trips the account limit and fails the run. 4 matches the ceiling init applies
 # to the other CLI-backed providers.
+#
+# The env override is a true override, not a clamp: it can raise the fan-out
+# above 4 as well as lower it. Deliberate -- a Max seat can take more than a Pro
+# one, and only the operator knows which they have -- but it does mean 4 is a
+# default rather than an enforced cap.
 _DEFAULT_CONCURRENCY = 4
 _CONCURRENCY_ENV = "REPOWISE_CLAUDE_CLI_CONCURRENCY"
 

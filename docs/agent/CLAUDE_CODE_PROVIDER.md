@@ -97,6 +97,10 @@ providers. Override with:
 REPOWISE_CLAUDE_CLI_CONCURRENCY=2 repowise generate --unwritten
 ```
 
+That variable raises as well as lowers the limit, so 4 is a default rather than
+an enforced ceiling. Going higher is reasonable on a plan with a larger
+allowance; it is also the fastest way to trip the account limit mid-run.
+
 Budget roughly **9k output tokens and a few minutes per page**, drawn from the
 same limits as your interactive Claude Code sessions. On a large repo, prefer
 `--path` to scope a run rather than regenerating everything.

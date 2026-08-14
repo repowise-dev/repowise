@@ -88,7 +88,9 @@ runs with `--path` rather than reaching for `--all`:
 repowise generate --path src/api
 ```
 
-Concurrency is bounded to 4 processes; lower it if you are hitting limits:
+Concurrency defaults to 4 processes. The variable below overrides it in either
+direction -- lower it if you are hitting limits, and note that raising it past 4
+is allowed but is the quickest way to hit them:
 
 ```bash
 REPOWISE_CLAUDE_CLI_CONCURRENCY=2 repowise generate --unwritten
