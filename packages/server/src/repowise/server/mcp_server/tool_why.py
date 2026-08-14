@@ -38,6 +38,13 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._why_relevance import (
+    clears_floor,
+    question_terms,
+    redirect_for,
+    relevance,
+    term_idf,
+)
 
 
 @mcp.tool()
@@ -221,6 +228,16 @@ _MAX_SEARCH_DECISIONS = 3
 #: lanes (decisions, documentation) are partitioned out of this single window,
 #: so the depth is the old decision lane's rather than the sum of the two.
 _SEMANTIC_WINDOW = 50
+
+#: Records search mode ranks over. It used to be 200, against a store holding
+#: 614: ``list_decisions`` sorts confirmed-then-confident, so the 414 records
+#: below the cut were unreachable by any question, and the cap was a silent
+#: recall ceiling rather than a cost control. It is not a cost control either —
+#: ranking is a substring scan over short fields, measured at 2 ms for 182
+#: records here, so the whole store costs single-digit milliseconds. Kept
+#: bounded only so an unattended extractor cannot turn one call into an
+#: unbounded scan.
+_DECISION_CORPUS_LIMIT = 2000
 
 #: Keyword candidates scored before restatements are collapsed. Wider than the
 #: serving cap on purpose: the worst cluster here is fourteen phrasings of one
@@ -487,29 +504,6 @@ async def _why_path(query: str, repo: str | None) -> dict:
         return _fit_path_response(result_data, ctx.path, collector=collector)
 
 
-# Stop words removed before keyword matching for better signal.
-_QUERY_STOP_WORDS = {
-    "why",
-    "was",
-    "is",
-    "the",
-    "a",
-    "an",
-    "this",
-    "that",
-    "how",
-    "what",
-    "when",
-    "where",
-    "for",
-    "to",
-    "of",
-    "in",
-    "it",
-    "be",
-}
-
-
 async def _load_target_git(
     session: Any, repository_id: Any, targets: list[str] | None
 ) -> dict[str, Any]:
@@ -530,29 +524,62 @@ async def _load_target_git(
     return target_git
 
 
+def _governs_any(d: Any, targets: set[str]) -> bool:
+    """Whether *d* names any of *targets* among its files or modules."""
+    if not targets:
+        return False
+    affected = set(json.loads(d.affected_files_json))
+    modules = json.loads(d.affected_modules_json)
+    return any(t in affected or any(t.startswith(m + "/") for m in modules) for t in targets)
+
+
 def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str]) -> list:
-    """Score decisions by weighted keyword overlap, best-first.
+    """Records relevant enough to serve, best-first. Empty when none are.
 
-    Score first, then status: a record someone confirmed wins a tie against one
-    an extractor proposed, but never outranks a better-matching record. Ordering
-    by status *first* was tried and measured worse, and the reason generalises —
-    only 69 of this repo's 614 records are active, so a hard status gate serves
-    three weakly-matching confirmed records ahead of the only relevant ones. The
-    four records that answer "why is entry-point candidacy decided at ingestion"
-    are all proposed, and status-first ordering made them unreachable.
+    Ranks by how much of the question's *vocabulary* a record carries, rarer
+    words weighing more, with the older occurrence count breaking ties and
+    status breaking the ties after that. Ordering by the occurrence count alone
+    scored by length and by how ordinary a word is: measured here, "why do we
+    use ruff check instead of ruff format" was won by records matching "use",
+    "check", "format" and "instead" while the two ``active`` records that answer
+    it — one of them 48 characters long — did not place at all.
 
-    Returns a pool wider than the serving cap because restatements are collapsed
-    downstream, and a pool cut to the cap first would let three phrasings of one
-    decision fill every slot.
+    Status stays a tie-break and never a gate. Ordering by it *first* was tried
+    and measured worse, and the reason generalises: only 69 of this repo's 614
+    records are active, so a hard status gate serves three weakly-matching
+    confirmed records ahead of the only relevant ones. The four records that
+    answer "why is entry-point candidacy decided at ingestion" are all proposed,
+    and status-first ordering made them unreachable.
+
+    Records below the floor are dropped rather than ranked last, so an empty
+    return is the honest answer and the caller turns it into a redirect. The
+    surviving pool is wider than the serving cap because restatements are
+    collapsed downstream, and a pool cut to the cap first would let three
+    phrasings of one decision fill every slot.
     """
-    query_words = set(query.lower().split()) - _QUERY_STOP_WORDS
-    scored_decisions: list[tuple[float, int, Any]] = []
+    terms = question_terms(query)
+    texts = {id(d): _record_text(d) for d in all_decisions}
+    idf = term_idf(terms, list(texts.values()))
+
+    scored_decisions: list[tuple[float, float, int, Any]] = []
     for d in all_decisions:
-        score = _score_decision(d, query_words, target_set)
-        if score > 0:
-            scored_decisions.append((-score, _PATH_STATUS_ORDER.get(d.status, 4), d))
-    scored_decisions.sort(key=lambda t: (t[0], t[1]))
-    return [d for _, _, d in scored_decisions[:_KEYWORD_POOL]]
+        # A record governing a file the caller named is relevant by
+        # construction: they pointed at it instead of describing it, so it owes
+        # the question no vocabulary.
+        governs = _governs_any(d, target_set)
+        score = 1.0 if governs else relevance(texts[id(d)], idf)
+        if not clears_floor(score):
+            continue
+        scored_decisions.append(
+            (
+                -score,
+                -_score_decision(d, set(terms), target_set),
+                _PATH_STATUS_ORDER.get(d.status, 4),
+                d,
+            )
+        )
+    scored_decisions.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [t[3] for t in scored_decisions[:_KEYWORD_POOL]]
 
 
 async def _fts_doc_results(ctx: Any, query: str) -> list:
@@ -773,6 +800,50 @@ async def _build_target_context(
         return target_context
 
 
+async def _why_no_match(
+    query: str,
+    targets: list[str] | None,
+    ctx: Any,
+    repository: Any,
+    all_decisions: list,
+    target_git: dict[str, Any],
+) -> dict[str, Any]:
+    """The whole response when no record clears the relevance floor.
+
+    Returns early rather than serving the closest three anyway, and returns
+    *before* the semantic lookup: a nearest-neighbour search over a 614-record
+    store always returns three records, and on the questions this store cannot
+    answer those were "14-language AST support" for "where is the episode store"
+    and "Escape LIKE patterns" for "why is entry-point candidacy decided at
+    ingestion". Serving them beside a redirect would be the padding the redirect
+    exists to stop, and skipping the lookup is also the latency this branch
+    saves. Episodes are held back for the same reason — they are what made the
+    unanswerable questions the *largest* responses in the measured set.
+
+    Named targets are the exception, and both blocks they carry are kept. A
+    caller who passes them has handed over a concrete handle, so this file's
+    git archaeology and this file's rationale comments are evidence about the
+    thing asked rather than the nearest guess at it — the same reason path mode
+    serves them. That is also the branch the redirect is *least* useful on,
+    since `get_why` on a path is the tool the caller already reached for.
+    """
+    result: dict[str, Any] = {
+        "mode": "search",
+        "query": query,
+        "decisions": [],
+        **redirect_for(query),
+    }
+    if targets:
+        result["target_context"] = await _build_target_context(
+            ctx, repository, all_decisions, target_git, targets
+        )
+        rationale = _mine_rationale(ctx.path, targets, query)
+        if rationale:
+            result["code_rationale"] = rationale
+    result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
+    return result
+
+
 async def _why_search(query: str, targets: list[str] | None, repo: str | None) -> dict:
     """Mode 3: natural-language, target-aware decision + documentation search."""
     from repowise.core.persistence.crud import list_decisions as _list_decisions
@@ -781,7 +852,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         all_decisions = await _list_decisions(
-            session, repository.id, include_proposed=True, limit=200
+            session, repository.id, include_proposed=True, limit=_DECISION_CORPUS_LIMIT
         )
         # Records anchored entirely in excluded paths (vendored venvs mined
         # before exclude rules changed) are noise for every mode downstream.
@@ -794,6 +865,10 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     # Rank wide, collapse restatements, then cap — so the cap spends its slots on
     # distinct decisions — and only walk lineage for what survives.
     ranked = _rank_keyword_matches(all_decisions, query, target_set)
+    if not ranked:
+        return await _why_no_match(
+            query, targets, ctx, repository, all_decisions, target_git
+        )
     collapsed = _collapse_restatements(ranked)[:_MAX_SEARCH_DECISIONS]
     decision_results, doc_results = await _semantic_lanes(ctx, query)
     lineage_by_id = await _lineage_for_matches(ctx, [d for d, _ in collapsed])
@@ -824,12 +899,9 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
         result_data["target_context"] = await _build_target_context(
             ctx, repository, all_decisions, target_git, targets
         )
-        # When the decision corpus is thin, the rationale for the anchored
-        # files may be in their comments — mine them against the question.
-        if not merged_decisions:
-            rationale = _mine_rationale(ctx.path, targets, query)
-            if rationale:
-                result_data["code_rationale"] = rationale
+        # The comment-mining fallback that used to sit here was gated on
+        # ``not merged_decisions``, which nothing ever reached. It now lives in
+        # ``_why_no_match``, behind the floor — the condition it always meant.
 
     # Targets resolve through the node index; without them the question itself
     # is the only handle, so it is ranked against the bodies.
@@ -860,26 +932,20 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     return result_data
 
 
-def _score_decision(
-    d: Any,
-    query_words: set[str],
-    target_files: set[str],
-) -> float:
-    """Score a decision against query words with field weighting and target boosting."""
-    if not query_words:
-        return 1.0 if target_files else 0.0
+def _weighted_fields(d: Any) -> list[tuple[float, str]]:
+    """The searchable text of a record, lowercased, by field weight.
 
-    # Build weighted text fields.
-    #
-    # ``affected_files`` is deliberately absent. Joining a record's whole path
-    # list into one haystack and substring-matching a question against it scores
-    # by *breadth*: the record here governing 83 files matched almost every
-    # question asked, because ordinary query words ("index", "page", "format")
-    # occur somewhere in 83 paths, and it became the top hit for three of five
-    # probe questions including one about ruff. A scope is not question text.
-    # The legitimate use of that field — does this record govern the file the
-    # caller named — is the exact set membership in the target boost below.
-    fields = [
+    ``affected_files`` is deliberately absent. Joining a record's whole path
+    list into one haystack and substring-matching a question against it scores
+    by *breadth*: the record here governing 83 files matched almost every
+    question asked, because ordinary query words ("index", "page", "format")
+    occur somewhere in 83 paths, and it became the top hit for three of five
+    probe questions including one about ruff. A scope is not question text.
+    The legitimate use of that field — does this record govern the file the
+    caller named — is the exact set membership in :func:`_governs_any` and in
+    the target boost inside :func:`_score_decision`.
+    """
+    return [
         (3.0, d.title.lower()),
         (2.0, d.decision.lower()),
         (2.0, d.rationale.lower()),
@@ -889,8 +955,27 @@ def _score_decision(
         (1.0, (d.evidence_file or "").lower()),
     ]
 
+
+def _record_text(d: Any) -> str:
+    """The same text, unweighted, for term coverage and the relevance floor.
+
+    Built from :func:`_weighted_fields` so a record cannot clear the floor on a
+    field the tie-break cannot see, or the reverse.
+    """
+    return " ".join(text for _, text in _weighted_fields(d))
+
+
+def _score_decision(
+    d: Any,
+    query_words: set[str],
+    target_files: set[str],
+) -> float:
+    """Score a decision against query words with field weighting and target boosting."""
+    if not query_words:
+        return 1.0 if target_files else 0.0
+
     score = 0.0
-    for weight, text in fields:
+    for weight, text in _weighted_fields(d):
         for word in query_words:
             if word in text:
                 score += weight

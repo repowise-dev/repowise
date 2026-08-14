@@ -139,8 +139,20 @@ def decision_is_excluded(decision_row: Any, spec: Any) -> bool:
     one with no affected files at all is kept (nothing to judge it by).
     Paths are normalized to forward slashes — ``affected_files_json`` stores
     OS-native separators.
+
+    Confirmed records are exempt. The file list is where an extractor *read* a
+    decision, not what makes it true, and once a human has marked one ``active``
+    that provenance has been superseded by their judgement. Measured on this
+    repo: all 18 records this rule dropped were ``active``, a quarter of the
+    confirmed corpus, and they included both records answering "why ruff check
+    and not ruff format" — a rule so plainly repo-wide that it had been written
+    into CLAUDE.md by hand while the store already held it. What the rule is
+    aimed at is unreviewed machine output from a tree the user said to ignore,
+    and that is exactly what ``proposed`` marks.
     """
     if spec is None:
+        return False
+    if getattr(decision_row, "status", None) == "active":
         return False
     try:
         affected = json.loads(getattr(decision_row, "affected_files_json", None) or "[]")

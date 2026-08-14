@@ -147,10 +147,23 @@ async def test_search_caps_full_bodies(session, setup_mcp):
 
 
 @pytest.mark.asyncio
-async def test_search_embeds_the_query_once(setup_mcp, monkeypatch):
+async def test_search_embeds_the_query_once(session, setup_mcp, monkeypatch):
     """Two awaits embedded the same string back to back, one question, two trips."""
     import repowise.server.mcp_server as mcp_mod
     from repowise.server.mcp_server import get_why
+
+    # Seeded because the semantic lanes now run only once some record has
+    # cleared the relevance floor: a question with no answer behind it returns
+    # before embedding anything, which is its own test below.
+    await _seed(
+        session,
+        setup_mcp,
+        id_="jwt",
+        title="JWT used for authentication",
+        decision="JWT is used for authentication",
+        rationale="JWT authentication is stateless",
+        context="authentication",
+    )
 
     vs = mcp_mod._vector_store
     calls: list[str] = []
@@ -176,7 +189,7 @@ async def test_search_embeds_the_query_once(setup_mcp, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_related_documentation_excludes_decision_pages(setup_mcp):
+async def test_related_documentation_excludes_decision_pages(session, setup_mcp):
     """The doc lane took the nearest pages of any kind, decisions included.
 
     So a decision record came back as "related documentation" beside the
@@ -186,6 +199,17 @@ async def test_related_documentation_excludes_decision_pages(setup_mcp):
     import repowise.server.mcp_server as mcp_mod
     from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
     from repowise.server.mcp_server import get_why
+
+    # Seeded so the question clears the relevance floor and the lanes run at
+    # all; the assertion is about which lane a decision page lands in.
+    await _seed(
+        session,
+        setup_mcp,
+        id_="zebra-latency",
+        title="Zebrafish caching keeps latency down",
+        decision="Zebrafish caching keeps latency down",
+        rationale="zebrafish caching latency",
+    )
 
     vs = mcp_mod._vector_store
     await vs.embed_and_upsert(
@@ -258,15 +282,31 @@ async def test_status_breaks_ties_without_gating(session, setup_mcp):
     """
     from repowise.server.mcp_server import get_why
 
+    # Both candidates now have to clear the relevance floor before ordering is
+    # observable at all, so the weaker one is weaker rather than unrelated: it
+    # carries "zebrafish caching" and not "strategy". The three fillers exist to
+    # make "strategy" an ordinary word in this store, which is what leaves the
+    # weaker record enough of the question's weight to be served.
+    for n in range(3):
+        await _seed(
+            session,
+            setup_mcp,
+            id_=f"filler{n}",
+            title=f"Deployment strategy {n}",
+            decision="strategy",
+            rationale="strategy",
+            context="strategy",
+            commits=[f"fill{n}"],
+        )
     await _seed(
         session,
         setup_mcp,
         id_="weak-active",
         status="active",
-        title="Zebrafish unrelated",
-        decision="unrelated",
-        rationale="unrelated",
-        context="unrelated",
+        title="Zebrafish caching",
+        decision="zebrafish caching",
+        rationale="zebrafish caching",
+        context="zebrafish caching",
         commits=["aaa"],
     )
     await _seed(

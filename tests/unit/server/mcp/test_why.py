@@ -240,17 +240,43 @@ async def test_get_why_targets_surfaces_code_rationale(setup_mcp, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_why_semantic_decision_namespace_filtering(setup_mcp):
+async def test_get_why_semantic_decision_namespace_filtering(session, setup_mcp):
     """Mode 3 semantic path: over-fetch from page store, keep only decision: hits.
 
     Upserts a decision vector under the 'decision:' prefix and a noise page
     without the prefix into the shared vector store.  Confirms that get_why
     surfaces the decision hit with the prefix stripped, and excludes the noise
     page from the decisions list.
+
+    A stored record is seeded alongside them because the semantic lanes now run
+    only once something has cleared the relevance floor: a question no stored
+    record answers returns before embedding anything, rather than serving the
+    three nearest vectors to a store that has nothing to say.
     """
+    import json
+
     import repowise.server.mcp_server as mcp_mod
     from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
+    from repowise.core.persistence.models import DecisionRecord
     from repowise.server.mcp_server import get_why
+
+    session.add(
+        DecisionRecord(
+            id="dec-redis",
+            repository_id=setup_mcp,
+            title="Redis for caching",
+            status="proposed",
+            context="caching",
+            decision="Use Redis for caching",
+            rationale="Redis caching reduces latency",
+            affected_files_json=json.dumps([]),
+            affected_modules_json=json.dumps([]),
+            source="pr",
+            confidence=0.8,
+            staleness_score=0.0,
+        )
+    )
+    await session.flush()
 
     vs = mcp_mod._vector_store
 
