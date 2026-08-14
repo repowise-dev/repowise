@@ -31,10 +31,7 @@ CLEAN = b"""def add(a, b):
 
 
 def _fake_result(files: dict[str, bytes]):
-    parsed = [
-        SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[])
-        for p in files
-    ]
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[]) for p in files]
     return SimpleNamespace(parsed_files=parsed, source_map=dict(files))
 
 
@@ -73,9 +70,7 @@ async def _rows(sf) -> list[tuple]:
 class TestScanFile:
     def test_line_patterns_fire_on_real_source(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        findings = asyncio.run(
-            scanner.scan_file("a.py", SNIPPY.decode(), symbols=[])
-        )
+        findings = asyncio.run(scanner.scan_file("a.py", SNIPPY.decode(), symbols=[]))
         kinds = {f["kind"] for f in findings}
         assert "hardcoded_password" in kinds
         assert "pickle_loads" in kinds
@@ -139,13 +134,9 @@ class TestPersistSecurityFindings:
             from repowise.core.persistence import get_session
 
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": SNIPPY}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": SNIPPY}), session, "repo-1")
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": CLEAN}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": CLEAN}), session, "repo-1")
             rows = await _rows(sf)
             await engine.dispose()
             return rows
@@ -166,9 +157,7 @@ class TestPersistSecurityFindings:
             sym = SimpleNamespace(name="auth", start_line=7)
             result = SimpleNamespace(
                 parsed_files=[
-                    SimpleNamespace(
-                        file_info=SimpleNamespace(path="auth.py"), symbols=[sym]
-                    )
+                    SimpleNamespace(file_info=SimpleNamespace(path="auth.py"), symbols=[sym])
                 ],
             )
             async with get_session(sf) as session:
@@ -179,3 +168,64 @@ class TestPersistSecurityFindings:
 
         rows = asyncio.run(_run())
         assert ("auth.py", "security_sensitive_symbol", 7) in rows
+
+    def test_replace_findings_duplicate_key_does_not_lose_rows(self, tmp_path: Path) -> None:
+        """Two findings sharing a provenance key must not abort the batch and
+        drop the file's other rows (regression for the bulk-INSERT abort that
+        swallowed IntegrityError and silently truncated the insert)."""
+        from repowise.core.analysis.security_scan import SecurityScanner
+        from repowise.core.persistence import get_session
+
+        async def _run():
+            engine, sf = await _fresh_session_factory(tmp_path)
+            async with get_session(sf) as session:
+                scanner = SecurityScanner(session, "repo-1")
+                await scanner.replace_findings(
+                    {
+                        "a.py": [
+                            {"kind": "hardcoded_password", "severity": "high", "line": 1},
+                            {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                            {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                        ],
+                    },
+                    ["a.py"],
+                )
+            rows = await _rows(sf)
+            await engine.dispose()
+            return rows
+
+        rows = asyncio.run(_run())
+        assert sorted(rows) == [
+            ("a.py", "hardcoded_password", 1),
+            ("a.py", "security_sensitive_symbol", 7),
+        ]
+
+    def test_replace_findings_rescan_keeps_prior_and_new_rows(self, tmp_path: Path) -> None:
+        """Re-running replace_findings over the same file must yield the same
+        full row set — duplicates on the provenance key are no-ops, never a
+        partial insert."""
+        from repowise.core.analysis.security_scan import SecurityScanner
+        from repowise.core.persistence import get_session
+
+        async def _run():
+            engine, sf = await _fresh_session_factory(tmp_path)
+            findings = {
+                "a.py": [
+                    {"kind": "hardcoded_password", "severity": "high", "line": 1},
+                    {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                    {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                ],
+            }
+            for _ in range(2):
+                async with get_session(sf) as session:
+                    scanner = SecurityScanner(session, "repo-1")
+                    await scanner.replace_findings(findings, ["a.py"])
+            rows = await _rows(sf)
+            await engine.dispose()
+            return rows
+
+        rows = asyncio.run(_run())
+        assert sorted(rows) == [
+            ("a.py", "hardcoded_password", 1),
+            ("a.py", "security_sensitive_symbol", 7),
+        ]

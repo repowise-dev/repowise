@@ -40,7 +40,7 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"password\s*=\s*['\"]"), "hardcoded_password", "high"),
     (re.compile(r"(?:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
-    (re.compile(r'\.execute\(\s*[\'\"]\s*SELECT.*\+'), "concat_sql", "med"),
+    (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
     (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
 ]
@@ -51,9 +51,7 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
 _ANY_PATTERN = re.compile("|".join(f"(?:{p.pattern})" for p, _, _ in _PATTERNS))
 
 # Symbol names that are informational security hotspots
-_SYMBOL_KEYWORDS = re.compile(
-    r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE
-)
+_SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE)
 
 # Patterns whose matches are genuine leaked credentials (as opposed to the
 # broader "code smell" patterns like os.system/eval). Full-history scans
@@ -62,6 +60,17 @@ _SYMBOL_KEYWORDS = re.compile(
 # history. This positions history mode as complementary to gitleaks /
 # trufflehog rather than a noisy replacement.
 SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
+
+
+def _is_missing_table_error(exc: Exception) -> bool:
+    """True when *exc* is a 'no such table' / 'does not exist' failure.
+
+    ``replace_findings`` runs against a DB that may not yet have migrated the
+    ``security_findings`` table (pre-migration indexing). Those failures are
+    expected and skipped silently; everything else is a real error.
+    """
+    message = str(exc).lower()
+    return "no such table" in message or "does not exist" in message
 
 
 class SecurityScanner:
@@ -169,10 +178,7 @@ class SecurityScanner:
             conflict_suffix = ""
         else:
             insert_prefix = "INSERT INTO security_findings "
-            conflict_suffix = (
-                " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance "
-                "DO NOTHING"
-            )
+            conflict_suffix = " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance DO NOTHING"
 
         inserted = 0
         for finding in findings:
@@ -183,8 +189,7 @@ class SecurityScanner:
                         + "(repository_id, file_path, kind, severity, snippet, line_number, "
                         "commit_sha, commit_at, detected_at) "
                         "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
-                        ":commit_sha, :commit_at, :detected_at)"
-                        + conflict_suffix
+                        ":commit_sha, :commit_at, :detected_at)" + conflict_suffix
                     ),
                     {
                         "repo_id": self._repo_id,
@@ -223,6 +228,14 @@ class SecurityScanner:
         ``scan --history`` are left intact. Uses raw SQL to stay independent of
         any ORM session state; silently skips if the table doesn't exist yet
         (pre-migration).
+
+        Re-running must never lose findings: two findings in one batch can
+        share a provenance key (e.g. two keyword symbols on the same line), and
+        a plain bulk INSERT would abort the whole batch at the first collision
+        — after the DELETE above already removed the file's prior rows. Rows
+        are therefore deduplicated in Python and inserted with the same
+        conflict-tolerant clauses as ``persist``, so a duplicate key is a no-op
+        rather than an abort.
         """
         chunk_size = 400  # SQLite parameter-limit headroom, same as the CRUD layer
 
@@ -258,16 +271,51 @@ class SecurityScanner:
                 for file_path, findings in findings_by_file.items()
                 for finding in findings
             ]
-            if rows:
+            # Two findings can collide on the unique provenance key
+            # (repository_id, file_path, kind, line_number, commit_sha) — e.g.
+            # two keyword symbols on the same line. Keeping only the first per
+            # key makes the batch insertable and lossless (the duplicates are
+            # redundant signals, not distinct rows).
+            seen: set[tuple[str, str, int]] = set()
+            deduped: list[dict] = []
+            for row in rows:
+                key = (row["file_path"], row["kind"], row["line"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(row)
+
+            if deduped:
+                uses_sqlite = self._uses_sqlite()
+                insert_prefix = (
+                    "INSERT OR IGNORE INTO security_findings "
+                    if uses_sqlite
+                    else "INSERT INTO security_findings "
+                )
+                conflict_suffix = (
+                    ""
+                    if uses_sqlite
+                    else " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance DO NOTHING"
+                )
                 await self._session.execute(
                     text(
-                        "INSERT INTO security_findings "
-                        "(repository_id, file_path, kind, severity, snippet, line_number, "
+                        insert_prefix
+                        + "(repository_id, file_path, kind, severity, snippet, line_number, "
                         "commit_sha, commit_at, detected_at) "
                         "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
-                        ":commit_sha, :commit_at, :detected_at)"
+                        ":commit_sha, :commit_at, :detected_at)" + conflict_suffix
                     ),
-                    rows,
+                    deduped,
                 )
-        except Exception:  # table may not exist pre-migration
-            return
+        except Exception as exc:
+            # Pre-migration, the table does not exist yet — silently skip (the
+            # historical contract for indexing against a not-yet-migrated DB).
+            # Any other failure is a real one and must not be swallowed: a
+            # silently dropped batch is how findings disappear.
+            if _is_missing_table_error(exc):
+                return
+            logger.exception(
+                "security_findings_replace_failed paths=%d rows=%d",
+                len(scanned_paths),
+                len(rows) if "rows" in locals() else 0,
+            )
