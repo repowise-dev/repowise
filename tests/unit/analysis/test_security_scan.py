@@ -31,10 +31,7 @@ CLEAN = b"""def add(a, b):
 
 
 def _fake_result(files: dict[str, bytes]):
-    parsed = [
-        SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[])
-        for p in files
-    ]
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[]) for p in files]
     return SimpleNamespace(parsed_files=parsed, source_map=dict(files))
 
 
@@ -73,9 +70,7 @@ async def _rows(sf) -> list[tuple]:
 class TestScanFile:
     def test_line_patterns_fire_on_real_source(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        findings = asyncio.run(
-            scanner.scan_file("a.py", SNIPPY.decode(), symbols=[])
-        )
+        findings = asyncio.run(scanner.scan_file("a.py", SNIPPY.decode(), symbols=[]))
         kinds = {f["kind"] for f in findings}
         assert "hardcoded_password" in kinds
         assert "pickle_loads" in kinds
@@ -87,6 +82,37 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("b.py", CLEAN.decode(), symbols=[]))
         assert findings == []
+
+    def test_single_line_subprocess_shell_true_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.run("rm -rf " + path, shell=True)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_multiline_subprocess_shell_true_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.run(\n    "rm -rf " + path,\n    shell=True,\n)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_multiline_popen_shell_true_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.Popen(\n    ["/bin/sh"],\n    shell=True,\n)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_subprocess_without_shell_does_not_fire(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.run(\n    ["git", "rev-parse", "HEAD"],\n    capture_output=True,\n)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert hits == []
 
 
 class TestPersistSecurityFindings:
@@ -139,13 +165,9 @@ class TestPersistSecurityFindings:
             from repowise.core.persistence import get_session
 
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": SNIPPY}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": SNIPPY}), session, "repo-1")
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": CLEAN}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": CLEAN}), session, "repo-1")
             rows = await _rows(sf)
             await engine.dispose()
             return rows
@@ -166,9 +188,7 @@ class TestPersistSecurityFindings:
             sym = SimpleNamespace(name="auth", start_line=7)
             result = SimpleNamespace(
                 parsed_files=[
-                    SimpleNamespace(
-                        file_info=SimpleNamespace(path="auth.py"), symbols=[sym]
-                    )
+                    SimpleNamespace(file_info=SimpleNamespace(path="auth.py"), symbols=[sym])
                 ],
             )
             async with get_session(sf) as session:
