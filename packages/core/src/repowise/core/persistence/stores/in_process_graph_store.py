@@ -169,16 +169,48 @@ class InProcessGraphStore(GraphStore):
     def _file_subgraph(self) -> nx.DiGraph:
         """Return the subgraph restricted to file-level nodes.
 
-        Matches the convention used by :class:`GraphBuilder` — symbol
-        nodes are excluded from file-centric metrics so PageRank reflects
-        module-level importance rather than per-function frequency.
+        Symbol nodes are excluded from file-centric metrics so PageRank
+        reflects module-level importance rather than per-function frequency.
+
+        Kept in step with :meth:`GraphBuilder.file_subgraph`, the other
+        implementation of this same rule: ``external`` nodes are file-level
+        too, and ``co_changes`` is history rather than code, so leaving it in
+        makes every co-change partner contribute PageRank as though it were an
+        import. This body previously claimed to match the builder while doing
+        neither, and only the absence of a production call site kept that from
+        being a live defect — the two would have scored different centrality
+        for one graph.
+
+        That parity covers :meth:`pagerank` and :meth:`betweenness_centrality`,
+        the two builder metrics computed over ``file_subgraph``. It does *not*
+        make :meth:`communities` agree with the pipeline: that path runs
+        ``detect_file_communities``, which excludes ``external`` deliberately,
+        allowlists ``FILE_DEPENDENCY_EDGE_TYPES`` rather than denying temporal
+        edges, and clusters with Leiden instead of greedy modularity. Only the
+        subgraph rule is shared.
+
+        The import is function-local on purpose: ``ingestion/__init__`` eagerly
+        pulls the tree-sitter parser stack, and ``stores/__init__`` is imported
+        by the job-store path, so a module-level import would make
+        ``repowise upgrade`` load a parser to read a ledger. The two existing
+        persistence → ingestion imports are local for the same reason.
         """
+        from ...ingestion.models import TEMPORAL_EDGE_TYPES
+
         file_nodes = [
             n
             for n, attrs in self._graph.nodes(data=True)
-            if attrs.get("node_type", "file") == "file"
+            if attrs.get("node_type", "file") in ("file", "external")
         ]
-        return self._graph.subgraph(file_nodes).copy()
+        sub = self._graph.subgraph(file_nodes).copy()
+        sub.remove_edges_from(
+            [
+                (u, v)
+                for u, v, attrs in sub.edges(data=True)
+                if attrs.get("edge_type") in TEMPORAL_EDGE_TYPES
+            ]
+        )
+        return sub
 
 
 __all__ = ["InProcessGraphStore"]

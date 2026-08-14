@@ -530,6 +530,80 @@ async def test_symbol_callers_carry_definition_line(setup_mcp, session):
 
 
 @pytest.mark.asyncio
+async def test_one_caller_joined_by_two_edge_types_is_listed_once(setup_mcp, session):
+    """Two edges between the same pair must not become two callers.
+
+    The displayed list is compared against a COUNT(DISTINCT) to decide
+    truncation, so an entry per edge makes the two sides count different
+    things: the list looks longer than the true total and `callers_truncated`
+    stays unset while real callers have been cut. Reachable since the caller
+    set became the shared symbol view — in Go a struct routinely both `calls`
+    an interface's methods and `method_implements` it.
+    """
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/store/iface.go::Storer"
+    caller_id = "src/store/disk.go::DiskStore"
+    session.add_all(
+        [
+            GraphNode(
+                id="dup_tgt",
+                repository_id=repo.id,
+                node_id=target_id,
+                node_type="symbol",
+                name="Storer",
+                file_path="src/store/iface.go",
+                kind="interface",
+                start_line=1,
+                end_line=5,
+                created_at=_NOW,
+            ),
+            GraphNode(
+                id="dup_src",
+                repository_id=repo.id,
+                node_id=caller_id,
+                node_type="symbol",
+                name="DiskStore",
+                file_path="src/store/disk.go",
+                kind="struct",
+                start_line=1,
+                end_line=9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_calls",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_impl",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="method_implements",
+                confidence=0.95,
+                created_at=_NOW,
+            ),
+        ]
+    )
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    matching = [c for c in t.get("callers", []) if c["symbol_id"] == caller_id]
+    assert len(matching) == 1, matching
+    # Highest-confidence edge survives the collapse.
+    assert matching[0]["edge_type"] == "method_implements"
+    assert not t.get("callers_truncated")
+
+
+@pytest.mark.asyncio
 async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
     """A symbol with more callers than the display cap must report the TRUE
     total + a truncation flag, so a find-all-callers sweep is not silently

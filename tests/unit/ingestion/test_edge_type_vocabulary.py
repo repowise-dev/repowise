@@ -268,6 +268,67 @@ def test_edge_type_map_covers_the_vocabulary() -> None:
     )
 
 
+def _alias_targets() -> dict[str, tuple[str, set[str]]]:
+    """Map `path::CONSTANT` -> (referenced name, names that file imports from models).
+
+    Only for `*_EDGE_TYPES = <bare name>` and the `sorted(<bare name>)` /
+    `frozenset(<bare name>)` wrappers around one. `_string_members` returns an
+    empty set for those shapes, so without this they are invisible to both
+    directions of the check.
+    """
+    found: dict[str, tuple[str, set[str]]] = {}
+    for path in _python_files():
+        rel = _rel(path)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        from_models = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("ingestion.models")
+            for alias in node.names
+        }
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            names = [t.id for t in targets if isinstance(t, ast.Name)]
+            if not any(n.endswith("_EDGE_TYPES") for n in names) or node.value is None:
+                continue
+            value = node.value
+            if isinstance(value, ast.Call) and len(value.args) == 1:
+                value = value.args[0]
+            if isinstance(value, ast.Name):
+                found[f"{rel}::{names[0]}"] = (value.id, from_models)
+    return found
+
+
+def test_an_edge_type_alias_points_at_the_shared_vocabulary() -> None:
+    """`_X_EDGE_TYPES = SOME_NAME` must name something this test can still see.
+
+    The AST checks read literals, so an alias is a blind spot: `_TYPES =
+    {"heritage"}` followed by `_CALL_EDGE_TYPES = _TYPES` would smuggle a dead
+    key past both directions. Aliasing a shared view is the intended shape and
+    stays legal; aliasing an arbitrary local name does not.
+    """
+    offenders = {
+        name: referenced
+        for name, (referenced, from_models) in _alias_targets().items()
+        if referenced not in from_models and not referenced.endswith("_EDGE_TYPES")
+    }
+    assert not offenders, (
+        "edge-type set(s) aliasing a name this check cannot follow:\n"
+        + "\n".join(f"  {n} = {v}" for n, v in sorted(offenders.items()))
+        + "\n\nAlias a view imported from repowise.core.ingestion.models, or name the"
+        " referent `*_EDGE_TYPES` so it is checked where it is defined."
+    )
+
+
 @pytest.mark.parametrize("phantom", ["has_property", "method_overrides", "dynamic"])
 def test_the_removed_phantoms_stay_removed(phantom: str) -> None:
     """Each measured at 0 rows across 42 local indexes with no producer in the tree.

@@ -17,7 +17,7 @@ explain how they fit together.
 These are the real edges between the concepts above. Base "How they
 connect" on these; do not assert a relationship that is not listed here.
 {% for r in ctx.relations %}
-- `{{ r.source }}` {% if r.kind == 'calls' %}calls{% elif r.kind == 'extends' %}extends{% elif r.kind == 'implements' %}implements{% else %}imports from{% endif %} `{{ r.target }}`
+- `{{ r.source }}` {{ r.verb }} `{{ r.target }}`
 {% endfor %}
 {% endif %}
 
@@ -65,8 +65,8 @@ Produce a Key Concepts markdown page. Required structure:
      it's awkward.
 3. **## How they connect** — one paragraph (4–7 sentences) tracing how
    the concepts collaborate. This is the section that turns the list
-   into a mental model. Ground every "X calls / extends / implements /
-   imports Y" claim in the dependency edges listed above; if two
+   into a mental model. Ground every "X depends on Y" claim in the
+   dependency edges listed above, using the verb given there; if two
    concepts have no listed edge, describe their relationship structurally
    (same layer, shared cluster) rather than asserting a direct call. If
    no edges were listed, keep this to how the clusters relate, not

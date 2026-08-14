@@ -16,6 +16,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import file_signals
+from repowise.core.ingestion.models import SYMBOL_USE_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_all_file_metrics,
     get_community_members,
@@ -39,8 +40,38 @@ from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path
 # Minimum confidence for call edges to filter false positives
 _MIN_CALL_CONFIDENCE = 0.7
 
-# Edge types that count as a "caller"/"callee" relationship.
-_CALL_EDGE_TYPES = ["calls", "extends", "implements"]
+# Edge types that count as a "caller"/"callee" relationship. Sorted so the
+# generated SQL is stable; the shared view is the source of truth.
+#
+# The private copy this replaced omitted `method_implements`, so a Go type
+# satisfying an interface was neither a caller nor a callee of it — +2,799
+# edges across 42 local indexes, all of them in Go repos.
+#
+# It also omitted `reads`, and that member is worth naming precisely rather
+# than counting as another fixed omission. At the symbol layer `reads` has one
+# producer, `framework_edges/express.py`, which joins a file's synthetic
+# `path::__module__` node to a route handler in the same file. So it admits
+# exactly one edge across all 42 indexes, and what it admits is a `__module__`
+# entry in an Express handler's caller list. Taking the shared view whole is
+# still right: hand-trimming a member here is how the private sets started.
+_CALL_EDGE_TYPES = sorted(SYMBOL_USE_EDGE_TYPES)
+
+
+def _unique_by_symbol(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse entries sharing a ``symbol_id``, keeping the first.
+
+    Order-preserving, so callers sort by confidence before calling this and
+    the survivor is the highest-confidence edge to that symbol.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        symbol_id = str(entry.get("symbol_id"))
+        if symbol_id in seen:
+            continue
+        seen.add(symbol_id)
+        out.append(entry)
+    return out
 
 
 async def _count_call_neighbors(
@@ -178,6 +209,16 @@ async def _resolve_call_graph(
     # Sort by confidence DESC
     callers.sort(key=lambda x: -(x.get("confidence") or 0))
     callees.sort(key=lambda x: -(x.get("confidence") or 0))
+
+    # One entry per neighbouring symbol, highest-confidence edge kept. Two
+    # symbols can be joined by more than one edge — in Go a struct routinely
+    # both `calls` an interface's methods and `method_implements` it — and the
+    # truncation check below compares this length against a COUNT(DISTINCT),
+    # so counting edges here reports "not truncated" while real callers are
+    # missing. That is the S2 dogfood failure `_count_call_neighbors` exists
+    # to prevent, so the two sides have to count the same thing.
+    callers = _unique_by_symbol(callers)
+    callees = _unique_by_symbol(callees)
 
     if want_callers:
         result_data["callers"] = callers

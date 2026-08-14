@@ -23,11 +23,20 @@ from repowise.core.generation.onboarding.slots import (
     SLOT_KEY_CONCEPTS,
 )
 from repowise.core.generation.onboarding.subkinds.key_concepts import (
+    _CONCEPT_EDGE_TYPES,
+    _RELATION_VERB,
+    ConceptRelation,
     ConceptSymbol,
     KeyConceptsContext,
     _prose_hits,
 )
-from repowise.core.ingestion.models import FileInfo, ParsedFile, RepoStructure, Symbol
+from repowise.core.ingestion.models import (
+    SYMBOL_USE_EDGE_TYPES,
+    FileInfo,
+    ParsedFile,
+    RepoStructure,
+    Symbol,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture builders: a ParsedFile + a real networkx symbol graph so the builder
@@ -104,7 +113,7 @@ def _graph_builder(files: list[ParsedFile], edges: list[tuple[str, str, str]]):
     concept_edges = [
         (u, v)
         for u, v, d in g.edges(data=True)
-        if d.get("edge_type") in ("calls", "extends", "implements")
+        if d.get("edge_type") in SYMBOL_USE_EDGE_TYPES
     ]
     sub = nx.DiGraph()
     sub.add_nodes_from(n for n, d in g.nodes(data=True) if d.get("node_type") == "symbol")
@@ -267,6 +276,46 @@ def test_key_concepts_grounds_relationships_from_edges() -> None:
     assert ctx is not None
     rels = {(r.source, r.kind, r.target) for r in ctx.relations}
     assert ("OpenAIProvider", "extends", "BaseProvider") in rels
+
+
+def test_relation_verb_covers_the_edge_types() -> None:
+    """Every type the relations list can carry needs a verb.
+
+    The fall-through is silent: an unmapped type renders as "depends on" into
+    an LLM prompt that says to use the verb given. The template this replaced
+    fell through to "imports from", which would have called a Go
+    ``method_implements`` edge an import.
+    """
+    assert not (_CONCEPT_EDGE_TYPES - _RELATION_VERB.keys())
+    assert not (_RELATION_VERB.keys() - _CONCEPT_EDGE_TYPES)
+
+
+def test_go_interface_satisfaction_is_a_relation() -> None:
+    """``method_implements`` was absent from the private set this file kept, so
+    a Go type satisfying an interface produced no relation at all."""
+    base = _file("m/base.go", [_sym("m/base.go", "Storer", "interface", doc="Interface.")])
+    impl = _file("m/disk.go", [_sym("m/disk.go", "DiskStore", "struct", doc="Concrete.")])
+    other = _file("m/client.go", [_sym("m/client.go", "ApiClient", "struct", doc="Client.")])
+    conf = _file("m/config.go", [_sym("m/config.go", "Settings", "struct", doc="Config.")])
+    files = [base, impl, other, conf]
+    edges = [("m/disk.go::DiskStore", "m/base.go::Storer", "method_implements")]
+    for i in range(5):
+        c = f"call/u{i}.go"
+        files.append(_file(c, [_sym(c, f"u{i}", "function")]))
+        for tgt in (
+            "m/base.go::Storer",
+            "m/disk.go::DiskStore",
+            "m/client.go::ApiClient",
+            "m/config.go::Settings",
+        ):
+            edges.append((f"{c}::u{i}", tgt, "calls"))
+    ctx = onboarding.get_spec(SLOT_KEY_CONCEPTS).build_context(
+        _signals(files, _graph_builder(files, edges))
+    )
+    assert ctx is not None
+    rels = {(r.source, r.kind, r.target) for r in ctx.relations}
+    assert ("DiskStore", "method_implements", "Storer") in rels
+    assert ConceptRelation("DiskStore", "Storer", "method_implements").verb == "implements"
 
 
 def test_key_concepts_excludes_test_helpers() -> None:

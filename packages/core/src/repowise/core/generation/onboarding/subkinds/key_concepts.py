@@ -27,6 +27,7 @@ from typing import Any
 
 import structlog
 
+from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_KEY_CONCEPTS, SLOT_TITLES
@@ -54,12 +55,26 @@ _SKIP_KINDS = frozenset({"module", "variable", "constant"})
 _TRIVIAL_NAMES = frozenset(
     {"get", "set", "run", "main", "new", "init", "of", "to", "call", "setup", "wrap"}
 )
-# Symbol-graph edge types that mean "depends on": a call, or a heritage
-# link (subclass / interface implementation).
-_CONCEPT_EDGE_TYPES = frozenset({"calls", "extends", "implements"})
-# Relationship edge types rendered into "How they connect" - heritage and
-# calls plus resolved imports, so the LLM states real links, not guesses.
-_RELATION_EDGE_TYPES = frozenset({"calls", "extends", "implements", "imports"})
+# Symbol-graph edge types that mean "depends on": a call, a heritage link, or
+# a Go-style interface satisfaction. Both users below - the cross-file caller
+# count and the "How they connect" relations - keep only edges whose endpoints
+# are chosen symbols.
+#
+# The two private copies this replaced both omitted `method_implements`, and
+# the relations copy additionally carried `imports`. `imports` is file -> file
+# and every one of its producers emits it between file nodes, so it could not
+# match here at all: 0 symbol -> symbol `imports` edges exist across 42 local
+# indexes.
+#
+# `reads` is in the shared view and is *nearly* as inert here, for a weaker
+# reason worth writing down. Its one symbol-layer producer,
+# `framework_edges/express.py`, joins a file's `path::__module__` node to a
+# handler in the same file, so the cross-file test below drops it and
+# `_SKIP_KINDS` keeps `__module__` from ever being a chosen concept. That is a
+# property of today's extractor, not of the graph's shape, so it is taken from
+# the shared view rather than trimmed out: a future cross-file `reads` should
+# start counting here without anyone remembering to add it.
+_CONCEPT_EDGE_TYPES = SYMBOL_USE_EDGE_TYPES
 
 
 @dataclass
@@ -75,6 +90,28 @@ class ConceptSymbol:
     cross_file_callers: int = 0
 
 
+# One verb per edge type the relations list can carry, so both templates print
+# a phrase instead of a raw token. Total over _CONCEPT_EDGE_TYPES and asserted
+# so by test_relation_verb_covers_the_edge_types: the fall-through is silent,
+# and the template it replaced fell through to "imports from" — which was
+# harmless only while `imports` was in the set and would have mislabelled a Go
+# `method_implements` edge the moment it was not.
+#
+# Ceiling: c4_builder/labels.py `_EDGE_VERB` answers a similar question over
+# all 14 types, but it lives in packages/server and core cannot import it, and
+# it disagrees here on 2 of the 5 shared keys - `extends` reads "inherits from"
+# and `reads` reads "uses", both tuned for a C4 arrow rather than for prose. If
+# a third copy appears, reconcile the wording first, then lift one map into
+# core; a straight merge would silently reword these prompts.
+_RELATION_VERB: dict[str, str] = {
+    "calls": "calls",
+    "extends": "extends",
+    "implements": "implements",
+    "method_implements": "implements",
+    "reads": "reads from",
+}
+
+
 @dataclass
 class ConceptRelation:
     """One grounded edge between two chosen concepts, drawn from the graph
@@ -82,7 +119,13 @@ class ConceptRelation:
 
     source: str
     target: str
-    kind: str  # calls | extends | implements | imports
+    kind: str  # a member of _CONCEPT_EDGE_TYPES
+
+    @property
+    def verb(self) -> str:
+        """The phrase to render. ``"depends on"`` only if a new edge type
+        reaches here before it is given a verb above."""
+        return _RELATION_VERB.get(self.kind, "depends on")
 
 
 @dataclass
@@ -215,7 +258,7 @@ def _relations_among(
     relations: list[ConceptRelation] = []
     for src, dst, data in graph.edges(data=True):
         etype = data.get("edge_type")
-        if etype not in _RELATION_EDGE_TYPES:
+        if etype not in _CONCEPT_EDGE_TYPES:
             continue
         if src not in chosen_ids or dst not in chosen_ids or src == dst:
             continue
