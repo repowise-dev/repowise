@@ -13,6 +13,7 @@ import { toFriendlyMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
 import {
   deadCodeConfidenceTier,
+  deadCodeRiskFactorLabel,
   type DeadCodeFinding,
   type DeadCodeStatus,
 } from "@repowise-dev/types/dead-code";
@@ -155,7 +156,7 @@ export function FindingSafety({ finding }: { finding: DeadCodeFinding }) {
       variant="default"
       title={
         finding.risk_factors && finding.risk_factors.length > 0
-          ? `Runtime-load risk (${finding.risk_factors.join(", ")}) - verify it isn't loaded outside static imports before deleting`
+          ? `Runtime-load risk (${finding.risk_factors.map(deadCodeRiskFactorLabel).join(", ")}) - verify it isn't loaded outside static imports before deleting`
           : "Lower confidence - verify before deleting"
       }
     >
