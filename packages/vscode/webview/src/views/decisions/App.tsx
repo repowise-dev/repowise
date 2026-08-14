@@ -16,6 +16,9 @@ const STATUS_DOT: Record<Status, string> = {
   active: "var(--color-success)",
   proposed: "var(--color-info)",
   deprecated: "var(--color-error)",
+  // A tombstone, excluded from every listing this view reads — so it stays out
+  // of STATUS_ORDER, but the map is exhaustive over the status vocabulary.
+  dismissed: "var(--color-text-tertiary)",
   superseded: "var(--color-text-tertiary)",
 };
 

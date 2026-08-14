@@ -6,6 +6,8 @@ const STATUS_COLOR: Record<string, string> = {
   active: "var(--color-success)",
   proposed: "var(--color-accent-primary)",
   deprecated: "var(--color-error)",
+  // Muted like `superseded`: a tombstone is out of the way, not an alarm.
+  dismissed: "var(--color-text-tertiary)",
   superseded: "var(--color-text-tertiary)",
 };
 
