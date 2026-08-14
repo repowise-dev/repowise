@@ -43,6 +43,7 @@ from repowise.core.reasoning import REASONING_MODES
 
 from .incremental import (
     _build_update_vector_store,
+    _load_stored_function_mod_p80,
     _load_stored_git_meta,
     _rebuild_graph_and_git,
     _refresh_knowledge_graph,
@@ -1204,7 +1205,9 @@ def run_update(
 
     # ``git_meta_map`` holds this run's changed files only; the dead-code
     # analyzer scores confidence per file and would read every unchanged file
-    # as "no commits" without the stored rows.
+    # as "no commits" without the stored rows. The stored function-mod p80
+    # keeps the hotspot gate repo-wide instead of derived from the changed
+    # subset (issue #1484).
     partial_health_report, dead_code_report = _run_partial_analysis(
         repo_path,
         graph_builder,
@@ -1213,6 +1216,7 @@ def run_update(
         file_diffs,
         source_map,
         stored_git_meta=_load_stored_git_meta(repo_path),
+        repo_function_mod_p80=_load_stored_function_mod_p80(repo_path),
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before

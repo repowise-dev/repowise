@@ -554,6 +554,25 @@ async def count_git_function_blame(session: AsyncSession, repository_id: str) ->
     return int(result.scalar_one() or 0)
 
 
+async def get_git_function_mod_counts(session: AsyncSession, repository_id: str) -> list[int]:
+    """Return the persisted per-function modification counts for a repository.
+
+    The ``git_function_blame`` rollup is written during FULL-tier health
+    analysis (all modified functions on a full index; the changed subset on
+    an incremental one), so reading it back gives the repo-wide distribution
+    a fresh percentile can be computed from — the incremental health pass
+    reuses this instead of deriving the hotspot gate from the churn-heavy
+    changed-files subset (issue #1484).
+    """
+    result = await session.execute(
+        select(GitFunctionBlame.mod_count).where(
+            GitFunctionBlame.repository_id == repository_id,
+            GitFunctionBlame.mod_count > 0,
+        )
+    )
+    return [int(mod_count) for (mod_count,) in result.all()]
+
+
 async def get_git_function_blame(
     session: AsyncSession, repository_id: str, symbol_id: str
 ) -> GitFunctionBlame | None:

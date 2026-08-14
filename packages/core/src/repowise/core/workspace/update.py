@@ -425,9 +425,16 @@ async def _incremental_repo_update(
     # covers the changed files only, so every other file would be scored
     # against an empty dict — which reads as "no commits in 90 days" and puts
     # the whole repo on the 0.7 / safe-to-delete rung of the confidence ladder.
-    from ..pipeline.incremental import load_stored_git_meta
+    from ..pipeline.incremental import (
+        load_stored_function_mod_p80,
+        load_stored_git_meta,
+    )
 
     stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
+    # Repo-wide p80 from the persisted blame rollup, so the partial health
+    # pass scores the Function Hotspot gate against the full repo instead of
+    # this run's changed-files subset (issue #1484).
+    stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
 
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
@@ -437,6 +444,7 @@ async def _incremental_repo_update(
         file_diffs,
         source_map=source_map,
         stored_git_meta=stored_git_meta,
+        repo_function_mod_p80=stored_function_mod_p80,
         log=_log.info,
     )
 

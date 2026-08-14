@@ -359,6 +359,7 @@ class HealthAnalyzer:
         *,
         on_step: Any | None = None,
         changed_files: set[str] | list[str] | None = None,
+        repo_function_mod_p80: int | None = None,
     ) -> HealthReport:
         """Analyze the configured parsed files.
 
@@ -368,6 +369,15 @@ class HealthAnalyzer:
         files), but only files in *changed_files* contribute findings /
         metrics. The caller is responsible for upserting (not replacing)
         the result against the existing rows.
+
+        *repo_function_mod_p80* overrides the repo-wide 80th percentile of
+        per-function modification counts that gates the Function Hotspot
+        biomarker. On an incremental run ``walked`` holds only the changed
+        files, so deriving the percentile from it would bias the gate
+        toward churn-heavy subsets (issue #1484) — the caller should pass
+        the percentile computed over the full repo (from the persisted
+        ``git_function_blame`` rollup) instead. ``None`` (the default)
+        computes it from the walked set as before.
         """
         cfg = config or {}
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
@@ -437,7 +447,11 @@ class HealthAnalyzer:
             if on_step:
                 on_step(pf.file_info.path)
 
-        repo_fn_mod_p80 = _compute_repo_function_mod_p80(walked, self.git_meta_map)
+        repo_fn_mod_p80 = (
+            repo_function_mod_p80
+            if repo_function_mod_p80 is not None
+            else _compute_repo_function_mod_p80(walked, self.git_meta_map)
+        )
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
@@ -522,6 +536,7 @@ class HealthAnalyzer:
         on_step: Any | None = None,
         changed_files: set[str] | list[str] | None = None,
         max_workers: int | None = None,
+        repo_function_mod_p80: int | None = None,
     ) -> HealthReport:
         """Parallel variant of :meth:`analyze` for large repos.
 
@@ -534,6 +549,11 @@ class HealthAnalyzer:
         Duplication still runs once up-front (cross-file by nature), and
         the symbol-complexity write-back still runs on the main thread
         so ORM objects don't cross thread boundaries unexpectedly.
+
+        *repo_function_mod_p80* overrides the repo-wide percentile that
+        gates the Function Hotspot biomarker (see :meth:`analyze`); on an
+        incremental run the caller passes the value computed over the full
+        repo so the gate is not biased by the changed-files subset.
         """
         cfg = config or {}
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
@@ -612,7 +632,11 @@ class HealthAnalyzer:
             except Exception as exc:
                 log.debug("health_duplication_failed", error=str(exc))
                 dup_report = DuplicationReport()
-        repo_fn_mod_p80 = _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
+        repo_fn_mod_p80 = (
+            repo_function_mod_p80
+            if repo_function_mod_p80 is not None
+            else _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
+        )
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
