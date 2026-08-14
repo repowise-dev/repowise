@@ -673,6 +673,52 @@ def _wavg_attr(rows: list[HealthFileMetricData], attr: str) -> float | None:
     return sum(getattr(r, attr) * max(r.nloc, 1) for r in scored) / total_w
 
 
+def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
+    """NLOC-weighted mean of ``score``, weighting each file by ``max(nloc, 1)``.
+
+    Returns 10.0 for an empty input. Callers that can distinguish "nothing to
+    average" from "averaged to a perfect score" should check emptiness first —
+    :func:`hotspot_health` does exactly that.
+    """
+    if not rows:
+        return 10.0
+    total_w = sum(max(r.nloc, 1) for r in rows)
+    if total_w == 0:
+        return sum(r.score for r in rows) / len(rows)
+    return sum(r.score * max(r.nloc, 1) for r in rows) / total_w
+
+
+def hotspot_health(
+    metrics: list[HealthFileMetricData],
+    hotspot_paths: set[str],
+) -> float | None:
+    """The repo's hotspot health: NLOC-weighted score over its hotspot files.
+
+    **This is the only implementation of that question.** Four places computed
+    it and two more read a persisted copy. Of the four, two averaged the top 25%
+    of files *by NLOC*, which ranks size rather than churn and so answers a
+    different question: measured against this definition across 42 local
+    indexes they differed on all 42, median 2.67 points of 10, worst 6.46, and
+    read *higher* on 31 — the wrong definition was also the flattering one. The
+    other two agreed here and differed only over what to say when a repo has no
+    hotspot files. Anything that wants this number calls here.
+
+    *hotspot_paths* is the set git flagged ``is_hotspot``: top-quartile churn
+    **and** the absolute activity floors from issue #361.
+
+    ``None`` means the repo has no hotspot files at all, which is a real answer
+    and not a failure — a repo with no recent churn has nothing to be a hotspot.
+    It is kept distinct from a low score on purpose: averaging an empty set
+    yields 10.0, and reporting that would tell a user their hotspots are perfect
+    when they have none. :func:`compute_kpis` still floors it to 10.0 for the
+    persisted KPI, and says why there.
+    """
+    rows = [m for m in metrics if m.file_path in hotspot_paths]
+    if not rows:
+        return None
+    return round(nloc_weighted_score(rows), 2)
+
+
 def compute_kpis(
     metrics: list[HealthFileMetricData],
     hotspot_paths: set[str],
@@ -704,23 +750,21 @@ def compute_kpis(
             "performance_hotspot": None,
         }
 
-    def _wavg(rows: list[HealthFileMetricData]) -> float:
-        if not rows:
-            return 10.0
-        total_w = sum(max(r.nloc, 1) for r in rows)
-        if total_w == 0:
-            return sum(r.score for r in rows) / len(rows)
-        return sum(r.score * max(r.nloc, 1) for r in rows) / total_w
-
     hotspots = [m for m in metrics if m.file_path in hotspot_paths]
     worst = min(metrics, key=lambda m: m.score)
     maint_avg = _wavg_attr(metrics, "maintainability_score")
     maint_hotspot = _wavg_attr(hotspots, "maintainability_score")
     perf_avg = _wavg_attr(metrics, "performance_score")
     perf_hotspot = _wavg_attr(hotspots, "performance_score")
+    # Floored to 10.0 when the repo has no hotspot files, because this dict is
+    # what ``save_health_snapshot`` persists into a non-nullable column and what
+    # the trend alerts diff against. The floor lives here, at the one point that
+    # needs it, rather than inside the arithmetic — surfaces that can say "no
+    # hotspots" out loud read ``hotspot_health()`` and get ``None``.
+    hotspot_kpi = hotspot_health(metrics, hotspot_paths)
     return {
-        "hotspot_health": round(_wavg(hotspots), 2),
-        "average_health": round(_wavg(metrics), 2),
+        "hotspot_health": hotspot_kpi if hotspot_kpi is not None else 10.0,
+        "average_health": round(nloc_weighted_score(metrics), 2),
         "worst_performer_path": worst.file_path,
         "worst_performer_score": round(worst.score, 2),
         "file_count": len(metrics),

@@ -190,6 +190,7 @@ def _query_health(repo_path: Path) -> dict | None:
         return None
 
     async def _q() -> dict | None:
+        from repowise.core.analysis.health.scoring import hotspot_health
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
@@ -198,6 +199,7 @@ def _query_health(repo_path: Path) -> dict | None:
         from repowise.core.persistence.crud import (
             get_health_metrics,
             get_health_summary,
+            get_hotspot_file_paths,
             get_repository_by_path,
         )
 
@@ -210,23 +212,21 @@ def _query_health(repo_path: Path) -> dict | None:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return None
-                summary = await get_health_summary(session, repo.id)
+                # Load the metrics once and hand them to the summary. Without
+                # the ``metrics=`` handoff the summary reads the whole table
+                # itself, so this function used to read it twice per
+                # ``repowise status`` (and recompute the findings aggregate and
+                # the worst-first sort twice with it).
+                metrics = await get_health_metrics(session, repo.id)
+                summary = await get_health_summary(session, repo.id, metrics=metrics)
                 if summary["file_count"] == 0:
                     return None
-                metrics = await get_health_metrics(session, repo.id)
-                # Hotspot health: NLOC-weighted avg of top-25% files by NLOC.
-                if metrics:
-                    by_nloc = sorted(metrics, key=lambda m: m.nloc or 0, reverse=True)
-                    top = by_nloc[: max(1, len(by_nloc) // 4)]
-                    tot = sum(max(m.nloc, 1) for m in top)
-                    hotspot = (
-                        sum(m.score * max(m.nloc, 1) for m in top) / tot
-                        if tot
-                        else summary["average_health"]
-                    )
-                else:
-                    hotspot = summary["average_health"]
-                return {**summary, "hotspot_health": round(hotspot, 2)}
+                # Hotspot health from the one owner. This used to average the
+                # top 25% of files by NLOC, which ranks size rather than churn;
+                # it is the same wrong definition ``get_overview`` carried, so
+                # the two agreed with each other and with no other surface.
+                hotspot_paths = await get_hotspot_file_paths(session, repo.id)
+                return {**summary, "hotspot_health": hotspot_health(metrics, hotspot_paths)}
         finally:
             await engine.dispose()
 
@@ -267,10 +267,15 @@ def _query_health_line(repo_path: Path) -> str | None:
         if perf is not None
         else ""
     )
+    # ``None`` when the repo has no hotspot files, so the segment is dropped
+    # rather than printing a 10.0 that would read as "your hotspots are
+    # perfect" when there are none to score.
+    hotspot = data.get("hotspot_health")
+    hotspot_part = f"{hotspot:.1f} (hotspots) · " if hotspot is not None else ""
     return (
         f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) "
         f"[[{band_color}]{BAND_LABEL[band]}[/{band_color}]] · "
-        f"{data['hotspot_health']:.1f} (hotspots) · "
+        f"{hotspot_part}"
         f"{worst_repr} (worst: {worst_path})"
         f"{maint_part}"
         f"{perf_part}"

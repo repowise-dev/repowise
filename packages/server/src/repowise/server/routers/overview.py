@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -388,7 +389,16 @@ async def overview_summary(
     snapshot = await crud.get_health_snapshot_headline(
         session, repo_id, recent=HEALTH_HISTORY_POINTS
     )
-    hotspot_health: float | None = None
+    # The headline is the *current* number, so it comes from the metrics loaded
+    # above rather than off the newest snapshot: ``repowise update`` re-scores
+    # health without writing a snapshot, so the stored value can lag the rows
+    # every other figure on this page is built from. Costs no extra query.
+    #
+    # ``history`` and ``deltas`` below stay snapshot-derived on purpose. They
+    # are a series of recorded runs, and there is no live value for "the run
+    # before this one", so the delta means "since the last recorded snapshot".
+    hotspot_paths = await crud.get_hotspot_file_paths(session, repo_id)
+    hotspot_health_value = hotspot_health(health_metrics, hotspot_paths)
     last_indexed_at: str | None = None
     deltas: dict[str, float | None] = {
         "average_health": None,
@@ -396,7 +406,6 @@ async def overview_summary(
         "file_count": None,
     }
     if snapshot.snapshot_count:
-        hotspot_health = round(float(snapshot.hotspot_health), 2)
         last_indexed_at = snapshot.taken_at.isoformat() if snapshot.taken_at else None
     if len(snapshot.recent) >= 2:
         prev, cur = snapshot.recent[-2], snapshot.recent[-1]
@@ -580,7 +589,7 @@ async def overview_summary(
         },
         "health": {
             "average_health": health_summary.get("average_health"),
-            "hotspot_health": hotspot_health,
+            "hotspot_health": hotspot_health_value,
             "worst_performer_path": health_summary.get("worst_performer_path"),
             "worst_performer_score": health_summary.get("worst_performer_score"),
             "open_findings": health_summary.get("open_findings", 0),

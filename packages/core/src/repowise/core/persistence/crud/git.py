@@ -105,6 +105,25 @@ async def get_all_git_metadata(session: AsyncSession, repository_id: str) -> dic
     return {gm.file_path: gm for gm in result.scalars().all()}
 
 
+async def get_hotspot_file_paths(session: AsyncSession, repository_id: str) -> set[str]:
+    """The file paths git flagged ``is_hotspot``, as a set.
+
+    One scalar column, no entity hydration: every caller wants membership, and
+    :func:`get_all_git_metadata` would load each row's full ORM object to answer
+    it. Shared rather than inlined because the hotspot set defines what
+    ``hotspot_health`` averages over, and a surface that scopes it differently
+    silently answers a different question — which is how the KPI came to have
+    four implementations.
+    """
+    result = await session.execute(
+        select(GitMetadata.file_path).where(
+            GitMetadata.repository_id == repository_id,
+            GitMetadata.is_hotspot.is_(True),
+        )
+    )
+    return {row[0] for row in result.all() if row[0] is not None}
+
+
 #: The only git fields dead-code confidence is scored from
 #: (``analyzer._make_unreachable_finding`` and its sibling detectors).
 _DEAD_CODE_GIT_FIELDS = (

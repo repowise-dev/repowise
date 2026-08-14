@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
+from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -303,32 +304,29 @@ class EditorFileDataFetcher:
         if not metric_rows:
             return None
 
-        # KPIs.
-        total_nloc = sum(max(m.nloc, 1) for m in metric_rows)
-        avg = (
-            sum(m.score * max(m.nloc, 1) for m in metric_rows) / total_nloc
-            if total_nloc
-            else sum(m.score for m in metric_rows) / len(metric_rows)
-        )
+        # KPIs. The weighting is the shared one rather than a fourth copy of it:
+        # this reimplemented ``nloc_weighted_score`` exactly, including the
+        # zero-total-weight fallback to a plain mean. The empty case cannot
+        # reach it — ``metric_rows`` is checked above.
+        avg = nloc_weighted_score(metric_rows)
         worst = min(metric_rows, key=lambda m: m.score)
 
-        # Hotspot-flagged paths.
-        hotspot_paths_res = await self._session.execute(
-            select(GitMetadata.file_path).where(
-                GitMetadata.repository_id == self._repo_id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
-            )
-        )
-        hotspot_paths = {row[0] for row in hotspot_paths_res.all()}
+        # Hotspot-flagged paths, and the hotspot KPI over them. Both come from
+        # the shared owners now; this file used to re-derive the same weighted
+        # average inline and the same path query inline, and agreed with the
+        # canonical KPI only by coincidence.
+        hotspot_paths = await crud.get_hotspot_file_paths(self._session, self._repo_id)
+        hotspot_kpi = hotspot_health(metric_rows, hotspot_paths)
 
-        hotspot_metrics = [m for m in metric_rows if m.file_path in hotspot_paths]
-        if hotspot_metrics:
-            h_nloc = sum(max(m.nloc, 1) for m in hotspot_metrics)
-            hotspot_health = (
-                sum(m.score * max(m.nloc, 1) for m in hotspot_metrics) / h_nloc if h_nloc else avg
-            )
-        else:
-            hotspot_health = avg
+        # CEILING: when the repo has no hotspot files the honest answer is "no
+        # hotspots", and every other surface now says so by omitting the number.
+        # This one still substitutes the repo average, because saying nothing
+        # means making the figure optional in ``claude_md.j2`` / ``agents_md.j2``
+        # — and that same template line is the subject of issue #1490, which an
+        # outside contributor has claimed. UPGRADE PATH: once #1490 lands and the
+        # line renders conditionally, drop this fallback and pass ``hotspot_kpi``
+        # straight through. Affects only repos with no recent churn at all.
+        hotspot_for_claude_md = hotspot_kpi if hotspot_kpi is not None else avg
 
         # Maintainability pillar headline: NLOC-weighted over the per-file
         # maintainability scores, skipping rows that predate the split. ``None``
@@ -406,7 +404,7 @@ class EditorFileDataFetcher:
                 )
 
         return CodeHealthBlock(
-            hotspot_health=round(hotspot_health, 2),
+            hotspot_health=round(hotspot_for_claude_md, 2),
             average_health=round(avg, 2),
             worst_score=round(worst.score, 2),
             worst_path=worst.file_path,
