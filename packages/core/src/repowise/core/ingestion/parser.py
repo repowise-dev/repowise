@@ -879,9 +879,11 @@ class ASTParser:
             # call_expression, which would otherwise fall into the CommonJS
             # branch below and be dropped on the floor — a dynamic import
             # holds no ``require()`` for ``collect_cjs_requires`` to find.
-            # ``imported_names`` is empty because the construct binds a module
-            # namespace at runtime, not a static name; the file-to-file edge is
-            # what reachability needs.
+            # The construct binds a module namespace at runtime, so record a
+            # wildcard rather than a static name.  Downstream unused-export
+            # analysis treats ``*`` as namespace consumption and therefore
+            # keeps the target's exports live without a broad analyzer
+            # exemption.
             if (
                 file_info.language in _TS_JS_LANGUAGES
                 and stmt_node.type == "call_expression"
@@ -892,7 +894,7 @@ class ASTParser:
                     Import(
                         raw_statement=raw,
                         module_path=module_text,
-                        imported_names=[],
+                        imported_names=["*"],
                         is_relative=module_text.startswith("."),
                         resolved_file=None,
                         bindings=[],
