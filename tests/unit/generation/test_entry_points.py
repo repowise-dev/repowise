@@ -1,13 +1,15 @@
-"""Tests for the pure entry-point ranking/candidacy rules (generation.entry_points)."""
+"""Tests for the pure entry-point candidacy and ranking rules."""
 
 from __future__ import annotations
 
-from repowise.core.generation.entry_points import (
+from repowise.core.entry_candidacy import (
     GLUE_STEMS,
     entry_point_depth,
-    entry_point_rank_key,
     is_glue_leaf,
     not_an_execution_start,
+)
+from repowise.core.generation.entry_points import (
+    entry_point_rank_key,
     rank_entry_points,
 )
 
@@ -52,15 +54,28 @@ def test_not_an_execution_start_is_language_or_glue_leaf():
     assert not_an_execution_start("packages/cli/src/index.ts", "typescript")
 
 
-def test_the_curator_calls_the_shared_rule_not_a_copy():
-    # The curator's output is unchanged *by construction* only while it holds
-    # this exact object; a re-inlined copy reopens the divergence the lift
-    # closed. Scope, honestly: this pins the module binding, not the two call
-    # sites. A copy that left the import in place still passes here — ruff's
-    # unused-import rule is what catches that half.
+def test_every_consumer_calls_the_shared_rule_not_a_copy():
+    # Four surfaces answer "may this file be an entry point": ingestion's flag,
+    # the KG curator's list, the tour's scorer, and the wiki's ranking. Each is
+    # unchanged *by construction* only while it holds this exact object; a
+    # re-inlined copy reopens the divergence this closed. Scope, honestly: this
+    # pins the module binding, not the call sites. A copy that left the import
+    # in place still passes here — ruff's unused-import rule catches that half.
     from repowise.core.analysis import kg_curation
+    from repowise.core.generation import tour
+    from repowise.core.ingestion import traverser
 
     assert kg_curation.not_an_execution_start is not_an_execution_start
+    assert tour.not_an_execution_start is not_an_execution_start
+    assert traverser.not_an_execution_start is not_an_execution_start
+
+
+# The flag/ranking stem union (B23) is pinned by
+# ``test_stem_union_widens_the_flag_without_dropping_a_stem`` in the traverser
+# tests, which builds real files and fails without the change. Nothing is
+# asserted about the two sets here: ``conventional_entry_stems()`` is *defined*
+# as the registry stems minus ``GLUE_STEMS``, so every relation between them —
+# disjointness included — is set algebra that holds for any content.
 
 
 def test_glue_leaf_never_outranks_a_real_entry():

@@ -869,6 +869,40 @@ class TestEntryPointFlag:
         assert "pkg/helper.py" not in flagged
         assert "latest_app.py" not in flagged
 
+    def test_candidacy_rejects_names_that_cannot_start_execution(self, tmp_path: Path) -> None:
+        # Every one of these matches the traverser's name/stem conventions and
+        # is still not where a reader enters the system. The flag is what
+        # exempts a file from dead-code detection, so a name-only guess here is
+        # a file nothing can ever report.
+        files = {
+            "index.html": "<html></html>",  # entry *filename*, non-code language
+            "docs/guide/index.md": "# guide",  # entry stem, non-code language
+            "pkg/resolvers/dotnet/index.ts": "export * from './x';",  # deep glue leaf
+            "src/main.py": "print('x')",  # the control: a real entry
+            "cli/index.ts": "export const x = 1;",  # glue near a package root survives
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        assert self._flagged(tmp_path) == {"src/main.py", "cli/index.ts"}
+
+    def test_stem_union_widens_the_flag_without_dropping_a_stem(self, tmp_path: Path) -> None:
+        # The flag stems and the stems the wiki ranks by were kept by hand and
+        # disagreed both ways. Union: neither side loses one it had.
+        files = {
+            "src/bootstrap.rb": "puts 1",  # ranking-only stem, now flagged
+            "src/cli.go": "package main",
+            "src/entry.ts": "export const x = 1;",
+            "run.py": "print('x')",  # flag-only stems must survive
+            "start.js": "console.log(1);",
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        assert self._flagged(tmp_path) == set(files)
+
     def test_pyproject_console_scripts_flag_entry_modules(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(
             "[project]\n"
@@ -892,18 +926,34 @@ class TestEntryPointFlag:
         assert "src/demo/plugins/__init__.py" in flagged
         assert "src/demo/cli/other.py" not in flagged
 
+    def test_a_console_script_target_outranks_the_candidacy_rule(self, tmp_path: Path) -> None:
+        # ``pyproject.toml`` *names* the module a launcher imports, so it is
+        # evidence, not a guess about the filename — the glue-leaf rule must
+        # not overrule it. Same reason the post-traversal stampers
+        # (graph_warmups / framework_edges) are left alone.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[project.scripts]\ndemo = "demo.sub.index:main"\n'
+        )
+        p = tmp_path / "src" / "demo" / "sub" / "index.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def main(): pass")
+        assert "src/demo/sub/index.py" in self._flagged(tmp_path)
+
     def test_single_segment_script_target_matches_exactly(self, tmp_path: Path) -> None:
         # A bare ``main`` target must not suffix-match every ``.../main.py``.
+        # The stem must be one the name conventions do *not* claim, or both
+        # files flag for that reason and the test proves nothing — ``cli`` was
+        # such a stem until it joined the flag set.
         (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "demo"\n[project.scripts]\ndemo = "cli:main"\n'
+            '[project]\nname = "demo"\n[project.scripts]\ndemo = "tool:main"\n'
         )
-        (tmp_path / "cli.py").write_text("def main(): pass")
-        nested = tmp_path / "pkg" / "cli.py"
+        (tmp_path / "tool.py").write_text("def main(): pass")
+        nested = tmp_path / "pkg" / "tool.py"
         nested.parent.mkdir(parents=True)
         nested.write_text("x = 1")
         flagged = self._flagged(tmp_path)
-        assert "cli.py" in flagged
-        assert "pkg/cli.py" not in flagged
+        assert "tool.py" in flagged
+        assert "pkg/tool.py" not in flagged
 
 
 # ---------------------------------------------------------------------------

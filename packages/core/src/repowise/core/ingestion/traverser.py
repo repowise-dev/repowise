@@ -28,6 +28,7 @@ import pathspec
 import structlog
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
+from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
 from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
@@ -252,7 +253,16 @@ _MANIFEST_FILES: frozenset[str] = _LANG_REGISTRY.package_manifest_filenames()
 # the flag-stem set. The historical
 # extra {run.py, server.py} patterns were dropped — the run/server stems
 # already cover them.
-_ENTRY_POINT_STEMS: frozenset[str] = _LANG_REGISTRY.entry_flag_stems()
+#
+# The flag stems and the stems the wiki surfaces rank by were two hand-kept
+# sets that disagreed both ways: this one lacked bootstrap/cli/entry, and the
+# ranking set lacks run/start. Union, not replacement, so neither side loses a
+# stem it already had. The ranking set is the registry's stems minus the glue
+# stems, which keeps one asymmetry deliberately: ``index`` is entry *evidence*
+# here (a package's ``index.ts`` is a real front door) and glue to the ranker,
+# which must not let a resolver's nested ``index.py`` outrank a ``main.py``.
+# ``not_an_execution_start`` below is what drops the deep ones.
+_ENTRY_POINT_STEMS: frozenset[str] = _LANG_REGISTRY.entry_flag_stems() | conventional_entry_stems()
 
 _ENTRY_POINT_NAMES: frozenset[str] = frozenset(
     p for p in _LANG_REGISTRY.entry_point_names() if not p.startswith("*")
@@ -669,11 +679,8 @@ class FileTraverser:
             is_test=is_test_related_path(rel_str, language),
             is_config=_is_config_file(language),
             is_api_contract=_is_api_contract(abs_path, language),
-            is_entry_point=(
-                filename in _ENTRY_POINT_NAMES
-                or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
-                or _stem_is_entry_point(abs_path)
-                or _is_console_script_target(rel_str, self._console_script_modules)
+            is_entry_point=_is_entry_point(
+                rel_str, filename, abs_path, language, self._console_script_modules
             ),
         )
 
@@ -909,6 +916,43 @@ def _is_api_contract(abs_path: Path, language: LanguageTag) -> bool:
 def _stem_is_entry_point(abs_path: Path) -> bool:
     stem = abs_path.stem.lower()
     return stem in _ENTRY_POINT_STEMS
+
+
+def _is_entry_point(
+    rel_str: str,
+    filename: str,
+    abs_path: Path,
+    language: str,
+    console_script_modules: frozenset[str],
+) -> bool:
+    """Whether this file gets ``FileInfo.is_entry_point``.
+
+    Two kinds of evidence, and only one of them can be wrong about the file's
+    nature. A conventional filename or stem is a *guess from the name*, and
+    names lie: ``api/server.json`` is data, ``resolvers/dotnet/index.py``
+    dispatches. ``not_an_execution_start`` is the shared correction for exactly
+    that, so the same rule that keeps those two off the wiki's orientation list
+    keeps them from being flagged in the first place — which matters because
+    the flag, not the list, is what exempts a file from dead-code detection
+    (``RepoStructure.entry_points`` is a projection of this flag, so it is
+    filtered by the same change).
+
+    A ``[project.scripts]`` target is not a guess: ``pyproject.toml`` names the
+    module a console launcher imports at runtime. Overriding named evidence
+    with a filename heuristic is how a real entry point becomes a dead-code
+    finding, so that limb is checked outside the gate. The post-traversal
+    stampers (``graph_warmups``, ``framework_edges``) are evidence of the same
+    kind — a Go ``func main()``, a ``package.json`` ``exports`` map, Spring
+    classpath scanning — and are deliberately left alone for the same reason.
+    """
+    named_entry = (
+        filename in _ENTRY_POINT_NAMES
+        or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
+        or _stem_is_entry_point(abs_path)
+    )
+    if named_entry and not not_an_execution_start(rel_str, language):
+        return True
+    return _is_console_script_target(rel_str, console_script_modules)
 
 
 class ConsoleScriptTables(NamedTuple):

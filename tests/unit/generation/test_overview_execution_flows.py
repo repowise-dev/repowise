@@ -260,9 +260,12 @@ def test_barrels_rank_below_real_entry_points(sample_config, sample_repo_structu
     includes ``index``, so a buried re-export barrel arrived indistinguishable
     from a front door and could lead the list.
 
-    Demoted rather than dropped: ``packages/cli/src/index.ts`` is a genuine
-    package front door in a monorepo, and dropping every glue stem would lose
-    it.
+    The ranking demotes rather than drops, and that is still its contract: it
+    orders what it is handed and holds no candidacy rule. Ingestion now drops
+    deep glue leaves before the flag is set, so the buried paths below no
+    longer arrive from a current index — this pins the ordering against a
+    list built by hand, and against rows written by an older index that still
+    carries them.
     """
     # ``sample_repo_structure`` is module-scoped, so mutating it in place leaks
     # into every later test in this file.

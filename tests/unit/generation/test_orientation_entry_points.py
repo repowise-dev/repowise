@@ -1,7 +1,7 @@
 """Every orientation surface names the same front door.
 
 ``RepoStructure.entry_points`` arrives ``sorted()`` by path
-(``ingestion/traverser.py:470``): deterministic, and meaningless as an
+(``ingestion/traverser.py:480``): deterministic, and meaningless as an
 orientation order. The overview ranked it; the onboarding pages, the KG
 layer-naming prompt, the KG tour and the exported KG project block each took a
 raw prefix, so a truncated list showed whatever sorted first and the surfaces
@@ -10,6 +10,11 @@ disagreed with each other about where the program starts.
 The order asserted here is ``orientation_entry_points``: a conventional entry
 name first, then shallower path, then a generic glue stem last. ``src/main.py``
 leads and ``src/features/api/index.ts`` (a glue stem, nested) comes last.
+
+``RAW`` below is a hand-built list, not a current traversal: candidacy runs at
+ingestion now, so a nested glue leaf no longer reaches this function from a
+fresh index. Ranking must still order one correctly, because an index written
+before that change hands it over.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ import pytest
 from repowise.core.generation.entry_points import orientation_entry_points
 from repowise.core.ingestion.models import RepoStructure
 
-# Path-sorted, which is what ``traverser.py:470`` actually hands over: the
+# Path-sorted, which is what ``traverser.py:480`` actually hands over: the
 # barrel sorts above the real entry because ``src/features`` precedes
 # ``src/main.py``, and ``packages/`` precedes both.
 RAW = [

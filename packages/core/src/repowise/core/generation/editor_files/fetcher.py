@@ -146,10 +146,12 @@ class EditorFileDataFetcher:
         """Curated orientation entry points (re-export barrels and sinks demoted).
 
         Prefers the curated ``kg_project_meta`` list. The raw ``is_entry_point``
-        flag also tags every package-export file (cn.ts, types/*.ts) — high
-        fan-in sinks that are the opposite of where a reader starts, and ordering
-        them by PageRank floats those sinks to the top. Falls back to the
-        flag (PageRank-ordered) only for indexes built before the curation pass.
+        flag still tags shallow package-export files (a package-root ``cn.ts``
+        or ``types/index.ts``) — high fan-in sinks that are the opposite of
+        where a reader starts, and ordering them by PageRank floats those sinks
+        to the top. Ingestion's candidacy rule removed the deeper ones from the
+        flag, which narrows the gap without closing it. Falls back to the flag
+        (PageRank-ordered) only for indexes built before the curation pass.
         """
         meta = await crud.get_kg_project_meta(self._session, self._repo_id)
         if meta is not None:

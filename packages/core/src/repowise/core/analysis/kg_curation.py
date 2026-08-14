@@ -32,13 +32,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult, _slugify
-from repowise.core.generation.entry_points import (
-    CONVENTIONAL_ENTRY_STEMS as _CONVENTIONAL_ENTRY_STEMS,
-)
-from repowise.core.generation.entry_points import (
+from repowise.core.entry_candidacy import (
+    conventional_entry_stems,
     not_an_execution_start,
-    rank_entry_points,
 )
+from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
@@ -177,6 +175,10 @@ _MAX_LAYERS = 15
 # teaches a reader nothing, so it is demoted in the presentation view. Runtime
 # entries that survive are ranked by ``pagerank + betweenness`` and the surfaced
 # set is capped — the full ranked list is kept as ``entry_candidates``.
+# Only *shallow* barrels reach here now: ingestion's candidacy rule drops the
+# deep ones before the flag is set. Demotion still earns its keep, because a
+# package-root ``index.ts`` is a legal entry by candidacy and still a poor
+# thing to lead a reader with.
 _BARREL_STEMS = frozenset({"index"})
 _SUBSTANTIVE_KINDS = frozenset(
     {"function", "method", "class", "struct", "interface", "enum", "trait", "impl", "macro"}
@@ -910,7 +912,7 @@ def _curate_entry_points(
                 continue
             candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
-    ranked = rank_entry_points(candidates, _CONVENTIONAL_ENTRY_STEMS)
+    ranked = rank_entry_points(candidates, conventional_entry_stems())
     kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
 
