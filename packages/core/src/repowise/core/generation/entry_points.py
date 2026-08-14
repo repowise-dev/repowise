@@ -42,6 +42,13 @@ SHALLOW_ENTRY_DEPTH = 1
 # no DB / graph / LLM dependency.
 CONVENTIONAL_ENTRY_STEMS: frozenset[str] = _LANG_REGISTRY.entry_filename_stems() - GLUE_STEMS
 
+# Config/markup/data + infra languages — a server.json or a Dockerfile describes
+# or wires the system, it is never where execution starts, so it never belongs
+# on the orientation entry-point list.
+NON_CODE_ENTRY_LANGUAGES: frozenset[str] = (
+    _LANG_REGISTRY.config_languages() | _LANG_REGISTRY.infra_languages()
+)
+
 
 def entry_point_depth(path: str) -> int:
     """Directory depth — 0 for a root file, 1 for one level deep, etc."""
@@ -59,6 +66,24 @@ def is_glue_leaf(path: str) -> bool:
         PurePosixPath(path).stem.lower() in GLUE_STEMS
         and entry_point_depth(path) > SHALLOW_ENTRY_DEPTH
     )
+
+
+def not_an_execution_start(path: str, language: str) -> bool:
+    """True for a file that cannot be where a reader enters the system.
+
+    Config/data files (``server.json``) describe the system and deep
+    generic-glue leaves (a resolver's ``index.py``) dispatch within it —
+    neither is an execution start.
+
+    **Not the whole candidacy rule.** Callers apply their own further
+    exclusions beside this one: the knowledge-graph curator drops adjacent
+    layers, support paths and re-export barrels itself, and
+    :func:`~repowise.core.generation.tour.score_entry_points` withholds its
+    entry bonuses over a *wider* language set (it adds unnormalized aliases
+    from older indexes). This owns only the two conditions above, so that
+    the curator and the wiki surfaces answer them the same way.
+    """
+    return language in NON_CODE_ENTRY_LANGUAGES or is_glue_leaf(path)
 
 
 def _name_bucket(path: str, conventional_stems: frozenset[str]) -> int:
@@ -144,7 +169,7 @@ def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -
     candidacy is the larger defect. ``repo_structure.entry_points`` carries
     ``.github/workflows/main.yml``, ``README.md`` and test files, so some
     repos lead with one whatever the order. The knowledge-graph curator drops
-    those (``kg_curation._not_an_execution_start``) and the wiki surfaces do
+    those (:func:`not_an_execution_start`) and the wiki surfaces do
     not; sharing that rule is the follow-up. Same for the heuristic's own
     false positives: ``app`` is a generic entry stem, so a React
     ``src/components/App.tsx`` is published as an execution entry point, as is

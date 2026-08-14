@@ -7,6 +7,7 @@ from repowise.core.generation.entry_points import (
     entry_point_depth,
     entry_point_rank_key,
     is_glue_leaf,
+    not_an_execution_start,
     rank_entry_points,
 )
 
@@ -33,6 +34,33 @@ def test_is_glue_leaf_only_for_deep_generic_stems():
     assert not is_glue_leaf("src/index.ts")
     # Non-generic stems are never glue leaves, however deep.
     assert not is_glue_leaf("a/b/c/d/main.py")
+
+
+def test_not_an_execution_start_is_language_or_glue_leaf():
+    # Config/data and infra languages describe or wire the system.
+    assert not_an_execution_start("api/server.json", "json")
+    assert not_an_execution_start("deploy/Dockerfile", "dockerfile")
+    # Deep generic-glue leaves dispatch within it.
+    assert not_an_execution_start("core/ingestion/resolvers/dotnet/index.py", "python")
+    # A real code entry is neither, at any depth.
+    assert not not_an_execution_start("src/main.py", "python")
+    assert not not_an_execution_start("a/b/c/d/main.py", "python")
+    # Only a *shallow* glue stem survives candidacy. A monorepo package barrel
+    # is dropped here even though ``orientation_entry_points`` keeps it by
+    # ranking it last — candidacy and ordering answer different questions.
+    assert not not_an_execution_start("src/index.ts", "typescript")
+    assert not_an_execution_start("packages/cli/src/index.ts", "typescript")
+
+
+def test_the_curator_calls_the_shared_rule_not_a_copy():
+    # The curator's output is unchanged *by construction* only while it holds
+    # this exact object; a re-inlined copy reopens the divergence the lift
+    # closed. Scope, honestly: this pins the module binding, not the two call
+    # sites. A copy that left the import in place still passes here — ruff's
+    # unused-import rule is what catches that half.
+    from repowise.core.analysis import kg_curation
+
+    assert kg_curation.not_an_execution_start is not_an_execution_start
 
 
 def test_glue_leaf_never_outranks_a_real_entry():
