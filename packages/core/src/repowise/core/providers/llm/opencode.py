@@ -19,11 +19,10 @@ import os
 import re
 import shutil
 import subprocess
-import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib import request
 
 import structlog
 
@@ -43,8 +42,6 @@ _DEFAULT_MODEL_LABEL = "opencode/default"
 _EXEC_TIMEOUT_SECONDS = 600
 _CATALOG_TIMEOUT_SECONDS = 10
 _MAX_STDERR_CHARS = 1_000
-_OPENCODE_SERVER_URL = "http://127.0.0.1:4096"
-_ARCHIVE_TIMEOUT_SECONDS = 1
 
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/\-]*$")
 
@@ -105,10 +102,9 @@ def _combine_prompt(system_prompt: str, user_prompt: str) -> str:
     )
 
 
-def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any], str | None]:
+def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
     content_parts: list[str] = []
     usage: dict[str, Any] = {}
-    session_id: str | None = None
 
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
@@ -118,9 +114,6 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any], str | None]:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-
-        if session_id is None and isinstance(event.get("sessionID"), str):
-            session_id = event["sessionID"]
 
         event_type = event.get("type")
         if event_type == "text":
@@ -144,31 +137,7 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any], str | None]:
                     elif isinstance(value, (int, float)):
                         usage[key] = usage.get(key, 0) + int(value)
 
-    return "\n".join(content_parts), usage, session_id
-
-
-def _archive_opencode_session(session_id: str) -> None:
-    body = json.dumps(
-        {
-            "metadata": {"source": "repowise"},
-            "time": {"archived": int(time.time() * 1000)},
-        }
-    ).encode("utf-8")
-    archive_request = request.Request(
-        f"{_OPENCODE_SERVER_URL}/session/{session_id}",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="PATCH",
-    )
-    with request.urlopen(archive_request, timeout=_ARCHIVE_TIMEOUT_SECONDS):
-        pass
-
-
-async def _archive_opencode_session_best_effort(session_id: str) -> None:
-    try:
-        await asyncio.to_thread(_archive_opencode_session, session_id)
-    except Exception:
-        log.debug("opencode.session.archive_failed", session_id=session_id)
+    return "\n".join(content_parts), usage
 
 
 def _tail(text: str, max_chars: int = _MAX_STDERR_CHARS) -> str:
@@ -360,6 +329,8 @@ class OpenCodeProvider(BaseProvider):
             "json",
             "--dir",
             str(self._repo_path),
+            "--title",
+            f"repowise_auto_{uuid.uuid4().hex}",
         ]
         if self._model:
             cmd.extend(["--model", self._model])
@@ -432,9 +403,7 @@ class OpenCodeProvider(BaseProvider):
                 status_code=proc.returncode,
             )
 
-        content, usage, session_id = _parse_jsonl(stdout)
-        if session_id:
-            await _archive_opencode_session_best_effort(session_id)
+        content, usage = _parse_jsonl(stdout)
 
         if not content:
             raise ProviderError(

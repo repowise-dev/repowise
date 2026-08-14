@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import pytest
 
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError
 from repowise.core.providers.llm.opencode import (
-    _archive_opencode_session,
     OpenCodeProvider,
     _parse_models_output,
     _validate_model_name,
@@ -220,6 +220,9 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
     assert "--dangerously-skip-permissions" not in args
     assert args[args.index("--dir") + 1] == str(tmp_path.resolve())
     assert args[args.index("--model") + 1] == "deepseek/deepseek-v4-pro"
+    assert re.fullmatch(
+        r"repowise_auto_[0-9a-f]{32}", args[args.index("--title") + 1]
+    )
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
     env = captured["kwargs"].get("env", {})
     assert "OPENCODE_CONFIG_CONTENT" in env
@@ -260,58 +263,6 @@ async def test_generate_parses_jsonl_tokens(monkeypatch, tmp_path):
     assert result.cached_tokens == 20
     assert result.usage["source"] == "opencode_run"
     assert "estimated" not in result.usage
-
-
-async def test_generate_archives_opencode_session(monkeypatch, tmp_path):
-    monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
-    archived_session_ids: list[str] = []
-
-    async def archive(session_id: str) -> None:
-        archived_session_ids.append(session_id)
-
-    async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
-        return FakeProcess(stdout=_success_jsonl("OK"))
-
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-    monkeypatch.setattr(
-        "repowise.core.providers.llm.opencode._archive_opencode_session_best_effort",
-        archive,
-    )
-
-    await OpenCodeProvider(repo_path=tmp_path).generate("sys", "user")
-
-    assert archived_session_ids == ["s1"]
-
-
-def test_archive_opencode_session_tags_and_archives(monkeypatch):
-    captured: dict[str, Any] = {}
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args: Any) -> None:
-            return None
-
-    def urlopen(request, timeout: float):
-        captured["url"] = request.full_url
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        captured["timeout"] = timeout
-        return Response()
-
-    monkeypatch.setattr("time.time", lambda: 123.456)
-    monkeypatch.setattr("urllib.request.urlopen", urlopen)
-
-    _archive_opencode_session("ses_123")
-
-    assert captured == {
-        "url": "http://127.0.0.1:4096/session/ses_123",
-        "body": {
-            "metadata": {"source": "repowise"},
-            "time": {"archived": 123456},
-        },
-        "timeout": 1,
-    }
 
 
 async def test_generate_handles_jsonl_noise(monkeypatch, tmp_path):
