@@ -299,9 +299,7 @@ async def test_replace_accepts_dataclass_findings(async_session):
     await async_session.commit()
 
     rows = await _rows(async_session, repo.id)
-    assert [(r.file_path, r.symbol_name, r.kind) for r in rows] == [
-        ("a.py", "fa", "unused_export")
-    ]
+    assert [(r.file_path, r.symbol_name, r.kind) for r in rows] == [("a.py", "fa", "unused_export")]
 
     # ...and that row is now dismissible, i.e. the kind it stored is the value
     # the identity check compares against.
@@ -353,3 +351,38 @@ async def test_get_dead_code_git_fields_is_empty_for_an_unknown_repo(async_sessi
     from repowise.core.persistence.crud import get_dead_code_git_fields
 
     assert await get_dead_code_git_fields(async_session, "nope") == {}
+
+
+async def test_summary_uses_shared_confidence_thresholds(async_session, monkeypatch):
+    from repowise.core.persistence.crud.analysis import dead_code as dead_code_crud
+
+    monkeypatch.setattr(dead_code_crud, "SAFE_CONFIDENCE_THRESHOLD", 0.8)
+    monkeypatch.setattr(dead_code_crud, "RISK_CAP_CONFIDENCE", 0.3)
+
+    repo = await insert_repo(async_session)
+
+    high_boundary = _finding("high_boundary.py", "high_boundary")
+    high_boundary["confidence"] = 0.8
+    medium_top_boundary = _finding("medium_top_boundary.py", "medium_top_boundary")
+    medium_top_boundary["confidence"] = 0.75
+    medium_bottom_boundary = _finding("medium_bottom_boundary.py", "medium_bottom_boundary")
+    medium_bottom_boundary["confidence"] = 0.3
+    low_boundary = _finding("low_boundary.py", "low_boundary")
+    low_boundary["confidence"] = 0.25
+
+    findings = [
+        high_boundary,
+        medium_top_boundary,
+        medium_bottom_boundary,
+        low_boundary,
+    ]
+
+    await save_dead_code_findings(async_session, repo.id, findings)
+
+    summary = await dead_code_crud.get_dead_code_summary(async_session, repo.id)
+
+    assert summary["confidence_summary"] == {
+        "high": 1,
+        "medium": 2,
+        "low": 1,
+    }
