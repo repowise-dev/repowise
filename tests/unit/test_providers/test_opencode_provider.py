@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import pytest
@@ -219,6 +220,9 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
     assert "--dangerously-skip-permissions" not in args
     assert args[args.index("--dir") + 1] == str(tmp_path.resolve())
     assert args[args.index("--model") + 1] == "deepseek/deepseek-v4-pro"
+    assert re.fullmatch(
+        r"repowise_auto_[0-9a-f]{32}", args[args.index("--title") + 1]
+    )
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
     env = captured["kwargs"].get("env", {})
     assert "OPENCODE_CONFIG_CONTENT" in env
