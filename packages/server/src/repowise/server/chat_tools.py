@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+
 logger = logging.getLogger(__name__)
 
 
@@ -203,8 +205,11 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "min_confidence": {
                     "type": "number",
-                    "description": "Minimum confidence threshold (default 0.4; matches RISK_CAP_CONFIDENCE).",
-                    "default": 0.4,
+                    "description": (
+                        f"Minimum confidence threshold (default {RISK_CAP_CONFIDENCE}; "
+                        "matches RISK_CAP_CONFIDENCE)."
+                    ),
+                    "default": RISK_CAP_CONFIDENCE,
                 },
                 "safe_only": {
                     "type": "boolean",

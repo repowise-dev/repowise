@@ -43,7 +43,12 @@ from .file_reachability import (
     is_file_reachable,
 )
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
-from .risk_factors import RISK_CAP_CONFIDENCE, path_risk_factors, risk_evidence
+from .risk_factors import (
+    RISK_CAP_CONFIDENCE,
+    SAFE_CONFIDENCE_THRESHOLD,
+    path_risk_factors,
+    risk_evidence,
+)
 
 #: Identifier shape, matched over raw bytes so an unindexed file never has to
 #: be decoded (these files are large by definition, and a decode would double
@@ -720,16 +725,20 @@ class DeadCodeAnalyzer:
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
 
-        min_conf = cfg.get("min_confidence", 0.4)
+        min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
         findings = [f for f in findings if f.confidence >= min_conf]
 
         now = datetime.now(UTC)
         deletable = sum(f.lines for f in findings if f.safe_to_delete)
 
-        high = sum(1 for f in findings if f.confidence >= 0.7)
-        medium = sum(1 for f in findings if 0.4 <= f.confidence < 0.7)
-        low = sum(1 for f in findings if f.confidence < 0.4)
+        high = sum(1 for f in findings if f.confidence >= SAFE_CONFIDENCE_THRESHOLD)
+        medium = sum(
+            1
+            for f in findings
+            if RISK_CAP_CONFIDENCE <= f.confidence < SAFE_CONFIDENCE_THRESHOLD
+        )
+        low = sum(1 for f in findings if f.confidence < RISK_CAP_CONFIDENCE)
 
         return DeadCodeReport(
             repo_id="",
@@ -891,9 +900,14 @@ class DeadCodeAnalyzer:
         else:
             confidence = 0.4
 
+        # The ladder above is an evidence scale, not a tier boundary: its rungs
+        # stay literal so moving a threshold does not silently re-score how
+        # strong the git signal is. Everything below compares against or caps
+        # to a threshold, so it reads the constants.
+
         # Reduce confidence when dynamic imports exist in the same package.
         if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
-            confidence = min(confidence, 0.4)
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
         # Runtime-load risk factors (config / bootstrap / database /
         # environment / script / asset). These are files the never-flag allowlist
@@ -905,14 +919,14 @@ class DeadCodeAnalyzer:
         if risk_factors:
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-        safe = confidence >= 0.7
+        safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
         if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
             safe = False
 
         evidence = ["in_degree=0 (no files import this)"]
         if commit_90d == 0:
             evidence.append("No commits in last 90 days")
-        if self._dynamic_import_files and confidence <= 0.4:
+        if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
             evidence.append("Package uses dynamic imports or runtime-resolved edges")
         risk_line = risk_evidence(risk_factors)
         if risk_line:
@@ -1248,7 +1262,7 @@ class DeadCodeAnalyzer:
                 # confident dead code. Generic across all languages
                 # (C#, Java, Kotlin, Scala, Swift protocols, TS).
                 if sym.get("kind") == "interface" and not self._file_has_implementors(node):
-                    confidence = min(confidence, 0.4)
+                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
                 # COM / IUnknown / IDispatch contract methods
                 # (``QueryInterface``, ``AddRef``, ``Release``, …) are
@@ -1257,7 +1271,7 @@ class DeadCodeAnalyzer:
                 # safe-to-delete threshold so we never ship them as
                 # confident dead code on Windows / COM-heavy C++ repos.
                 if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
-                    confidence = min(confidence, 0.4)
+                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
                 # Runtime-load risk factors for the defining file (config /
                 # bootstrap / database / environment / script / asset): symbols in
@@ -1267,7 +1281,7 @@ class DeadCodeAnalyzer:
                 if risk_factors:
                     confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-                safe = confidence >= 0.7
+                safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
 
                 git_meta = self.git_meta_map.get(str(node), {})
 

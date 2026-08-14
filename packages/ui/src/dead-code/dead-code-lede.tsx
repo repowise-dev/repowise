@@ -14,7 +14,7 @@
  */
 
 import type { ReactNode } from "react";
-import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
+import { DEAD_CODE_CONFIDENCE, type DeadCodeSummary } from "@repowise-dev/types/dead-code";
 
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
@@ -89,7 +89,7 @@ export function DeadCodeLede({
       label: "High confidence",
       value: formatNumber(high),
       valueColor: high > 0 ? "text-[var(--color-success)]" : undefined,
-      sub: "confidence 0.7 or better",
+      sub: `confidence ${DEAD_CODE_CONFIDENCE.HIGH} or better`,
       hint: "No dynamic reference, no re-export, no entry point that we can see.",
     },
     {
