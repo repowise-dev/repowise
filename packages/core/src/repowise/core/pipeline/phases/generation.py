@@ -15,7 +15,7 @@ import structlog
 from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.pipeline.progress import ProgressCallback
 
-from ._common import _phase_done
+from ._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
 
 logger = structlog.get_logger(__name__)
 
@@ -89,22 +89,14 @@ async def run_generation(
     assembler = ContextAssembler(config)
 
     # Test-run: limit to top 10 files by PageRank for a fast validation run.
-    # Applied here rather than in the orchestrator so it works whether the
+    # Applied here rather than only in the orchestrator so it works whether the
     # pipeline ran with generate_docs=True or generation happened in a later,
     # separate phase (init's generate_docs=False flow) — the flag's documented
     # purpose is to cap the *generation* work, and this is where that happens.
     if test_run:
-        try:
-            import networkx as nx
-
-            ranks = nx.pagerank(graph_builder.graph())
-        except Exception:
-            ranks = {}
-        parsed_files = sorted(
-            parsed_files,
-            key=lambda pf: ranks.get(pf.file_info.path, 0),
-            reverse=True,
-        )[:10]
+        parsed_files = limit_to_top_pagerank(
+            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
+        )
         if progress:
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 

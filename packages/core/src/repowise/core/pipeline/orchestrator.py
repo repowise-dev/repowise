@@ -32,7 +32,7 @@ from repowise.core.pipeline.progress import (
 )
 from repowise.core.registry import HookProgressCallback
 
-from .phases._common import _phase_done
+from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
 from .phases.analysis import (
     _run_dead_code_analysis,
     _run_decision_extraction,
@@ -440,19 +440,12 @@ async def run_pipeline(
                 f"→ Git: {git_summary.files_indexed:,} files indexed{_hotspot_msg}",
             )
 
-    # Test-run: limit to top 10 files by PageRank
+    # Test-run: limit to top 10 files by PageRank (shared helper with
+    # ``run_generation`` so the two paths cannot drift).
     if test_run and generate_docs:
-        try:
-            import networkx as nx
-
-            ranks = nx.pagerank(graph_builder.graph())
-        except Exception:
-            ranks = {}
-        parsed_files = sorted(
-            parsed_files,
-            key=lambda pf: ranks.get(pf.file_info.path, 0),
-            reverse=True,
-        )[:10]
+        parsed_files = limit_to_top_pagerank(
+            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
+        )
         if progress:
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
