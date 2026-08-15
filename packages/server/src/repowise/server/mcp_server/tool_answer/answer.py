@@ -1085,13 +1085,13 @@ def _data_shape_prose(grounded: dict, citations: list[str]) -> tuple[str, str]:
 def _is_question_named_body_cut_by_us(entry: dict, question_ids: set[str]) -> bool:
     """Whether this body is the question's own symbol, cut because WE ran out of lines.
 
-    ``truncated`` alone is not trustworthy enough to demote on. It is set by
-    comparing the INDEXED end line against what was read, while the read clamps
-    to the end of the live file, so a symbol whose stored end overshoots (an
-    unsupported language or a syntax error leaves the bounds unverified, and a
-    file that shrank since indexing does it too) is served WHOLE and still
-    flagged. Requiring the served span to have reached the line cap says the cut
-    was ours, which is the only case where something was really withheld.
+    ``truncated`` alone is not trustworthy enough to demote on. The stale-bound
+    case this was written for is now fixed at its source — ``check_symbol_bounds``
+    clamps every bound to the live file (D8) — but the guard still earns its keep
+    on the ``source_excerpt`` fallback, where the served bytes come from the
+    index rather than from disk and the live length says nothing. Requiring the
+    served span to have reached the line cap says the cut was ours, which is the
+    only case where something was really withheld.
     """
     if not (entry.get("truncated") and entry.get("continuation")):
         return False

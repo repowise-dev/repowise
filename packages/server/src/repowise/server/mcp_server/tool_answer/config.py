@@ -402,7 +402,19 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # degraded returns, so a degraded payload has never been written to it. The
 # synthesised shape is untouched. A bump here would invalidate every keyed
 # install's cache, and re-synthesis is real provider spend, for nothing.
-_ANSWER_SCHEMA_VERSION = 15
+# v16: the same scanner again, in three places, and unlike the degraded rework
+# above every one of them changes the SYNTHESISED payload, which is the shape
+# that gets cached. (1) A run left open at end of file no longer masks to EOF,
+# so definitions below a phantom `"""` or `/*` are listed again — 26 real Rust
+# definitions across two corpus files, one of which had 3,002 lines masked.
+# (2) A cut inside a multi-line string keeps the symbol enclosing it, which
+# changes which entry is the HEADLINE `body_continues`, and therefore the note
+# and the get_symbol pointer. (3) An unverified symbol bound is clamped to the
+# live file, so a body served whole is no longer flagged `truncated` — and
+# v13/v14 cap confidence on that flag, so a cached row can carry a `medium`
+# this version would not produce. Cached pre-v16 rows carry all three, so they
+# must bypass.
+_ANSWER_SCHEMA_VERSION = 16
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary

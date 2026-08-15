@@ -206,3 +206,33 @@ async def test_heal_symbol_row_persists_corrected_bounds(setup_mcp, factory, ses
     async with get_session(factory) as s:
         healed = (await s.execute(select(WikiSymbol).where(WikiSymbol.id == row.id))).scalar_one()
         assert (healed.start_line, healed.end_line) == (42, 57)
+
+
+class TestUnverifiedBoundsAreStillClampedToTheLiveFile:
+    """D8: an unverified end that overshoots EOF made a whole body look cut.
+
+    The cheap gate clamps (``min(..., len(lines))``) and a re-parse returns real
+    bounds, so this was the one return handing back a raw stored end. Everything
+    downstream inherited it: get_answer's hydrator computes ``truncated`` from
+    it, and get_symbol / get_context slice with it.
+    """
+
+    def test_an_unrelocatable_symbol_does_not_report_an_end_past_eof(self) -> None:
+        # A name that is nowhere in the source, so both the cheap gate and the
+        # re-parse relocation fail and the approximate branch is taken.
+        row = _row(name="vanished", symbol_id="pkg/mod.py::vanished", end_line=900)
+
+        check = check_symbol_bounds(row, FRESH_SOURCE)
+
+        assert check.verified is False
+        assert check.approximate is True
+        assert check.end_line == len(FRESH_SOURCE.splitlines())
+
+    def test_an_unverified_end_inside_the_file_is_left_alone(self) -> None:
+        """The control: clamping must not shorten a bound that already fits."""
+        row = _row(name="vanished", symbol_id="pkg/mod.py::vanished", end_line=6)
+
+        check = check_symbol_bounds(row, FRESH_SOURCE)
+
+        assert check.verified is False
+        assert check.end_line == 6
