@@ -92,38 +92,81 @@ async def get_why(
 
 
 async def _why_workspace_search(query: str) -> dict:
-    """repo="all": keyword-search decisions across every repo in the workspace."""
+    """repo="all": the question single-repo search answers, across the workspace.
+
+    This used to be the whole tool as it stood before the relevance work: match
+    any query word as a substring, append in whatever order the workspace
+    resolved its stores, serve fifteen whole records. That is the shape the
+    single-repo mode was rebuilt away from, still reachable one argument away and
+    over several stores at once. It now loads its corpus the way ``_load_corpus``
+    does, so dismissed tombstones and records anchored entirely in excluded
+    paths stop being served here alone, and it ranks with the shared machinery, so
+    a question the workspace cannot answer gets the redirect rather than fifteen
+    records that happen to contain "the".
+
+    **Each store is scored against its own corpus, never a pooled one**, and the
+    consequence is asymmetric. The floor keeps the meaning it was swept for:
+    ``relevance`` is a normalised share of the question's weight, so it survives
+    a uniform rescale of the idf vector untouched. What a pooled corpus moves is
+    the *ratio* between term weights, and with it which records clear 0.6.
+    Scoring each store on its own statistics keeps that filter the one that was
+    calibrated. The merge is where the cost lands, and it is a real one: the cut
+    below is decided across stores whose scores come from different
+    distributions, since a large store polarises toward 0 and 1 while a small one
+    lands mid-range. So which store loses a slot is settled approximately, and
+    that is a *selection*, not merely an order. It is the price of not silently
+    re-scaling a constant nobody re-swept. The upgrade path, if workspace
+    ranking ever needs to be exact, is to sweep a floor against a pooled corpus,
+    not to pool the statistics underneath the floor that exists.
+    """
     contexts = await _resolve_all_contexts()
-    merged: list[dict] = []
-    query_words = query.lower().split()
+    scored: list[tuple[tuple[float, float, int], str, str, Any, list[str]]] = []
     for ctx in contexts:
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-            res = await session.execute(
-                select(DecisionRecord).where(
-                    DecisionRecord.repository_id == repository.id,
-                )
-            )
-            for d in res.scalars().all():
-                text = f"{d.title} {d.decision} {d.rationale} {d.context}".lower()
-                if any(w in text for w in query_words):
-                    merged.append(
-                        {
-                            "repo": ctx.alias,
-                            "id": d.id,
-                            "title": d.title,
-                            "status": d.status,
-                            "decision": _decision_body(d),
-                            "rationale": d.rationale,
-                            "source": d.source,
-                            "confidence": d.confidence,
-                        }
-                    )
+            records = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
+        ranked = _score_keyword_matches(records, query, set())
+        # Collapsed per store, not across the merge: ``_evidence_key`` is a
+        # (source, commit) pair carrying no repo, so two stores sharing a commit
+        # sha would fold into one and a repo would lose its record.
+        key_by_id = {d.id: key for key, d in ranked}
+        for d, folded in _collapse_restatements([d for _, d in ranked]):
+            scored.append((key_by_id[d.id], ctx.alias, d.id, d, folded))
+
+    if not scored:
+        return {
+            "mode": "search",
+            "query": query,
+            "workspace": True,
+            "decisions": [],
+            **redirect_for(query),
+            "_meta": _build_meta(),
+        }
+
+    # The store's own key first, so relevance, occurrence count and status decide
+    # as they do within one repo; alias and id only settle what those three leave
+    # equal, and are here so the answer is the same on two runs.
+    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+    decisions: list[dict] = []
+    for _, alias, _id, d, folded in scored[:_MAX_WORKSPACE_DECISIONS]:
+        entry = {
+            "repo": alias,
+            "id": d.id,
+            "title": d.title,
+            "status": d.status,
+            "decision": _decision_body(d),
+            "rationale": d.rationale,
+            "source": d.source,
+            "confidence": d.confidence,
+        }
+        if folded:
+            entry["restates"] = folded
+        decisions.append(entry)
     return {
         "mode": "search",
         "query": query,
         "workspace": True,
-        "decisions": merged[:15],
+        "decisions": decisions,
         "_meta": _build_meta(),
     }
 
@@ -159,7 +202,7 @@ async def _why_health_dashboard(repo: str | None) -> dict:
                         json.loads(d.affected_files_json), _get_exclude_spec(ctx.path)
                     )[:5],
                 }
-                for d in stale[:10]
+                for d in stale[:_MAX_HEALTH_STALE]
             ],
             "proposed_awaiting_review": [
                 {
@@ -168,9 +211,9 @@ async def _why_health_dashboard(repo: str | None) -> dict:
                     "source": d.source,
                     "confidence": d.confidence,
                 }
-                for d in proposed[:10]
+                for d in proposed[:_MAX_HEALTH_PROPOSED]
             ],
-            "ungoverned_hotspots": ungoverned[:15],
+            "ungoverned_hotspots": ungoverned[:_MAX_HEALTH_UNGOVERNED],
             "conflicts": health.get("conflicts", [])[:10],
             "_meta": _build_meta(repository=repository),
         }
@@ -231,6 +274,11 @@ _PATH_STATUS_ORDER = {"active": 0, "proposed": 1, "deprecated": 2, "superseded":
 #: hit the ranking is not trustworthy enough to spend an agent's context on.
 _MAX_SEARCH_DECISIONS = 3
 
+#: Records kept by workspace search. Above the single-repo three because the
+#: answer can genuinely live in more than one store and the repo is part of it;
+#: nowhere near the fifteen whole records this path served before it was ranked.
+_MAX_WORKSPACE_DECISIONS = 5
+
 #: Nearest pages pulled for the *one* semantic lookup search mode makes. Both
 #: lanes (decisions, documentation) are partitioned out of this single window,
 #: so the depth is the old decision lane's rather than the sum of the two.
@@ -251,6 +299,16 @@ _DECISION_CORPUS_LIMIT = 2000
 #: decision, so a pool cut to three first would serve one decision three times.
 #: Bounded because the lineage walk after the collapse costs a query per record.
 _KEYWORD_POOL = 24
+
+#: Items per list in the health dashboard. This mode is an orientation call:
+#: asked once, skimmed, acted on twice. It served 45 items to be read as a
+#: verdict. Halved now that ``get_decision_health_summary`` ranks what it
+#: returns: cutting an unranked list only makes a list nobody reads shorter,
+#: cutting a ranked one keeps the part that is worth reading. The full sizes stay
+#: legible in ``counts`` and in the summary line, so nothing is silently dropped.
+_MAX_HEALTH_STALE = 5
+_MAX_HEALTH_PROPOSED = 5
+_MAX_HEALTH_UNGOVERNED = 8
 
 
 def _path_decision_sort_key(d: Any) -> tuple[int, float, float]:
@@ -540,6 +598,45 @@ def _governs_any(d: Any, targets: set[str]) -> bool:
     return any(t in affected or any(t.startswith(m + "/") for m in modules) for t in targets)
 
 
+def _score_keyword_matches(
+    all_decisions: list, query: str, target_set: set[str]
+) -> list[tuple[tuple[float, float, int], Any]]:
+    """``_rank_keyword_matches`` with each record's whole sort key kept beside it.
+
+    Split out for workspace search, which ranks one store at a time and then has
+    to merge the survivors. It is the *whole* key rather than the score because a
+    merge that kept only the score would silently drop the other two rules: the
+    occurrence-count tie-break and the status tie-break both exist because
+    ``relevance`` is a share of one idf vector, so any two records covering the
+    same set of question terms score bit-identically and something has to
+    separate them. The floor and the ordering rules are documented on
+    ``_rank_keyword_matches``; this returns the key that implements them.
+    """
+    terms = question_terms(query)
+    texts = {id(d): _record_text(d) for d in all_decisions}
+    idf = term_idf(terms, list(texts.values()))
+
+    scored_decisions: list[tuple[float, float, int, Any]] = []
+    for d in all_decisions:
+        # A record governing a file the caller named is relevant by
+        # construction: they pointed at it instead of describing it, so it owes
+        # the question no vocabulary.
+        governs = _governs_any(d, target_set)
+        score = 1.0 if governs else relevance(texts[id(d)], idf)
+        if not clears_floor(score):
+            continue
+        scored_decisions.append(
+            (
+                -score,
+                -_score_decision(d, set(terms), target_set),
+                _PATH_STATUS_ORDER.get(d.status, 4),
+                d,
+            )
+        )
+    scored_decisions.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [((t[0], t[1], t[2]), t[3]) for t in scored_decisions[:_KEYWORD_POOL]]
+
+
 def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str]) -> list:
     """Records relevant enough to serve, best-first. Empty when none are.
 
@@ -564,29 +661,7 @@ def _rank_keyword_matches(all_decisions: list, query: str, target_set: set[str])
     collapsed downstream, and a pool cut to the cap first would let three
     phrasings of one decision fill every slot.
     """
-    terms = question_terms(query)
-    texts = {id(d): _record_text(d) for d in all_decisions}
-    idf = term_idf(terms, list(texts.values()))
-
-    scored_decisions: list[tuple[float, float, int, Any]] = []
-    for d in all_decisions:
-        # A record governing a file the caller named is relevant by
-        # construction: they pointed at it instead of describing it, so it owes
-        # the question no vocabulary.
-        governs = _governs_any(d, target_set)
-        score = 1.0 if governs else relevance(texts[id(d)], idf)
-        if not clears_floor(score):
-            continue
-        scored_decisions.append(
-            (
-                -score,
-                -_score_decision(d, set(terms), target_set),
-                _PATH_STATUS_ORDER.get(d.status, 4),
-                d,
-            )
-        )
-    scored_decisions.sort(key=lambda t: (t[0], t[1], t[2]))
-    return [t[3] for t in scored_decisions[:_KEYWORD_POOL]]
+    return [d for _, d in _score_keyword_matches(all_decisions, query, target_set)]
 
 
 async def _fts_doc_results(ctx: Any, query: str) -> list:
@@ -851,6 +926,24 @@ async def _why_no_match(
     return result
 
 
+async def _decision_corpus(session: Any, repository_id: str, exclude_spec: Any) -> list:
+    """The rankable decision records of one repository.
+
+    A record anchored entirely in excluded paths is noise for every mode, and a
+    dismissed one is a tombstone, so both filters belong wherever a corpus is
+    built. Takes a session rather than a context so the caller that also needs a
+    repository row and git metadata still opens one. Shared with workspace search
+    precisely because that path used to build its own corpus and got neither
+    filter.
+    """
+    from repowise.core.persistence.crud import list_decisions as _list_decisions
+
+    records = await _list_decisions(
+        session, repository_id, include_proposed=True, limit=_DECISION_CORPUS_LIMIT
+    )
+    return [d for d in records if not decision_is_excluded(d, exclude_spec)]
+
+
 async def _load_corpus(repo: str | None, targets: list[str] | None) -> tuple:
     """Repo context, the rankable decision corpus, and git metadata for targets.
 
@@ -859,16 +952,10 @@ async def _load_corpus(repo: str | None, targets: list[str] | None) -> tuple:
     every mode downstream, and a mode that skipped the filter would answer from
     a different store than its neighbour.
     """
-    from repowise.core.persistence.crud import list_decisions as _list_decisions
-
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
-        all_decisions = await _list_decisions(
-            session, repository.id, include_proposed=True, limit=_DECISION_CORPUS_LIMIT
-        )
-        _spec = _get_exclude_spec(ctx.path)
-        all_decisions = [d for d in all_decisions if not decision_is_excluded(d, _spec)]
+        all_decisions = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))
         # Load git metadata for targets (for origin context in results)
         target_git = await _load_target_git(session, repository.id, targets)
     return ctx, repository, all_decisions, target_git
