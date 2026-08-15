@@ -40,7 +40,7 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"password\s*=\s*['\"]"), "hardcoded_password", "high"),
     (re.compile(r"(?:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
-    (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
+    (re.compile(r'\.execute\(\s*[\'\"]\s*SELECT.*\+'), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
     (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
 ]
@@ -53,19 +53,26 @@ _ANY_PATTERN = re.compile("|".join(f"(?:{p.pattern})" for p, _, _ in _PATTERNS))
 # Patterns whose calls legitimately span multiple physical lines: the opening
 # ``subprocess.<call>(`` lands on one line and ``shell=True`` on another. The
 # per-line loop can never see such a call (``.*`` stops at the newline), so it
-# gets an extra whole-source pass. The span is bounded so a ``subprocess.*``
-# call without a ``shell=`` does not swallow an unrelated ``shell=True``
-# dozens of lines later.
+# gets an extra whole-source pass.
+#
+# Continuation is restricted to the same physical line or a newline that is
+# followed by indentation (``(?:[^\n]|\n(?=[ \t]))``), so a closed
+# ``subprocess.run(...)`` cannot jump to a later ``os.popen(..., shell=True)``
+# on a column-0 line. The span is also capped (~200 chars) as a second bound.
 _SPANNING_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (
-        re.compile(r"subprocess\.[A-Za-z]+\([\s\S]{0,500}?shell\s*=\s*True"),
+        re.compile(
+            r"subprocess\.[A-Za-z]+\((?:[^\n]|\n(?=[ \t])){0,200}?shell\s*=\s*True"
+        ),
         "subprocess_shell_true",
         "high",
     ),
 ]
 
 # Symbol names that are informational security hotspots
-_SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE)
+_SYMBOL_KEYWORDS = re.compile(
+    r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE
+)
 
 # Patterns whose matches are genuine leaked credentials (as opposed to the
 # broader "code smell" patterns like os.system/eval). Full-history scans
@@ -206,7 +213,10 @@ class SecurityScanner:
             conflict_suffix = ""
         else:
             insert_prefix = "INSERT INTO security_findings "
-            conflict_suffix = " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance DO NOTHING"
+            conflict_suffix = (
+                " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance "
+                "DO NOTHING"
+            )
 
         inserted = 0
         for finding in findings:
@@ -217,7 +227,8 @@ class SecurityScanner:
                         + "(repository_id, file_path, kind, severity, snippet, line_number, "
                         "commit_sha, commit_at, detected_at) "
                         "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
-                        ":commit_sha, :commit_at, :detected_at)" + conflict_suffix
+                        ":commit_sha, :commit_at, :detected_at)"
+                        + conflict_suffix
                     ),
                     {
                         "repo_id": self._repo_id,
