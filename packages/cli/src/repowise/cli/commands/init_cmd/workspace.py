@@ -379,7 +379,10 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         )
 
     if ctx.dry_run:
-        console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
+        console.print(
+            "    [yellow]Dry run — `.repowise/` created; "
+            "no DB, state, or pages written for this repo.[/yellow]\n"
+        )
         skip_reason = "dry run"
     elif ctx.run_mode == "fast":
         # Fast mode is a graph-and-git index by design; it skips the wiki so a
@@ -730,7 +733,13 @@ def _workspace_init(
         default_repo=primary_alias,
     )
     if dry_run:
-        console.print("  [yellow]Dry run — no workspace config will be written.[/yellow]")
+        # ensure_repowise_dir still creates `.repowise/` per repo (needed so a
+        # later distill-hook decline can gate every selected path); dry-run
+        # only means nothing is *written* into those directories or the workspace.
+        console.print(
+            "  [yellow]Dry run — `.repowise/` directories are created, "
+            "but no config, index, or pages are written.[/yellow]"
+        )
     else:
         config_path = ws_config.save(root)
         console.print(f"  [green]✓[/green] Created {config_path.name}")
