@@ -29,6 +29,7 @@ from repowise.core.pipeline.progress import (
     STAGE_INGESTION,
     ProgressCallback,
     emit_stage,
+    emit_warning,
 )
 from repowise.core.registry import HookProgressCallback
 
@@ -401,6 +402,11 @@ async def run_pipeline(
             )
     except Exception as _ext_err:
         logger.warning("external_systems_extraction_failed", error=str(_ext_err))
+        emit_warning(
+            progress,
+            f"External dependency manifests not parsed ({_ext_err}); "
+            "pages will not name this repo's third-party systems.",
+        )
     _phase_done(progress, "external_systems")
 
     # ---- Checkpoint: INDEX -------------------------------------------------
@@ -415,6 +421,7 @@ async def run_pipeline(
             git_summary=git_summary,
             external_systems=external_systems,
             source_map=source_map,
+            progress=progress,
         )
 
     # Emit rich insight summary for the ingestion phase
@@ -645,6 +652,7 @@ async def run_pipeline(
             health_report=health_report,
             decision_report=decision_report,
             git_metadata_list=git_metadata_list,
+            progress=progress,
         )
 
     # ---- Phase 3: Generation (optional) ------------------------------------
@@ -709,6 +717,10 @@ async def run_pipeline(
                 progress.on_message("info", f"→ Detected {flipped} additional API contract file(s)")
         except Exception as _api_err:
             logger.warning("api_contract_detection_failed", error=str(_api_err))
+            emit_warning(
+                progress,
+                f"API contract detection skipped ({_api_err}); endpoint pages may be missing.",
+            )
 
         # Launch the page-independent half of KG enrichment (LLM layer naming +
         # tour) so it overlaps page generation instead of running strictly
@@ -873,6 +885,11 @@ async def run_pipeline(
         execution_flow_report = await asyncio.to_thread(graph_builder.execution_flows)
     except Exception as _flow_err:
         logger.warning("execution_flow_tracing_skipped", error=str(_flow_err))
+        emit_warning(
+            progress,
+            f"Execution flow tracing skipped ({_flow_err}); "
+            "entry-point scores and flow-based pages will be absent.",
+        )
     _phase_done(progress, "graph.flows")
 
     # ---- Build result -------------------------------------------------------

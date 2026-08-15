@@ -360,6 +360,29 @@ async def _run_decision_extraction(
                 f"→ {report.total_found} architectural decisions found"
                 + (f": {summary}" if summary else ""),
             )
+            # And the sources that produced nothing. Hiding these was what made
+            # a source failing outright indistinguishable from a source with
+            # honestly nothing to find: every failure inside the extractor is
+            # swallowed and reported only through ``logger.warning``, which no
+            # default CLI run renders. A repo with no ADR files legitimately
+            # scores zero there, so this is not itself a failure report — it is
+            # the list you need to have before you can tell the two apart.
+            # The labels read "from git history" because they are normally
+            # rendered as "5 from git history"; strung together after one
+            # "No decisions" they would read "No decisions from inline
+            # markers, from ADR files". Drop the preposition and name the
+            # sources plainly.
+            #
+            # ``session`` is in the label table but is not one of the
+            # extractor's own sources, so ``source in enabled`` leaves it out
+            # of this list — correct, since it is mined separately below.
+            empty = [
+                label.removeprefix("from ")
+                for source, label in _DECISION_SOURCE_LABELS
+                if source in enabled and not bs.get(source)
+            ]
+            if empty:
+                progress.on_message("info", f"→ Nothing found in: {', '.join(empty)}")
 
         _phase_done(progress, "decisions")
         return report
