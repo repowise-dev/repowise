@@ -508,14 +508,27 @@ async def build_synthesized_payload(
             _cr = _drop_already_surfaced(_cr, symbol_bodies, quotes)
             if _cr:
                 payload["code_rationale"] = _cr
-        _caveat = (
-            "Retrieval was ambiguous (no single dominant page), so this was "
-            f"synthesized across several candidates and held at {confidence} "
-            "confidence — verify against best_guesses"
-            + (" or the code_rationale comments." if payload.get("code_rationale") else ".")
-        )
+        if grade.high_reason == "symbol_body":
+            # Held at high over an ambiguous ranking because the body of the
+            # symbol the question named is inlined below. Telling the agent to
+            # verify against best_guesses would send it to the ranked pages the
+            # confidence deliberately does not rest on, so the caveat scopes the
+            # doubt to the page choice and leaves the served body alone.
+            _caveat = (
+                "Retrieval was ambiguous (no single dominant page), so the "
+                "candidates listed are a ranking, not a finding — the confidence "
+                "above rests on the symbol body served in this payload, not on "
+                "which page ranked first."
+            )
+        else:
+            _caveat = (
+                "Retrieval was ambiguous (no single dominant page), so this was "
+                f"synthesized across several candidates and held at {confidence} "
+                "confidence — verify against best_guesses"
+                + (" or the code_rationale comments." if payload.get("code_rationale") else ".")
+            )
         payload["note"] = (payload["note"] + " " + _caveat) if payload.get("note") else _caveat
-        if payload.get("best_guesses"):
+        if payload.get("best_guesses") and grade.high_reason != "symbol_body":
             payload.setdefault(
                 "next_action_hint",
                 f"Verify against {payload['best_guesses'][0]['file']} — it scored "
@@ -594,6 +607,61 @@ async def _hedged_payload(
     return payload
 
 
+def _high_confidence_note(grade: _Grade, tail: str) -> str:
+    """The high-confidence note, written from the reason the grade was reached.
+
+    Each branch quotes the measurement its own tier made and no other. The ratio
+    is a valid justification only under ``"ratio"``: the gap tier exists BECAUSE
+    the ratio is uninformative where both scores are strong (6.0 vs 5.4 reads as
+    1.11x), and fusion compresses agreement pairs to about 1.02x, so quoting it
+    under either would print a near tie as the reason for confidence.
+
+    Only the dominance tiers and ``"symbol_body"`` reach *tail*, which is what
+    tells the agent it need not re-read the source. ``"grounding"`` never does:
+    it establishes the prose is not fabricated, which is not a claim about
+    whether the page it describes is the right one.
+    """
+    if grade.high_reason == "symbol_body":
+        return (
+            "High confidence: symbol_bodies below carries the live body of the "
+            "symbol you named, so the answer rests on source in this payload "
+            "rather than on the ranking, which was ambiguous (top score "
+            f"{grade.top_score:.2f}, runner-up {grade.second_score:.2f}). " + tail
+        )
+    if grade.high_reason == "grounding":
+        return (
+            "High confidence: every mechanism the answer names appears in the "
+            "cited source, so the prose is not fabricated. Retrieval was still "
+            f"ambiguous (top score {grade.top_score:.2f}, runner-up "
+            f"{grade.second_score:.2f}), so verify which file answers the "
+            "question rather than the wording of the answer."
+        )
+    if grade.high_reason == "gap":
+        return (
+            "High confidence: the top retrieval result clearly dominates, by "
+            f"{grade.top_score - grade.second_score:.2f} points over the "
+            f"runner-up (top score {grade.top_score:.2f}). Both scores are "
+            "strong, so the gap is the measure here and not the ratio. " + tail
+        )
+    if grade.high_reason == "agreement":
+        return (
+            "High confidence: both retrievers independently rank this page at "
+            "the top, which is the measure here — fused scores are compressed, "
+            f"so the {grade.ratio:.2f}x ratio understates the agreement "
+            f"(top score {grade.top_score:.2f}). " + tail
+        )
+    if grade.high_reason == "sole_hit":
+        return (
+            "High confidence: one page matched, so there was no competing "
+            f"candidate to be ambiguous against (top score {grade.top_score:.2f}). "
+            + tail
+        )
+    return (
+        "High confidence: top retrieval result clearly dominates "
+        f"(dominance ratio {grade.ratio:.2f}x, top score {grade.top_score:.2f}). " + tail
+    )
+
+
 async def _graded_payload(
     *,
     question: str,
@@ -642,6 +710,14 @@ async def _graded_payload(
         payload["quotes"] = quotes
     if symbol_bodies:
         payload["symbol_bodies"] = symbol_bodies
+    if grade.high_reason == "symbol_body":
+        # Same value the hedged path already emits for the same situation: what
+        # this answer rests on is the served body, not the ranking. It also has
+        # to be set for `_apply_lean_high` to see it — that strips `symbol_bodies`
+        # from a high-confidence payload unless `grounding` marks it as the
+        # evidence, and the note below points the agent straight at the block it
+        # would otherwise have removed.
+        payload["grounding"] = "symbol_body"
     if grade.ungrounded_values:
         payload["note"] = (
             f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
@@ -733,11 +809,13 @@ async def _graded_payload(
             else "Some cited bodies were truncated; see "
                  "symbol_bodies[].withheld_symbols for what was not served."
         )
-        payload["note"] = (
-            "High confidence: top retrieval result clearly dominates "
-            f"(dominance ratio {grade.ratio:.2f}x, top score {grade.top_score:.2f}). "
-            + _tail
-        )
+        # Say which test earned the grade, and quote only the measurement that
+        # test actually made. Writing one sentence for every high is how a
+        # response came to quote "clearly dominates (dominance ratio 1.00x)" — a
+        # tie — as its own justification, beside the caveat that no page
+        # dominated. The gap and agreement tiers fire at ratios near 1.0 too, so
+        # naming them without their own numbers would reproduce it exactly.
+        payload["note"] = _high_confidence_note(grade, _tail)
 
     # Concept anchoring put a comment-justified file at the top, so synthesis may
     # now run high — but the agent asked a "why is X = <number>" question and the

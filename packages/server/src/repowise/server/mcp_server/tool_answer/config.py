@@ -162,15 +162,26 @@ _KIND_PRIORITY = {"class": 0, "interface": 0, "function": 1, "method": 2}
 # cache-write cost on follow-up turns.
 _MAX_SYMBOL_DOC_CHARS = 120
 
-# Confidence gate for synthesis. When the top retrieval hit is NOT clearly
-# dominant relative to the second-best hit, skip LLM synthesis and return
-# ranked snippets only. This forces the agent to ground in source rather than
-# trust a possibly-wrong frame. Generic, repo-agnostic, no question parsing.
-# Failure modes addressed:
-#   (a) wrong-target retrieval where top-1 and top-2 are both plausible;
-#   (b) synthesis hallucination on tangential top hits.
+# The lower tier of the dominance test: how far the top hit must outscore the
+# runner-up, as a multiple, when neither score is strong enough for the absolute
+# gap below. Generic, repo-agnostic, no question parsing. The failure modes it
+# addresses are (a) wrong-target retrieval where top-1 and top-2 are both
+# plausible and (b) synthesis hallucination on tangential top hits.
+#
+# It no longer decides WHETHER to synthesise — under the always-synthesize
+# default that gate is gone, and dominance feeds the confidence grade, the
+# retrieval rating and the ambiguity caveat instead.
 _DOMINANCE_RATIO = 1.2
 _COVERAGE_THRESHOLD = 0.66
+
+# The second tier of the dominance test. Where both scores are excellent a close
+# ratio is expected — 6.0 vs 5.4 is a clear win that reads as 1.11x — so above
+# the score floor below, dominance is measured as an absolute gap instead. Held
+# here beside the ratio because ``is_dominant`` is the sole reader of all three;
+# they were inline in the answer module while a second, ratio-only copy of the
+# test lived in the grade, and the two disagreed in exactly this window.
+_DOMINANCE_ABS_SCORE_FLOOR = 3.0
+_DOMINANCE_ABS_GAP = 0.5
 
 # Agreement-aware dominance. The dominance ratio above is computed on
 # RRF-fused scores, and RRF *compresses*: a page both retrievers rank #1
@@ -436,7 +447,13 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # v13/v14 cap confidence on that flag, so a cached row can carry a `medium`
 # this version would not produce. Cached pre-v16 rows carry all three, so they
 # must bypass.
-_ANSWER_SCHEMA_VERSION = 16
+# v17: `confidence` itself moves. Dominance now has one owner, so a retrieval
+# with a strong absolute gap but a compressed ratio grades high where a cached
+# v16 row holds medium; and answer-grounding no longer earns high over a weak
+# retrieval, so the reverse case is cached too. The note is rewritten from the
+# reason the grade was reached rather than from the bare fact that it is high,
+# so v16 rows carry a note this version would not produce.
+_ANSWER_SCHEMA_VERSION = 17
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
@@ -549,9 +566,27 @@ _UNION_MECHANISM_DEFER_ENV = "REPOWISE_ANSWER_UNION_MECHANISM_DEFER"
 # Require the answer's central named mechanism symbol to be grounded in served
 # source before a mechanism/how answer may be stamped high.
 _CLAIM_SUPPORT_GATE_ENV = "REPOWISE_ANSWER_CLAIM_SUPPORT_GATE"
-# Let strong answer-grounding earn "high" on a non-dominant retrieval (a rank-1
-# hit buried in a sibling cluster), not only a clear numeric dominance margin.
+# Let a response earn "high" on a non-dominant retrieval — the served body of
+# the symbol the question named — rather than only a clear dominance margin.
 _EARN_HIGH_GROUNDING_ENV = "REPOWISE_ANSWER_EARN_HIGH_GROUNDING"
+# The other half of that lift, and OFF by default: earning high from the prose
+# being consistent with the material it was shown.
+#
+# It is only ever reachable over a weak retrieval. Earning high requires the top
+# score to clear the confidence floor, and a retrieval that clears the floor and
+# dominates is already high without earning anything — so the lift fires exactly
+# when ``retrieval_quality`` reads "weak", which is the pipeline reporting that
+# it may have surfaced the wrong material. Frame-term grounding cannot answer
+# that: it checks that the answer named nothing retrieval did not show it, which
+# is evidence against fabrication and says nothing about whether the material
+# was the right material. The served-body lift above CAN answer it — that body
+# is exact-name resolution rather than ranking, and the source is in the payload
+# — which is why the two are split rather than capped together.
+#
+# On for the previous behaviour, where grounded prose over a tied top pair
+# returned high with "do not re-read the source unless a specific detail is
+# missing".
+_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV = "REPOWISE_ANSWER_EARN_HIGH_ON_WEAK_RETRIEVAL"
 
 # Test/eval hook: skip the answer cache entirely (both read and write). The
 # cache keys on (repo, question) only — not on feature-flag state — so an A/B

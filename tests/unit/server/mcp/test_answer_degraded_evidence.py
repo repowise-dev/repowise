@@ -256,6 +256,21 @@ async def test_degraded_does_not_lift_a_genuinely_weak_retrieval():
     assert await _quality(_scored(6.0, 5.9)) == "weak"
 
 
+async def test_degraded_reads_the_same_two_tier_dominance_as_the_graded_path():
+    """The rating widened here too, deliberately, and only in one direction.
+
+    It used to re-derive a ratio-only dominance while the synthesised path used a
+    two-tier test, so this pair — a clear 0.6-point win between two strong scores
+    — rated "weak" on the degraded path and dominant everywhere else. Both now
+    read one owner, which is what makes "weak" mean exactly "not dominant".
+
+    The widening cannot demote: above the score floor, clearing the ratio implies
+    clearing the gap. So this is the only new outcome, and the genuinely-weak
+    control above (6.0/5.9, a gap of 0.1) still holds.
+    """
+    assert await _quality(_scored(6.0, 5.4)) == "high"
+
+
 async def test_degraded_agreement_can_lift_but_the_floor_still_binds():
     """Agreement is OR'd into dominance exactly as it is on the synthesised path."""
     assert await _quality(_scored(6.0, 5.9), agreement_dominant=True) == "high"

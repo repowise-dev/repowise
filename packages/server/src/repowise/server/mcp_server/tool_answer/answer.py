@@ -120,9 +120,9 @@ from repowise.server.mcp_server.tool_answer.confidence import (
     _grade_answer,
     _is_value_question,
     _retrieval_quality,
+    dominance_reason,
 )
 from repowise.server.mcp_server.tool_answer.config import (
-    _DOMINANCE_RATIO,
     _GATED_EXCERPT_CHARS,
     _LEAN_HIGH_DROP_KEYS,  # noqa: F401  — re-exported for tests that assert the key set
     _PAGE_EXCERPT_HITS,
@@ -372,7 +372,9 @@ async def get_answer(
     whose named mechanism is absent from the retrieved source is downgraded
     to medium (the rationale may be conflated). Low confidence returns
     best_guesses with one-line justifications instead of an empty answer.
-    retrieval_quality separately rates the retrieval that fed synthesis.
+    retrieval_quality separately rates the retrieval that fed synthesis; when
+    it reads "weak" beside confidence=high, the note says what the confidence
+    rests on instead of the ranking, and that is the claim to trust.
     When the answer names a function/method/class, ``symbol_bodies`` carries
     its full live body — read that instead of a follow-up get_symbol.
     ``episodes``, when present, is a dated fact recorded about this checkout
@@ -554,27 +556,16 @@ async def get_answer(
     # outscores the rest). It no longer decides WHETHER to synthesize — under
     # the always-synthesize default, synthesis runs for every retrieval so
     # coverage matches a research assistant that answers every question. It now
-    # feeds the confidence grade as a CEILING (a non-dominant retrieval is
-    # "answered, but verify", never "high") and gates the ambiguous-retrieval
-    # evidence folded into the reply.
-    #
-    # Two-tier test: at high retrieval quality (both scores excellent) close
-    # ratios are expected, so use an absolute gap; at lower quality the ratio
-    # gate flags genuinely ambiguous retrievals. Coverage (fraction of query
-    # terms in the top hit) biases ranking but is intentionally NOT a gate:
-    # natural-language questions rarely have all content terms in one page, so a
-    # coverage threshold over-fires. Default dominant for a lone hit (nothing to
-    # be ambiguous against).
+    # feeds the confidence grade (as the starting grade AND the ceiling), rates
+    # the retrieval, and gates the ambiguous-retrieval evidence folded into the
+    # reply. All of those read `dominance_reason`, where the two-tier test now
+    # lives: a second copy of it inside the grade is what let one payload claim
+    # the top result dominated and append the no-dominant-page caveat to the same
+    # note. The grade takes the TIER rather than the bool, because the note it
+    # writes may only quote the measurement that was actually made.
     always_synthesize = _always_synthesize()
-    dominant = True
-    if len(hits) >= 2:
-        top_score = hits[0].get("score", 0.0)
-        second_score = hits[1].get("score", 0.0) or 1e-9
-        if top_score >= 3.0:
-            dominant = (top_score - second_score) >= 0.5
-        else:
-            dominant = (top_score / second_score) >= _DOMINANCE_RATIO
-        dominant = dominant or agreement_dominant
+    dominance = dominance_reason(hits, agreement_dominant=agreement_dominant)
+    dominant = dominance is not None
 
     if not always_synthesize and not dominant:
         return _with_candidates(
@@ -711,8 +702,7 @@ async def get_answer(
         citations=citations,
         symbol_bodies=symbol_bodies,
         served_named_body=served_named_body,
-        dominant=dominant,
-        agreement_dominant=agreement_dominant,
+        dominance=dominance,
     )
     confidence = grade.confidence
     retrieval_quality = _retrieval_quality(hits, agreement_dominant)

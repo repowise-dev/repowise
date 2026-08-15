@@ -25,14 +25,18 @@ from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_RANK_GAP,
     _AGREEMENT_TOP_RANK_MAX,
     _CLAIM_SUPPORT_GATE_ENV,
+    _DOMINANCE_ABS_GAP,
+    _DOMINANCE_ABS_SCORE_FLOOR,
     _DOMINANCE_RATIO,
     _EARN_HIGH_GROUNDING_ENV,
+    _EARN_HIGH_ON_WEAK_RETRIEVAL_ENV,
     _ENRICH_TOP_N_HITS,
     _HEDGE_MARKERS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _INLINE_BODY_MAX_LINES,
     _SYMBOL_AGREEMENT_TOP_RANK_MAX,
     _flag_on,
+    _opt_in,
 )
 from repowise.server.mcp_server.tool_answer.symbols import is_symbol_lookup_question
 
@@ -416,10 +420,11 @@ def implicated_withheld_symbols(
 def _top_two_score_ratio(hits: list[dict]) -> float:
     """The top hit's retrieval score over the runner-up's.
 
-    The separator both the confidence grade and :func:`_retrieval_quality` are
-    built on, kept in one place because they must agree on what "dominant"
-    measures. A lone hit has nothing to be ambiguous against, so it is infinitely
-    dominant; no hits at all is zero.
+    Reporting only. :func:`dominance_reason` owns the dominance decision and does
+    not call this; the grade carries the ratio out so a note can quote it, and
+    a note may quote it only when ``"ratio"`` is the tier that actually fired.
+    A lone hit has nothing to be ambiguous against, so it is infinitely dominant;
+    no hits at all is zero.
     """
     if len(hits) >= 2:
         return hits[0].get("score", 0.0) / (hits[1].get("score", 0.0) or 1e-9)
@@ -504,6 +509,62 @@ def _agreement_dominant(hits: list[dict], *, vector_leg_keyless: bool = False) -
     return False
 
 
+def dominance_reason(hits: list[dict], *, agreement_dominant: bool = False) -> str | None:
+    """WHICH test found the top hit dominant, or None if none did.
+
+    The single owner of "did retrieval clearly point at ONE page". Callers that
+    only need the verdict take :func:`is_dominant`; the note builder needs the
+    reason, because the three tiers measure different things and a note that
+    quotes the wrong one refutes itself.
+
+    * ``"ratio"`` — the top hit outscores the runner-up by a clear multiple.
+    * ``"gap"`` — where both scores are excellent a close ratio is expected
+      (6.0 vs 5.4 is a clear win reading as 1.11x), so dominance is an absolute
+      gap and the RATIO IS NOT THE MEASUREMENT. Quoting it as one prints a near
+      tie as the reason for confidence.
+    * ``"agreement"`` — both retrievers independently rank this page top. RRF
+      compresses fused scores, so this fires around 1.02x; the ratio is not the
+      measurement here either.
+    * ``"sole_hit"`` — one hit, nothing to be ambiguous against.
+
+    Coverage (fraction of query terms in the top hit) biases ranking but is
+    deliberately NOT a gate: natural-language questions rarely put every content
+    term in one page, so a coverage threshold over-fires.
+
+    No hits at all is not dominance: there is no page for the claim to be about,
+    and rating that dominant would grade an empty retrieval as merely
+    under-scoring. Unreachable from the synthesised path, which returns early on
+    empty hits, but the degraded path rates its retrieval through here too.
+    """
+    if not hits:
+        return None
+    if len(hits) < 2:
+        return "sole_hit"
+    top_score = hits[0].get("score", 0.0)
+    second_score = hits[1].get("score", 0.0) or 1e-9
+    if top_score >= _DOMINANCE_ABS_SCORE_FLOOR:
+        if (top_score - second_score) >= _DOMINANCE_ABS_GAP:
+            return "gap"
+    elif (top_score / second_score) >= _DOMINANCE_RATIO:
+        return "ratio"
+    return "agreement" if agreement_dominant else None
+
+
+def is_dominant(hits: list[dict], *, agreement_dominant: bool = False) -> bool:
+    """Did retrieval clearly point at ONE page? See :func:`dominance_reason`.
+
+    Three callers ask it and they must not disagree: the confidence grade uses it
+    as both the starting grade and the ceiling, :func:`_retrieval_quality` rates
+    the retrieval from it, and the payload folds in the ambiguous-retrieval
+    evidence on it. It used to be computed twice — a two-tier version in the
+    answer module and a ratio-only re-derivation inside the grade — and the two
+    disagree in a real window (a 6.0/5.4 pair is dominant by gap and not by
+    ratio), which is how one payload came to assert that the top result "clearly
+    dominates" while appending the caveat that retrieval found no dominant page.
+    """
+    return dominance_reason(hits, agreement_dominant=agreement_dominant) is not None
+
+
 def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     """Rate the retrieval, independently of the text it fed.
 
@@ -512,10 +573,14 @@ def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     ``confidence`` stays low, correctly), but it ran exactly the same retrieval,
     and "high" has to mean the same thing to a keyless caller as to a keyed one
     or the field is worth less than nothing.
+
+    Reads :func:`is_dominant` rather than re-deriving the ratio, so "weak" means
+    exactly "not dominant" — the same fact the confidence ceiling and the
+    ambiguity caveat are keyed on. Without that the payload could rate retrieval
+    weak and treat it as dominant in the same breath.
     """
-    ratio = _top_two_score_ratio(hits)
     top_score = hits[0].get("score", 0.0) if hits else 0.0
-    dominant_grade = ratio >= _DOMINANCE_RATIO or agreement_dominant
+    dominant_grade = is_dominant(hits, agreement_dominant=agreement_dominant)
     if dominant_grade and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         return "high"
     return "partial" if dominant_grade else "weak"
@@ -567,6 +632,15 @@ class _Grade(NamedTuple):
     hedged: bool
     ratio: float
     top_score: float
+    second_score: float
+    #: Why the grade is "high", or None when it is not: a
+    #: :func:`dominance_reason` tier, or "symbol_body" / "grounding". The note is
+    #: written from this rather than from the bare label, because the reasons
+    #: license different sentences — only "ratio" may quote the ratio as the
+    #: measurement, and only a dominance tier or "symbol_body" may tell the agent
+    #: not to re-read. Writing one reason for every high is how a payload came to
+    #: quote a 1.00x dominance ratio, a tie, as the reason it was confident.
+    high_reason: str | None
     ungrounded_values: list[str]
     frame_unsupported: list[str]
     exclusivity_over_truncated: bool
@@ -584,8 +658,7 @@ def _grade_answer(
     citations: list[str],
     symbol_bodies: list[dict],
     served_named_body: bool,
-    dominant: bool,
-    agreement_dominant: bool,
+    dominance: str | None,
 ) -> _Grade:
     """Grade the synthesised answer through the gate cascade, in order.
 
@@ -594,41 +667,53 @@ def _grade_answer(
     that one response cannot be pushed two levels for one problem. Read them
     as a list of reasons not to trust the prose: the order is the order they
     were added, and each comment says which failure it was built to catch.
+
+    ``dominance`` is :func:`dominance_reason`'s verdict, computed once by the
+    caller and used here for the starting grade, the ceiling, and the reason the
+    note is written from. A bare bool used to be accepted for the ceiling alone
+    while the starting grade re-derived a ratio-only version of the same
+    question, so a retrieval the rest of the pipeline treated as dominant could
+    start the cascade as if it were not.
     """
-    # Compute confidence from the dominance ratio (top hit vs second hit).
-    # The dominance ratio is a more reliable separator than absolute BM25
-    # thresholds, which tend to label most retrievals "high" indiscriminately.
+    dominant = dominance is not None
     _ratio = _top_two_score_ratio(hits)
     _top_score = hits[0].get("score", 0.0) if hits else 0.0
-    # Agreement lifts the RRF-compressed ratio: a consensus top hit (both
-    # retrievers rank it at/near #1) grades dominant even though its fused
-    # score barely outscores the runner-up. The score floor still applies, and
-    # is naturally cleared — a rank-0-in-both hit scores well above it.
-    _dominant_grade = _ratio >= _DOMINANCE_RATIO or agreement_dominant
+    _second_score = hits[1].get("score", 0.0) if len(hits) >= 2 else 0.0
 
-    # Strong answer-grounding can EARN "high" on a NON-dominant retrieval. RRF
-    # compresses sibling scores, so a rank-1 hit buried in a cluster of related
-    # files never "dominates" numerically and was capped at medium even when the
-    # synthesised answer is fully grounded in served source. Earn high when
-    # EITHER the question's named symbol body is served in-hand (tier-0 anchor),
-    # OR every distinctive mechanism term the answer names is grounded in the
-    # retrieval corpus AND a cited hit carries real symbol bodies. Conservative:
-    # a single ungrounded mechanism term disqualifies (that is the fabricated-
-    # mechanism signal), and the score floor still applies — this lifts
-    # non-dominant *well grounded* answers, never weakly-retrieved ones. The
-    # demotion gates below (hedge, value, claim-support) still pull an earned
+    # A response can EARN "high" on a NON-dominant retrieval, by two routes that
+    # are NOT equally good and so are tracked apart. Both need the score floor,
+    # and a retrieval that clears the floor and dominates is already high — so
+    # earning fires exactly when `retrieval_quality` reads "weak".
+    #
+    # * `earned_body` — the question named a symbol and its live body is inlined
+    #   in this payload. Resolved by exact name, not by ranking, so how ambiguous
+    #   the ranking was does not bear on it, and "do not re-read the source" is
+    #   literally true: the source is in the response. (An oversized body can
+    #   still arrive cut, which is why the note it writes says "the live body"
+    #   rather than "the full body" and lets the truncation tail speak.)
+    # * `earned_grounding` — every distinctive mechanism term the answer names
+    #   appears in the material it was shown, and a cited hit carries real symbol
+    #   bodies. That is evidence the model did not FABRICATE a mechanism. It is
+    #   not evidence retrieval found the right page, which is the only thing in
+    #   doubt on a weak retrieval — an answer can be perfectly consistent with
+    #   the wrong file. Off by default; see the env flag's comment.
+    #
+    # The demotion gates below (hedge, value, claim-support) still pull an earned
     # high back down.
-    earn_high = False
+    earned_body = False
+    earned_grounding = False
     if _flag_on(_EARN_HIGH_GROUNDING_ENV) and _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
-        _cited = set(citations)
-        _cited_has_body = any(h.get("symbols") for h in hits if h.get("target_path") in _cited)
-        _fu, _fg = _frame_term_grounding(answer_text, question, hits)
-        grounding_strong = _cited_has_body and _fg >= 1 and not _fu
-        earn_high = served_named_body or grounding_strong
+        earned_body = served_named_body
+        if _opt_in(_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV):
+            _cited = set(citations)
+            _cited_has_body = any(h.get("symbols") for h in hits if h.get("target_path") in _cited)
+            _fu, _fg = _frame_term_grounding(answer_text, question, hits)
+            earned_grounding = _cited_has_body and _fg >= 1 and not _fu
+    earn_high = earned_body or earned_grounding
 
-    if (_dominant_grade or earn_high) and _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
+    if (dominant or earn_high) and _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         confidence = "high"
-    elif _dominant_grade:
+    elif dominant:
         # Dominant but weak — the right file relative to its siblings, but
         # the signal isn't strong enough to trust the synthesised answer
         # without verification. Downgrade so the consumer Reads the source.
@@ -779,14 +864,29 @@ def _grade_answer(
     # if every gate passed. (A non-dominant retrieval already scores <high via
     # the ratio, so this is usually a no-op; it is explicit so the
     # always-synthesize contract — "answered, but verify" — is self-documenting.)
-    # Exception: an answer that EARNED high via strong grounding (named symbol
-    # body in-hand, or every mechanism term grounded in a cited body) is not
-    # "cite without verifying" — the source IS in the payload — so the
-    # non-dominance ceiling does not apply to it.
+    # Exception: an answer that EARNED high is not "cite without verifying". By
+    # default that means only the served-body route — the source IS in the
+    # payload — since grounded PROSE is merely consistent with material this same
+    # retrieval says may be the wrong material, and an agent reads "high" as
+    # permission to skip the verification that would catch precisely that. The
+    # exemption is written against `earn_high` rather than `earned_body` so the
+    # opt-in genuinely restores the old behaviour instead of being overruled two
+    # lines later.
     if not dominant and not earn_high and confidence == "high":
         confidence = "medium"
+
+    # Name the reason while the evidence for it is still in scope. The dominance
+    # tier first, and the specific tier rather than "dominant": the gap and
+    # agreement tiers fire at ratios near 1.0, so a note quoting the ratio as the
+    # measurement would print a near tie as its own justification — the reported
+    # defect, one layer down.
+    high_reason = None
+    if confidence == "high":
+        high_reason = dominance or ("symbol_body" if earned_body else "grounding")
     return _Grade(
         confidence=confidence,
+        high_reason=high_reason,
+        second_score=_second_score,
         hedged=hedged,
         ratio=_ratio,
         top_score=_top_score,

@@ -191,22 +191,42 @@ async def test_demotion_gate_still_fires_on_agreement_hit(setup_mcp, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_earn_high_via_grounding_lifts_nondominant(setup_mcp, monkeypatch):
-    """A NON-dominant retrieval (no agreement, ratio < 1.2) whose answer is fully
-    grounded — cites a hit carrying the named symbol body and introduces no
-    ungrounded mechanism term — EARNS high. Flag off → medium."""
+async def test_grounding_earns_high_only_when_opted_in(setup_mcp, monkeypatch):
+    """A fully-grounded answer over a NON-dominant retrieval no longer earns high.
+
+    The lift is only ever reachable over a WEAK retrieval — it needs the top score
+    to clear the confidence floor, and a retrieval that clears the floor and
+    dominates is already high — so this fires exactly where the pipeline is
+    reporting it may have surfaced the wrong material. Frame-term grounding
+    cannot speak to that: it establishes the answer named nothing retrieval did
+    not show it, which rules out a fabricated mechanism and not a well-described
+    wrong file. `high` tells the agent to cite without re-reading, so the two
+    cannot both hold.
+
+    Opt back in with REPOWISE_ANSWER_EARN_HIGH_ON_WEAK_RETRIEVAL for the previous
+    behaviour, and then the note must say the grounding is what it rests on
+    rather than claiming a dominance that was never measured.
+    """
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
     monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
-    # No agreement lift (top found by one retriever); the only path to high is
-    # the grounding-earn.
+    # No agreement lift (top found by one retriever), so grounding is the only
+    # route to high under test.
     monkeypatch.setenv("REPOWISE_ANSWER_AGREEMENT_CONFIDENCE", "off")
     _patch_agreement_pipeline(monkeypatch, answer_mod, top_both=False)
     _patch_provider(monkeypatch, answer_mod, _GOOD_ANSWER)
 
     result = await get_answer("how are large uploads handled")
-    assert result["confidence"] == "high"
+    assert result["retrieval_quality"] == "weak"
+    assert result["confidence"] == "medium", "grounded prose does not out-vote weak retrieval"
+
+    monkeypatch.setenv("REPOWISE_ANSWER_EARN_HIGH_ON_WEAK_RETRIEVAL", "on")
+    result_on = await get_answer("how are large uploads handled")
+    assert result_on["confidence"] == "high"
+    assert "clearly dominates" not in result_on["note"], (
+        "the lift did not measure dominance, so the note must not claim it"
+    )
 
     monkeypatch.setenv("REPOWISE_ANSWER_EARN_HIGH_GROUNDING", "off")
     result_off = await get_answer("how are large uploads handled")
