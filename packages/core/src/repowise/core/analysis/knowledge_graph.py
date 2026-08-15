@@ -205,6 +205,16 @@ def _slugify(text: str) -> str:
 # Edge type mapping
 # ---------------------------------------------------------------------------
 
+# Bump when the builder or the curation pass changes what it emits from an
+# unchanged graph — a wider `_EDGE_TYPE_MAP`, a different entry-point ranking,
+# a new node field. Folded into `compute_kg_fingerprint`, which otherwise only
+# measures the input graph and would let an existing store serve the old
+# artifact indefinitely. See that function for why one bump is one rebuild.
+#
+# "2" for 0.43.0: `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points`
+# changed its ranking, neither of which moves a node or edge count.
+KG_BUILDER_VERSION = "2"
+
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
 # missing — framework, the three dynamic_* kinds, reads and method_implements —
@@ -410,10 +420,29 @@ def build_knowledge_graph_skeleton(
 
 
 def compute_kg_fingerprint(graph_builder: Any) -> str:
-    """Compute a fingerprint from the graph state for incremental skip logic."""
+    """Compute a fingerprint from the graph state for incremental skip logic.
+
+    The four graph measures describe the *input* graph. They cannot see a
+    change in how this module turns that graph into an export, and the export
+    is not total: :data:`_EDGE_TYPE_MAP` drops every unmapped edge type. So
+    widening that map — six types in 0.43.0 — changes what the knowledge graph
+    contains while all four measures hold still, and the stored artifact would
+    keep the narrower edge set until some unrelated commit happened to move a
+    node or edge count. Same for the ordering the curation pass applies to
+    ``project.entry_points``, which every orientation surface reads.
+
+    :data:`KG_BUILDER_VERSION` closes that: bump it in the same commit as a
+    change to what the builder or the curation pass emits, and every existing
+    store rebuilds its knowledge graph exactly once, on the next ordinary
+    ``repowise update``. The rebuild is the deterministic skeleton and curation
+    passes over a graph the run already holds — no model, no re-index, nothing
+    for the user to do. One rebuild and not a loop: the new value is stored as
+    the artifact's fingerprint, so the next run matches and skips.
+    """
     g = graph_builder.graph()
     cd = graph_builder.community_detection()
     parts = [
+        KG_BUILDER_VERSION,
         str(g.number_of_nodes()),
         str(g.number_of_edges()),
         str(len(set(cd.values()))),

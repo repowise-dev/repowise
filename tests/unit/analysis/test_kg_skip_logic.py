@@ -7,6 +7,7 @@ import logging
 
 import pytest
 
+from repowise.core.analysis import knowledge_graph
 from repowise.core.analysis.knowledge_graph import (
     _KG_SCHEMA_VERSION,
     KnowledgeGraphResult,
@@ -180,6 +181,36 @@ class TestFingerprintDeterminism:
             ["a.py", "b.py"], [], {"a.py": 0, "b.py": 1}
         )
         assert compute_kg_fingerprint(gb1) != compute_kg_fingerprint(gb2)
+
+    def test_builder_version_changes_the_fingerprint(self, monkeypatch):
+        """The one input that is not a measurement of the graph.
+
+        Every other test here varies the graph and expects the fingerprint to
+        follow. This is the opposite case, and the one the skip logic could not
+        express before: the graph is identical and the *builder* changed, which
+        is what a release does when it widens ``_EDGE_TYPE_MAP`` or re-ranks
+        entry points. Without this fold an existing store keeps the artifact a
+        narrower builder wrote, for as long as its node and edge counts happen
+        to hold still.
+        """
+        gb = self._make_graph_builder(["a.py", "b.py"], [("a.py", "b.py")], {"a.py": 0, "b.py": 0})
+        before = compute_kg_fingerprint(gb)
+
+        monkeypatch.setattr(knowledge_graph, "KG_BUILDER_VERSION", "test-next")
+        assert compute_kg_fingerprint(gb) != before
+
+    def test_builder_version_is_a_stable_constant(self):
+        """Pins the fold to a constant, not to something that drifts per run.
+
+        A value derived from a clock or from the module's own bytes would make
+        every update rebuild the knowledge graph forever — the failure mode
+        opposite to the one the constant exists to fix, and the more expensive
+        of the two.
+        """
+        gb = self._make_graph_builder(["a.py"], [], {"a.py": 0})
+        assert compute_kg_fingerprint(gb) == compute_kg_fingerprint(gb)
+        assert isinstance(knowledge_graph.KG_BUILDER_VERSION, str)
+        assert knowledge_graph.KG_BUILDER_VERSION
 
 
 # ---------------------------------------------------------------------------
