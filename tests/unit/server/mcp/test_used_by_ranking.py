@@ -31,8 +31,15 @@ async def repository(session, populated_db) -> Repository:
 async def many_users(session, populated_db) -> str:
     """``_NOISE`` peripheral importers, then one central one, added last.
 
-    Last, so that no prefix of the insertion order contains it: a cut that
-    keeps the first twenty rows cannot keep this file by luck.
+    ``zz_`` is load-bearing. The first cut of this fixture called the central
+    file ``src/app/hub.py`` and **passed against the unranked code** — SQLite
+    serves this join through the ``(repository_id, node_id)`` unique index, so
+    the "unordered" query comes back in path order and a hub whose path sorts
+    early survives a cut that is not ranking anything. Named to sort last, and
+    inserted last, so neither path order nor insertion order can keep it: only
+    the ranking can. (That also says what the old behaviour was — alphabetical
+    on SQLite, nothing promised on Postgres — which is not the same as random,
+    and is still the wrong list.)
     """
     rid = populated_db
     for i in range(_NOISE):
@@ -47,7 +54,10 @@ async def many_users(session, populated_db) -> str:
                 symbol_count=1,
                 is_test=False,
                 is_entry_point=False,
-                pagerank=0.001,
+                # Rising with the name, so path order and rank order disagree
+                # on every pair. Equal ranks would let an alphabetical list
+                # satisfy "descending by PageRank" for free.
+                pagerank=0.001 * (i + 1),
                 betweenness=0.0,
                 community_id=1,
             )
@@ -66,7 +76,7 @@ async def many_users(session, populated_db) -> str:
         GraphNode(
             id="gn-hub",
             repository_id=rid,
-            node_id="src/app/hub.py",
+            node_id="src/zz_hub.py",
             node_type="file",
             language="python",
             symbol_count=9,
@@ -81,7 +91,7 @@ async def many_users(session, populated_db) -> str:
         GraphEdge(
             id="ge-hub",
             repository_id=rid,
-            source_node_id="src/app/hub.py",
+            source_node_id="src/zz_hub.py",
             target_node_id=_FILE,
             edge_type="imports",
             imported_names_json='["AuthService"]',
@@ -101,7 +111,7 @@ async def test_the_most_central_user_survives_the_cut(session, repository, many_
     used_by = (await _card(session, repository, "AuthService"))["docs"]["used_by"]
 
     assert len(used_by) == _MAX_USED_BY
-    assert used_by[0] == "src/app/hub.py"
+    assert used_by[0] == "src/zz_hub.py"
 
 
 async def test_used_by_is_ordered_by_centrality(session, repository, many_users) -> None:
