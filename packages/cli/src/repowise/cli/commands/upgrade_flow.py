@@ -46,7 +46,7 @@ from repowise.cli.helpers import (
 )
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 from repowise.core.docs_mode import docs_mode_state_fields
-from repowise.core.update_lock import try_acquire_update_lock
+from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 
 
 def _gate_cost(
@@ -497,66 +497,64 @@ def upgrade_to_full(
             "The full upgrade is deferred; it will run on the next pass."
         )
 
-    # We own the lock from here on; release it on every exit path (including
-    # the cost-gate Abort return below), mirroring the incremental update.
-    import atexit
-
-    from repowise.core.update_lock import release_update_lock
-
-    atexit.register(release_update_lock, repo_path)
-
+    # We own the lock from here on; release it when this function returns
+    # (success, cost-gate Abort, or unexpected failure) rather than at process
+    # exit — atexit would leave the lock held for the rest of the CLI process.
     try:
-        generated_pages, total_pages = run_async(
-            _run_upgrade(
-                repo_path,
-                provider,
-                config,
-                exclude_patterns=exclude_patterns,
-                commit_limit=commit_limit,
-                follow_renames=follow_renames,
-                embedder_name=embedder_name,
-                yes=yes,
+        try:
+            generated_pages, total_pages = run_async(
+                _run_upgrade(
+                    repo_path,
+                    provider,
+                    config,
+                    exclude_patterns=exclude_patterns,
+                    commit_limit=commit_limit,
+                    follow_renames=follow_renames,
+                    embedder_name=embedder_name,
+                    yes=yes,
+                )
             )
+        except click.Abort:
+            # Declined at the cost gate. The git backfill that ran before it is
+            # kept (it costs nothing to keep and everything to redo), and the
+            # persisted docs mode is left alone so the repo keeps whatever wiki it
+            # already had.
+            console.print("[yellow]Nothing generated.[/yellow] The index is unchanged.")
+            return
+
+        # Flip persisted state to full so subsequent `repowise update` runs the
+        # normal incremental LLM path rather than offering upgrade.
+        state["last_sync_commit"] = head
+        state.update(docs_mode_state_fields("llm"))
+        state["git_tier"] = "full"
+        state["total_pages"] = total_pages
+        # Record who wrote the pages. Without this, `repowise status` on a repo
+        # upgraded this way reports its provider and model as unknown, which reads
+        # as "nothing wrote this wiki" right after a run that did.
+        state["provider"] = provider.provider_name
+        state["model"] = provider.model_name
+        # `update --full` regenerates the whole wiki (concept tree included), so it
+        # brings the store to the terminal store format the same way a full init
+        # does. Stamp it as such rather than clamping at the reindex gate.
+        #
+        # This is also the run that answers the missing-slot notice: it evaluates
+        # every registered onboarding slot against whole-repo signals, so after it
+        # there is nothing left for the notice to report.
+        stamp_offered_slots(state, enabled=config.enable_onboarding)
+        # This run re-ran health analysis over the whole repo, so its rows come
+        # from the current analyzer. Without the stamp the next plain `update`
+        # would read a stale version and pay a redundant full re-score.
+        state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        save_state(repo_path, state, full_index=True)
+        if embedder_name and embedder_name != cfg.get("embedder"):
+            from repowise.cli.helpers import save_config_partial
+
+            save_config_partial(repo_path, embedder=embedder_name)
+
+        elapsed = time.monotonic() - start
+        console.print(
+            f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f}s — "
+            f"{len(generated_pages)} pages generated, git tier now FULL."
         )
-    except click.Abort:
-        # Declined at the cost gate. The git backfill that ran before it is
-        # kept (it costs nothing to keep and everything to redo), and the
-        # persisted docs mode is left alone so the repo keeps whatever wiki it
-        # already had. The atexit release above drops the lock on this return.
-        console.print("[yellow]Nothing generated.[/yellow] The index is unchanged.")
-        return
-
-    # Flip persisted state to full so subsequent `repowise update` runs the
-    # normal incremental LLM path rather than offering upgrade.
-    state["last_sync_commit"] = head
-    state.update(docs_mode_state_fields("llm"))
-    state["git_tier"] = "full"
-    state["total_pages"] = total_pages
-    # Record who wrote the pages. Without this, `repowise status` on a repo
-    # upgraded this way reports its provider and model as unknown, which reads
-    # as "nothing wrote this wiki" right after a run that did.
-    state["provider"] = provider.provider_name
-    state["model"] = provider.model_name
-    # `update --full` regenerates the whole wiki (concept tree included), so it
-    # brings the store to the terminal store format the same way a full init
-    # does. Stamp it as such rather than clamping at the reindex gate.
-    #
-    # This is also the run that answers the missing-slot notice: it evaluates
-    # every registered onboarding slot against whole-repo signals, so after it
-    # there is nothing left for the notice to report.
-    stamp_offered_slots(state, enabled=config.enable_onboarding)
-    # This run re-ran health analysis over the whole repo, so its rows come
-    # from the current analyzer. Without the stamp the next plain `update`
-    # would read a stale version and pay a redundant full re-score.
-    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
-    save_state(repo_path, state, full_index=True)
-    if embedder_name and embedder_name != cfg.get("embedder"):
-        from repowise.cli.helpers import save_config_partial
-
-        save_config_partial(repo_path, embedder=embedder_name)
-
-    elapsed = time.monotonic() - start
-    console.print(
-        f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f}s — "
-        f"{len(generated_pages)} pages generated, git tier now FULL."
-    )
+    finally:
+        release_update_lock(repo_path)

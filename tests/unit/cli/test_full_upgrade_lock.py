@@ -80,13 +80,12 @@ def test_full_upgrade_acquires_and_releases_lock(
 
     monkeypatch.setattr(up_mod, "try_acquire_update_lock", _fake_acquire)
     released: list[Path] = []
-    monkeypatch.setattr(
-        "repowise.core.update_lock.release_update_lock", lambda p: released.append(p)
-    )
+    monkeypatch.setattr(up_mod, "release_update_lock", lambda p: released.append(p))
 
     _call_upgrade(repo)
 
     assert acquired == [True], "the full upgrade must acquire the single-flight lock"
+    assert released == [repo], "the full upgrade must release the lock when it returns"
 
 
 def test_full_upgrade_defers_when_lock_held(
