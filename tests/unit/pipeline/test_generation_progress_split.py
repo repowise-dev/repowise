@@ -96,15 +96,11 @@ def test_free_page_types_are_the_ones_that_cost_nothing() -> None:
     assert "onboarding" not in _FREE_PAGE_TYPES
 
 
-def test_paid_pages_get_their_own_counter(monkeypatch, tmp_path: Path) -> None:
+def test_each_tier_advances_only_its_own_bar(monkeypatch, tmp_path: Path) -> None:
     progress = _run(monkeypatch, tmp_path, ["file_page"] * 5 + ["module_page"] * 3)
 
-    # The free pages must not appear on the paid counter...
     assert progress.items.count("generation.llm") == 3
-    # ...and the paid counter must not be announced before the first paid page,
-    # or it sits at 0 on screen through the entire free stretch.
-    assert ("generation.llm", None) in progress.started
-    assert progress.started.index(("generation.llm", None)) > 0
+    assert progress.items.count("generation") == 5
 
 
 def test_a_run_with_no_paid_pages_shows_no_paid_counter(monkeypatch, tmp_path: Path) -> None:
@@ -112,24 +108,19 @@ def test_a_run_with_no_paid_pages_shows_no_paid_counter(monkeypatch, tmp_path: P
     would be an unanswered question, not an answer."""
     progress = _run(monkeypatch, tmp_path, ["file_page"] * 4)
 
-    assert "generation.llm" not in [phase for phase, _ in progress.started]
     assert "generation.llm" not in progress.items
 
 
-def test_every_page_still_advances_the_overall_bar(monkeypatch, tmp_path: Path) -> None:
-    """The overall total counts onboarding, so the overall bar must too.
+def test_onboarding_counts_as_paid_and_keeps_its_own_step(monkeypatch, tmp_path: Path) -> None:
+    """Onboarding slots cost a model call, so they belong to the paid tier.
 
-    It previously routed onboarding pages *only* to the onboarding task while
-    ``_announce_total`` counted them into the overall total, so that bar could
-    never reach its own denominator — ``on_phase_done`` forcing it to 100% at
-    the end is what hid the arithmetic.
+    Routing them to the free bar would leave that bar unable to reach the
+    denominator ``_announce_total`` derives from the same tier split.
     """
-    page_types = ["file_page", "module_page", "onboarding", "onboarding"]
-    progress = _run(monkeypatch, tmp_path, page_types)
+    progress = _run(monkeypatch, tmp_path, ["file_page", "module_page", "onboarding", "onboarding"])
 
-    announced = dict(progress.started)["generation"]
-    assert announced == len(page_types)
-    assert progress.items.count("generation") == len(page_types)
+    assert progress.items.count("generation") == 1
+    assert progress.items.count("generation.llm") == 3
     # Onboarding keeps its own named step as well.
     assert progress.items.count("onboarding") == 2
 

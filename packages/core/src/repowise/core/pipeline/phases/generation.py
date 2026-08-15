@@ -114,34 +114,26 @@ async def run_generation(
         _pages_done += 1
         if not progress:
             return
-        # Onboarding keeps its own named step, and also advances the overall
-        # bar. It used to do only the former while ``_announce_total`` counted
-        # onboarding slots into the overall total, so that bar's denominator
-        # included pages that could never tick it and it never reached 100%
-        # on its own — ``on_phase_done`` forcing it there at the end is what
-        # hid the arithmetic.
+        # Onboarding keeps its own named step as well as advancing its tier's
+        # bar, so it stays visible as a distinct step in the terminal.
         if page_type == "onboarding":
             progress.on_item_done("onboarding")
-        progress.on_item_done("generation")
 
-        # One bar counting 4,229 items where ~4,134 are free template renders
-        # and ~95 are paid model calls reads as frozen: the cheap levels run
-        # first, so it sprints to 97% and then crawls for another quarter of an
-        # hour with the cost figure sitting still. The paid work gets its own
-        # counter so that stretch has something visibly moving in it.
+        # Each page advances the bar for its own tier. One bar counting 4,229
+        # items where ~4,134 are free template renders and ~95 are paid model
+        # calls reads as frozen: the cheap levels run first, so it sprints to
+        # 97% and then crawls for another quarter of an hour. Split, the free
+        # bar finishes and hides while the paid one counts the stretch that is
+        # actually still running.
         #
-        # Counted rather than announced up front: the per-tier totals are known
-        # only inside the level builders, which this phase does not own. An
-        # indeterminate counter states what is true without inventing a
-        # denominator.
-        #
-        # Counts by page *type*, not by whether a call was made, so a resume or
-        # update run that reuses a cached page still counts it here. The tier
-        # is right; on a heavily-reused run the count overstates the calls.
-        if page_type not in _FREE_PAGE_TYPES:
+        # Routed by page *type*, not by whether a call was made, so a resume or
+        # update run that reuses a cached page still counts it against the paid
+        # tier. That matches how ``_announce_total`` derives the denominators,
+        # which is what keeps the bar reaching 100%.
+        if page_type in _FREE_PAGE_TYPES:
+            progress.on_item_done("generation")
+        else:
             _llm_pages_done += 1
-            if _llm_pages_done == 1:
-                progress.on_phase_start("generation.llm", None)
             progress.on_item_done("generation.llm")
 
         # Push live cost update if the callback supports it

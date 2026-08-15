@@ -12,6 +12,7 @@ purely a structural split to satisfy the project's 400-line ceiling.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,43 @@ if TYPE_CHECKING:
     from .core import PageGenerator
 
 log = structlog.get_logger(__name__)
+
+
+def _free_page_types() -> frozenset[str]:
+    """Page types rendered from a template, with no provider call.
+
+    Deferred import on purpose: ``cost_estimator`` reaches back into
+    ``generation.selection``, so importing it at module scope from inside the
+    generation package risks a partially-initialised cycle. Reused rather than
+    restated because that set is already the repo's answer to "does this page
+    cost tokens", and a second copy here is what would drift the first time a
+    page type changes tier.
+    """
+    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
+
+    return frozenset(STRUCTURAL_PAGE_TYPES)
+
+
+def _count_free_ids(page_ids: Any) -> int:
+    """How many of *page_ids* are free-tier, read off the id's type prefix.
+
+    Page ids are ``"<page_type>:<target>"``, so the prefix is the tier without
+    needing the pages themselves — which matters here because these are
+    completed ids recovered from a prior run, not objects in hand.
+    """
+    free = _free_page_types()
+    return sum(1 for page_id in page_ids if str(page_id).split(":", 1)[0] in free)
+
+
+def _announce_paid(on_subphase: Any, total: int) -> None:
+    """Start the model-backed bar, or leave it off a run that has none.
+
+    A deterministic run makes no model calls at all, and a bar sitting at 0/0
+    for its whole duration is an unanswered question rather than an answer.
+    """
+    if total > 0 and on_subphase is not None:
+        with contextlib.suppress(Exception):
+            on_subphase("generation.llm", total)
 
 
 class _GenerationRun:
@@ -435,9 +473,12 @@ class _GenerationRun:
         # still an upper bound (a page may gate-skip at build time), matching
         # the contract the caller reconciles against the real completed count.
         if self.only_page_ids is not None:
-            remaining = len(self.only_page_ids - self.completed_ids)
+            remaining_ids = self.only_page_ids - self.completed_ids
+            remaining = len(remaining_ids)
+            free_remaining = _count_free_ids(remaining_ids)
             if self.on_total_known is not None:
-                self.on_total_known(remaining)
+                self.on_total_known(free_remaining)
+            _announce_paid(self.on_subphase, remaining - free_remaining)
             if self.job_system is not None and self.job_id is not None:
                 self.job_system.start_job(self.job_id, remaining)
             return
@@ -466,9 +507,21 @@ class _GenerationRun:
             + counts["infra_page"]
             + onboarding_page_count
         )
-        remaining_total = max(0, estimated_total - len(self.completed_ids))
+        # Split the total across the two progress bars. One bar counting both
+        # tiers reads as frozen: the free levels run first, so it reaches ~97%
+        # in minutes and then crawls for the rest of the run while the ~95
+        # model-backed pages finish. The paid count is the remainder rather
+        # than a second sum, so the two always add back to the total this
+        # already reported and the job system still books the whole run.
+        free_total = sum(counts.get(page_type, 0) for page_type in _free_page_types())
+        done_free = _count_free_ids(self.completed_ids)
+        remaining_free = max(0, free_total - done_free)
+        remaining_paid = max(
+            0, (estimated_total - free_total) - (len(self.completed_ids) - done_free)
+        )
         if self.on_total_known is not None:
-            self.on_total_known(remaining_total)
+            self.on_total_known(remaining_free)
+        _announce_paid(self.on_subphase, remaining_paid)
         if self.job_system is not None and self.job_id is not None:
             self.job_system.start_job(self.job_id, estimated_total)
 
