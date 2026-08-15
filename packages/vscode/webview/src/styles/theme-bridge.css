@@ -22,6 +22,38 @@
   --kg-card-texture: none;
 }
 
+/*
+ * High contrast, both kinds. The theme runtime stamps `hc` on the root under
+ * `vscode-high-contrast` and `vscode-high-contrast-light`, which previously
+ * fell through to the ordinary dark and light ramps: someone who explicitly
+ * asked for high contrast got the standard rgba(255,255,255,.07) hairlines and
+ * the standard tertiary text.
+ *
+ * The brand palette is kept rather than remapped onto --vscode-*, for the same
+ * reason the bridge above refuses the full remap and one more. Editor greys
+ * have no vocabulary for a health band, and green/amber/red on this surface
+ * carry one — a remap would trade contrast for making the map, the legend and
+ * every score unreadable as data. What is bridged is the part VS Code does
+ * define for this purpose: contrastBorder, contrastActiveBorder and
+ * focusBorder are set only by high-contrast themes, so the fallbacks below
+ * never fire outside one.
+ *
+ * Tertiary text is lifted to secondary rather than to a literal, so it follows
+ * the ramp instead of pinning a copy of it.
+ */
+.hc {
+  --color-border-default: var(--vscode-contrastBorder, currentColor);
+  --color-border-hover: var(--vscode-contrastActiveBorder, var(--color-text-primary));
+  --color-text-tertiary: var(--color-text-secondary);
+}
+
+/* HC themes outline the focused element rather than tinting it, and an
+   unfocusable-looking control is the accessibility end of this. */
+.hc :focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, currentColor);
+  outline-offset: 2px;
+}
+
 html,
 body {
   margin: 0;

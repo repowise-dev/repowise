@@ -1,3 +1,15 @@
+/**
+ * Change risk: the diff-shape score for the committed range as the lede, a
+ * verdict strip, what the working change touches, and the statistical
+ * breakdown.
+ *
+ * Grouping is hairlines and vertical rhythm, not boxes. This file carried
+ * thirty `Card` wrappers and not one of them was clickable — a card means "a
+ * discrete object you can act on", and a driver bar, a feature count and a
+ * reviewer ranking are none of those. Everything that does act (the verdict
+ * chips, the file rows, Copy, Run again) keeps its affordance.
+ */
+
 import { useCallback, useEffect, useState } from "react";
 import {
   Copy,
@@ -10,8 +22,10 @@ import {
   TestTube,
   Users,
 } from "lucide-react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui";
+import { Badge, Button } from "@repowise-dev/ui/ui";
 import { EmptyState } from "@repowise-dev/ui/shared";
+import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { OverviewSection } from "@repowise-dev/ui/overview";
 import type { ViewProps } from "../../runtime/mount";
 import type { WebviewHost } from "../../runtime/rpc";
 import type {
@@ -72,6 +86,14 @@ function formatFeatureValue(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
+/** "87th", "91st", "22nd". The percentile reads in a sentence now, where a
+ *  hardcoded "th" produces "91th". */
+function ordinal(n: number): string {
+  const v = Math.round(n);
+  if (v % 100 >= 11 && v % 100 <= 13) return `${v}th`;
+  return `${v}${["th", "st", "nd", "rd"][v % 10] ?? "th"}`;
+}
+
 export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
   const [report, setReport] = useState<RiskRangeReport | null>(null);
   const [impact, setImpact] = useState<ChangeImpactReport | null>(null);
@@ -117,11 +139,13 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
   const base = report?.base ?? "";
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 p-6">
+    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6 sm:gap-8">
       <header className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Change risk</h1>
-          <p className="mt-1 flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+          <h1 className="text-[22px] font-semibold tracking-tight text-[var(--color-text-primary)]">
+            Change risk
+          </h1>
+          <p className="mt-1 flex items-center gap-2 text-[15px] text-[var(--color-text-secondary)]">
             <GitCompare className="h-4 w-4 shrink-0" />
             <span className="truncate">
               <code className="text-[var(--color-text-primary)]">{branch}</code>
@@ -166,34 +190,27 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
  *  holds its shape while the working tree is scored. */
 function RiskSkeleton({ base }: { base: string }) {
   return (
-    <div className="space-y-5">
-      <Card>
-        <CardContent className="flex flex-wrap items-center gap-6 py-6" aria-hidden>
-          <div className="h-24 w-24 shrink-0 animate-pulse rounded-2xl bg-[var(--color-bg-inset)]" />
-          <div className="min-w-0 flex-1 space-y-3">
-            <div className="h-5 w-24 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-            <div className="h-4 w-48 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-            <div className="flex gap-2 pt-1">
-              <div className="h-5 w-20 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-              <div className="h-5 w-28 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-            </div>
+    <div className="flex flex-col gap-6 sm:gap-8" aria-hidden>
+      <div className="flex flex-col gap-4 sm:flex-row sm:gap-8">
+        <div className="flex shrink-0 flex-col gap-2.5">
+          <div className="h-3 w-20 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+          <div className="h-12 w-32 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+        </div>
+        <div className="min-w-0 flex-1 space-y-2 pt-1">
+          <div className="h-4 w-full animate-pulse rounded bg-[var(--color-bg-inset)]" />
+          <div className="h-4 w-4/5 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+        </div>
+      </div>
+      <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] pt-6 sm:pt-8">
+        <div className="h-5 w-44 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-3">
+            <div className="h-3 w-40 shrink-0 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            <div className="h-2 flex-1 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
+            <div className="h-3 w-14 shrink-0 animate-pulse rounded bg-[var(--color-bg-inset)]" />
           </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm">What moves the score</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3" aria-hidden>
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="flex items-center gap-3">
-              <div className="h-3 w-40 shrink-0 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-              <div className="h-2 flex-1 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
-              <div className="h-3 w-14 shrink-0 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+        ))}
+      </div>
       <p className="flex items-center justify-center gap-2 text-xs text-[var(--color-text-tertiary)]">
         <RotateCw className="h-3.5 w-3.5 animate-spin" />
         Scoring the working tree{base ? ` against ${base}` : ""}
@@ -202,59 +219,68 @@ function RiskSkeleton({ base }: { base: string }) {
   );
 }
 
-/** The Kamei diff-shape risk score for the committed range (base..HEAD). */
+/**
+ * The Kamei diff-shape risk score for the committed range (base..HEAD).
+ *
+ * The figure carries a sentence rather than three badges: "6.8" and a
+ * "high review priority" pill say the same thing twice and neither says what
+ * the number was computed from.
+ */
 function ScoreHero({ report }: { report: RiskRangeReport }) {
   const r = report.result;
-  const tone = scoreTone(r.score);
-  const color = TONE_VAR[tone];
+  const color = TONE_VAR[scoreTone(r.score)];
   return (
-    <Card>
-      <CardContent className="flex flex-wrap items-center gap-6 py-6">
-        <div
-          className="flex h-24 w-24 shrink-0 flex-col items-center justify-center rounded-2xl border"
-          style={{
-            borderColor: `color-mix(in srgb, ${color} 45%, transparent)`,
-            backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
-          }}
-        >
-          <span className="text-3xl font-bold leading-none" style={{ color }}>
-            {r.score.toFixed(1)}
-          </span>
-          <span className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">out of 10</span>
-        </div>
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className="inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium capitalize"
-              style={{ color, borderColor: `color-mix(in srgb, ${color} 40%, transparent)` }}
-            >
-              {r.level} risk
-            </span>
-            {r.is_fix && (
-              <Badge variant="outline" title="Classified as a fix change">
-                fix
-              </Badge>
-            )}
-          </div>
-          <p className="text-sm text-[var(--color-text-secondary)]">
-            Estimated defect probability{" "}
-            <span className="font-semibold text-[var(--color-text-primary)]">
-              {(r.probability * 100).toFixed(1)}%
-            </span>
-          </p>
-          <div className="flex flex-wrap gap-2 pt-1">
-            {r.risk_percentile != null && (
-              <Badge variant="default">{r.risk_percentile.toFixed(0)}th percentile</Badge>
-            )}
-            {r.review_priority && (
-              <Badge variant="accent" className="capitalize">
-                {r.review_priority} review priority
-              </Badge>
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <PageLede
+      // Not "Change risk" again: the page's h1 two lines above already says
+      // that, and a micro-label repeating the heading verbatim labels nothing.
+      label="Diff shape"
+      value={r.score.toFixed(1)}
+      valueColor={color}
+      unit="out of 10"
+      band={{ label: `${r.level} risk`, color }}
+      layout="beside"
+      badge={
+        r.is_fix ? (
+          <Badge variant="outline" title="Classified as a fix change">
+            fix
+          </Badge>
+        ) : undefined
+      }
+    >
+      <p>
+        Scored from the shape of this range's diff — how much it adds and
+        deletes, how many files, directories and subsystems it spreads across,
+        and how experienced its author is in them. We put the chance it carries
+        a defect at{" "}
+        <strong className="font-semibold text-[var(--color-text-primary)] tabular-nums">
+          {(r.probability * 100).toFixed(1)}%
+        </strong>
+        .
+      </p>
+      {(r.risk_percentile != null || r.review_priority) && (
+        <p className="mt-2.5">
+          {r.risk_percentile != null && (
+            <>
+              That ranks it at the{" "}
+              <strong className="font-semibold text-[var(--color-text-primary)] tabular-nums">
+                {ordinal(r.risk_percentile)} percentile
+              </strong>{" "}
+              against recent commits here
+              {r.review_priority ? ", so " : "."}
+            </>
+          )}
+          {r.review_priority && (
+            <>
+              {r.risk_percentile == null && "Worth "}
+              <strong className="font-semibold text-[var(--color-text-primary)]">
+                {r.review_priority}
+              </strong>{" "}
+              review priority.
+            </>
+          )}
+        </p>
+      )}
+    </PageLede>
   );
 }
 
@@ -268,7 +294,10 @@ function VerdictStrip({
   cochangeFloor: number;
 }) {
   const blast = impact?.blast;
-  if (!impact || !blast || impact.gitUnavailable) return null;
+  // `changed.length === 0` matters as well as `blast`: the impact block below
+  // renders an empty state in that case, so a chip would scroll to an anchor
+  // that is not on the page. The two must bail on the same condition.
+  if (!impact || !blast || impact.gitUnavailable || impact.changed.length === 0) return null;
 
   const downstream = blast.transitive_affected.length;
   const cochanges = selectMissingCochanges(impact, cochangeFloor).length;
@@ -328,17 +357,17 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
   return (
     <>
       {drivers.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">What moves the score</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
+        <OverviewSection
+          title="What moves the score"
+          description="Each feature's signed contribution. Positive raises the estimate, negative lowers it; the bar is relative to the strongest driver."
+        >
+          <div className="flex flex-col gap-3">
             {drivers.map((d) => {
               const raises = d.contribution >= 0;
               const barColor = raises ? "var(--color-error)" : "var(--color-success)";
               const pct = maxDriver > 0 ? (Math.abs(d.contribution) / maxDriver) * 100 : 0;
               return (
-                <div key={d.feature} className="flex items-center gap-3 text-sm">
+                <div key={d.feature} className="flex items-center gap-3 text-[15px]">
                   <span className="w-40 shrink-0 truncate text-[var(--color-text-secondary)]">
                     {d.label}
                   </span>
@@ -357,31 +386,29 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
                 </div>
               );
             })}
-          </CardContent>
-        </Card>
+          </div>
+        </OverviewSection>
       )}
 
       {featureRows.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Change shape</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <dl className="grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-2">
-              {featureRows.map(([key, label]) => (
-                <div
-                  key={key}
-                  className="flex items-baseline justify-between gap-3 border-b border-[var(--color-border-default)] py-1.5 last:border-b-0"
-                >
-                  <dt className="text-sm text-[var(--color-text-secondary)]">{label}</dt>
-                  <dd className="text-sm font-medium tabular-nums text-[var(--color-text-primary)]">
-                    {formatFeatureValue(r.features[key] as number)}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </CardContent>
-        </Card>
+        <OverviewSection
+          title="Change shape"
+          description="The raw diff measurements the score is computed from."
+        >
+          <dl className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
+            {featureRows.map(([key, label]) => (
+              <div
+                key={key}
+                className="flex items-baseline justify-between gap-3 border-b border-[var(--color-border-default)] py-2 last:border-b-0"
+              >
+                <dt className="text-[15px] text-[var(--color-text-secondary)]">{label}</dt>
+                <dd className="text-[15px] font-medium tabular-nums text-[var(--color-text-primary)]">
+                  {formatFeatureValue(r.features[key] as number)}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </OverviewSection>
       )}
     </>
   );
@@ -404,38 +431,28 @@ function ChangeImpact({
 }) {
   if (loading && !impact) {
     return (
-      <>
-        <Card>
-          <CardContent className="space-y-3 py-5" aria-hidden>
-            <div className="h-4 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <div className="h-3 flex-1 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-                <div className="h-1.5 w-16 shrink-0 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="space-y-3 py-5" aria-hidden>
-            <div className="h-4 w-40 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-            <div className="h-3 w-full animate-pulse rounded bg-[var(--color-bg-inset)]" />
-            <div className="h-3 w-2/3 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-          </CardContent>
-        </Card>
-      </>
+      <div
+        className="flex flex-col gap-3 border-t border-[var(--color-border-default)] pt-6 sm:pt-8"
+        aria-hidden
+      >
+        <div className="h-5 w-48 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <div className="h-3 flex-1 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            <div className="h-1.5 w-16 shrink-0 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
+          </div>
+        ))}
+      </div>
     );
   }
   if (!impact) return null;
 
   if (impact.gitUnavailable) {
     return (
-      <Card>
-        <CardContent className="py-4 text-sm text-[var(--color-text-tertiary)]">
-          Enable Git for this workspace to see what your change touches, who
-          usually changes it with you, and who could review it.
-        </CardContent>
-      </Card>
+      <p className="border-t border-[var(--color-border-default)] pt-6 text-[15px] text-[var(--color-text-tertiary)] sm:pt-8">
+        Enable Git for this workspace to see what your change touches, who
+        usually changes it with you, and who could review it.
+      </p>
     );
   }
 
@@ -461,12 +478,10 @@ function ChangeImpact({
     impact.scope === "branch" ? "uncommitted and unpushed" : "uncommitted";
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
-          What this change touches
-        </h2>
-        <span className="text-xs text-[var(--color-text-tertiary)]">
+    <OverviewSection
+      title="What this change touches"
+      action={
+        <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
           {impact.changed.length} {scopeLabel} file{impact.changed.length === 1 ? "" : "s"}
           {overall != null && (
             <>
@@ -477,10 +492,11 @@ function ChangeImpact({
             </>
           )}
         </span>
-      </div>
-
+      }
+      className="gap-6"
+    >
       {directRisks.length > 0 && (
-        <ImpactCard
+        <ImpactBlock
           id={SECTION_IDS.directRisks}
           icon={<Gauge className="h-4 w-4" />}
           title="Riskiest files in this change"
@@ -490,11 +506,11 @@ function ChangeImpact({
             <DirectRiskRow key={f.path} risk={f} onOpen={() => host.openFile(f.path)} />
           ))}
           <MoreRow count={directRisks.length - 10} />
-        </ImpactCard>
+        </ImpactBlock>
       )}
 
       {downstream.length > 0 && (
-        <ImpactCard
+        <ImpactBlock
           id={SECTION_IDS.downstream}
           icon={<Network className="h-4 w-4" />}
           title="Downstream of your changes"
@@ -509,11 +525,11 @@ function ChangeImpact({
             />
           ))}
           <MoreRow count={downstream.length - 10} />
-        </ImpactCard>
+        </ImpactBlock>
       )}
 
       {cochanges.length > 0 && (
-        <ImpactCard
+        <ImpactBlock
           id={SECTION_IDS.cochanges}
           icon={<GitPullRequest className="h-4 w-4" />}
           title="Usually changes together"
@@ -528,11 +544,11 @@ function ChangeImpact({
             />
           ))}
           <MoreRow count={cochanges.length - 8} />
-        </ImpactCard>
+        </ImpactBlock>
       )}
 
       {testGaps.length > 0 && (
-        <ImpactCard
+        <ImpactBlock
           id={SECTION_IDS.testGaps}
           icon={<TestTube className="h-4 w-4" />}
           title="Changed without a test"
@@ -542,22 +558,25 @@ function ChangeImpact({
             <PathRow key={p} path={p} onOpen={() => host.openFile(p)} />
           ))}
           <MoreRow count={testGaps.length - 8} />
-        </ImpactCard>
+        </ImpactBlock>
       )}
 
       {reviewers.length > 0 && <Reviewers reviewers={reviewers} host={host} />}
-    </div>
+    </OverviewSection>
   );
 }
 
-function ImpactCard({
+/** One block of the impact read. A hairline and a heading, not a card: the
+ *  rows inside are the things you can act on, and each carrying its own box
+ *  put four bordered containers around four lists of file names. */
+function ImpactBlock({
   id,
   icon,
   title,
   hint,
   children,
 }: {
-  /** Anchor for the verdict chips; omitted for cards without a chip. */
+  /** Anchor for the verdict chips; omitted for blocks without a chip. */
   id?: string;
   icon: React.ReactNode;
   title: string;
@@ -565,16 +584,17 @@ function ImpactCard({
   children: React.ReactNode;
 }) {
   return (
-    <Card id={id}>
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <span className="text-[var(--color-text-tertiary)]">{icon}</span>
-          {title}
-        </CardTitle>
-        <p className="text-xs text-[var(--color-text-tertiary)]">{hint}</p>
-      </CardHeader>
-      <CardContent className="space-y-0.5">{children}</CardContent>
-    </Card>
+    <section
+      {...(id ? { id } : {})}
+      className="flex scroll-mt-6 flex-col gap-1.5 border-t border-[var(--color-border-default)] pt-4"
+    >
+      <h3 className="flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text-primary)]">
+        <span className="text-[var(--color-text-tertiary)]">{icon}</span>
+        {title}
+      </h3>
+      <p className="text-xs text-[var(--color-text-tertiary)]">{hint}</p>
+      <div className="mt-1 flex flex-col gap-0.5">{children}</div>
+    </section>
   );
 }
 
@@ -594,7 +614,7 @@ function PathRow({
       type="button"
       onClick={onOpen}
       title={`Open ${path}`}
-      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--color-bg-surface)]"
+      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-surface)]"
     >
       <span className="min-w-0 flex-1 truncate">
         {dir && <span className="text-[var(--color-text-tertiary)]">{dir}</span>}
@@ -619,7 +639,7 @@ function DirectRiskRow({ risk, onOpen }: { risk: RankedDirectRisk; onOpen: () =>
       type="button"
       onClick={onOpen}
       title={`Open ${risk.path}`}
-      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--color-bg-surface)]"
+      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-surface)]"
     >
       <span className="min-w-0 flex-1 truncate">
         {dir && <span className="text-[var(--color-text-tertiary)]">{dir}</span>}
@@ -674,30 +694,30 @@ function Reviewers({
   const maxScore = top.reduce((m, r) => Math.max(m, r.score), 0);
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-        <div>
-          <CardTitle className="flex items-center gap-2 text-sm">
+    <section className="flex flex-col gap-1.5 border-t border-[var(--color-border-default)] pt-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text-primary)]">
             <span className="text-[var(--color-text-tertiary)]">
               <Users className="h-4 w-4" />
             </span>
             Suggested reviewers
-          </CardTitle>
+          </h3>
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Ranked by ownership and co-change history of the changed files.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={copy}>
+        <Button variant="outline" size="sm" onClick={copy} className="shrink-0">
           <Copy className="h-3.5 w-3.5" />
           Copy
         </Button>
-      </CardHeader>
-      <CardContent className="space-y-2.5">
+      </div>
+      <div className="mt-1 flex flex-col gap-2.5">
         {top.map((r) => {
           const pct = maxScore > 0 ? (r.score / maxScore) * 100 : 0;
           return (
             <div key={r.email ?? r.name} className="space-y-1">
-              <div className="flex items-center justify-between gap-3 text-sm">
+              <div className="flex items-center justify-between gap-3 text-[15px]">
                 <span className="min-w-0 truncate font-medium text-[var(--color-text-primary)]">
                   {r.name}
                 </span>
@@ -719,7 +739,7 @@ function Reviewers({
             </div>
           );
         })}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }

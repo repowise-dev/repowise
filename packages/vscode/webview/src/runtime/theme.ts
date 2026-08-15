@@ -5,6 +5,11 @@
  * palette from a `.dark` class on the root element. This module keeps the two
  * in sync and exposes a subscription for code that needs the resolved kind
  * (the next-themes shim, canvas renderers).
+ *
+ * The two high-contrast kinds additionally stamp an `hc` class, which
+ * `theme-bridge.css` uses to widen borders and lift tertiary text. Contrast is
+ * read from the editor even when the light/dark preference is pinned: a user on
+ * a high-contrast theme needs the contrast whichever ramp they chose.
  */
 
 import type { ThemePreference } from "../../../src/shared/webviewMessages";
@@ -27,8 +32,17 @@ function compute(): ThemeKind {
   return "light";
 }
 
+/** True under either high-contrast kind. VS Code stamps the light one with
+ *  both `vscode-high-contrast-light` and, on some builds, the base class. */
+function computeHighContrast(): boolean {
+  const cls = document.body.classList;
+  return cls.contains("vscode-high-contrast") || cls.contains("vscode-high-contrast-light");
+}
+
 function apply(kind: ThemeKind): void {
-  document.documentElement.classList.toggle("dark", kind === "dark");
+  const root = document.documentElement;
+  root.classList.toggle("dark", kind === "dark");
+  root.classList.toggle("hc", computeHighContrast());
   if (kind === current) return;
   current = kind;
   for (const cb of subscribers) cb(kind);

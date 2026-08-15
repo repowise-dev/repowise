@@ -120,7 +120,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   render(): ReactNode {
     if (this.state.error) {
       return (
-        <div className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-sm">
+        <div className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-[15px]">
           <p className="font-medium text-[var(--color-error)]">This view hit an error.</p>
           <p className="mt-2 text-[var(--color-text-secondary)]">{this.state.error.message}</p>
         </div>
