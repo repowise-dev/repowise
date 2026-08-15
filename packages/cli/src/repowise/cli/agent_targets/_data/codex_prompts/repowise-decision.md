@@ -24,7 +24,12 @@ sources and tracks them for staleness and conflicts. This command drives the
 - **show** — `repowise decision show <id>` — full record: rationale, evidence
   spans, status, and the supersession lineage.
 - **add** — `repowise decision add` — guided interactive capture (~90s). Use when
-  the user makes a decision during the session and wants it recorded.
+  the user makes a decision during the session and wants it recorded. With both
+  `--title` and `--decision` it records without prompting and prints the id
+  (`--format json` to parse it back), which is the form to use with no terminal.
+  The rest are optional: `--context`, `--rationale`, `--alternative`,
+  `--consequence`, `--affects`, `--tag`, the last four repeatable. A flag-driven
+  record lands `proposed` for a person to `confirm`.
 - **confirm** — `repowise decision confirm` — review decisions auto-proposed from
   git history and accept or reject them.
 - **deprecate / dismiss** — `repowise decision deprecate <id>` (optionally
@@ -35,5 +40,6 @@ sources and tracks them for staleness and conflicts. This command drives the
 - For *querying* why code looks the way it does mid-task, prefer the `get_why`
   MCP tool (the `architectural-decisions` skill) — it returns lineage and an
   alignment score. This command is for *managing* the decision records themselves.
-- `add` and `confirm` are interactive; tell the user when a step needs their input.
+- `confirm` is interactive, and so is `add` unless you pass `--title` and
+  `--decision`; tell the user when a step needs their input.
 - If unsure of an exact subcommand or flag, run `repowise decision --help`.

@@ -96,11 +96,22 @@ Git:
   --follow-renames       Track files across renames (slower but more accurate history)
 
 Editor integration:
-  --editor-setup /       Register (default) or skip the global MCP server entry
-  --no-editor-setup      and Claude Code hooks in ~/.claude/settings.json and
-                         Claude Desktop's config, plus the distill rewrite-hook
-                         offer. There is one 'repowise' MCP entry per config, so
-                         a later init from another repo repoints it. See Step 3b.
+  --editor-setup /       Wire repowise into your editors (default), or skip it
+  --no-editor-setup      entirely. Covers both halves: the machine-wide config
+                         (~/.claude/settings.json, Claude Desktop's config, the
+                         Claude Code hooks, the distill rewrite-hook offer) and
+                         the project-local files (.mcp.json, .claude/CLAUDE.md,
+                         .vscode/mcp.json, .vscode/extensions.json). With
+                         --no-editor-setup only .repowise/ is touched. There is
+                         one 'repowise' MCP entry per machine-wide config, so a
+                         later init from another repo repoints it. See Step 3b.
+
+Keys:
+  --save-key /           Save the provider key this run authenticated with to
+  --no-save-key          .repowise/.env (gitignored, owner-only). Default: on,
+                         so the MCP server can answer later without the shell
+                         that set it. Use --no-save-key in CI or on a shared
+                         machine.
 
 Output:
   --no-claude-md         Don't generate/update CLAUDE.md
@@ -122,8 +133,10 @@ Then ask if they want you to construct a command or if they'll handle it.
 Every path reaches this step. It is about the repo, not the provider.
 
 By default `init` registers repowise as the user's global MCP server, in
-`~/.claude/settings.json` and Claude Desktop's config. There is **one**
-`repowise` key in each file, so this repo replaces whatever repo is registered
+`~/.claude/settings.json` and Claude Desktop's config, and writes four
+project-local files into the repo (`.mcp.json`, `.claude/CLAUDE.md`,
+`.vscode/mcp.json`, `.vscode/extensions.json`). There is **one** `repowise` key
+in each machine-wide config, so this repo replaces whatever repo is registered
 now. That is the right default for the repo someone actually works in, and the
 wrong one for a checkout that is about to disappear.
 
@@ -138,9 +151,11 @@ Also add it if the user says they don't want their editor or MCP setup touched.
 Do **not** infer that from "just index it" or "don't ask me questions" — those
 are about prompts, not config.
 
-The index, the wiki, and every project-local file are identical either way.
-Only the machine-wide registration is skipped, and it can be done later by
-re-running `repowise init` in that repo without the flag.
+The index and the wiki are identical either way. What the flag skips is both
+the machine-wide registration and the four project-local files, so with it only
+`.repowise/` is touched. (`.repowise/mcp.json` is still written: it is what
+`repowise mcp .` prints, and it is how you opt back in.) Either half can be
+done later by re-running `repowise init` in that repo without the flag.
 
 Whichever you pick, say which in one line so the user can correct you.
 
@@ -218,10 +233,11 @@ After init completes successfully:
 3. Tell the user:
    - "Repowise has indexed your codebase. The MCP tools are now active — I can answer questions about your architecture, ownership, dependencies, and more."
      **Only if you did not pass `--no-editor-setup`.** With that flag nothing was
-     registered, so say instead: "The index is built. I did not register it as
-     your global MCP server (this looked like a temporary checkout). The
-     repowise plugin's tools still work here; to make this the repo the MCP
-     server points at, re-run `repowise init` without `--no-editor-setup`."
+     registered and nothing was written into the repo outside `.repowise/`, so
+     say instead: "The index is built. I did not register it as your global MCP
+     server and wrote no editor files into the repo (this looked like a
+     temporary checkout). The repowise plugin's tools still work here; to wire
+     it up properly, re-run `repowise init` without `--no-editor-setup`."
    - "Try asking me something like 'how does the auth module work?' or 'what depends on utils.py?'"
    - "Run `/prompts:repowise-status` anytime to check the health of your index."
    - "Run `/prompts:repowise-update` after making code changes to keep the wiki in sync."
