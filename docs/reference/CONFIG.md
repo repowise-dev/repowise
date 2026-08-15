@@ -472,6 +472,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
 | `KIMI_API_KEY` | Kimi API key |
+| `MINIMAX_API_KEY` | MiniMax API key (issued for one region) |
 | `LITELLM_API_KEY` | LiteLLM proxy key |
 | `LITELLM_API_BASE` | LiteLLM proxy base URL |
 
@@ -485,6 +486,7 @@ The `.repowise/.env` file is gitignored automatically.
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |
 | `KIMI_BASE_URL` | Override the Kimi API base URL |
+| `MINIMAX_BASE_URL` | Override the MiniMax API base URL (global or China region) |
 | `LITELLM_BASE_URL` | Override the LiteLLM proxy base URL |
 
 ### Provider and model overrides
@@ -665,3 +667,4 @@ repowise init --provider minimax --model MiniMax-M3
 
 The global endpoint is used by default. Set
 `MINIMAX_BASE_URL=https://api.minimaxi.com/v1` for the China region.
+MiniMax API keys are region-bound, so use a key issued for the selected endpoint.

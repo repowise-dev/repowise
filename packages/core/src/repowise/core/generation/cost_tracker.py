@@ -64,6 +64,12 @@ _PRICING: dict[str, dict[str, float]] = {
     "MiniMax-M2.7": {"input": 0.3, "output": 1.2},
 }
 
+# User-provided model ids are case-insensitive across provider selection and
+# must resolve to the same price as the canonical catalog spelling.
+_PRICING_CASEFOLD: dict[str, dict[str, float]] = {
+    model.casefold(): pricing for model, pricing in _PRICING.items()
+}
+
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
 
 #: Model-name prefixes that identify a locally-served model (Ollama, LM Studio,
@@ -151,11 +157,13 @@ def _get_pricing(model: str) -> dict[str, float]:
     """Return pricing for *model*, falling back and warning if unknown."""
     if is_local_model(model):
         return {"input": 0.0, "output": 0.0}
-    if model in _PRICING:
-        return _PRICING[model]
+    pricing = _PRICING_CASEFOLD.get(model.casefold())
+    if pricing is not None:
+        return pricing
     leaf = _routed_model_leaf(model)
-    if leaf in _PRICING:
-        return _PRICING[leaf]
+    pricing = _PRICING_CASEFOLD.get(leaf.casefold())
+    if pricing is not None:
+        return pricing
     family = _family_pricing(model) or _family_pricing(leaf)
     if family is not None:
         return family

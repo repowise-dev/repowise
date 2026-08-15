@@ -99,6 +99,8 @@ def _resolve_minimax_reasoning_mode(
     *,
     model: str,
 ) -> ReasoningMode:
+    # MiniMax accepts the disabled-thinking field for M2.x but keeps thinking
+    # enabled, so reject that misleading request before it incurs API usage.
     detail = (
         "MiniMax-M3 thinks adaptively and can be told not to think; MiniMax-M2.7 "
         "thinks always-on and accepts auto only."
