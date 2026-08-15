@@ -184,7 +184,9 @@ def test_the_nested_guard_is_not_vacuous(tmp_path) -> None:
     target = 11  # the `export function afterTheTemplate` line
     flat_masked, _flat_open = _flat(lines)
     assert target in flat_masked, sorted(flat_masked)
-    assert target not in _string_masked_lines(lines), sorted(_string_masked_lines(lines))
+    assert target not in _string_masked_lines(lines).all, sorted(
+        _string_masked_lines(lines).all
+    )
 
 
 def test_a_backtick_inside_a_regex_literal_does_not_open_a_template(tmp_path) -> None:
