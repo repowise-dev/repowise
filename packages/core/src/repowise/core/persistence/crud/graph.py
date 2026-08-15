@@ -564,10 +564,19 @@ async def get_graph_edges_for_node(
         ``ORDER BY`` the survivors were whichever rows the table handed over,
         so a node with more adjacent edges than *limit* could return its
         containment rows and none of its real calls — the failure
-        ``routers/files.py`` documents at its own call site — and two
-        identical calls could disagree. Every consumer here either filters on
-        ``confidence`` afterwards or shows the result directly, so ordering by
-        it means the rows that survive are the ones that pass.
+        ``routers/files.py`` documents at its own call site rather than fixing
+        here. What the consumers do afterwards is the argument for ranking at
+        this end: ``mcp_server/_graph_utils`` and ``tool_symbol`` drop anything
+        below 0.5, so an unranked cut can hand them 50 rows and leave them
+        nothing; and ``routers/symbols`` and ``routers/graph/intelligence``
+        **sort by confidence after** the cut, which presented a
+        confident-looking order over an arbitrary subset — ranking was already
+        the contract there, applied one step too late.
+
+        On SQLite the unranked form was not arbitrary in practice: the rows
+        arrive in index order, which is stable but is promised by no query
+        planner and by no other backend. Deterministic, and still the wrong
+        rows.
     """
     results: list[GraphEdge] = []
 

@@ -54,9 +54,10 @@ from repowise.server.mcp_server.tool_context.kg import (
 )
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
-#: How many users of a symbol the card carries. The sibling ``imported_by`` on
-#: a file target is deliberately uncapped; this one is capped because a symbol
-#: card is the compact half of the tool.
+#: How many users of a symbol the card carries. The asymmetry is recorded, not
+#: explained: the sibling ``imported_by`` on a file target carries no cap at
+#: all, and nothing in the code or its history says whether that is a decision
+#: or an omission. This constant only names the cut that already existed.
 _MAX_USED_BY = 20
 
 # Skeleton-by-default is GONE; ``include=["skeleton"]`` still serves it in full.

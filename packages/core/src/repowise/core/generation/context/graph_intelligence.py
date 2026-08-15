@@ -20,9 +20,10 @@ def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
     ``extract_call_graph`` / ``extract_heritage`` historically scanned every
     graph node per file — O(files x nodes) across a generation run. Callers
     that assemble context for many files build this index once and pass it
-    in; per-file extraction becomes a dict lookup. Buckets preserve the
-    graph's node iteration order, and both extractors rank what they collect
-    before returning it, so results are byte-identical to the scan.
+    in; per-file extraction becomes a dict lookup. Results are byte-identical
+    to the scan: the buckets preserve the graph's node iteration order, and
+    since both extractors rank what they collect, that equivalence no longer
+    rests on the bucket order at all.
     """
     index: dict[str, list[tuple[Any, dict]]] = {}
     try:
