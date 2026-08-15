@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the API also rejects `max` for 5.6 (verified live against both `gpt-5.6-luna`
   and `gpt-5.6-sol`), so it is not offered.
 
+### Fixed
+
+- **`init` now persists an API key supplied through the environment.** Key
+  persistence used to hang off the interactive key *prompt*, so
+  `repowise init --provider openai --yes` with `OPENAI_API_KEY` already exported
+  indexed fine and wrote `provider:` to `config.yaml`, but left no
+  `.repowise/.env`, and `repowise mcp` against that repo then answered
+  `degraded: "no-llm-provider"` with retrieval-only output. Scripted init is the
+  primary path for agents and CI, so a run that succeeds now leaves a repo whose
+  MCP server can actually answer. The key that indexed the repo is saved, with a
+  one-line notice naming the file; `--no-save-key` (or `REPOWISE_NO_SAVE_KEY=1`)
+  opts out, and answering No at the interactive prompt still wins. Covers
+  `init`, workspace init and `workspace add`. The `.gitignore` entry is now
+  written *before* the key, so a failure cannot leave a committable secret.
+
 ---
 
 ## [0.42.0] — 2026-08-13

@@ -280,6 +280,9 @@ class _WorkspaceCtx:
     #: so --no-editor-setup has to reach every one of them, not just the
     #: primary's client registration.
     editor_setup: bool = True
+    #: Same reasoning for key persistence: each workspace repo gets its own
+    #: .repowise/, so each needs its own credential to be MCP-answerable.
+    save_key: bool = True
 
 
 @dataclass
@@ -502,6 +505,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
+            save_key=ctx.save_key,
         )
         # Persist the wiki style per repo so update/restyle honor it. Default
         # omitted to keep config tidy — only an override is recorded.
@@ -561,6 +565,7 @@ def _workspace_init(
     codex_setup: bool | None,
     distill_hook: bool | None,
     editor_setup: bool,
+    save_key: bool,
     include_submodules: bool,
     # Generation params (passed through from init_command)
     provider_name: str | None = None,
@@ -760,6 +765,7 @@ def _workspace_init(
         ws_config=ws_config,
         editor_options=editor_options,
         editor_setup=editor_setup,
+        save_key=save_key,
         index_only=index_only,
         dry_run=dry_run,
         force=force,

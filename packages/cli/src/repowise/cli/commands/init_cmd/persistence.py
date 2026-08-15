@@ -311,6 +311,7 @@ def save_full_state_and_config(
     resolved_commit_limit: int,
     resolved_reasoning: str,
     include_submodules: bool = False,
+    save_key: bool = True,
 ) -> None:
     """Persist state.json + config for a completed full-mode (docs) init run."""
 
@@ -387,6 +388,7 @@ def save_full_state_and_config(
         exclude_patterns=exclude_patterns if exclude_patterns else None,
         commit_limit=resolved_commit_limit if commit_limit is not None else None,
         reasoning=resolved_reasoning,
+        save_key=save_key,
     )
 
     # Re-save state with the fingerprint now that config.yaml is written.

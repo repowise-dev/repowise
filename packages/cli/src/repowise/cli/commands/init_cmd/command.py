@@ -557,6 +557,20 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--save-key/--no-save-key",
+    "save_key",
+    default=True,
+    help=(
+        "Save the provider API key this run authenticated with into "
+        ".repowise/.env (gitignored, owner-only). Default: on, because a scripted "
+        "init that succeeds must leave a repo whose MCP server can answer, "
+        "and the key would otherwise be lost with the shell that set it. Use "
+        "--no-save-key when the key is injected per-process (CI secrets, a "
+        "shared machine) and must not be written to disk. "
+        "REPOWISE_NO_SAVE_KEY=1 does the same for CI and sandboxes."
+    ),
+)
+@click.option(
     "--include-submodules",
     is_flag=True,
     default=False,
@@ -716,6 +730,7 @@ def init_command(
     codex_setup: bool | None,
     distill_hook: bool | None,
     editor_setup: bool,
+    save_key: bool,
     include_submodules: bool,
     no_workspace: bool,
     init_all: bool,
@@ -862,6 +877,7 @@ def init_command(
             codex_setup=codex_setup,
             distill_hook=distill_hook,
             editor_setup=editor_setup,
+            save_key=save_key,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -1612,6 +1628,7 @@ def init_command(
             resolved_commit_limit=resolved_commit_limit,
             resolved_reasoning=resolved_reasoning,
             include_submodules=include_submodules,
+            save_key=save_key,
         )
 
     _record_init_outcome(

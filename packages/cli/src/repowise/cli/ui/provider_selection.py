@@ -722,6 +722,15 @@ def _prompt_api_key(
         if save:
             _save_key_to_dotenv(repo_path, env_var, key)
             console.print(f"  [{OK}]✓ Saved to .repowise/.env[/]")
+        else:
+            # A declined key must stay declined. The run puts the key in the
+            # environment (above) so indexing can use it, and init now mirrors
+            # the environment's key into .repowise/.env when it writes config,
+            # which would quietly overrule this exact answer. Record the "no"
+            # where that later step will see it.
+            from repowise.cli.helpers import NO_SAVE_KEY_ENV
+
+            os.environ[NO_SAVE_KEY_ENV] = "1"
     console.print()
 
     return key

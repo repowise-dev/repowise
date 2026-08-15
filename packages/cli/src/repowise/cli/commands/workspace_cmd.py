@@ -302,6 +302,17 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
     "--concurrency", type=int, default=10, help="Max concurrent LLM calls during doc generation."
 )
 @click.option(
+    "--save-key/--no-save-key",
+    "save_key",
+    default=True,
+    help=(
+        "Save the provider API key this run authenticated with into the added "
+        "repo's .repowise/.env (gitignored). Default: on, because each workspace repo "
+        "has its own .repowise/, so each needs its own key to be answerable by "
+        "the MCP server. Same switch as `repowise init --no-save-key`."
+    ),
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -316,6 +327,7 @@ def workspace_add(
     provider_name: str | None,
     model: str | None,
     concurrency: int,
+    save_key: bool,
     verbose: bool,
 ) -> None:
     """Add a repo to the workspace and (by default) index + generate docs for it.
@@ -398,6 +410,7 @@ def workspace_add(
         model=model,
         concurrency=concurrency,
         docs_skip_reason=docs_skip_reason,
+        save_key=save_key,
     )
 
 
@@ -528,6 +541,7 @@ def _run_index_for_repo(
     model: str | None = None,
     concurrency: int = 10,
     docs_skip_reason: str | None = None,
+    save_key: bool = True,
 ) -> None:
     """Run the ingestion pipeline on a single repo, optionally with LLM docs.
 
@@ -655,6 +669,7 @@ def _run_index_for_repo(
             exclude_patterns=exclude_patterns or None,
             commit_limit=int(commit_limit) if commit_limit else None,
             reasoning=resolved_reasoning,
+            save_key=save_key,
         )
 
     # Update workspace config entry
