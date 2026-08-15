@@ -20,6 +20,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from .config import WorkspaceConfig, ensure_workspace_data_dir
 
@@ -798,10 +799,70 @@ def _scan_go_mod(
     return results
 
 
+_CSPROJ_SKIP_DIRS = frozenset(
+    {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
+)
+
+
+@dataclass
+class _CsprojIndex:
+    """Every ``.csproj`` in the workspace, walked and parsed exactly once.
+
+    ``_scan_csproj`` needs two things: the assembly-name → repo-alias map
+    (built from *all* repos) and the current repo's own project files. Built
+    per repo, the map is rebuilt identically for every alias, so an R-repo
+    workspace walked R*R + R trees and re-parsed every project file R times.
+    The map depends only on ``repo_paths``, never on the alias being scanned,
+    so hoisting it here is a pure de-duplication: same inputs, same map, R
+    walks instead of R*R + R.
+    """
+
+    # Parsed once and shared; ElementTree instances are only ever read.
+    trees: dict[Path, Any] = field(default_factory=dict)
+    by_repo: dict[str, list[Path]] = field(default_factory=dict)
+    assembly_to_repo: dict[str, str] = field(default_factory=dict)
+
+
+def _index_csproj_files(repo_paths: dict[str, Path]) -> _CsprojIndex:
+    """Walk each repo once, parse each ``.csproj`` once, build the assembly map."""
+    from xml.etree import ElementTree as ET
+
+    from repowise.core.fs_walk import iter_glob
+
+    index = _CsprojIndex()
+    # Insertion order matches the previous per-alias rebuild, so a name
+    # defined in two repos still resolves to the last repo in repo_paths.
+    for alias, path in repo_paths.items():
+        found: list[Path] = []
+        # Each *selected* workspace repo is walked from its own root;
+        # iter_glob's nested-git pruning keeps any physically-nested
+        # unselected repo out of the scan.
+        for csproj in iter_glob(path, "*.csproj"):
+            if any(part in _CSPROJ_SKIP_DIRS for part in csproj.parts):
+                continue
+            try:
+                tree = ET.parse(csproj)
+            except (ET.ParseError, OSError):
+                continue
+            found.append(csproj)
+            index.trees[csproj] = tree
+            assembly_name = csproj.stem  # default: filename minus extension
+            for elem in tree.getroot().iter():
+                tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
+                if tag == "AssemblyName" and elem.text:
+                    assembly_name = elem.text.strip()
+                    break
+            index.assembly_to_repo[assembly_name] = alias
+        index.by_repo[alias] = found
+    return index
+
+
 def _scan_csproj(
     repo_path: Path,
     repo_paths: dict[str, Path],
     alias: str,
+    *,
+    csproj_index: _CsprojIndex | None = None,
 ) -> list[CrossRepoPackageDep]:
     """Scan every .csproj for cross-repo references.
 
@@ -818,42 +879,21 @@ def _scan_csproj(
        in a separate repo.
 
     Skips ``bin``/``obj``/``packages``/``.vs``/``TestResults`` build outputs.
-    """
-    from xml.etree import ElementTree as ET
 
-    from repowise.core.fs_walk import iter_glob
+    ``csproj_index`` lets a caller scanning several repos share one walk;
+    omitted, the scan builds its own and behaves exactly as a standalone call.
+    """
+    index = csproj_index if csproj_index is not None else _index_csproj_files(repo_paths)
+    if alias not in index.by_repo:
+        # Scanning a repo the index does not cover (an alias absent from
+        # repo_paths). Walk it on its own so the standalone contract holds.
+        index = _index_csproj_files({**repo_paths, alias: repo_path})
+    assembly_to_repo = index.assembly_to_repo
 
     results: list[CrossRepoPackageDep] = []
-    skip = {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
 
-    # Pre-compute the assembly-name → repo-alias map so we can resolve
-    # internal-NuGet references in a second pass. Each *selected* workspace
-    # repo is walked from its own root; iter_glob's nested-git pruning keeps
-    # any physically-nested unselected repo out of the scan.
-    assembly_to_repo: dict[str, str] = {}
-    for sib_alias, sib_path in repo_paths.items():
-        for csproj in iter_glob(sib_path, "*.csproj"):
-            if any(part in skip for part in csproj.parts):
-                continue
-            try:
-                tree = ET.parse(csproj)
-            except (ET.ParseError, OSError):
-                continue
-            assembly_name = csproj.stem  # default: filename minus extension
-            for elem in tree.getroot().iter():
-                tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
-                if tag == "AssemblyName" and elem.text:
-                    assembly_name = elem.text.strip()
-                    break
-            assembly_to_repo[assembly_name] = sib_alias
-
-    for csproj in iter_glob(repo_path, "*.csproj"):
-        if any(part in skip for part in csproj.parts):
-            continue
-        try:
-            tree = ET.parse(csproj)
-        except (ET.ParseError, OSError):
-            continue
+    for csproj in index.by_repo.get(alias, ()):
+        tree = index.trees[csproj]
         try:
             rel_manifest = csproj.relative_to(repo_path).as_posix()
         except ValueError:
@@ -899,19 +939,29 @@ def detect_package_dependencies(
     results: list[CrossRepoPackageDep] = []
     seen: set[tuple[str, str, str]] = set()  # (source, target, kind)
 
+    # One walk per repo, shared across every alias. The .csproj scan is the
+    # only manifest scanner that walks the tree rather than reading a fixed
+    # root file, and it needs a workspace-wide view, so building its index
+    # per repo re-walked every tree once per repo.
+    csproj_index = _index_csproj_files(repo_paths)
+
     for alias, path in repo_paths.items():
         for scanner in (
             _scan_package_json,
             _scan_pyproject_toml,
             _scan_cargo_toml,
             _scan_go_mod,
-            _scan_csproj,
         ):
             for dep in scanner(path, repo_paths, alias):
                 key = (dep.source_repo, dep.target_repo, dep.kind)
                 if key not in seen:
                     seen.add(key)
                     results.append(dep)
+        for dep in _scan_csproj(path, repo_paths, alias, csproj_index=csproj_index):
+            key = (dep.source_repo, dep.target_repo, dep.kind)
+            if key not in seen:
+                seen.add(key)
+                results.append(dep)
 
     return results
 
