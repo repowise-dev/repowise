@@ -64,12 +64,20 @@ export function useChat(repoId: string) {
         ],
       }));
 
+      // The server closes the stream with a `done` or an `error` event, and
+      // those are the only things that clear `isStreaming`. A stream that ends
+      // without either one (an early return in the SSE generator, a dropped
+      // connection, a provider that stops mid-answer) used to leave the
+      // composer spinning forever with nothing on screen to explain it.
+      let settled = false;
+
       try {
         const res = await postChatMessage(repoId, {
           message: text,
           conversationId: state.conversationId ?? undefined,
           provider: opts?.provider,
           model: opts?.model,
+          signal: abort.signal,
         });
 
         if (!res.body) throw new Error("No response body");
@@ -102,6 +110,7 @@ export function useChat(repoId: string) {
         }
       } catch (err: unknown) {
         if (!abort.signal.aborted) {
+          settled = true;
           setState((prev) => ({
             ...prev,
             isStreaming: false,
@@ -113,7 +122,21 @@ export function useChat(repoId: string) {
         }
       }
 
+      if (!settled && !abort.signal.aborted) {
+        setState((prev) => ({
+          ...prev,
+          isStreaming: false,
+          error:
+            prev.error ??
+            "The response ended before it finished. The server log should say why.",
+          messages: prev.messages.map((m) =>
+            m.id === asstMsgId ? { ...m, isStreaming: false } : m,
+          ),
+        }));
+      }
+
       function handleEvent(ev: ChatSSEEvent, asstId: string) {
+        if (ev.type === "done" || ev.type === "error") settled = true;
         setState((prev) => {
           const messages = prev.messages.map((m) => {
             if (m.id !== asstId) return m;

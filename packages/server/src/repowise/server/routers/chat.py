@@ -156,7 +156,16 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                 if conv_id:
                     conv = await crud.get_conversation(session, conv_id)
                     if not conv or conv.repository_id != repo_id:
-                        yield _sse_event("error", {"message": "Conversation not found"})
+                        # Every other failure here goes out on the ``data``
+                        # channel carrying a ``type``, which is the only shape
+                        # the client switches on. This one used to be an
+                        # ``error``-channel event with no ``type``, so the UI
+                        # dropped it and then sat on the stream's close with
+                        # nothing to show.
+                        yield _sse_event(
+                            "data",
+                            {"type": "error", "message": "Conversation not found"},
+                        )
                         return
                 else:
                     title = " ".join(body.message.split()[:6])
