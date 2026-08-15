@@ -219,6 +219,84 @@ async def test_invalid_provider_output_raises_and_is_not_cached(sample_config):
     assert provider.call_count == 2
 
 
+# ---------------------------------------------------------------------------
+# The corrective retry
+#
+# A rejected page is a page already paid for, so one re-ask is cheaper than
+# losing it. The bound matters as much as the retry: a page that fails twice
+# must fall through to the caller's stub path rather than loop.
+# ---------------------------------------------------------------------------
+
+_BANNED_PHRASING = "# Queue status\n\nThe supplied material describes a queue reader."
+_CLEAN_PAGE = "# Queue status\n\n`QueueStatus` reports the active queue."
+
+
+def _page(content: str) -> GeneratedResponse:
+    return GeneratedResponse(content=content, input_tokens=10, output_tokens=20)
+
+
+async def test_artifact_violation_is_retried_once_and_recovers(sample_config):
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+
+    assert response.content == _CLEAN_PAGE
+    assert provider.call_count == 2
+
+
+async def test_corrective_retry_names_the_broken_rule_and_keeps_the_request(sample_config):
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    retry_prompt = provider.calls[1]["user_prompt"]
+    assert "supplied_context" in retry_prompt
+    # The whole page is being rewritten, so the original request has to survive.
+    assert "Document this module." in retry_prompt
+    # The offending words must not be handed back: quoting them re-plants the
+    # vocabulary the retry exists to remove.
+    assert "supplied material" not in retry_prompt
+    # A byte-identical system prompt is what keeps the retry eligible for the
+    # provider's prefix cache.
+    assert provider.calls[1]["system_prompt"] == provider.calls[0]["system_prompt"]
+
+
+async def test_second_violation_gives_up_rather_than_looping(sample_config):
+    # MockProvider repeats its last response, so every attempt violates.
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    with pytest.raises(InvalidGeneratedContentError, match="supplied_context"):
+        await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.call_count == 2
+
+
+async def test_token_limit_is_not_retried(sample_config):
+    """Re-asking with the same ``max_tokens`` truncates again and bills twice."""
+    provider = MockProvider(
+        responses=[
+            GeneratedResponse(
+                content="# Queue status\n\nIncomplete",
+                input_tokens=10,
+                output_tokens=20,
+                stop_reason="max_tokens",
+                provider_stop_reason="length",
+            )
+        ]
+    )
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    with pytest.raises(InvalidGeneratedContentError, match="token limit"):
+        await generator._call_provider("module_page", "Document this module.", "request-id")
+
+    assert provider.call_count == 1
+
+
 def test_generated_page_retains_completion_stop_metadata(sample_config):
     generator = PageGenerator(MockProvider(), ContextAssembler(sample_config), sample_config)
     page = generator._build_generated_page(

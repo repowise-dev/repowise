@@ -23,7 +23,32 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
 class InvalidGeneratedContentError(ValueError):
-    """Raised when a fresh LLM response cannot be persisted as documentation."""
+    """Raised when a fresh LLM response cannot be persisted as documentation.
+
+    ``retry_hint`` is the same complaint with any quoted offending phrase
+    removed, for the corrective re-ask. The message itself keeps the quote
+    because a log that does not say which words failed cannot be acted on, but
+    feeding those words back to the model re-plants the vocabulary the retry is
+    trying to get rid of. Defaults to the message when there is nothing to
+    strip.
+
+    ``retryable`` says whether asking again can plausibly help. It is False for
+    a response that stopped at the token limit: the second call carries the
+    same ``max_tokens``, so it truncates in the same place and the only certain
+    result is twice the spend. Everything else is the model writing badly when
+    told what "badly" means, which is what the re-ask supplies.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_hint: str | None = None,
+        retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.retry_hint = retry_hint if retry_hint is not None else message
+        self.retryable = retryable
 
 
 # ---------------------------------------------------------------------------
@@ -129,15 +154,21 @@ def reset_artifact_check_counts() -> None:
     _artifact_check_counts.clear()
 
 
-def _artifact_detail(content: str) -> str | None:
-    """Describe the first generation artifact in ``content``, if any."""
+def _artifact_detail(content: str) -> tuple[str, str] | None:
+    """Describe the first generation artifact in ``content``, if any.
+
+    Returns ``(detail, retry_hint)``: the first quotes the offending phrase for
+    the log, the second names only the rule so a re-ask built from it does not
+    repeat the words that failed.
+    """
     prose = prose_text(content)
     for rule in GENERATION_ARTIFACT_RULES:
         match = rule.pattern.search(prose)
         if match is not None:
             _artifact_check_counts["rejected"] += 1
             _artifact_check_counts[f"rejected:{rule.name}"] += 1
-            return f"{rule.name}: {rule.explanation} ({match.group(0).strip()!r})"
+            detail = f"{rule.name}: {rule.explanation} ({match.group(0).strip()!r})"
+            return detail, f"{rule.name}: {rule.explanation}"
     return None
 
 
@@ -182,7 +213,8 @@ def validate_generated_response(response: GeneratedResponse) -> None:
             else ""
         )
         raise InvalidGeneratedContentError(
-            f"generation reached a token limit before the documentation was complete{detail}"
+            f"generation reached a token limit before the documentation was complete{detail}",
+            retryable=False,
         )
     if not response.content.strip():
         raise InvalidGeneratedContentError("provider returned empty documentation")
@@ -193,10 +225,12 @@ def validate_generated_response(response: GeneratedResponse) -> None:
             f"provider returned pathologically repetitive documentation: {repetition_detail}"
         )
 
-    artifact_detail = _artifact_detail(response.content)
-    if artifact_detail is not None:
+    artifact = _artifact_detail(response.content)
+    if artifact is not None:
+        detail, retry_hint = artifact
+        preamble = "provider returned text addressed to the prompter, not the reader — "
         raise InvalidGeneratedContentError(
-            f"provider returned text addressed to the prompter, not the reader — {artifact_detail}"
+            f"{preamble}{detail}", retry_hint=f"{preamble}{retry_hint}"
         )
 
 

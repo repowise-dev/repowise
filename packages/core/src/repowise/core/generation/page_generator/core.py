@@ -46,14 +46,18 @@ from ..structural_labels import resolve_structural_labels, structural_page_title
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
-from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
+from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .structural import (
     StructuralRenderMixin,
     as_markdown,
     oneline,
     signature,
 )
-from .validation import reset_artifact_check_counts, validate_generated_response
+from .validation import (
+    InvalidGeneratedContentError,
+    reset_artifact_check_counts,
+    validate_generated_response,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
@@ -398,12 +402,45 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             reasoning=self._config.reasoning,
             cache_hints=cache_hints,
         )
-        validate_generated_response(response)
+        try:
+            validate_generated_response(response)
+        except InvalidGeneratedContentError as first_failure:
+            # One corrective re-ask. Without it a single banned phrase anywhere
+            # in a finished page discards the whole thing with the tokens
+            # already spent, and the only recovery is --resume regenerating it
+            # from scratch. The re-ask names the rule that was broken, because
+            # a blind retry at the same temperature tends to reproduce the
+            # sentence that failed.
+            if not first_failure.retryable:
+                raise
+            log.warning(
+                "page_generation.retrying_after_validation_failure",
+                page_type=page_type,
+                target_path=target_path,
+                reason=str(first_failure),
+            )
+            response = await self._provider.generate(
+                system_prompt,
+                self._corrective_prompt(user_prompt, first_failure),
+                max_tokens=self._config.max_tokens,
+                temperature=self._config.temperature,
+                request_id=request_id,
+                reasoning=self._config.reasoning,
+                cache_hints=cache_hints,
+            )
+            # A second failure raises, so the caller's stub-fallback path is
+            # reached exactly as it was before the retry existed.
+            validate_generated_response(response)
 
         if self._config.cache_enabled:
             self._cache[key] = response
 
         return response
+
+    @staticmethod
+    def _corrective_prompt(user_prompt: str, failure: InvalidGeneratedContentError) -> str:
+        """The original request plus a note naming what the last attempt broke."""
+        return f"{user_prompt}\n\n{CORRECTIVE_RETRY_DIRECTIVE.format(reason=failure.retry_hint)}"
 
     def _build_system_prompt(self, page_type: str) -> str:
         base_system = SYSTEM_PROMPTS[page_type]
