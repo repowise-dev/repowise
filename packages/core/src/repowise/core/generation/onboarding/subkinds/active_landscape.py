@@ -93,10 +93,10 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
         for path, meta in git_meta_map.items()
         if int(meta.get("commit_count_90d", 0) or 0) > 0
     ]
-    hot_files_all.sort(
-        key=lambda h: (h.commit_count_90d, -h.age_days),
-        reverse=True,
-    )
+    # Path last, so the key is total. Files tied on both churn and age fell
+    # back to ``git_meta_map`` insertion order, and this list is cut twice —
+    # at ``_TOP_HOT_FILES`` here and at 15 after the dead-code walk below.
+    hot_files_all.sort(key=lambda h: (-h.commit_count_90d, h.age_days, h.path))
     hot_files = hot_files_all[:_TOP_HOT_FILES]
 
     # Roll up to directories.

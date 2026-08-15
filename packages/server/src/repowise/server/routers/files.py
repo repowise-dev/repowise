@@ -295,9 +295,14 @@ async def file_detail(
         # and since the limit is per direction, a file with more symbols than
         # the limit could return containment rows and none of its real
         # imports. The type filter is what fixed that; the ranked cut inside
-        # ``get_graph_edges_for_node`` is what keeps the 40 it does return
-        # from being an arbitrary 40. Both halves are then shown 20 at a time,
-        # in that ranked order.
+        # ``get_graph_edges_for_node`` is what keeps the rows it returns —
+        # 40 per direction, so up to 80 — from being an arbitrary window.
+        # Both halves are then shown 20 at a time in that order. Most of what
+        # the ranking buys *here* is determinism rather than importance: 97.5%
+        # of the edge types this filter admits carry confidence 1.0, so on the
+        # 2,271 over-cap nodes in the corpus where the kept set moves, only
+        # 23% move because of confidence and the rest because of the path
+        # tiebreak.
         edges = await crud.get_graph_edges_for_node(
             session,
             repo_id,

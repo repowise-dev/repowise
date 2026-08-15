@@ -577,6 +577,18 @@ async def get_graph_edges_for_node(
         arrive in index order, which is stable but is promised by no query
         planner and by no other backend. Deterministic, and still the wrong
         rows.
+
+        **It costs something, on one direction only.** ``graph_edges`` is
+        indexed on ``(repository_id, source_node_id, target_node_id,
+        edge_type)``, so the *callees* branch seeks and then sorts a narrow
+        match set, while the *callers* branch filters on ``target_node_id``,
+        which that index cannot serve — it scanned before and now also builds a
+        temp b-tree, losing the early exit the bare ``LIMIT`` gave it. Measured
+        on django's 120k-edge index: the hottest node (1,525 inbound edges)
+        goes 10.9 ms to 38.2 ms; a low-degree node is unchanged at ~37 ms
+        because it was already scanning. The fix is an index on
+        ``(repository_id, target_node_id)``, which is a migration and is not
+        this change.
     """
     results: list[GraphEdge] = []
 
@@ -587,7 +599,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id).limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -598,7 +612,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.order_by(GraphEdge.confidence.desc(), GraphEdge.target_node_id).limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 

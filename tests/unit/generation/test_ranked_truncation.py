@@ -89,6 +89,12 @@ def test_a_call_list_under_the_cap_keeps_every_entry() -> None:
 
 
 def test_the_call_cut_is_the_same_from_either_extraction_path() -> None:
+    """``test_symbol_index.py`` asserts this too, on a graph below the cap.
+
+    Kept because the interesting regime is above it: the index and the scan
+    now agree on which 15 survive, not merely on a list short enough that no
+    cut happened.
+    """
     graph = _graph_with_calls(MAX_CALL_ENTRIES + 10)
 
     assert extract_call_graph("src/hub.py", graph, build_symbol_index(graph)) == (
@@ -138,18 +144,26 @@ def test_the_resolved_subclass_survives_the_heritage_cut() -> None:
     entries = extract_heritage("src/base.py", graph)
 
     assert len(entries) == MAX_HERITAGE_ENTRIES
-    assert "ResolvedChild" in {e["child"] for e in entries}
-    assert [e["confidence"] for e in entries] == sorted(
-        (e["confidence"] for e in entries), reverse=True
-    )
+    # First, not merely present: the score is not on the entry to assert on,
+    # so position is what says the ranking ran. Every other edge in the
+    # fixture is a 0.5 guess, and this one is the 0.95 resolution.
+    assert entries[0]["child"] == "ResolvedChild"
 
 
-def test_heritage_entries_carry_the_confidence_they_are_ranked_on() -> None:
-    """The caller re-ranks these when it merges files, so the score travels."""
+def test_heritage_entries_do_not_carry_the_score_they_were_ranked_on() -> None:
+    """The rank is internal, and the entry shape is unchanged by this phase.
+
+    A first cut put ``confidence`` on the returned dicts and justified it as
+    "the caller re-ranks these" — the caller (``assemble_module_page``) ranks
+    by the *file's* PageRank and never reads it, and nothing else in
+    ``packages/`` does either. Pinned so the speculative key does not return.
+    """
     graph = _graph_with_heritage(2)
 
-    for entry in extract_heritage("src/base.py", graph):
-        assert "confidence" in entry
+    entries = extract_heritage("src/base.py", graph)
+    assert entries
+    for entry in entries:
+        assert set(entry) <= {"child", "parent", "kind", "parent_file", "child_file"}
 
 
 def test_equal_confidence_is_broken_deterministically_not_by_graph_order() -> None:
