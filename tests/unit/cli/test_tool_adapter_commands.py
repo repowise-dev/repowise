@@ -18,6 +18,7 @@ Three things have to hold and each has tests below.
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -247,6 +248,13 @@ def repo(tmp_path):
     return tmp_path
 
 
+def _split_runner() -> CliRunner:
+    """Keep stderr separate across the Click 8.1 and 8.2+ runner APIs."""
+    if "mix_stderr" in inspect.signature(CliRunner.__init__).parameters:
+        return CliRunner(mix_stderr=False)
+    return CliRunner()
+
+
 def _spy_run(payload: dict, calls: list):
     """Stand in for ``_tool_adapters.run``, but call the factory for real.
 
@@ -266,7 +274,7 @@ def _spy_run(payload: dict, calls: list):
 
 def _invoke(monkeypatch, command, args, repo, payload, calls=None, expect_exit=0):
     monkeypatch.setattr(_ta, "run", _spy_run(payload, calls if calls is not None else []))
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         command, [*args, "--path", str(repo), "--no-workspace"]
     )
     assert result.exit_code == expect_exit, result.output + (result.stderr or "")
@@ -668,7 +676,7 @@ def test_the_command_builds_the_coroutine_of_the_tool_it_names(
 def test_an_unindexed_repo_is_refused_before_any_tool_runs(monkeypatch, tmp_path):
     calls: list = []
     monkeypatch.setattr(_ta, "run", _spy_run({}, calls))
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         ask_command, ["q?", "--path", str(tmp_path), "--no-workspace"]
     )
     assert result.exit_code != 0
@@ -692,7 +700,7 @@ def test_logs_are_silenced_at_every_format_not_only_the_machine_ones(
         lambda: silenced.append(True),
     )
     monkeypatch.setattr("repowise.cli.tool_bridge.call_tool", lambda p, f, t: {"_meta": {}})
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         ask_command, ["q?", *args, "--path", str(repo), "--no-workspace"]
     )
     assert result.exit_code == 0, result.output

@@ -18,6 +18,7 @@ The same three things have to hold as for the other adapters:
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -238,10 +239,17 @@ def repo(tmp_path):
     return tmp_path
 
 
+def _split_runner() -> CliRunner:
+    """Keep stderr separate across the Click 8.1 and 8.2+ runner APIs."""
+    if "mix_stderr" in inspect.signature(CliRunner.__init__).parameters:
+        return CliRunner(mix_stderr=False)
+    return CliRunner()
+
+
 def _invoke(monkeypatch, command, args, repo, payload, calls=None, expect_exit=0):
     """``risk`` takes its repo as ``--path``; it has no ``--no-workspace``."""
     monkeypatch.setattr(_ta, "run", _spy_run(payload, calls if calls is not None else []))
-    result = CliRunner(mix_stderr=False).invoke(command, [*args, "--path", str(repo)])
+    result = _split_runner().invoke(command, [*args, "--path", str(repo)])
     assert result.exit_code == expect_exit, result.output + (result.stderr or "")
     return result
 
@@ -249,7 +257,7 @@ def _invoke(monkeypatch, command, args, repo, payload, calls=None, expect_exit=0
 def _search(monkeypatch, args, repo, payload, calls=None, expect_exit=0):
     """``search`` takes its repo as a trailing positional, not ``--path``."""
     monkeypatch.setattr(_ta, "run", _spy_run(payload, calls if calls is not None else []))
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         search_command, [*args, str(repo), "--no-workspace"]
     )
     assert result.exit_code == expect_exit, result.output + (result.stderr or "")
@@ -385,7 +393,7 @@ def test_search_reaches_the_tool_with_the_mapped_mode(monkeypatch, repo, request
         return CONCEPT_PAYLOAD
 
     monkeypatch.setattr(_ta, "run", _run)
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         search_command, ["width", "--mode", requested, str(repo), "--no-workspace"]
     )
     assert result.exit_code == 0, result.output
@@ -481,11 +489,11 @@ def test_no_results_still_emits_a_document_and_says_so(monkeypatch, repo):
 
 
 def test_an_unindexed_repo_emits_a_document(monkeypatch, tmp_path):
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         search_command, ["q", str(tmp_path), "--no-workspace", "--format", "json"]
     )
     assert result.exit_code == 0
-    assert json.loads(result.output) == {"query": "q", "mode": "concept", "results": []}
+    assert json.loads(result.stdout) == {"query": "q", "mode": "concept", "results": []}
 
 
 # --------------------------------------------------------------------------
@@ -671,7 +679,7 @@ def test_risk_without_a_target_still_scores_a_revspec(monkeypatch, repo):
         "repowise.cli.commands.risk_cmd.score_live_change",
         lambda *a, **k: called.append(a) or (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    result = CliRunner(mix_stderr=False).invoke(risk_command, ["HEAD", "--path", str(repo)])
+    result = _split_runner().invoke(risk_command, ["HEAD", "--path", str(repo)])
     assert called, "a bare `repowise risk` must still reach the change scorer"
     assert result.exit_code != 0  # our own boom
 
@@ -797,7 +805,7 @@ def test_risk_full_on_a_revspec_is_json_not_a_table(monkeypatch, repo):
         "repowise.cli.commands.risk_cmd.score_live_change",
         lambda *a, **k: _FakeChangeResult(),
     )
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         risk_command, ["HEAD", "--path", str(repo), "--full", "--baseline", "0"]
     )
     assert result.exit_code == 0, result.output + (result.stderr or "")
@@ -829,7 +837,7 @@ class _FakeChangeResult:
 def test_changed_file_without_a_target_is_a_usage_error(monkeypatch, repo):
     """It is a modifier on ``--target``, and silently scoring HEAD instead
     would answer a question nobody asked."""
-    result = CliRunner(mix_stderr=False).invoke(
+    result = _split_runner().invoke(
         risk_command, ["--changed-file", "a.py", "--path", str(repo)]
     )
     assert result.exit_code == 2
