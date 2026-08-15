@@ -178,12 +178,20 @@ export function ContextRenderer({ data }: { data: ContextArtifactData }) {
 
 type NormalizedRiskTarget = {
   file_path: string;
+  /** 0–1 fraction from MCP `hotspot_score` / `churn_percentile`. */
   score: number | null;
   is_hotspot: boolean;
   risk_type?: string;
   trend?: string;
   risk_summary?: string;
 };
+
+/** Same top-quartile cut `git_indexer/enrich.py` uses for `is_hotspot`. */
+const HOTSPOT_SCORE_THRESHOLD = 0.75;
+
+function formatHotspotPct(score: number): string {
+  return `${Math.round(score * 100)}th`;
+}
 
 function normalizeRiskTargets(data: RiskReportArtifactData): NormalizedRiskTarget[] {
   const raw = data.targets;
@@ -219,7 +227,10 @@ function normalizeRiskTargets(data: RiskReportArtifactData): NormalizedRiskTarge
       const out: NormalizedRiskTarget = {
         file_path: t.file_path,
         score,
-        is_hotspot: Boolean(t.is_hotspot) || (typeof score === "number" && score >= 80),
+        // MCP target rows omit `is_hotspot`; derive from the enrich.py cut.
+        is_hotspot:
+          Boolean(t.is_hotspot) ||
+          (typeof score === "number" && score >= HOTSPOT_SCORE_THRESHOLD),
       };
       if (typeof t.risk_type === "string") out.risk_type = t.risk_type;
       if (typeof t.trend === "string") out.trend = t.trend;
@@ -313,7 +324,7 @@ export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
                 </div>
                 {typeof t.score === "number" && (
                   <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5 tabular-nums">
-                    Hotspot {Math.round(t.score)}th pct
+                    Hotspot {formatHotspotPct(t.score)} pct
                     {t.risk_type ? ` · ${t.risk_type}` : ""}
                     {t.trend ? ` · ${t.trend}` : ""}
                   </div>
@@ -342,7 +353,7 @@ export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
                   {h.path}
                 </span>
                 <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-                  {Math.round(h.score)}th
+                  {formatHotspotPct(h.score)}
                 </span>
               </div>
             ))}

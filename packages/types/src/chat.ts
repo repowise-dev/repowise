@@ -131,9 +131,12 @@ export interface RiskTargetRow {
   file_path?: string;
   /** MCP per-target id when `targets` is a path-keyed object. */
   target?: string;
-  /** MCP `get_risk` hotspot score (0–100 churn percentile). */
+  /**
+   * MCP `get_risk` hotspot score: a 0–1 fraction from
+   * `GitMetadata.churn_percentile` (rank / total), not 0–100.
+   */
   hotspot_score?: number;
-  /** Legacy chat fixture field. */
+  /** Same 0–1 fraction as `hotspot_score` (legacy fixture field name). */
   churn_percentile?: number;
   is_hotspot?: boolean;
   risk_type?: string;

@@ -58,15 +58,18 @@ describe("chat artifact renderers", () => {
       <RiskReportRenderer
         data={{
           targets: [
-            { file_path: "src/hot.ts", churn_percentile: 99, is_hotspot: true },
+            // Wire scores are 0–1 fractions (rank / total), not 0–100.
+            { file_path: "src/hot.ts", churn_percentile: 0.99 },
           ],
-          global_hotspots: [{ path: "src/other.ts", churn_percentile: 88 }],
+          global_hotspots: [{ path: "src/other.ts", churn_percentile: 0.88 }],
         }}
       />,
     );
     expect(screen.getByText("src/hot.ts")).toBeInTheDocument();
     expect(screen.getByText("hotspot")).toBeInTheDocument();
     expect(screen.getByText("src/other.ts")).toBeInTheDocument();
+    expect(screen.getByText(/99th pct/)).toBeInTheDocument();
+    expect(screen.getByText("88th")).toBeInTheDocument();
   });
 
   it("RiskReportRenderer accepts MCP dict targets and hotspot_score", () => {
@@ -76,13 +79,14 @@ describe("chat artifact renderers", () => {
           targets: {
             "src/auth.py": {
               target: "src/auth.py",
-              hotspot_score: 91,
+              // No is_hotspot on the MCP row — badge comes from score >= 0.75.
+              hotspot_score: 0.91,
               risk_type: "churn-heavy",
               trend: "increasing",
             },
           },
           global_hotspots: [
-            { file_path: "src/db.py", hotspot_score: 85 },
+            { file_path: "src/db.py", hotspot_score: 0.85 },
           ],
         }}
       />,
@@ -91,6 +95,7 @@ describe("chat artifact renderers", () => {
     expect(screen.getByText("hotspot")).toBeInTheDocument();
     expect(screen.getByText("src/db.py")).toBeInTheDocument();
     expect(screen.getByText(/91th pct/)).toBeInTheDocument();
+    expect(screen.getByText("85th")).toBeInTheDocument();
   });
 
   it("RiskReportRenderer renders get_change_risk score cards", () => {
