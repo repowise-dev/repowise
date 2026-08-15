@@ -62,6 +62,12 @@ CONSUMER_DIALECTS: tuple[HttpDialect, ...] = (
 # runs its dialect, because nothing reads their decorators yet.
 _INDEX_BACKED_DIALECTS = frozenset({"fastapi"})
 
+# Consumer dialects the index path replaces for a file it produced consumers
+# for. Same per-file, non-empty rule as the provider side: a file whose parse is
+# missing, stale, or yielded nothing keeps its full regex coverage, so the
+# confirmed-wrapper pass can only ever add recall, never subtract it.
+_INDEX_BACKED_CONSUMER_DIALECTS = frozenset({"js-clients"})
+
 
 def _union_extensions(dialects: tuple[HttpDialect, ...]) -> frozenset[str]:
     out: set[str] = set()
@@ -91,6 +97,7 @@ class HttpExtractor:
         files: Sequence[SourceFile] | None = None,
         index: dict[str, object] | None = None,
         content_hashes: dict[str, str] | None = None,
+        stats: dict[str, int] | None = None,
     ) -> list[Contract]:
         """Scan all source files in *repo_path* and return Contract instances.
 
@@ -106,6 +113,12 @@ class HttpExtractor:
         a route from a comment, and cannot lose an empty path. *content_hashes*
         is the walk's ``rel_path -> sha256`` map, which is what proves a cached
         parse describes the file as it is now; without it the index is unused.
+
+        *stats* is an optional out-dict of counters. ``http_consumer_unresolved``
+        counts calls to a *confirmed* HTTP wrapper whose path argument could not
+        be resolved statically — real endpoint calls that were located but
+        cannot be named. They are counted rather than dropped, so a recall
+        figure built from these contracts states its own denominator.
         """
         own_hashes: dict[str, str] | None = None
         if files is None and index is not None and content_hashes is None:
@@ -115,7 +128,8 @@ class HttpExtractor:
         )
         mounts = self._collect_mounts(scanned)
 
-        from ..from_index import extract_http_providers, parsed_for
+        from ..from_index import CONSUMER_INDEX_SUFFIXES, extract_http_providers, parsed_for
+        from .index_clients import extract_consumers
 
         contracts: list[Contract] = []
         for rel_path, suffix, content in scanned:
@@ -124,7 +138,7 @@ class HttpExtractor:
             # regex; a stale or missing entry leaves the dialect in charge.
             parsed = (
                 parsed_for(index, rel_path, (content_hashes or {}).get(rel_path))
-                if suffix in PYTHON
+                if suffix in PYTHON or suffix in CONSUMER_INDEX_SUFFIXES
                 else None
             )
             # Run the index pass first: it only supersedes the text dialect for
@@ -132,8 +146,24 @@ class HttpExtractor:
             # decorated symbols (a grammar the parser stumbled on, a route
             # shape the queries do not capture) must not silently delete the
             # routes the regex can still see in the file's text.
-            from_parse = extract_http_providers(ctx, parsed) if parsed else []
+            from_parse = (
+                extract_http_providers(ctx, parsed)
+                if parsed is not None and suffix in PYTHON
+                else []
+            )
             contracts.extend(from_parse)
+
+            # Consumers, under the same per-file supersede rule: calls at the
+            # sites of wrappers confirmed to reach an HTTP sink.
+            consumers_from_parse: list[Contract] = []
+            if parsed is not None and suffix in CONSUMER_INDEX_SUFFIXES:
+                consumers_from_parse, unresolved = extract_consumers(ctx, parsed)
+                contracts.extend(consumers_from_parse)
+                if stats is not None and unresolved:
+                    stats["http_consumer_unresolved"] = (
+                        stats.get("http_consumer_unresolved", 0) + unresolved
+                    )
+
             for dialect in self.provider_dialects:
                 if suffix not in dialect.extensions:
                     continue
@@ -141,8 +171,11 @@ class HttpExtractor:
                     continue  # superseded by the index pass above
                 contracts.extend(dialect.extract(ctx))
             for dialect in self.consumer_dialects:
-                if suffix in dialect.extensions:
-                    contracts.extend(dialect.extract(ctx))
+                if suffix not in dialect.extensions:
+                    continue
+                if consumers_from_parse and dialect.name in _INDEX_BACKED_CONSUMER_DIALECTS:
+                    continue  # superseded by the confirmed-wrapper pass above
+                contracts.extend(dialect.extract(ctx))
         return contracts
 
     def _collect_mounts(self, files: list[tuple[str, str, str]]) -> dict[str, str]:

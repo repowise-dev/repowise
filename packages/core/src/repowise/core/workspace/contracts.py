@@ -705,6 +705,7 @@ async def run_contract_extraction(
     )
     from .extractors.base import iter_source_files, make_exclude_predicate
     from .extractors.from_index import (
+        ALL_INDEX_SUFFIXES,
         EXTRACTION_LAYER_KEY,
         LAYER_REGEX,
         load_repo_index,
@@ -769,11 +770,16 @@ async def run_contract_extraction(
         # extractor consults it, so nothing is loaded when it is disabled.
         index = None
         if contract_config.detect_http:
-            index = await asyncio.to_thread(load_repo_index, repo_path)
+            index = await asyncio.to_thread(load_repo_index, repo_path, ALL_INDEX_SUFFIXES)
+
+        # Counters the HTTP extractor fills in as it goes. The unresolved-path
+        # count is the honest half of any recall figure: it says how many real
+        # client calls were located but could not be resolved to an endpoint.
+        stats: dict[str, int] = {}
 
         for extractor in extractors:
             kwargs = (
-                {"index": index, "content_hashes": content_hashes}
+                {"index": index, "content_hashes": content_hashes, "stats": stats}
                 if isinstance(extractor, HttpExtractor)
                 else {}
             )
@@ -787,6 +793,14 @@ async def run_contract_extraction(
                 c.meta.setdefault(EXTRACTION_LAYER_KEY, LAYER_REGEX)
             contracts.extend(found)
 
+        unresolved = stats.get("http_consumer_unresolved", 0)
+        if unresolved:
+            _log.info(
+                "%s: %d HTTP client call(s) reach a confirmed wrapper but their "
+                "path could not be resolved statically; counted, not extracted",
+                alias,
+                unresolved,
+            )
         return contracts
 
     results = await asyncio.gather(

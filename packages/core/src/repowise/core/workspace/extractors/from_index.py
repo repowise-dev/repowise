@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 from .http.dialect import build_provider_contract
 from .http.mounts import compose_prefix, router_prefixes
+from .langs import JS_TS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -80,6 +81,18 @@ _ROUTE_HEADS = frozenset({"route"})
 # The languages anything here reads decorators for. Widening this means
 # widening :func:`extract_http_providers` to match.
 INDEX_SUFFIXES = frozenset({".py"})
+
+# Consumer extraction needs the *symbol table* — line ranges and kinds — for the
+# languages HTTP clients are written in, so the wrapper-confirmation pass can
+# bound "this symbol's own body" to a parsed extent instead of guessing it by
+# counting braces. Kept separate from INDEX_SUFFIXES because the two passes read
+# different things off the same parse: providers read ``Symbol.decorators``,
+# consumers read line ranges.
+CONSUMER_INDEX_SUFFIXES = frozenset(JS_TS)
+
+# What :func:`load_repo_index` deserializes for both passes together. One load
+# per repo feeds both; asking for them separately would read the cache twice.
+ALL_INDEX_SUFFIXES = INDEX_SUFFIXES | CONSUMER_INDEX_SUFFIXES
 
 
 def _decorator_head_and_arg(decorator: str) -> tuple[str, str | None]:
