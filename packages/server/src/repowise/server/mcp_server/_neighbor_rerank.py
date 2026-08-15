@@ -124,7 +124,7 @@ def _hub_cutoff(deg: dict[str, int]) -> int:
     return max(vals[min(len(vals) - 1, int(len(vals) * _HUB_PERCENTILE))], 1)
 
 
-def _walk_neighborhood(adj: dict[str, set[str]], seeds: list[str]) -> set[str]:
+def _walk_neighborhood(adj: dict[str, list[str]], seeds: list[str]) -> set[str]:
     """Bounded BFS out from ``seeds``, never expanding through a hub or plumbing.
 
     Such nodes may be *reached* (a hub can be the gold) but are never expanded

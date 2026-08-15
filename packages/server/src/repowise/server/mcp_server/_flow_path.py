@@ -40,7 +40,6 @@ from sqlalchemy import select
 
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
-from repowise.server.mcp_server.tool_answer.retrieval import _question_terms
 
 # Edge kinds that form the file-level dependency graph. ``imports`` is
 # file-to-file already; ``calls`` is symbol-to-symbol and gets projected to
@@ -154,11 +153,15 @@ async def _resolve_question_anchors(
     # Named symbols -> defining files.
     if question_ids:
         res = await session.execute(
-            select(WikiSymbol.file_path).where(
+            select(WikiSymbol.file_path)
+            .where(
                 WikiSymbol.repository_id == repo_id,
-                WikiSymbol.name.in_(list(question_ids)),
+                WikiSymbol.name.in_(sorted(question_ids)),
                 WikiSymbol.kind.in_(("function", "method", "class", "interface")),
             )
+            # Insertion order here decides which anchors survive the
+            # _FLOW_MAX_ANCHORS cap, so it must not be the engine's whim.
+            .order_by(WikiSymbol.file_path)
         )
         for (fp,) in res.all():
             if fp:
@@ -166,13 +169,23 @@ async def _resolve_question_anchors(
 
     # Module-name matches. Build a stem -> file_page paths map once, then keep
     # tokens that resolve tightly (not the generic ones).
-    tokens = {t for t in _question_terms(question) if len(t) >= 4}
+    # Sorted for the same reason as the query above: this loop's order is the
+    # anchor insertion order.
+    # Imported here, not at module scope: `tool_answer.retrieval` pulls in the
+    # `tool_answer` package, whose __init__ imports `answer`, which imports this
+    # module. At module scope that cycle makes this file unimportable first.
+    from repowise.server.mcp_server.tool_answer.retrieval import _question_terms
+
+    tokens = sorted({t for t in _question_terms(question) if len(t) >= 4})
     if tokens:
         res = await session.execute(
-            select(Page.target_path).where(
+            select(Page.target_path)
+            .where(
                 Page.repository_id == repo_id,
                 Page.page_type == "file_page",
             )
+            # Same reason as the symbol query: this feeds anchor insertion order.
+            .order_by(Page.target_path)
         )
         stem_to_paths: dict[str, list[str]] = {}
         for (tp,) in res.all():
@@ -191,12 +204,17 @@ async def _resolve_question_anchors(
     return anchors
 
 
-async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, set[str]]:
+async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str]]:
     """Undirected file-level adjacency from imports + projected calls edges.
 
     Both directions are added: a flow can be read caller->callee or the reverse,
     and the endpoints are anchored, not oriented. ``calls`` edges are projected
     from symbol node_ids onto their files and self-loops dropped.
+
+    Neighbours come back **sorted**. Built as sets to dedupe, returned as lists
+    because BFS walks them: set iteration order over strings moves with the
+    per-process hash seed, so which of several equal-length paths was found
+    changed between runs on identical data.
     """
     res = await session.execute(
         select(
@@ -226,14 +244,18 @@ async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, set[str]
             continue
         adj.setdefault(src, set()).add(tgt)
         adj.setdefault(tgt, set()).add(src)
-    return adj
+    return {node: sorted(neighbours) for node, neighbours in adj.items()}
 
 
-def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> list[str] | None:
+def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> list[str] | None:
     """Shortest file path between ``src`` and ``dst`` (inclusive), or None.
 
     Bidirectional BFS bounded to ``max_depth`` hops and ``_FLOW_MAX_VISITED``
     nodes. Returns the node sequence ``[src, ..., dst]``.
+
+    Frontiers are lists, not sets: with several shortest paths the one found is
+    whichever neighbour is reached first, so the walk has to be ordered for the
+    result to be. ``parents`` already dedupes, so no node is queued twice.
     """
     if src == dst:
         return [src]
@@ -247,8 +269,8 @@ def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> l
     # forward side would never close a path longer than the forward reach.
     fwd: dict[str, Any] = {src: None}
     bwd: dict[str, Any] = {dst: None}
-    fwd_frontier = {src}
-    bwd_frontier = {dst}
+    fwd_frontier = [src]
+    bwd_frontier = [dst]
     fwd_depth = 0
     bwd_depth = 0
     visited = 0
@@ -258,7 +280,7 @@ def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> l
             frontier, parents, other = fwd_frontier, fwd, bwd
         else:
             frontier, parents, other = bwd_frontier, bwd, fwd
-        nxt: set[str] = set()
+        nxt: list[str] = []
         for node in frontier:
             for nb in adj.get(node, ()):
                 if nb in parents:
@@ -267,7 +289,7 @@ def _bfs_path(adj: dict[str, set[str]], src: str, dst: str, max_depth: int) -> l
                 visited += 1
                 if nb in other:
                     return _stitch(fwd, bwd, nb)
-                nxt.add(nb)
+                nxt.append(nb)
             if visited > _FLOW_MAX_VISITED:
                 return None
         if expand_fwd:
@@ -332,7 +354,14 @@ async def expand_via_flow_path(
     # Endpoints to connect: the question-derived anchors, plus the confident top
     # hit as a bridge (a question often names one endpoint and the top hit is
     # the other). Cap the set so the pairwise BFS stays cheap.
-    endpoints = list(anchors)
+    #
+    # Retrieval rank decides who survives the cap. The anchors arrive in path
+    # order, so a plain cap would keep the six alphabetically-first files — a
+    # stable bias toward whichever package sorts early. A file retrieval already
+    # ranked is the better endpoint, and unranked anchors keep path order behind
+    # them, which leaves the whole thing deterministic either way.
+    rank = {h.get("target_path"): i for i, h in enumerate(hits) if h.get("target_path")}
+    endpoints = sorted(anchors, key=lambda p: (rank.get(p, len(hits)), p))
     if top_hit and top_hit not in anchors:
         endpoints.append(top_hit)
     endpoints = endpoints[:_FLOW_MAX_ANCHORS]
@@ -354,8 +383,10 @@ async def expand_via_flow_path(
     # coincidental basename match is rejected), but injecting it as extra hits
     # just hands the agent pass-through files to drill into for a two-file
     # question. Shortest paths first so a direct neighbor beats a 4-hop
-    # coincidence; capped at _FLOW_MAX_INJECT.
-    paths.sort(key=len)
+    # coincidence; capped at _FLOW_MAX_INJECT. The path itself breaks a length
+    # tie, so `flow_path` and the injected node order do not depend on which of
+    # two equally short paths happened to be enumerated first.
+    paths.sort(key=lambda p: (len(p), p))
     path_nodes: list[str] = []
     seen_nodes: set[str] = set()
     for path in paths:
