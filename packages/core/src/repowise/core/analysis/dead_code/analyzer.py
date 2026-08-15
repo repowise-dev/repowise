@@ -1502,18 +1502,16 @@ class DeadCodeAnalyzer:
                     caller for caller in self.graph.predecessors(pred)
                     if self.graph[caller][pred].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
                 ]
-                if not incoming:
-                    return (prop_name, parent_name)
-
-                all_missing = True
-                for caller in incoming:
-                    edge = self.graph[caller][pred]
-                    supplied = edge.get("supplied_props")
-                    if supplied is None or prop_name in supplied:
-                        all_missing = False
-                        break
-                if all_missing:
-                    return (prop_name, parent_name)
+                if incoming:
+                    all_missing = True
+                    for caller in incoming:
+                        edge = self.graph[caller][pred]
+                        supplied = edge.get("supplied_props")
+                        if supplied is None or prop_name in supplied:
+                            all_missing = False
+                            break
+                    if all_missing:
+                        return (prop_name, parent_name)
 
             pred_name = pred.split("::")[-1]
             parent_guard = self._get_unsatisfied_prop_guard(pred, pred_name, visited)

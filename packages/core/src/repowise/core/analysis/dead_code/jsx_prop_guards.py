@@ -40,26 +40,70 @@ def extract_guarded_jsx_renders(
     def _node_text(n: Any) -> str:
         return code[n.start_byte : n.end_byte].decode("utf-8", errors="replace")
 
-    def _extract_prop_name(n: Any) -> str | None:
-        if n.type == "member_expression":
-            obj = None
-            prop = None
+    def _extract_prop_names(n: Any) -> list[str]:
+        if n.type == "parenthesized_expression":
             for c in n.children:
-                if c.type in ("identifier", "this"):
-                    obj = _node_text(c)
-                elif c.type == "property_identifier":
-                    prop = _node_text(c)
-            if obj in ("props", "this.props") and prop:
-                return prop
+                if c.type not in ("(", ")"):
+                    return _extract_prop_names(c)
+        elif n.type == "member_expression":
+            obj_node = n.children[0]
+            obj_text = _node_text(obj_node)
+            prop_text = None
+            for c in n.children:
+                if c.type == "property_identifier":
+                    prop_text = _node_text(c)
+            if (
+                obj_text in ("props", "this.props", "self.props")
+                or obj_text.endswith(".props")
+            ) and prop_text:
+                return [prop_text]
         elif n.type == "identifier":
             name = _node_text(n)
             if name not in ("true", "false", "undefined", "null"):
-                return name
+                return [name]
         elif n.type == "unary_expression":
+            op = None
+            operand = None
             for c in n.children:
-                if c.type != "!":
-                    return _extract_prop_name(c)
-        return None
+                if c.type == "!":
+                    op = "!"
+                else:
+                    operand = c
+            if op == "!":
+                if operand and operand.type == "unary_expression":
+                    sub_op = None
+                    sub_operand = None
+                    for sub in operand.children:
+                        if sub.type == "!":
+                            sub_op = "!"
+                        else:
+                            sub_operand = sub
+                    if sub_op == "!" and sub_operand:
+                        return _extract_prop_names(sub_operand)
+                return []
+        elif n.type == "binary_expression":
+            op = None
+            left = None
+            right = None
+            for c in n.children:
+                if c.type in ("&&", "===", "==", "!==", "!="):
+                    op = c.type
+                elif left is None:
+                    left = c
+                else:
+                    right = c
+            if op == "&&" and left and right:
+                return _extract_prop_names(left) + _extract_prop_names(right)
+            elif op in ("===", "==") and left and right:
+                return _extract_prop_names(left) + _extract_prop_names(right)
+            elif op in ("!==", "!=") and left and right:
+                right_text = _node_text(right)
+                left_text = _node_text(left)
+                if right_text in ("undefined", "null", "false"):
+                    return _extract_prop_names(left)
+                elif left_text in ("undefined", "null", "false"):
+                    return _extract_prop_names(right)
+        return []
 
     def _find_jsx_targets(n: Any) -> list[str]:
         targets: list[str] = []
@@ -75,17 +119,30 @@ def extract_guarded_jsx_renders(
                         if name and name[0].isupper():
                             targets.append(name)
                             break
+                    elif c.type == "member_expression":
+                        prop_name = None
+                        for sub in c.children:
+                            if sub.type == "property_identifier":
+                                prop_name = _node_text(sub)
+                        if prop_name and prop_name[0].isupper():
+                            targets.append(prop_name)
+                            break
         else:
             for c in n.children:
                 targets.extend(_find_jsx_targets(c))
         return targets
 
     def _walk(n: Any, current_fn: str | None = None) -> None:
-        if n.type in ("function_declaration", "arrow_function", "function_expression"):
+        if n.type in (
+            "function_declaration",
+            "arrow_function",
+            "function_expression",
+            "method_definition",
+        ):
             fn_name = current_fn
-            if n.type == "function_declaration":
+            if n.type in ("function_declaration", "method_definition"):
                 for c in n.children:
-                    if c.type == "identifier":
+                    if c.type in ("identifier", "property_identifier"):
                         fn_name = _node_text(c)
                         break
             elif n.parent and n.parent.type == "variable_declarator":
@@ -93,7 +150,7 @@ def extract_guarded_jsx_renders(
                     if c.type == "identifier":
                         fn_name = _node_text(c)
                         break
-            current_fn = fn_name
+            current_fn = fn_name or "Anonymous"
 
         if n.type == "binary_expression":
             op = None
@@ -107,29 +164,29 @@ def extract_guarded_jsx_renders(
                 else:
                     right = c
             if op == "&&" and left and right:
-                prop_name = _extract_prop_name(left)
                 jsx_targets = _find_jsx_targets(right)
-                if prop_name and jsx_targets and current_fn:
-                    for target in jsx_targets:
-                        results.append((current_fn, target, prop_name))
+                if jsx_targets and current_fn:
+                    prop_names = _extract_prop_names(left)
+                    for prop_name in prop_names:
+                        for target in jsx_targets:
+                            results.append((current_fn, target, prop_name))
 
         elif n.type == "ternary_expression":
             cond = None
             consequence = None
-            alternative = None
             for c in n.children:
                 if c.type not in ("?", ":"):
                     if cond is None:
                         cond = c
                     elif consequence is None:
                         consequence = c
-                    else:
-                        alternative = c
-            if cond and current_fn:
-                prop_name = _extract_prop_name(cond)
-                if prop_name and consequence:
-                    for target in _find_jsx_targets(consequence):
-                        results.append((current_fn, target, prop_name))
+            if cond and consequence and current_fn:
+                jsx_targets = _find_jsx_targets(consequence)
+                if jsx_targets:
+                    prop_names = _extract_prop_names(cond)
+                    for prop_name in prop_names:
+                        for target in jsx_targets:
+                            results.append((current_fn, target, prop_name))
 
         for child in n.children:
             _walk(child, current_fn)

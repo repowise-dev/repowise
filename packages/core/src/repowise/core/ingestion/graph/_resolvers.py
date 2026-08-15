@@ -592,10 +592,10 @@ class ResolveMixin:
                             existing["confidence"] = rc.confidence
                             existing["resolution_origin"] = rc.origin
                         ex_props = existing.get("supplied_props")
-                        if ex_props is not None and rc.supplied_props is not None:
-                            existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
-                        elif rc.supplied_props is None:
+                        if ex_props is None or rc.supplied_props is None:
                             existing["supplied_props"] = None
+                        else:
+                            existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
             if progress:
                 progress.on_item_done("graph.calls")
 
