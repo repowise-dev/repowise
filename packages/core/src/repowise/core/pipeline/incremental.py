@@ -412,9 +412,10 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
             await engine.dispose()
         if not counts:
             return None
-        counts = sorted(counts)
-        idx_p80 = min(len(counts) - 1, max(0, int(0.8 * len(counts))))
-        return int(counts[idx_p80])
+        # Same inclusive-lower p80 as the in-memory path — do not reimplement.
+        from repowise.core.analysis.health.engine import _percentile_p80
+
+        return _percentile_p80(counts)
     except Exception as exc:
         log(f"[yellow]Stored function-mod percentile unavailable: {exc}[/yellow]")
         return None
