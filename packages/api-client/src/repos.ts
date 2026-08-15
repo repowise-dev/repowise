@@ -1,3 +1,4 @@
+import type { ReposSummaryResponse } from "@repowise-dev/types/repos";
 import { apiGet, apiPost, apiPatch, apiDelete } from "./client";
 import type {
   RepoCreate,
@@ -13,6 +14,13 @@ import type {
 
 export async function listRepos(): Promise<RepoResponse[]> {
   return apiGet<RepoResponse[]>("/api/repos");
+}
+
+/** One-call payload for the multi-repo dashboard: every registered repo's
+ *  headline figures. Replaces `listRepos` plus a `getRepoStats` and a
+ *  `getGitSummary` per repo, whose cost grew with the repository count. */
+export async function getReposSummary(): Promise<ReposSummaryResponse> {
+  return apiGet<ReposSummaryResponse>("/api/repos/summary");
 }
 
 export async function getRepo(repoId: string): Promise<RepoResponse> {

@@ -201,3 +201,40 @@ async def test_export_wiki_returns_zip(client: AsyncClient, session) -> None:
     assert len(names) == 1
     assert names[0].startswith("wiki/")
     assert names[0].endswith(".md")
+
+
+@pytest.mark.asyncio
+async def test_stats_file_count_excludes_symbol_nodes(client: AsyncClient, session) -> None:
+    """`file_count` must count files, not every `graph_nodes` row.
+
+    Symbol nodes share the table. Counting them made the field report ~10x
+    the real figure, which both the multi-repo dashboard and the chat empty
+    state printed verbatim as "N files".
+    """
+    from repowise.core.persistence.crud import upsert_repository
+    from repowise.core.persistence.models import GraphNode
+
+    repo = await upsert_repository(session, name="counts", local_path="/tmp/counts")
+    for i in range(2):
+        session.add(
+            GraphNode(
+                repository_id=repo.id,
+                node_id=f"src/mod{i}.py",
+                node_type="file",
+                symbol_count=5,
+            )
+        )
+        for j in range(5):
+            session.add(
+                GraphNode(
+                    repository_id=repo.id,
+                    node_id=f"src/mod{i}.py::sym{j}",
+                    node_type="symbol",
+                )
+            )
+    await session.commit()
+
+    data = (await client.get(f"/api/repos/{repo.id}/stats")).json()
+
+    assert data["file_count"] == 2  # not 12
+    assert data["symbol_count"] == 10

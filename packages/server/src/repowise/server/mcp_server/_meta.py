@@ -31,7 +31,7 @@ from typing import Any
 _STALE_AGE_FLOOR_DAYS = 90
 
 
-def _read_live_head(local_path: str | None) -> str | None:
+def read_live_head(local_path: str | None) -> str | None:
     """Read the repo's current git HEAD SHA via plain file I/O.
 
     Returns a full 40-char SHA, or ``None`` when the repo isn't a git checkout
@@ -259,7 +259,7 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     if indexed_full:
         out["indexed_commit"] = indexed_full[:12] if isinstance(indexed_full, str) else indexed_full
 
-    live_full = _read_live_head(local_path)
+    live_full = read_live_head(local_path)
 
     if live_full and indexed_full:
         if live_full != indexed_full:
