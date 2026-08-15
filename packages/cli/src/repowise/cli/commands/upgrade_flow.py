@@ -260,7 +260,7 @@ async def _run_upgrade(
     embedder = None
     vector_store = None
     try:
-        embedder = build_embedder(resolve_embedder(embedder_name))
+        embedder = build_embedder(resolve_embedder(embedder_name), repo_path)
         vector_store = build_vector_store(repo_path, embedder)
     except Exception as exc:
         console.print(f"[yellow]Embedding skipped: {exc}[/yellow]")

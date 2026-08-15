@@ -569,8 +569,14 @@ def _run_index_for_repo(
     primary_cfg: dict = {}
     if primary is not None:
         from repowise.cli.helpers import load_config as _load_cfg
+        from repowise.cli.ui import load_dotenv
 
-        primary_cfg = _load_cfg((ws_root / primary.path).resolve())
+        primary_path = (ws_root / primary.path).resolve()
+        primary_cfg = _load_cfg(primary_path)
+        # The provider settings are inherited from the primary repo, so the
+        # credential that goes with them lives in the primary's ``.env`` —
+        # the new repo has none yet. Same call `init`'s workspace flow makes.
+        load_dotenv(primary_path)
 
     effective_provider = provider_name or primary_cfg.get("provider")
     effective_model = model or primary_cfg.get("model")

@@ -143,7 +143,7 @@ def _vector_dims(repo_path: Path) -> tuple[int | None, int | None]:
     from .providers.vector_store import existing_vector_dim
 
     try:
-        embedder = build_embedder(resolve_embedder_for_repo(repo_path))
+        embedder = build_embedder(resolve_embedder_for_repo(repo_path), repo_path)
     except Exception:
         return None, None
     if isinstance(embedder, MockEmbedder):

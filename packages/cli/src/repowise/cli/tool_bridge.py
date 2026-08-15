@@ -110,8 +110,12 @@ async def _open_vector_store(repo_path: Path) -> Any:
     from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
     from repowise.core.persistence.vector_store import InMemoryVectorStore
 
+    # Both halves read ``<repo>/.repowise/.env`` themselves rather than the
+    # process environment, which is why this path needs no ``load_dotenv``:
+    # the tools serve one repo per call, and merging a repo's keys into
+    # ``os.environ`` is first-writer-wins for the life of the process.
     requested = resolve_embedder_for_repo(repo_path)
-    embedder = build_embedder(requested)
+    embedder = build_embedder(requested, repo_path)
     _publish_embedder_status(requested, embedder)
     lance_dir = repo_path / REPOWISE_DIR / "lancedb"
     if lance_dir.is_dir():

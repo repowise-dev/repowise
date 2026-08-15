@@ -118,7 +118,7 @@ def repair(monkeypatch):
     def _run(repo_path: Path) -> _RecordingStore:
         recorder = _RecordingStore()
         monkeypatch.setattr("repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "mock")
-        monkeypatch.setattr("repowise.cli.providers.build_embedder", lambda _n: object())
+        monkeypatch.setattr("repowise.cli.providers.build_embedder", lambda _n, _p=None: object())
         monkeypatch.setattr("repowise.cli.providers.build_vector_store", lambda _p, _e: recorder)
         repo_checks._run_repo_checks(Path(repo_path), repair=True)
         return recorder

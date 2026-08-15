@@ -171,7 +171,9 @@ def _render_pages(
             from repowise.cli.providers import build_embedder, build_vector_store
 
             try:
-                vector_store = build_vector_store(repo_path, build_embedder(embedder_name))
+                vector_store = build_vector_store(
+                    repo_path, build_embedder(embedder_name, repo_path)
+                )
             except Exception as exc:  # embedding is optional; FTS still indexes
                 degraded.append(f"Page embedding: {exc}")
 

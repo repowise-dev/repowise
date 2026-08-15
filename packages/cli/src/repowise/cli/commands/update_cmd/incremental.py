@@ -26,7 +26,7 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")))
+        embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
         return build_vector_store(repo_path, embedder)
     except Exception:
         return None
