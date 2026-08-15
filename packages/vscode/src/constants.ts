@@ -12,8 +12,12 @@ export const CONFIG_SECTION = "repowise";
 /**
  * Lowest server version this build understands. Older servers may serve a
  * store shape this extension cannot read, so the status bar flags them.
+ *
+ * 0.43.0: the risk panel leads with `fix_history`, which no earlier server
+ * sends. `RiskRangeResponse.fix_history` is a required field and the panel
+ * dereferences it, so an older server would throw rather than degrade.
  */
-export const MIN_SERVER_VERSION = "0.26.0";
+export const MIN_SERVER_VERSION = "0.43.0";
 
 /** Command ids contributed by the extension, mirrored from package.json. */
 export const Commands = {
