@@ -376,13 +376,27 @@ async def _run_decision_extraction(
             # ``session`` is in the label table but is not one of the
             # extractor's own sources, so ``source in enabled`` leaves it out
             # of this list — correct, since it is mined separately below.
+            #
+            # A source that *failed* is listed separately and as a warning.
+            # It is not "nothing found": the repo may be full of decisions
+            # nobody could read. Same shape the update path already uses for
+            # its ``degraded`` list, so both runs report an outage the same
+            # way instead of one of them printing a reassuring zero.
+            failures = getattr(report, "failures", {}) or {}
             empty = [
                 label.removeprefix("from ")
                 for source, label in _DECISION_SOURCE_LABELS
-                if source in enabled and not bs.get(source)
+                if source in enabled and not bs.get(source) and source not in failures
             ]
             if empty:
                 progress.on_message("info", f"→ Nothing found in: {', '.join(empty)}")
+            for source, label in _DECISION_SOURCE_LABELS:
+                if source in failures:
+                    progress.on_message(
+                        "warning",
+                        f"Decision source {label.removeprefix('from ')} failed, "
+                        f"so this run found none there: {failures[source]}",
+                    )
 
         _phase_done(progress, "decisions")
         return report

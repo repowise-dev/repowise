@@ -153,11 +153,52 @@ class ExtractedDecision:
     source_text: str = ""
 
 
+class DecisionSourceError(RuntimeError):
+    """Every batch of a decision source failed.
+
+    Raised so :meth:`DecisionExtractor.extract_all` records the source as
+    failed rather than empty. A source that loses *some* batches still
+    returns what it has and only logs, because partial supply beats none.
+    """
+
+
+def _collect_batches(
+    source: str,
+    results: list[Any],
+) -> list[ExtractedDecision]:
+    """Flatten ``asyncio.gather(..., return_exceptions=True)`` output.
+
+    Exceptions are logged per batch. If nothing survived and there was work
+    to do, the source failed outright and says so instead of returning a
+    zero that reads like an empty repository.
+    """
+    decisions: list[ExtractedDecision] = []
+    errors: list[str] = []
+    for result in results:
+        if isinstance(result, list):
+            decisions.extend(result)
+        else:
+            errors.append(f"{type(result).__name__}: {result}")
+            logger.warning(
+                "decision_extractor.batch_failed",
+                source=source,
+                error=str(result),
+            )
+    if errors and len(errors) == len(results):
+        raise DecisionSourceError(f"all {len(errors)} batch(es) failed — {errors[0]}")
+    return decisions
+
+
 @dataclass
 class DecisionExtractionReport:
     total_found: int
     decisions: list[ExtractedDecision]
     by_source: dict[str, int]
+    # Sources that raised, {source name: error text}. A source that fails
+    # returns an empty list, so without this a total outage and an honestly
+    # empty repo are the same number on screen. Callers render it; nothing
+    # else can tell the two apart.
+    failures: dict[str, str] = field(default_factory=dict)
 
 
 # Every index-time capture source, in progress order. The CLI derives its
@@ -191,11 +232,20 @@ def enabled_source_names(repo_config: dict[str, Any] | None) -> tuple[str, ...]:
 # Comment marker detection
 # ---------------------------------------------------------------------------
 
+# The keyword is deliberately case-SENSITIVE. These are annotation
+# conventions, written in caps like TODO:/FIXME:/HACK:, and matching them
+# case-insensitively turns ordinary prose into architectural decisions. Two
+# real examples from this repo, both of which reached the store as `active`
+# records: a wrapped sentence whose continuation line began "# decision:
+# namespace, batched like the pages", and a test's "# Rejected: nothing to
+# extract." Across 3,860 tracked files those were the ONLY two matches — a
+# 100% false-positive rate — because no genuine marker was written in lower
+# case. A missed marker costs one record; a false positive publishes a
+# sentence fragment as a decision governing every file it touches.
 MARKER_RE = re.compile(
     r"^\s*(?:#|//|--|/\*|\*)\s*"
     r"(?P<keyword>WHY|DECISION|TRADEOFF|ADR|RATIONALE|REJECTED)"
     r"\s*:\s*(?P<text>.+)",
-    re.IGNORECASE,
 )
 
 _SKIP_DIRS = frozenset(
@@ -354,6 +404,10 @@ _COMMENT_RATIONALE_CUES = (
     "intentionally",
 )
 _MAX_COMMENT_NODES = 30
+
+# Inline markers sent to the model per call. Caps prompt length only; a file
+# with more markers is sent in several calls rather than truncated.
+_MARKERS_PER_CALL = 5
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -531,24 +585,36 @@ class DecisionExtractor:
     async def _structure_markers_via_llm(
         self, file_path: str, markers: list[dict]
     ) -> list[ExtractedDecision]:
-        """Use LLM to structure inline markers into decision records."""
-        markers_block = ""
-        for m in markers[:5]:  # Batch up to 5 per call
-            markers_block += (
-                f"\n--- Marker ({m['keyword']}) at line {m['line']} ---\n"
-                f"Text: {m['text']}\n"
-                f"Surrounding code:\n{m['context'][:1500]}\n"
+        """Use LLM to structure inline markers into decision records.
+
+        Markers are sent five per call. The batch size caps prompt length;
+        it is not a cap on how many markers a file may have. ``markers[:5]``
+        alone dropped every marker past the fifth: the caller invokes this
+        once per file, and the raw-marker fallback below only runs on an
+        exception, so those markers were never structured and never fell
+        back — they left no record and no log line.
+        """
+        decisions: list[ExtractedDecision] = []
+        for start in range(0, len(markers), _MARKERS_PER_CALL):
+            batch = markers[start : start + _MARKERS_PER_CALL]
+            markers_block = ""
+            for m in batch:
+                markers_block += (
+                    f"\n--- Marker ({m['keyword']}) at line {m['line']} ---\n"
+                    f"Text: {m['text']}\n"
+                    f"Surrounding code:\n{m['context'][:1500]}\n"
+                )
+
+            prompt = INLINE_MARKER_PROMPT.format(
+                file_path=file_path,
+                markers_block=markers_block,
             )
 
-        prompt = INLINE_MARKER_PROMPT.format(
-            file_path=file_path,
-            markers_block=markers_block,
-        )
-
-        response = await self._provider.generate(
-            _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
-        )
-        return self._parse_decisions_json(response.content)
+            response = await self._provider.generate(
+                _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
+            )
+            decisions.extend(self._parse_decisions_json(response.content))
+        return decisions
 
     # ------------------------------------------------------------------
     # Source 2: Git archaeology
@@ -660,14 +726,7 @@ class DecisionExtractor:
             *[_process_batch(b) for b in batches],
             return_exceptions=True,
         )
-        for result in results:
-            if isinstance(result, list):
-                decisions.extend(result)
-            else:
-                logger.warning(
-                    "decision_extractor.git_batch_failed",
-                    error=str(result),
-                )
+        decisions.extend(_collect_batches("git_archaeology", list(results)))
 
         return decisions
 
@@ -884,12 +943,14 @@ class DecisionExtractor:
                 )
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
-            try:
-                response = await self._provider.generate(
-                    _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
-                )
-            except Exception:
-                return []
+            # Let this propagate to the gather below. Swallowed here, a total
+            # provider outage returned five empty lists, so ``_collect_batches``
+            # saw no errors and the run reported "Nothing found in: pull
+            # requests" — the exact zero-that-means-failure this change exists
+            # to remove.
+            response = await self._provider.generate(
+                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+            )
             extracted = self._parse_decisions_json(response.content)
             for d in extracted:
                 sha = d.evidence_commits[0] if d.evidence_commits else ""
@@ -908,16 +969,10 @@ class DecisionExtractor:
                 d.affected_modules = self._infer_modules(d.affected_files)
             return extracted
 
-        decisions: list[ExtractedDecision] = []
         results = await asyncio.gather(
             *[_process_batch(b) for b in batches], return_exceptions=True
         )
-        for result in results:
-            if isinstance(result, list):
-                decisions.extend(result)
-            else:
-                logger.warning("decision_extractor.pr_batch_failed", error=str(result))
-        return decisions
+        return _collect_batches("pr", list(results))
 
     # ------------------------------------------------------------------
     # Source 5: Comment archaeology (centrality-bounded)
@@ -954,12 +1009,13 @@ class DecisionExtractor:
             for fp, prose in batch:
                 comments_block += f"\n--- {fp} ---\n{prose[:1500]}\n"
             prompt = COMMENT_ARCHAEOLOGY_PROMPT.format(comments_block=comments_block)
-            try:
-                response = await self._provider.generate(
-                    _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
-                )
-            except Exception:
-                return []
+            # Was a bare ``except Exception: return []`` here with no log at
+            # all — the quietest of the three swallows, and the one that made
+            # "comment: 0" unfalsifiable. Let it propagate to the gather
+            # below, which counts it.
+            response = await self._provider.generate(
+                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+            )
             extracted = self._parse_decisions_json(response.content)
             # Best-effort attribution to the originating file by token overlap.
             for d in extracted:
@@ -982,9 +1038,7 @@ class DecisionExtractor:
         results = await asyncio.gather(
             *[_process_batch(b) for b in batches], return_exceptions=True
         )
-        for result in results:
-            if isinstance(result, list):
-                decisions.extend(result)
+        decisions.extend(_collect_batches("comment", list(results)))
         return decisions
 
     # Above this node count, skip the iterative PageRank solve and use degree
@@ -1216,6 +1270,8 @@ class DecisionExtractor:
         ungrounded LLM fields are dropped and evidence-less decisions rejected.
         """
 
+        failures: dict[str, str] = {}
+
         async def _safe_source(name: str, coro_fn: Any) -> list[ExtractedDecision]:
             try:
                 logger.info("decision_extractor.starting", source=name)
@@ -1223,6 +1279,10 @@ class DecisionExtractor:
                 logger.info("decision_extractor.finished", source=name, count=len(result))
                 return result
             except Exception as exc:
+                # Recorded as well as logged: the CLI pins core to ERROR, so
+                # a source that dies here used to reach the user as a plain
+                # zero indistinguishable from "this repo has no ADRs".
+                failures[name] = f"{type(exc).__name__}: {exc}"
                 logger.warning("decision_extractor.source_failed", source=name, error=str(exc))
                 return []
             finally:
@@ -1269,6 +1329,7 @@ class DecisionExtractor:
             total_found=len(decisions),
             decisions=decisions,
             by_source=by_source,
+            failures=failures,
         )
 
     # ------------------------------------------------------------------

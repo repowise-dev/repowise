@@ -1509,20 +1509,14 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             logger.warning("health_snapshot_skipped", error=str(_snap_err))
 
     # ---- Decision records ----------------------------------------------------
-    # Two contributors merge into one upsert: the multi-source extractor
-    # (decision_report) and the Phase-2 LLM-docs harvest (ridden on each
-    # generated page's metadata, already gated at generation time). Folding
-    # them into a single bulk_upsert lets harvested candidates corroborate
-    # extracted decisions (extra evidence row + confidence bump) or stand alone
-    # as low-rank ``proposed`` records awaiting review.
+    # One contributor: the multi-source extractor. A second read used to fold
+    # ``page.metadata["harvested_decisions"]`` in from LLM page generation, but
+    # nothing ever wrote that key — harvesting only ever ran on ``file_page``,
+    # and file pages are rendered structurally now, so the directive had no
+    # host and the loop was permanently a no-op.
     decision_dicts: list[dict] = []
     if result.decision_report and result.decision_report.decisions:
         decision_dicts.extend(dataclasses.asdict(d) for d in result.decision_report.decisions)
-    if result.generated_pages:
-        for page in result.generated_pages:
-            harvested = page.metadata.get("harvested_decisions")
-            if harvested:
-                decision_dicts.extend(harvested)
 
     # Restore records the semantic supersession detector retired before it was
     # turned off. ``superseded`` is a protected status, so nothing else will

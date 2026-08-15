@@ -118,7 +118,6 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "embedder": "mock",
         "test_run": False,
         "onboarding": True,
-        "harvest_decisions": True,
         "wiki_style": DEFAULT_STYLE,
         "language": "en",
     }
@@ -148,7 +147,7 @@ def test_advanced_config_index_only_omits_generation_keys(
         "embedder": "mock",
     }
     # The knobs that only shape a model's writing must not appear.
-    for key in ("concurrency", "reasoning", "onboarding", "harvest_decisions", "wiki_style"):
+    for key in ("concurrency", "reasoning", "onboarding", "wiki_style"):
         assert key not in result
 
 

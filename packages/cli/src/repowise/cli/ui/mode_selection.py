@@ -417,7 +417,7 @@ def _prompt_generation(
     language: str | None = None,
 ) -> None:
     """Generation section: concurrency, reasoning, embedder, test run, tiering,
-    onboarding, decision harvesting, wiki style, and output language.
+    onboarding, wiki style, and output language.
 
     *wiki_style* carries an explicit ``--wiki-style`` value; when set the style
     prompt is skipped so the flag wins. *language* works the same way for the
@@ -466,13 +466,6 @@ def _prompt_generation(
     # slots without enough signal are skipped automatically.
     result["onboarding"] = click.confirm(
         "  Generate the curated Onboarding collection? (up to 8 overview pages)",
-        default=True,
-    )
-
-    # Decision harvesting rides along with file-page generation; the token cost
-    # lands only on files that actually carry a decision.
-    result["harvest_decisions"] = click.confirm(
-        "  Harvest architectural decisions during generation?",
         default=True,
     )
 
@@ -545,7 +538,6 @@ def _summary_rows(
                 f"{result['language']} ({SUPPORTED_LANGUAGES.get(result['language'], '?')})",
             )
         add("Onboarding", "yes" if result.get("onboarding", True) else "no")
-        add("Harvest decisions", "yes" if result.get("harvest_decisions", True) else "no")
         add("Test run", "yes" if result["test_run"] else "no")
     return summary
 
@@ -567,7 +559,7 @@ def interactive_advanced_config(
 
     The indexing section (scope, run mode, exclude, git) is always prompted.
     The generation section (concurrency, reasoning, embedder, onboarding,
-    decision harvesting, tiering, wiki style, test run) is prompted only when
+    tiering, wiki style, test run) is prompted only when
     *generate_docs* is True, so an index-only advanced run skips knobs that have
     no effect. ``generate_docs`` is echoed back in the result.
 
@@ -575,7 +567,7 @@ def interactive_advanced_config(
     ``commit_limit``, ``follow_renames``, ``skip_tests``, ``skip_infra``,
     ``exclude``, ``include_submodules``, ``run_mode``, ``max_file_pages``,
     ``generate_docs`` (always), plus ``concurrency``, ``reasoning``, ``embedder``,
-    ``test_run``, ``onboarding``, ``harvest_decisions``, ``wiki_style``,
+    ``test_run``, ``onboarding``, ``wiki_style``,
     ``language`` (docs only).
 
     Editor integration prompts are intentionally not asked here so that full and

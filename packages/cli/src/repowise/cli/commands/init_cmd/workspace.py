@@ -95,7 +95,6 @@ def _run_workspace_generation(
     test_run: bool,
     reasoning: str = "auto",
     onboarding: bool = True,
-    harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
 ) -> list[Any]:
@@ -113,7 +112,6 @@ def _run_workspace_generation(
         max_concurrency=concurrency,
         reasoning=resolve_reasoning(reasoning),
         enable_onboarding=onboarding,
-        harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         language=language,
         # No question is asked in the workspace flow, so this only picks up a cap
@@ -268,7 +266,6 @@ class _WorkspaceCtx:
     yes: bool
     resume: bool
     onboarding: bool
-    harvest_decisions: bool
     wiki_style: str
     language: str
     resolved_reasoning: str
@@ -412,7 +409,6 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                 test_run=ctx.test_run,
                 reasoning=ctx.resolved_reasoning,
                 onboarding=ctx.onboarding,
-                harvest_decisions=ctx.harvest_decisions,
                 wiki_style=ctx.wiki_style,
                 language=ctx.language,
             )
@@ -582,7 +578,6 @@ def _workspace_init(
     resume: bool = False,
     force: bool = False,
     onboarding: bool = True,
-    harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str | None = None,
     run_mode: str = "standard",
@@ -661,7 +656,7 @@ def _workspace_init(
             reasoning = selection.reasoning
             # Pass the resolved style so the advanced generation section doesn't
             # add a per-workspace wiki-style prompt (the workspace flow applies
-            # one style uniformly); onboarding / decision harvesting still apply.
+            # one style uniformly); onboarding still applies.
             adv = interactive_advanced_config(
                 console, prompt_reasoning=False, wiki_style=wiki_style, language=language
             )
@@ -676,7 +671,6 @@ def _workspace_init(
             reasoning = adv.get("reasoning") or reasoning
             embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
             onboarding = adv.get("onboarding", onboarding)
-            harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
             if adv.get("wiki_style"):
                 wiki_style = adv["wiki_style"]
             if adv.get("language"):
@@ -779,7 +773,6 @@ def _workspace_init(
         yes=yes,
         resume=resume,
         onboarding=onboarding,
-        harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         language=language or "en",
         resolved_reasoning=resolved_reasoning,

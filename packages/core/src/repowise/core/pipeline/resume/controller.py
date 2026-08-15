@@ -202,9 +202,7 @@ class ResumeController:
         lets a generation interrupt resume past analysis instead of recomputing
         it (decision extraction in particular can run for minutes). Best-effort:
         a persistence hiccup is logged and swallowed, leaving ANALYSIS unmarked
-        so the resumed run simply recomputes it. ``generated_pages`` is empty at
-        this point, so harvested-decision folding still happens at the final
-        end-of-run persist.
+        so the resumed run simply recomputes it.
         """
         from repowise.core.persistence import get_session
 

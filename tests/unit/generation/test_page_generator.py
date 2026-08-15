@@ -695,11 +695,7 @@ async def test_generate_all_level_values_in_range():
 
 
 def _gen(language: str = "en") -> PageGenerator:
-    # Harvest disabled here so these assert the language-prefix logic in
-    # isolation; the harvest-directive suffix is covered in test_decision_harvest.
-    config = GenerationConfig(
-        max_tokens=256, token_budget=500, max_concurrency=1, harvest_decisions=False
-    )
+    config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=1)
     provider = MockProvider()
     assembler = ContextAssembler(config)
     return PageGenerator(provider, assembler, config, language=language)
@@ -736,7 +732,7 @@ def test_language_defaults_from_config_when_arg_omitted():
     # Callers that only build a GenerationConfig (server regenerate, pipeline
     # fallback) must still get the configured output language.
     config = GenerationConfig(
-        max_tokens=256, token_budget=500, max_concurrency=1, harvest_decisions=False, language="ru"
+        max_tokens=256, token_budget=500, max_concurrency=1, language="ru"
     )
     gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
     prompt = gen._build_system_prompt("module_page")

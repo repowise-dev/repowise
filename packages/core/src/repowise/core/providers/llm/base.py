@@ -196,14 +196,6 @@ class GeneratedResponse:
         cached_tokens: Tokens served from the provider's prompt cache (if any).
                        Normalised across providers by the adapter.
         usage:         Provider-specific usage dict (stored as-is for auditing).
-        decisions:     Optional structured side-channel: candidate architectural
-                       decisions the model surfaced while writing the page
-                       (Phase-2 LLM-docs harvest). Populated by the generator
-                       from a trailing JSON block (or native structured output)
-                       and stripped from ``content`` before storage; ``None``
-                       when nothing was harvested. Each item is a raw dict
-                       carrying at least ``title`` + ``source_quote``; the
-                       generator gates them against the file source before use.
         stop_reason:   Provider-neutral completion reason. Uses the same values
                        as streaming chat (notably ``end_turn``, ``max_tokens``,
                        and ``tool_use``).
@@ -216,7 +208,6 @@ class GeneratedResponse:
     output_tokens: int
     cached_tokens: int = 0
     usage: dict[str, Any] = field(default_factory=dict)
-    decisions: list[dict] | None = None
     stop_reason: str | None = None
     provider_stop_reason: str | None = None
 

@@ -816,10 +816,9 @@ async def _persist_full_update_async(
                     import dataclasses as _dc
 
                     decision_dicts.extend(_dc.asdict(d) for d in new_decision_markers)
-                for page in generated_pages:
-                    harvested = page.metadata.get("harvested_decisions")
-                    if harvested:
-                        decision_dicts.extend(harvested)
+                # A second read folded in ``page.metadata["harvested_decisions"]``
+                # here. Nothing ever wrote that key, so it never contributed a
+                # record; it is gone along with the generation-time harvest.
 
                 if decision_dicts:
                     from repowise.core.persistence.crud import bulk_upsert_decisions

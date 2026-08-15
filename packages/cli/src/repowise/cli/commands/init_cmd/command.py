@@ -257,7 +257,6 @@ def _run_generation_phase(
     language: str,
     resolved_reasoning: str,
     onboarding: bool,
-    harvest_decisions: bool,
     wiki_style: str,
     max_file_pages: int | None,
     yes: bool,
@@ -291,7 +290,6 @@ def _run_generation_phase(
         language=language,
         reasoning=resolved_reasoning,
         enable_onboarding=onboarding,
-        harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
     )
@@ -631,17 +629,6 @@ def _run_generation_phase(
     ),
 )
 @click.option(
-    "--harvest-decisions/--no-harvest-decisions",
-    "harvest_decisions",
-    default=True,
-    help=(
-        "Harvest candidate architectural decisions from LLM page generation "
-        "(file pages). Each harvested decision is verified against the file's "
-        "source before storage. The model emits a decision only on a genuine "
-        "hit, so the token cost lands only on files that carry one. Default: on."
-    ),
-)
-@click.option(
     "--wiki-style",
     "wiki_style",
     type=click.Choice([s.name for s in list_styles()]),
@@ -737,7 +724,6 @@ def init_command(
     onboarding: bool,
     max_file_pages_opt: int | None,
     coverage_report: tuple[str, ...],
-    harvest_decisions: bool,
     wiki_style: str | None,
     language_opt: str | None,
     no_cost_tracking: bool,
@@ -893,7 +879,6 @@ def init_command(
             resume=resume,
             force=force,
             onboarding=onboarding,
-            harvest_decisions=harvest_decisions,
             # Apply the chosen style uniformly across the workspace's repos
             # (no per-repo interactive prompt in the multi-repo flow).
             wiki_style=resolve_style(wiki_style).name,
@@ -1033,7 +1018,6 @@ def init_command(
                 reasoning = adv.get("reasoning") or reasoning
                 test_run = adv["test_run"]
                 onboarding = adv.get("onboarding", onboarding)
-                harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
                 if adv.get("wiki_style"):
                     wiki_style = adv["wiki_style"]
                 if adv.get("language"):
@@ -1409,7 +1393,6 @@ def init_command(
             language=language,
             resolved_reasoning=resolved_reasoning,
             onboarding=onboarding,
-            harvest_decisions=harvest_decisions,
             wiki_style=wiki_style,
             max_file_pages=max_file_pages,
             yes=yes,
