@@ -40,7 +40,7 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"password\s*=\s*['\"]"), "hardcoded_password", "high"),
     (re.compile(r"(?:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
-    (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
+    (re.compile(r'\.execute\(\s*[\'\"]\s*SELECT.*\+'), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
     (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
 ]
@@ -51,7 +51,9 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
 _ANY_PATTERN = re.compile("|".join(f"(?:{p.pattern})" for p, _, _ in _PATTERNS))
 
 # Symbol names that are informational security hotspots
-_SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE)
+_SYMBOL_KEYWORDS = re.compile(
+    r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE
+)
 
 # Patterns whose matches are genuine leaked credentials (as opposed to the
 # broader "code smell" patterns like os.system/eval). Full-history scans
@@ -178,7 +180,10 @@ class SecurityScanner:
             conflict_suffix = ""
         else:
             insert_prefix = "INSERT INTO security_findings "
-            conflict_suffix = " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance DO NOTHING"
+            conflict_suffix = (
+                " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance "
+                "DO NOTHING"
+            )
 
         inserted = 0
         for finding in findings:
@@ -189,7 +194,8 @@ class SecurityScanner:
                         + "(repository_id, file_path, kind, severity, snippet, line_number, "
                         "commit_sha, commit_at, detected_at) "
                         "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
-                        ":commit_sha, :commit_at, :detected_at)" + conflict_suffix
+                        ":commit_sha, :commit_at, :detected_at)"
+                        + conflict_suffix
                     ),
                     {
                         "repo_id": self._repo_id,
