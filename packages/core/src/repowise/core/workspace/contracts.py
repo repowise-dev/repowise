@@ -140,6 +140,11 @@ class ContractStore:
     generated_at: str = ""
     contracts: list[Contract] = field(default_factory=list)
     contract_links: list[ContractLink] = field(default_factory=list)
+    #: Per-repo-alias counters the extractors filled in as they ran — what was
+    #: located but could not be turned into a contract. Without these the
+    #: contract count has no denominator, and 26 consumers looks like 26
+    #: consumers rather than 26 out of 130.
+    extraction_stats: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -147,6 +152,7 @@ class ContractStore:
             "generated_at": self.generated_at,
             "contracts": [c.to_dict() for c in self.contracts],
             "contract_links": [lk.to_dict() for lk in self.contract_links],
+            "extraction_stats": self.extraction_stats,
         }
 
     @classmethod
@@ -156,6 +162,7 @@ class ContractStore:
             generated_at=data.get("generated_at", ""),
             contracts=[Contract.from_dict(c) for c in data.get("contracts", [])],
             contract_links=[ContractLink.from_dict(lk) for lk in data.get("contract_links", [])],
+            extraction_stats=data.get("extraction_stats", {}),
         )
 
 
@@ -726,8 +733,12 @@ async def run_contract_extraction(
     if len(repo_paths) < 2:
         return ContractStore()
 
-    # Per-repo extraction
-    async def _extract_one_repo(alias: str, repo_path: Path) -> list[Contract]:
+    # Per-repo extraction. Returns the contracts plus the counters the
+    # extractors filled in, which are the denominator half of any coverage
+    # figure and so must survive past this function.
+    async def _extract_one_repo(
+        alias: str, repo_path: Path
+    ) -> tuple[list[Contract], dict[str, int]]:
         contracts: list[Contract] = []
 
         if boundaries_by_repo is not None:
@@ -748,7 +759,7 @@ async def run_contract_extraction(
         if contract_config.detect_data:
             extractors.append(DataExtractor())
         if not extractors:
-            return contracts
+            return contracts, {}
 
         # One walk per repo, shared by every extractor. Each used to walk and
         # re-read the tree itself, so a file claimed by N extractors was read N
@@ -801,14 +812,17 @@ async def run_contract_extraction(
                 alias,
                 unresolved,
             )
-        return contracts
+        return contracts, stats
 
     results = await asyncio.gather(
         *[_extract_one_repo(alias, path) for alias, path in repo_paths.items()]
     )
     all_contracts: list[Contract] = []
-    for repo_contracts in results:
+    extraction_stats: dict[str, dict[str, int]] = {}
+    for alias, (repo_contracts, repo_stats) in zip(repo_paths, results, strict=True):
         all_contracts.extend(repo_contracts)
+        if repo_stats:
+            extraction_stats[alias] = repo_stats
 
     # Resolve each consumer's target service / third-party host, then match.
     annotate_consumer_targets(all_contracts, contract_config.service_bases)
@@ -823,6 +837,7 @@ async def run_contract_extraction(
         generated_at=datetime.now(UTC).isoformat(),
         contracts=all_contracts,
         contract_links=links,
+        extraction_stats=extraction_stats,
     )
 
     out_path = save_contract_store(store, workspace_root)

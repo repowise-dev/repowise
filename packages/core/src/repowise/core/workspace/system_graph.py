@@ -487,7 +487,9 @@ async def run_system_graph_build(
             _detect_boundaries_by_repo, ws_config, workspace_root
         )
 
-    diagnostics = build_diagnostics(store.contracts, store.contract_links)
+    diagnostics = build_diagnostics(
+        store.contracts, store.contract_links, store.extraction_stats
+    )
     graph = build_system_graph(
         store.contracts,
         store.contract_links,

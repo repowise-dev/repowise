@@ -103,7 +103,14 @@ export interface WorkspaceCoChangeEntry {
 
 export interface WorkspaceCoChangesResponse {
   co_changes: WorkspaceCoChangeEntry[];
+  /** Pairs matching the query, before `limit` paged them. */
   total: number;
+  /**
+   * Pairs the miner scored before its edge caps trimmed the stored overlay.
+   * Not every pair in git history — each session's file list is bounded
+   * before pairing, so some pairs are in neither number.
+   */
+  total_mined: number;
 }
 
 export interface WorkspaceGraphNode {

@@ -119,7 +119,13 @@ class WorkspaceCoChangeEntry(BaseModel):
 
 class WorkspaceCoChangesResponse(BaseModel):
     co_changes: list[WorkspaceCoChangeEntry]
+    #: Pairs matching the query, before ``limit`` paged them.
     total: int
+    #: Pairs the miner scored before its edge caps trimmed the stored overlay.
+    #: Larger than ``total`` means the artifact itself is a sample. Not a count
+    #: of every pair in git history — each session's file list is bounded
+    #: before pairing.
+    total_mined: int = 0
 
 
 class WorkspaceGraphNode(BaseModel):
@@ -183,6 +189,9 @@ class WorkspaceRepoDiagnostics(BaseModel):
     consumers_by_type: dict[str, int] = {}
     provider_count: int = 0
     consumer_count: int = 0
+    providers_by_layer: dict[str, int] = {}
+    consumers_by_layer: dict[str, int] = {}
+    http_consumers_unresolved: int = 0
 
 
 class WorkspaceUnmatchedConsumer(BaseModel):
@@ -209,6 +218,12 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     unmatched_consumers: list[WorkspaceUnmatchedConsumer] = []
     unmatched_by_reason: dict[str, int] = {}
     orphan_providers: list[WorkspaceOrphanProvider] = []
+    providers_by_layer: dict[str, int] = {}
+    consumers_by_layer: dict[str, int] = {}
+    http_consumers_unresolved: int = 0
+    #: Share of located HTTP client calls that became a contract. ``None`` when
+    #: none were located — 0/0 is not 100%.
+    http_consumer_coverage: float | None = None
 
 
 class WorkspaceSystemGraphResponse(BaseModel):
@@ -283,7 +298,9 @@ class WorkspaceBreakingChange(BaseModel):
 
 class WorkspaceBreakingChangesResponse(BaseModel):
     version: int = 1
-    generated_at: str = ""
+    #: ``None`` when detection has not run. An empty ``changes`` list means
+    #: "nothing broke" only when this is set.
+    generated_at: str | None = None
     changes: list[WorkspaceBreakingChange] = []
     total: int = 0
     breaking_count: int = 0
@@ -320,12 +337,17 @@ class WorkspaceDependencyCycle(BaseModel):
 
 class WorkspaceConformanceResponse(BaseModel):
     version: int = 1
-    generated_at: str = ""
+    #: ``None`` when the check has not run. Zero violations means "clean" only
+    #: when this is set.
+    generated_at: str | None = None
     rules_evaluated: int = 0
     violations: list[WorkspaceConformanceViolation] = []
     cycles: list[WorkspaceDependencyCycle] = []
     violation_count: int = 0
+    #: ``cycle_count`` is how many cycles are listed; ``total_cycles`` is how
+    #: many exist. They differ when MAX_CYCLES truncated the list.
     cycle_count: int = 0
+    total_cycles: int = 0
     violating_repos: list[str] = []
 
 

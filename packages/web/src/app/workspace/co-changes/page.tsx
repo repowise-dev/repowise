@@ -48,6 +48,9 @@ export default async function CoChangesPage({ searchParams }: Props) {
   const res = await Promise.allSettled([getWorkspaceCoChanges({ limit: ROW_LIMIT })]);
   const data = res[0].status === "fulfilled" ? res[0].value : null;
   const coChanges = data?.co_changes ?? [];
+  // What the miner found before its own caps trimmed the artifact. Above
+  // coChanges.length means this page is the top of a longer list.
+  const totalMined = data?.total_mined ?? coChanges.length;
 
   const repoPairs = summarisePairs(coChanges);
   const selected = pair && repoPairs.some((p) => p.id === pair) ? pair : null;
@@ -70,7 +73,10 @@ export default async function CoChangesPage({ searchParams }: Props) {
     {
       label: "File pairs",
       value: coChanges.length > 0 ? formatNumber(coChanges.length) : "—",
-      sub: "capped per repository pair by the miner",
+      sub:
+        totalMined > coChanges.length
+          ? `of ${formatNumber(totalMined)} found; capped by the miner`
+          : "every pair the miner found",
     },
     {
       label: "Strongest pair",
@@ -132,9 +138,17 @@ export default async function CoChangesPage({ searchParams }: Props) {
         <p>
           Strength is the share of the less-active file&rsquo;s recent sessions that also touched
           its partner. This is a work-pattern signal from git history, not a declared or verified
-          dependency, so it is a place to start looking rather than proof of coupling. The miner
-          keeps only the strongest file pairs for each repository pair, so this is the top of the
-          list rather than all of it.
+          dependency, so it is a place to start looking rather than proof of coupling.
+          {totalMined > coChanges.length ? (
+            <>
+              {" "}
+              The miner found {formatNumber(totalMined)} qualifying file pairs and kept the
+              strongest {formatNumber(coChanges.length)}, so this is the top of the list rather
+              than all of it.
+            </>
+          ) : (
+            " Every pair the miner found is shown."
+          )}
         </p>
       </PageLede>
 

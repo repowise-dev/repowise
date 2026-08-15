@@ -92,6 +92,19 @@ export default async function ContractsPage({ searchParams }: Props) {
       value: diagnostics ? formatNumber(diagnostics.orphan_providers.length) : "—",
       sub: "nothing in the workspace calls them",
     },
+    {
+      // Extraction reporting on its own recall. The denominator is calls a
+      // dialect located, so this is honest about what it covers and silent
+      // about calls nothing recognised — it is not total recall.
+      label: "HTTP calls resolved",
+      value:
+        diagnostics?.http_consumer_coverage != null
+          ? `${Math.floor(diagnostics.http_consumer_coverage * 100)}%`
+          : "—",
+      sub: diagnostics?.http_consumers_unresolved
+        ? `${formatNumber(diagnostics.http_consumers_unresolved)} located but not resolvable`
+        : "of the client calls extraction located",
+    },
   ];
 
   return (
@@ -117,9 +130,17 @@ export default async function ContractsPage({ searchParams }: Props) {
             </p>
             <p>
               {formatNumber(diagnostics.orphan_providers.length)} providers have no caller in
-              this workspace. Read that against the consumer count rather than on its own: an
-              endpoint looks unused both when nothing calls it and when the call was written in
-              a form this analysis could not follow, and those two are not separated yet.
+              this workspace. Read that against extraction&rsquo;s own coverage rather than on
+              its own: an endpoint looks unused both when nothing calls it and when the call
+              was written in a form this analysis could not follow.
+              {diagnostics.http_consumers_unresolved > 0 ? (
+                <>
+                  {" "}
+                  {formatNumber(diagnostics.http_consumers_unresolved)} HTTP client calls were
+                  located here but could not be resolved to an endpoint, so some of those
+                  providers are called by code this page cannot yet name.
+                </>
+              ) : null}
             </p>
           </>
         ) : (

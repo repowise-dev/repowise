@@ -88,6 +88,7 @@ function report(over: Partial<ConformanceReport> = {}): ConformanceReport {
     cycles,
     violation_count: violations.length,
     cycle_count: cycles.length,
+    total_cycles: cycles.length,
     violating_repos: [],
     ...over,
   };

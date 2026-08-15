@@ -36,17 +36,14 @@ const DSM_DESCRIPTION =
 /**
  * Whether the conformance analyser has ever produced this report.
  *
- * The artifact is written with `generated_at: ""` and every count at zero
- * before anything runs, which is indistinguishable from a clean pass unless
- * this is checked — and a clean pass is what the page used to show. Three
- * states have to stay separate: never ran, ran with no rules to check, and ran
+ * A report with no `generated_at` was never written a result, and its zero
+ * counts are the absence of a check rather than a clean pass. Three states
+ * have to stay separate: never ran, ran with no rules to check, and ran
  * against real rules.
  *
- * Reads only fields already on the wire. Phase 4 of the workspace overhaul
- * replaces the empty string with a proper null and adds the same distinction
- * to the CLI and the artifact; this is the frontend half, and it should follow
- * that contract when it lands rather than keeping the empty-string check
- * forever.
+ * `generated_at` is now `string | null`, and the checker stamps it whenever it
+ * runs. Artifacts written before that carry `""`, which the loader maps to
+ * null, so the falsy check covers both.
  */
 function reportState(
   report: ConformanceReport | null,

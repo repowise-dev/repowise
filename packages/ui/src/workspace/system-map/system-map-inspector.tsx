@@ -211,7 +211,13 @@ function EdgeBody({
       {edge.contract_refs.length > 0 && (
         <div>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: "var(--color-text-tertiary)", marginBottom: 3 }}>
-            Evidence ({edge.contract_refs.length})
+            {/* Back-pointers are capped per edge while `weight` counts every
+                contributor, so the two numbers diverge silently once an edge
+                is busy enough. Name the cap instead of showing two figures
+                the reader has to reconcile. */}
+            {edge.weight > edge.contract_refs.length
+              ? `Evidence (${edge.contract_refs.length} of ${edge.weight})`
+              : `Evidence (${edge.contract_refs.length})`}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             {edge.contract_refs.map((ref) => (

@@ -350,9 +350,10 @@ async def get_co_changes(
     _require_workspace(ws_config)
 
     if enricher is None:
-        return WorkspaceCoChangesResponse(co_changes=[], total=0)
+        return WorkspaceCoChangesResponse(co_changes=[], total=0, total_mined=0)
 
     co_changes = list(getattr(enricher, "_co_changes", []))
+    total_mined = getattr(enricher, "_total_co_changes", len(co_changes))
 
     if repo:
         co_changes = [
@@ -383,6 +384,7 @@ async def get_co_changes(
             for cc in co_changes
         ],
         total=total,
+        total_mined=total_mined,
     )
 
 
@@ -624,7 +626,7 @@ async def get_breaking_changes(
         )
         return WorkspaceBreakingChangesResponse(
             version=report.get("version", 1),
-            generated_at=report.get("generated_at", ""),
+            generated_at=report.get("generated_at") or None,
             changes=changes,
             total=len(changes),
             breaking_count=sum(1 for c in changes if c.get("severity") == "breaking"),
@@ -664,7 +666,15 @@ async def get_conformance(
         return WorkspaceConformanceResponse()
 
     if not repo:
-        return WorkspaceConformanceResponse(**report)
+        # An artifact written before cycle totals were recorded has no
+        # total_cycles key; falling back to the listed count is better than
+        # letting the model default report zero cycles alongside a non-zero list.
+        return WorkspaceConformanceResponse(
+            **{
+                **report,
+                "total_cycles": report.get("total_cycles", len(report.get("cycles", []))),
+            }
+        )
 
     # Narrow to findings that involve the repo, recomputing rollups so the
     # response stays self-consistent.
@@ -677,12 +687,15 @@ async def get_conformance(
     )
     return WorkspaceConformanceResponse(
         version=report.get("version", 1),
-        generated_at=report.get("generated_at", ""),
+        generated_at=report.get("generated_at") or None,
         rules_evaluated=report.get("rules_evaluated", 0),
         violations=violations,
         cycles=cycles,
         violation_count=len(violations),
         cycle_count=len(cycles),
+        # The unscoped total, not the scoped count: how many cycles the
+        # workspace has does not change because the view was narrowed.
+        total_cycles=report.get("total_cycles", len(report.get("cycles", []))),
         violating_repos=violating_repos,
     )
 
