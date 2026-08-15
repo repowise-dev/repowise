@@ -14,10 +14,11 @@ Works without `repowise init` (index is optional).
 cd /path/to/your-repo
 ```
 
-## 1. Score HEAD or a range
+## 1. Score your current change, a commit, or a range
 
 ```bash
-repowise risk                 # score HEAD
+repowise risk                 # score uncommitted work, else HEAD
+repowise risk HEAD            # score the last commit
 repowise risk main..HEAD      # whole branch / PR as one change
 repowise risk HEAD~5..HEAD    # recent local work
 ```

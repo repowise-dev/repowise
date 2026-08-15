@@ -22,10 +22,13 @@ export interface RiskRangeResponse {
   base: string;
   head: string;
   score: number;
-  probability: number;
-  level: string;
+  /** The unit `score` is calibrated on: a single commit, not a whole range. */
+  score_unit: string;
   risk_percentile: number | null;
   review_priority: string | null;
+  classification: string | null;
+  /** Absolute band, present only when there was no baseline to rank against. */
+  fallback_band: string | null;
   is_fix: boolean;
   features: Record<string, number | null>;
   drivers: RiskDriverResponse[];

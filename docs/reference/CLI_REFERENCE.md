@@ -730,8 +730,9 @@ repowise dead-code --repo backend        # workspace, single repo
 Just-in-time change-risk scoring for a commit or diff range. Scores the defect
 risk of a change from the same calibrated signals the code-health layer uses -
 no LLM calls, and it works without `repowise init` (pure git + learned
-constants). `REVSPEC` defaults to `HEAD`; pass a `base..head` range to score a
-whole branch / PR as one change.
+constants). With no `REVSPEC` it scores your uncommitted work, falling back to
+`HEAD` when the tree is clean; pass `HEAD` to always mean the last commit, or a
+`base..head` range to score a whole branch / PR as one change.
 
 The headline is **repo-relative**: the change's percentile and review priority
 (`Below typical` / `Typical` / `Elevated`) within the repo's own recent commits,
@@ -754,7 +755,8 @@ to the model's baseline commit, not this repo.
 | `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 
 ```bash
-repowise risk                 # score HEAD
+repowise risk                 # score uncommitted work, else HEAD
+repowise risk HEAD            # score the last commit
 repowise risk main..HEAD      # score a branch / PR range as one change
 repowise risk --ext .ts,.tsx  # restrict to specific suffixes
 repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit tests from scoring

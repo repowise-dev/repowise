@@ -7,6 +7,7 @@ import json
 import subprocess
 import time
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 import pathspec
@@ -38,23 +39,23 @@ _PRIOR_FIXES_LIMIT = 10
 
 @mcp.tool()
 async def get_change_risk(
-    revspec: str = "HEAD",
+    revspec: str | None = None,
     repo: str | None = None,
     extensions: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     baseline: int = 200,
 ) -> dict:
-    """Score a live commit or ``base..head`` range from its diff shape.
+    """Score a live commit, ``base..head`` range, or uncommitted work.
 
     Use this for a pre-merge score of a commit or PR range. It is distinct from
     ``get_risk``, which assesses indexed files and PR blast radius. Both filters
     below also apply to the baseline used for the repository percentile.
 
-    Prefer ``risk_percentile`` as the indicator of change risk: it ranks this
-    change against sampled recent commits in the same repository. Summarize it
-    with ``review_priority`` and ``classification``. ``score``, ``probability``,
-    and ``level`` are secondary corpus-calibrated context, the fallback only
-    when ``risk_percentile`` is unavailable.
+    Lead with ``risk_percentile``, summarized by ``review_priority`` and
+    ``classification``: it ranks this change against sampled recent commits in
+    the same repository. ``score`` is calibrated per single commit, so a PR-sized
+    change reads high by construction; ``fallback_band`` appears only when there
+    was no baseline to rank against.
 
     ``impacted_tests`` names the tests the per-test coverage map proves execute
     the change's changed *lines* (line-precise, narrower than get_risk's
@@ -66,7 +67,8 @@ async def get_change_risk(
     per-file counts, never a commit name.
 
     Args:
-        revspec: Commit or ``base..head`` range to score. Defaults to ``HEAD``.
+        revspec: Commit or ``base..head`` range to score. Omit it to score the
+            uncommitted change, or ``HEAD`` when the working tree is clean.
         repo: Repository alias in workspace mode; omit for the default repository.
         extensions: File suffixes to count, for example ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, for example ``["tests/", "*.md"]``.
@@ -89,13 +91,13 @@ async def get_change_risk(
         return {"error": str(exc)}
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip() or str(exc)
-        return {"error": f"Could not read change {revspec!r}: {detail}"}
+        return {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
     except subprocess.TimeoutExpired:
-        return {"error": f"git timed out reading change {revspec!r}."}
+        return {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
     payload = change_risk_payload(result)
     if result.features.nf == 0:
         payload["warning"] = (
-            f"No counted file changes in {revspec!r} "
+            f"No counted file changes in {payload['ref']!r} "
             "(check the revspec, extensions, or exclusion filters)."
         )
     # Changed lines over the SAME file universe the score counted (its
@@ -112,6 +114,7 @@ async def get_change_risk(
             revspec,
             normalize_extensions(tuple(extensions or ())),
             result.riskignore_excludes + result.request_excludes,
+            working_tree=result.working_tree,
         )
     payload["impacted_tests"] = await _impacted_tests_block(ctx, changed, changed_error)
     prior_fixes = await _prior_fixes_block(ctx, changed)
@@ -126,13 +129,15 @@ async def get_change_risk(
     return payload
 
 
-def _normalize_revspec(revspec: str) -> str:
+def _normalize_revspec(revspec: str | None) -> str:
     """Mirror ``score_live_change``'s three-dot handling for ``changed_lines``.
 
     ``changed_lines`` verifies each side of a ``base..head`` range as a ref, so a
     three-dot ``base...head`` (whose head parses as ``.head``) would fail its
     ref check. Strip the extra dot to the two-dot form the scorer already uses.
     """
+    if revspec is None:
+        return "HEAD"
     if ".." in revspec:
         base, _, head = revspec.partition("..")
         head = head.lstrip(".") or "HEAD"
@@ -208,9 +213,11 @@ def _serialize_missing(report: Any) -> dict[str, Any]:
 
 async def _changed_in_scope(
     repo_path: str,
-    revspec: str,
+    revspec: str | None,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...],
+    *,
+    working_tree: bool = False,
 ) -> tuple[dict[str, set[int]], tuple[str, str] | None]:
     """The change's changed lines, restricted to the score's counted universe.
 
@@ -223,7 +230,12 @@ async def _changed_in_scope(
 
     try:
         changed, _label = await asyncio.to_thread(
-            changed_lines, repo_path, _normalize_revspec(revspec)
+            partial(
+                changed_lines,
+                repo_path,
+                _normalize_revspec(revspec),
+                working_tree=working_tree,
+            )
         )
     except ValueError as exc:
         return {}, ("unknown", f"Could not read changed lines: {exc}")

@@ -284,9 +284,10 @@ async def test_get_commit_detail_has_drivers(client: AsyncClient, app) -> None:
     assert data["author_experience"] == 3
     # Re-scoring the stored features reproduces the persisted score exactly.
     assert data["change_risk_score"] == 8.5
-    assert len(data["drivers"]) == 7  # la, ld, nf, nd, ns, entropy, exp
+    # The reportable drivers only: nf/nd/ns still enter the score, but their
+    # fitted signs are collinearity with diff size, so they explain nothing.
     feats = {d["feature"] for d in data["drivers"]}
-    assert {"la", "exp", "entropy"} <= feats
+    assert feats == {"la", "ld", "entropy", "exp"}
 
 
 @pytest.mark.asyncio

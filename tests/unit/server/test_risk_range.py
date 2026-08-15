@@ -65,15 +65,19 @@ async def test_risk_range_happy_path(client: AsyncClient, git_repo: Path, tmp_pa
     assert data["base"] == base
     assert data["head"] == "HEAD"
     assert 0.0 <= data["score"] <= 10.0
-    assert 0.0 <= data["probability"] <= 1.0
-    assert data["level"] in {"low", "moderate", "high"}
+    assert data["score_unit"] == "per-commit"
     assert data["is_fix"] is True
     assert data["features"]["nf"] == 2
     assert data["features"]["la"] == 3
     assert isinstance(data["drivers"], list) and len(data["drivers"]) > 0
-    # Only two commits sampled, below _MIN_BASELINE, so no percentile.
+    # The collinear diffusion features stay out of the reported drivers.
+    assert {d["feature"] for d in data["drivers"]}.isdisjoint({"nf", "nd", "ns"})
+    # Only two commits sampled, below _MIN_BASELINE, so no percentile — which
+    # is exactly when the absolute band is offered, and only then.
     assert data["risk_percentile"] is None
     assert data["review_priority"] is None
+    assert data["classification"] is None
+    assert data["fallback_band"] in {"low", "moderate", "high"}
 
 
 @pytest.mark.asyncio

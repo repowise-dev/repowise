@@ -11,13 +11,16 @@ from __future__ import annotations
 
 from .baseline import baseline_scores
 from .features import (
+    WORKING_TREE_REF,
     ChangeFeatures,
     change_features_from_stored,
     extract_commit_features,
     extract_range_features,
+    extract_worktree_features,
     features_from_file_changes,
+    working_tree_is_dirty,
 )
-from .model import ChangeRisk, RiskDriver, score_change
+from .model import SCORE_UNIT, ChangeRisk, RiskDriver, score_change
 from .normalize import RiskNormalizer, review_priority_classification
 from .service import (
     ChangeRiskResult,
@@ -28,6 +31,8 @@ from .service import (
 )
 
 __all__ = [
+    "SCORE_UNIT",
+    "WORKING_TREE_REF",
     "ChangeFeatures",
     "ChangeRisk",
     "ChangeRiskResult",
@@ -38,10 +43,12 @@ __all__ = [
     "change_risk_payload",
     "extract_commit_features",
     "extract_range_features",
+    "extract_worktree_features",
     "features_from_file_changes",
     "normalize_extensions",
     "review_priority_classification",
     "riskignore_patterns",
     "score_change",
     "score_live_change",
+    "working_tree_is_dirty",
 ]

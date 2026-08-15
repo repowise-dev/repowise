@@ -15,10 +15,11 @@ const REPORT: RiskRangeReport = {
     base: "main",
     head: "HEAD",
     score: 7.4,
-    probability: 0.63,
-    level: "high",
+    score_unit: "per-commit",
     risk_percentile: 88,
     review_priority: "high",
+    classification: "Elevated",
+    fallback_band: null,
     is_fix: false,
     features: { la: 120, ld: 30, nf: 6, nd: 2, ns: 1, entropy: 2.31, exp: null },
     drivers: [
@@ -107,12 +108,13 @@ describe("risk App", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => cleanup());
 
-  it("renders the score, level, and drivers from a fixture", async () => {
+  it("leads with the repo-relative ranking and keeps the raw score secondary", async () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
     render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
 
-    expect(await screen.findByText("7.4")).toBeTruthy();
-    expect(screen.getByText("high risk")).toBeTruthy();
+    expect(await screen.findByText("Elevated")).toBeTruthy();
+    expect(screen.getByText("88th percentile")).toBeTruthy();
+    expect(screen.getByText("7.4/10")).toBeTruthy();
     expect(screen.getByText("+1.80")).toBeTruthy();
     expect(screen.getByText("−0.50")).toBeTruthy();
     // The change-shape table renders labelled features and skips null ones.
@@ -124,7 +126,7 @@ describe("risk App", () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
     render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
 
-    await screen.findByText("7.4");
+    await screen.findByText("Elevated");
     expect(riskRange).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: /run again/i }));
@@ -214,7 +216,7 @@ describe("risk App", () => {
     const riskRange = vi.fn().mockResolvedValue(REPORT);
     render(<App host={makeHost(riskRange)} repo={REPO} params={{}} refreshToken={0} />);
 
-    await screen.findByText("7.4");
+    await screen.findByText("Elevated");
     expect(screen.queryByText(/downstream file/)).toBeNull();
     expect(screen.queryByText(/untouched/)).toBeNull();
     expect(screen.queryByText(/associated test/)).toBeNull();

@@ -426,18 +426,20 @@ shape of the live diff and needs no index refresh.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `revspec` | string | No | Commit or `base..head` range to score (default `"HEAD"`) |
+| `revspec` | string | No | Commit or `base..head` range to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
 | `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables percentile ranking) |
 
-**Returns:** The corpus-calibrated `score`, `probability`, and `level`, plus a
-repo-relative `risk_percentile`, `review_priority`, and `classification`.
-`baseline_sample_size` reports how many filtered commits informed the percentile;
-`features`, `drivers`, and combined `exclude_patterns` make the result auditable.
-Use the percentile and review priority for triage; the raw score is secondary
-context when no repository baseline is available.
+**Returns:** A repo-relative `risk_percentile`, `review_priority`, and
+`classification` — triage on these — plus the raw `score` and the `score_unit`
+it is calibrated on (a single commit, so a PR-sized range reads high by
+construction). `fallback_band` carries the absolute band and appears only when
+no baseline was available. `working_tree` says whether uncommitted work was the
+subject. `baseline_sample_size` reports how many filtered commits informed the
+percentile; `features`, `drivers`, and combined `exclude_patterns` make the
+result auditable.
 
 It also returns `impacted_tests`: the tests the per-test coverage map proves
 execute the change's changed *lines* (line-precise, so a narrower set than

@@ -7,7 +7,8 @@ scores files), and useful as a PR gate because it fires on risky *small* changes
 a file-level delta misses.
 
 ```bash
-repowise risk                 # score HEAD
+repowise risk                 # score uncommitted work, else HEAD
+repowise risk HEAD            # score the last commit
 repowise risk abc123          # score a single commit
 repowise risk main..HEAD      # score a branch / PR range as one change
 repowise risk main..HEAD --ext .py        # count only .py files
@@ -17,6 +18,16 @@ repowise risk --format json               # machine-readable
 
 It runs in-process: pure `git` + learned constants. **No LLM, no network, and no
 blame at runtime**: SZZ labelling lives entirely in the offline calibration.
+
+## What gets scored
+
+With **no revspec** the subject is the change in front of you: your uncommitted
+work (staged, unstaged and untracked) if the tree is dirty, otherwise `HEAD`.
+The payload sets `working_tree: true` when it took that path, and the CLI says
+so. Naming a revspec — `HEAD` included — always means committed refs.
+
+A **merge commit** is scored for the diff it brought onto its first parent, so a
+merged PR reads as its own content rather than as an empty change.
 
 ## Excluding paths
 
@@ -39,7 +50,13 @@ empirical study of just-in-time quality assurance"):
 | `nf` | files touched |
 | `nd`, `ns` | distinct directories / top-level subsystems touched |
 | `entropy` | Shannon entropy of the per-file churn distribution (diffusion) |
-| `exp` | author's prior commit count (experience); unknown is scored neutrally |
+| `exp` | author's prior commit count (experience) |
+
+`exp` is genuinely optional: when the author cannot be resolved — a diff-only
+caller with no local history, or a name whose regex breaks the `git rev-list`
+lookup — it is reported as `null` and contributes exactly zero to the logit.
+Nothing is imputed, because `0` is a real value meaning "first ever commit" and
+the model reads it as a risk-raising signal.
 
 These are properties of the *diff*, so the score is a change-level signal rather
 than a file-size proxy. The risk is a plain L2-logistic over standardized,
@@ -49,20 +66,27 @@ linear / per-finding-attributable contract the file health score holds).
 
 ## How to read the result
 
-The headline signal is **repo-relative**. The raw 0–10 logistic probability is
-anchored to the offline calibration corpus, so on a repo whose typical commit is
-large the diff-size term dominates and the absolute band skews high: two-thirds
-of commits can read "high" while ranking perfectly normally for *that* repo. The
-*ranking* is sound; the absolute band is not portable.
+The headline signal is **repo-relative**. The raw 0–10 score is anchored to the
+offline calibration corpus, and that corpus is **individual commits** (baseline:
+10.5 lines added, 1.7 files). A squash-merged PR, a `base..head` range, or any
+repo whose typical commit is large is several commits' worth of diff read
+against a one-commit scale, so the absolute band skews high: two-thirds of
+commits can read "high" while ranking perfectly normally for *that* repo. The
+*ranking* is sound; the absolute band is not portable. The payload states the
+assumption in `score_unit`.
 
 So the surfaces lead with where the change sits in its **own repo's**
 distribution:
 
-- **Review priority**: `Below typical` / `Typical` / `Elevated` (terciles of
-  the repo's own commit-risk distribution). This is the signal to triage on.
+- **Review priority** / **classification**: `Below typical` / `Typical` /
+  `Elevated` (terciles of the repo's own commit-risk distribution). This is the
+  signal to triage on.
 - **Percentile**: "riskier than N% of this repo's commits".
 - **Raw model score** (0–10): kept for transparency but shown as a secondary,
   clearly corpus-anchored number, not the thing to act on.
+- **`fallback_band`**: the absolute `low` / `moderate` / `high` band. Present
+  *only* when there was no baseline to rank against (a shallow repo, or
+  `--baseline 0`), which is why it is not a peer of the review priority.
 
 Each **driver** is reported relative to *the model's baseline commit* (the
 calibration-corpus mean), not this repo, so a `+19 / −1` change can legitimately
@@ -70,6 +94,13 @@ read "more lines added than baseline" while still ranking `Below typical` for a
 repo of large commits. The signed contribution and colour (red raised the raw
 score, green lowered it) carry the direction; the label only states the
 feature's standing, never an absolute verdict.
+
+`nf`, `nd` and `ns` enter the logit exactly as fit but are **not reported as
+drivers**. Their coefficients are small and negative — collinearity with `la`
+(size), not a finding that touching more files is safer — so as an explanation
+they contradict themselves: the label reads "more directories than baseline"
+while the contribution is protective. Hiding an explanation we cannot stand
+behind is the honest interim; a refit is the real fix.
 
 The `repowise risk` CLI samples the repo's recent commits live (`--baseline`,
 default 200) to compute this percentile; in the web UI it is precomputed from the

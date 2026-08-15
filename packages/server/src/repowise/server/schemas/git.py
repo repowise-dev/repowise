@@ -298,10 +298,15 @@ class RiskRangeResponse(BaseModel):
     base: str
     head: str
     score: float
-    probability: float
-    level: str
+    #: The unit ``score`` is calibrated on. A range is several commits' worth
+    #: of diff, so it reads high against a single-commit scale.
+    score_unit: str
     risk_percentile: float | None
     review_priority: str | None
+    classification: str | None
+    #: Absolute calibrated band, present only when there was no baseline to
+    #: rank against — so it is not a peer of ``review_priority``.
+    fallback_band: str | None
     is_fix: bool
     features: ChangeFeaturesResponse
     drivers: list[RiskDriverResponse]

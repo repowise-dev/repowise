@@ -101,7 +101,7 @@ export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailC
       <OverviewSection
         className="mt-7"
         title="What changed, and what it cost"
-        description="Every measurement the model reads, and the exact signed points each one moved the raw score by. Red raised it, green lowered it, both against the model's baseline commit."
+        description="The measurements that explain the score, and the exact signed points each one moved it by. Red raised it, green lowered it, both against the model's baseline commit. File, directory and subsystem counts are left out: they enter the score, but their fitted signs are collinearity with diff size rather than a finding."
       >
         <RiskDriverBreakdown drivers={c.drivers} />
       </OverviewSection>

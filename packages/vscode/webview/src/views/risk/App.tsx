@@ -219,25 +219,42 @@ function RiskSkeleton({ base }: { base: string }) {
   );
 }
 
+/** Repo-relative review priority mapped onto the three risk tones. */
+const PRIORITY_TONE: Record<string, Tone> = {
+  low: "low",
+  moderate: "medium",
+  high: "high",
+};
+
 /**
- * The Kamei diff-shape risk score for the committed range (base..HEAD).
+ * Where this range sits in its own repo's risk distribution.
  *
- * The figure carries a sentence rather than three badges: "6.8" and a
- * "high review priority" pill say the same thing twice and neither says what
- * the number was computed from.
+ * The lede is the ranking, not the raw score. That 0-10 figure is calibrated
+ * on single commits, so a range spanning several reads high by construction
+ * and says more about the corpus than about this change; it stays on the page
+ * as a secondary, explicitly anchored line.
  */
 function ScoreHero({ report }: { report: RiskRangeReport }) {
   const r = report.result;
-  const color = TONE_VAR[scoreTone(r.score)];
+  const priority = r.review_priority;
+  const percentile = r.risk_percentile;
+  const ranked = percentile != null && priority != null;
+  const color = ranked
+    ? TONE_VAR[PRIORITY_TONE[priority] ?? "medium"]
+    : TONE_VAR[scoreTone(r.score)];
   return (
     <PageLede
       // Not "Change risk" again: the page's h1 two lines above already says
       // that, and a micro-label repeating the heading verbatim labels nothing.
-      label="Diff shape"
-      value={r.score.toFixed(1)}
+      label={ranked ? "Review priority" : "Diff shape"}
+      value={ranked ? (r.classification ?? priority) : r.score.toFixed(1)}
       valueColor={color}
-      unit="out of 10"
-      band={{ label: `${r.level} risk`, color }}
+      unit={ranked ? "for this repo" : "out of 10"}
+      band={
+        ranked
+          ? { label: `${ordinal(percentile)} percentile`, color }
+          : { label: `${r.fallback_band ?? "unranked"} risk`, color }
+      }
       layout="beside"
       badge={
         r.is_fix ? (
@@ -250,36 +267,25 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
       <p>
         Scored from the shape of this range's diff — how much it adds and
         deletes, how many files, directories and subsystems it spreads across,
-        and how experienced its author is in them. We put the chance it carries
-        a defect at{" "}
-        <strong className="font-semibold text-[var(--color-text-primary)] tabular-nums">
-          {(r.probability * 100).toFixed(1)}%
-        </strong>
-        .
+        and how experienced its author is in them.{" "}
+        {ranked ? (
+          <>
+            That ranks it above{" "}
+            <strong className="font-semibold text-[var(--color-text-primary)] tabular-nums">
+              {Math.round(percentile)}%
+            </strong>{" "}
+            of recent commits in this repository.
+          </>
+        ) : (
+          <>There was no baseline of recent commits to rank it against.</>
+        )}
       </p>
-      {(r.risk_percentile != null || r.review_priority) && (
-        <p className="mt-2.5">
-          {r.risk_percentile != null && (
-            <>
-              That ranks it at the{" "}
-              <strong className="font-semibold text-[var(--color-text-primary)] tabular-nums">
-                {ordinal(r.risk_percentile)} percentile
-              </strong>{" "}
-              against recent commits here
-              {r.review_priority ? ", so " : "."}
-            </>
-          )}
-          {r.review_priority && (
-            <>
-              {r.risk_percentile == null && "Worth "}
-              <strong className="font-semibold text-[var(--color-text-primary)]">
-                {r.review_priority}
-              </strong>{" "}
-              review priority.
-            </>
-          )}
-        </p>
-      )}
+      <p className="mt-2.5 text-[var(--color-text-tertiary)]">
+        Raw model score{" "}
+        <strong className="font-semibold tabular-nums">{r.score.toFixed(1)}/10</strong>, anchored
+        to a corpus of single commits — a range spans several, so it reads high by construction.
+        Prefer the ranking above for review order.
+      </p>
     </PageLede>
   );
 }
@@ -359,7 +365,7 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
       {drivers.length > 0 && (
         <OverviewSection
           title="What moves the score"
-          description="Each feature's signed contribution. Positive raises the estimate, negative lowers it; the bar is relative to the strongest driver."
+          description="The signed contribution of each feature that explains the score. Positive raises the estimate, negative lowers it; the bar is relative to the strongest driver. File, directory and subsystem counts enter the score but are not shown, because their fitted signs are collinearity with diff size rather than a finding."
         >
           <div className="flex flex-col gap-3">
             {drivers.map((d) => {

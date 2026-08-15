@@ -14,10 +14,12 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
+    SCORE_UNIT,
     RiskNormalizer,
     baseline_scores,
     change_features_from_stored,
     extract_range_features,
+    review_priority_classification,
     score_change,
 )
 from repowise.core.ingestion.git_indexer._constants import (
@@ -699,10 +701,11 @@ def get_risk_range(
         base=base,
         head=head,
         score=risk.score,
-        probability=risk.probability,
-        level=risk.level,
+        score_unit=SCORE_UNIT,
         risk_percentile=percentile,
         review_priority=priority,
+        classification=review_priority_classification(priority),
+        fallback_band=risk.level if priority is None else None,
         is_fix=features.is_fix,
         features=ChangeFeaturesResponse(
             la=features.la,

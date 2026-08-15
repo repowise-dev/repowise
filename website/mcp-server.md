@@ -365,16 +365,18 @@ Live risk scoring for one commit or a `base..head` range. Unlike `get_risk`
 refresh.
 
 **Parameters:**
-- `revspec` (optional, string) — commit or `base..head` (default `"HEAD"`)
+- `revspec` (optional, string) — commit or `base..head`; omit it to score uncommitted work
 - `extensions` (optional) — file suffixes to count (e.g. `[".py", ".ts"]`)
 - `exclude_patterns` (optional) — gitignore-style paths; combined with root `.riskignore`
 - `baseline` (optional, int) — recent commits for percentile ranking (default `200`)
 
-**Returns:** Corpus-calibrated `score` / `probability` / `level`, repo-relative
-`risk_percentile`, `review_priority`, `classification`, plus `impacted_tests`
-when a per-test coverage map is ingested (`repowise coverage add`).
+**Returns:** Repo-relative `risk_percentile`, `review_priority` and
+`classification`, the raw `score` with the `score_unit` it is calibrated on, a
+`fallback_band` when there was no baseline to rank against, plus
+`impacted_tests` when a per-test coverage map is ingested (`repowise coverage add`).
 
-**When to use:** Before merging a commit or PR range.
+**When to use:** Before merging a commit or PR range, or on work you have not
+committed yet.
 
 **Example:**
 ```

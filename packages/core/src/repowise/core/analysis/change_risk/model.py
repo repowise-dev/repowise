@@ -71,20 +71,37 @@ class RiskDriver:
     label: str  # human-readable explanation
 
 
+#: Features whose contribution is real but whose *explanation* is not.
+#:
+#: ``nf``/``nd``/``ns`` carry small negative coefficients that are collinearity
+#: with ``la`` (size), not a finding that touching more files is safer. Reported
+#: as drivers they contradict themselves: the label says "more directories than
+#: baseline" while the colour says protective. They still enter the logit
+#: exactly as fit — this hides an explanation we cannot stand behind, not a
+#: number. A refit is the real fix.
+_UNREPORTABLE_DRIVERS = frozenset({"nf", "nd", "ns"})
+
+
 @dataclass
 class ChangeRisk:
     """Result of scoring a change."""
 
     score: float  # 0-10 (10 * predicted probability)
-    probability: float  # calibrated logistic probability
-    level: str  # "low" | "moderate" | "high"
+    level: str  # absolute band; see _level
     drivers: list[RiskDriver] = field(default_factory=list)
     features: ChangeFeatures | None = None
 
     @property
     def top_drivers(self) -> list[RiskDriver]:
-        """Drivers sorted by absolute contribution (strongest first)."""
-        return sorted(self.drivers, key=lambda d: -abs(d.contribution))
+        """Reportable drivers, sorted by absolute contribution (strongest first).
+
+        ``drivers`` holds the full attribution and always sums to the logit;
+        this is the display subset, minus ``_UNREPORTABLE_DRIVERS``.
+        """
+        return sorted(
+            (d for d in self.drivers if d.feature not in _UNREPORTABLE_DRIVERS),
+            key=lambda d: -abs(d.contribution),
+        )
 
 
 def _sigmoid(z: float) -> float:
@@ -94,7 +111,23 @@ def _sigmoid(z: float) -> float:
     return e / (1.0 + e)
 
 
+#: The unit the absolute band assumes, stated wherever the band is emitted.
+#:
+#: The constants were fit on *individual commits* (corpus baseline: 10.5 lines
+#: added, 1.7 files), so a squash-merged PR or a multi-commit range is several
+#: commits' worth of diff read against a one-commit scale and lands high by
+#: construction. The repo-relative percentile is immune to this; the band is not.
+SCORE_UNIT = "per-commit"
+
+
 def _level(score: float) -> str:
+    """Absolute calibrated band — the fallback when no percentile is available.
+
+    Portable only across repos whose typical commit resembles the calibration
+    corpus (see :data:`SCORE_UNIT`). Surfaces lead with the repo-relative
+    review priority and fall back to this only when the baseline sample is
+    empty or too small to rank against.
+    """
     if score >= 7.0:
         return "high"
     if score >= 4.0:
@@ -150,12 +183,5 @@ def score_change(features: ChangeFeatures) -> ChangeRisk:
             )
         )
 
-    prob = _sigmoid(logit)
-    score = round(10.0 * prob, 1)
-    return ChangeRisk(
-        score=score,
-        probability=prob,
-        level=_level(score),
-        drivers=drivers,
-        features=features,
-    )
+    score = round(10.0 * _sigmoid(logit), 1)
+    return ChangeRisk(score=score, level=_level(score), drivers=drivers, features=features)

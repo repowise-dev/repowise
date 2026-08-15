@@ -249,10 +249,11 @@ export function registerLmTools(ctx: RepowiseContext): vscode.Disposable {
       return jsonResult({
         base,
         score: result.score,
-        level: result.level,
-        probability: result.probability,
+        score_unit: result.score_unit,
         risk_percentile: result.risk_percentile,
         review_priority: result.review_priority,
+        classification: result.classification,
+        fallback_band: result.fallback_band,
         drivers: result.drivers,
         features: result.features,
       });

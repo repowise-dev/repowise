@@ -18,8 +18,10 @@ Two complementary risk signals, use both:
   change entropy, author familiarity). No LLM, no network. Prefer this in-MCP
   tool; it takes a revspec and diffs server-side, so you never shell out. Lead
   with `risk_percentile` (this change ranked against sampled recent commits),
-  summarized by `review_priority` and `classification`; `score` / `level` are
-  the corpus-calibrated fallback. This is the pre-merge gate: "how risky is this
+  summarized by `review_priority` and `classification`. `score` is calibrated
+  per single commit, so a PR-sized change reads high by construction, and
+  `fallback_band` appears only when there was no baseline to rank against.
+  Omit `revspec` to score uncommitted work. This is the pre-merge gate: "how risky is this
   change overall?" The `repowise risk <revspec>` CLI is the identical scorer for
   when you are already in a terminal.
 - **`get_risk(changed_files=…)` (MCP)** works *per file* and returns the
