@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.server.mcp_server._query_terms import content_terms, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
     _DEFINES_MAX_FILES,
@@ -29,11 +30,98 @@ from repowise.server.mcp_server.tool_answer.config import (
     _MAX_RICH_SIG_LINES,
     _MAX_SYMBOLS_PER_HIT,
     _MAX_SYMBOLS_TOP_HIT,
+    _RELEVANCE_DOC_CHARS,
+    _RELEVANCE_DOC_WEIGHT,
+    _RELEVANCE_NAME_WEIGHT,
+    _RELEVANCE_SIG_WEIGHT,
+    _RELEVANT_EXCERPT_MAX_SYMBOLS,
     _STOPWORDS,
     _SYNTH_FULL_BODY_MAX_SYMBOLS,
     _SYNTH_FULL_SOURCE_LINES,
 )
 from repowise.server.mcp_server.tool_search import _prose_dominates
+
+# Suffixes stripped so a question's word reaches the identifier that answers it
+# ("routing" -> the `route` symbol). Longest first; never stems below 4 chars.
+_STEM_SUFFIXES = ("tion", "ing", "ion", "es", "ed", "er", "s")
+
+
+def _stem(token: str) -> str:
+    for suffix in _STEM_SUFFIXES:
+        if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+            return token[: -len(suffix)]
+    return token
+
+
+def _text_stems(text: str) -> set[str]:
+    """Stemmed content tokens of *text*, hump- and separator-split."""
+    return {
+        _stem(tok.lower())
+        for tok in re.split(r"[^A-Za-z0-9]+", split_humps(text))
+        if len(tok) >= 3 and tok.lower() not in _STOPWORDS
+    }
+
+
+def _stem_hit(term: str, tokens: set[str]) -> bool:
+    """Whether *term* names one of *tokens*, allowing a shared 4-char root."""
+    if term in tokens:
+        return True
+    return any(
+        min(len(term), len(tok)) >= 4 and (term.startswith(tok) or tok.startswith(term))
+        for tok in tokens
+    )
+
+
+def _question_names_symbol(row, qids_lower: set[str]) -> bool:
+    """Whether an identifier from the question names this symbol.
+
+    Substring-matching the whole qualified name marked every symbol in a package
+    whose path shares a word with the question, which flattened the promotion to
+    a no-op. Matching is against the symbol's own name, its full qualified name,
+    or its parent: asking about a class should still reach its methods.
+    """
+    if not qids_lower:
+        return False
+    name_lower = (row.name or "").lower()
+    parent_lower = (row.parent_name or "").lower()
+    return (
+        name_lower in qids_lower
+        or (row.qualified_name or "").lower() in qids_lower
+        or (bool(parent_lower) and parent_lower in qids_lower)
+        or any(
+            q in name_lower
+            for q in qids_lower
+            if len(q) >= 5  # avoid spurious substring matches on short tokens
+        )
+    )
+
+
+def _symbol_relevance(entry: dict, terms: set[str]) -> int:
+    """How strongly a symbol's own text answers the question's content terms.
+
+    Reads only what hydration already loaded, so it adds no I/O to the call.
+    """
+    if not terms:
+        return 0
+    name_tokens = _text_stems(entry.get("name") or "")
+    sig_tokens = _text_stems(entry.get("signature") or "")
+    # Docstrings are the bulk of the text to tokenize and the weakest signal, so
+    # they are only read once a term has missed the name and the signature.
+    doc_tokens: set[str] | None = None
+    score = 0
+    for term in terms:
+        if _stem_hit(term, name_tokens):
+            score += _RELEVANCE_NAME_WEIGHT
+        elif _stem_hit(term, sig_tokens):
+            score += _RELEVANCE_SIG_WEIGHT
+        else:
+            if doc_tokens is None:
+                doc_tokens = _text_stems(
+                    (entry.get("docstring") or "")[:_RELEVANCE_DOC_CHARS]
+                )
+            if _stem_hit(term, doc_tokens):
+                score += _RELEVANCE_DOC_WEIGHT
+    return score
 
 
 def _extract_question_identifiers(question: str) -> set[str]:
@@ -774,6 +862,7 @@ async def _hydrate_symbols_for_hits(
     hits: list[dict],
     ctx: Any = None,
     question_ids: set[str] | None = None,
+    question: str = "",
 ) -> None:
     """Mutate `hits` in place: attach `symbols` list to top-N file_page hits.
 
@@ -788,10 +877,16 @@ async def _hydrate_symbols_for_hits(
     Top hit gets ``_MAX_SYMBOLS_TOP_HIT`` slots; secondaries get the smaller
     ``_MAX_SYMBOLS_PER_HIT``. Symbols not matching a question id carry the
     short 120-char docstring; matched symbols carry 400 chars + source body.
+
+    ``question`` decides which symbols fill those slots when the file holds more
+    than fit, and earns the leading few a source body: a question phrased in
+    prose names no identifier, so nothing matches and nothing would carry code.
     """
     question_ids = question_ids or set()
     # Case-folded copy for matching.
     qids_lower = {q.lower() for q in question_ids}
+    # Once per call: the question's terms, stemmed to match identifier roots.
+    term_stems = {_stem(t) for t in content_terms(question)}
 
     # Identify the top file_page hits in retrieval-rank order. `hits` is
     # already sorted by descending score upstream.
@@ -845,21 +940,7 @@ async def _hydrate_symbols_for_hits(
             rich_sig = _read_signature_from_source(
                 repo_root, row.file_path, start_line, text=text
             )
-        # Does the symbol name match any identifier from the question?
-        name_lower = (row.name or "").lower()
-        qname_lower = (row.qualified_name or "").lower()
-        matched = bool(
-            qids_lower
-            and (
-                name_lower in qids_lower
-                or qname_lower in qids_lower
-                or any(
-                    q in name_lower or q in qname_lower
-                    for q in qids_lower
-                    if len(q) >= 5  # avoid spurious substring matches on short tokens
-                )
-            )
-        )
+        matched = _question_names_symbol(row, qids_lower)
         entry: dict[str, Any] = {
             "name": row.name,
             "kind": row.kind,
@@ -868,7 +949,11 @@ async def _hydrate_symbols_for_hits(
             "start_line": start_line,
             "end_line": end_line,
             "_matched": matched,
+            "_verified": verified,
         }
+        # Scored once here, not in the sort key, so a dense file pays for it per
+        # symbol rather than per comparison.
+        entry["_relevance"] = _symbol_relevance(entry, term_stems)
         if matched and verified:
             src = _read_symbol_source(
                 repo_root, row.file_path, start_line, end_line, text=text
@@ -877,15 +962,16 @@ async def _hydrate_symbols_for_hits(
                 entry["source_excerpt"] = src
         by_file.setdefault(row.file_path, []).append(entry)
 
-    # Sort: matched symbols first (document order within the match group),
-    # then unmatched in start_line order. Cap per file — top hit gets more
-    # slots than secondary hits.
+    # Sort: matched symbols first, then by relevance to the question, then in
+    # start_line order. Cap per file — top hit gets more slots than secondary
+    # hits. This decides WHICH symbols are kept; the kept slice is put back into
+    # reading order below, so consumers still see document order.
     for i, h in enumerate(hits):
         path = h.get("target_path")
         if path not in by_file:
             continue
         syms = by_file[path]
-        syms.sort(key=lambda s: (not s["_matched"], s["start_line"]))
+        syms.sort(key=lambda s: (not s["_matched"], -s["_relevance"], s["start_line"]))
         cap = _MAX_SYMBOLS_TOP_HIT if i == 0 else _MAX_SYMBOLS_PER_HIT
         # Force-include the exact symbol the question named (via anchoring) so a
         # class-name flood — where every sibling method "matches" through the
@@ -903,6 +989,26 @@ async def _hydrate_symbols_for_hits(
             if len(kept) >= cap:
                 break
             kept.append(s)
+        # A prose question names no identifier, so nothing is `_matched` and the
+        # slate would carry signatures only. Give the leading few symbols the
+        # question scored against a body, so the excerpts hold the code the
+        # question is about. `kept` is still in priority order here.
+        bodied = 0
+        for s in kept:
+            if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
+                break
+            if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
+                continue
+            src = _read_symbol_source(
+                repo_root,
+                path,
+                s["start_line"],
+                s.get("end_line") or 0,
+                text=text_cache.get(path),
+            )
+            if src:
+                s["source_excerpt"] = src
+                bodied += 1
         # Upgrade the top question-relevant symbols to the inline-body depth
         # BEFORE the reading-order sort, while `kept` is still in priority order
         # (anchors, then matched, then unmatched). The default 40-line excerpt

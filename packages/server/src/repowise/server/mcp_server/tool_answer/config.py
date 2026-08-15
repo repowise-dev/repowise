@@ -32,6 +32,26 @@ _MAX_SYMBOLS_PER_HIT = 4
 _MATCHED_SYMBOL_DOC_CHARS = 400
 _MATCHED_SYMBOL_SOURCE_LINES = 40
 
+# Which symbols survive the per-file cap. A `start_line` tiebreak served a
+# document-order prefix, so on a file larger than its symbol budget the symbol
+# the question was about could not be reached at all. Scoring the already-loaded
+# name / signature / docstring against the question's content terms changes which
+# symbols fill the same budget, not how many: no extra I/O, no prompt growth.
+# A name hit outranks a signature hit outranks a mention in the docstring. With
+# no signal every score is 0 and the sort falls back to `start_line` as before.
+_RELEVANCE_NAME_WEIGHT = 3
+_RELEVANCE_SIG_WEIGHT = 2
+_RELEVANCE_DOC_WEIGHT = 1
+# Score the docstring's opening prose only, so a long one can't out-score a
+# precise name on word count alone.
+_RELEVANCE_DOC_CHARS = 400
+# A source excerpt used to require a question IDENTIFIER match, so a question
+# phrased in prose reached the right symbols and then showed only their
+# signatures — the "excerpts don't include the actual code" answer. The leading
+# few symbols the question scored against get a body too. Bounded hard: this is
+# the one part of the change that adds prompt text.
+_RELEVANT_EXCERPT_MAX_SYMBOLS = 2
+
 # How many question-named symbol bodies get_answer inlines in `symbol_bodies`.
 # The hydrator already reads these bodies live for synthesis; surfacing them
 # in the response collapses the get_answer -> get_symbol drill-down on

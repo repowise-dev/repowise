@@ -342,7 +342,7 @@ async def _run_retrieval_pipeline(
         with contextlib.suppress(Exception):
             async with get_session(ctx.session_factory) as session:
                 await _hydrate_symbols_for_hits(
-                    session, repo_id, hits, ctx, question_ids=question_ids
+                    session, repo_id, hits, ctx, question_ids=question_ids, question=question
                 )
                 # And the shortlist BELOW the synthesis cap: `candidates` names
                 # those files and, until now, said nothing about any of them.
