@@ -16,7 +16,14 @@ from .features import (
     extract_worktree_features,
     working_tree_is_dirty,
 )
-from .model import SCORE_UNIT, ChangeRisk, score_change
+from .fix_history import (
+    FixHistoryUnavailableError,
+    change_fix_density,
+    fix_density_percentile,
+    fix_pressure,
+    hot_files,
+)
+from .model import SCORE_MEASURES, SCORE_UNIT, ChangeRisk, score_change
 from .normalize import RiskNormalizer, review_priority_classification
 
 _MIN_BASELINE = 8
@@ -24,7 +31,7 @@ _MIN_BASELINE = 8
 
 @dataclass(frozen=True)
 class ChangeRiskResult:
-    """A live change score and its optional repository-relative ranking."""
+    """A live change score, its repo-relative ranking, and its fix-history load."""
 
     features: ChangeFeatures
     risk: ChangeRisk
@@ -34,6 +41,17 @@ class ChangeRiskResult:
     riskignore_excludes: tuple[str, ...]
     request_excludes: tuple[str, ...]
     working_tree: bool = False  # scored the uncommitted change, not a commit
+    # Bug-fix history of the ground this change stands on. ``density`` is the
+    # churn-weighted mean fix pressure of the touched files, ``percentile`` ranks
+    # it against the repo's own fix-bearing files, and ``hot_files`` names where
+    # the pressure is. Unlike the score, none of these grow with diff size.
+    fix_density: float = 0.0
+    fix_percentile: float | None = None
+    hot_files: tuple[tuple[str, int, float], ...] = ()  # (path, churn, pressure)
+    # False when the history walk could not run (git failure, timeout on a very
+    # large repository). Distinguishes "no fixes here" from "we could not look",
+    # which the surfaces would otherwise report identically.
+    fix_history_available: bool = True
 
 
 def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
@@ -134,6 +152,10 @@ def score_live_change(
     # A tree dirty only in paths the filters drop is not a change this command
     # can score, so fall through to HEAD rather than answer "empty change".
     working_tree = uncommitted is not None and uncommitted.nf > 0
+    # Ref whose history the fix record is read from. Strictly *before* the
+    # change being scored, so a commit is never credited with fixes that only
+    # landed because of it.
+    history_ref = "HEAD"
     if working_tree:
         features = uncommitted
         anchor, excluded_ref = "HEAD", ""
@@ -144,14 +166,29 @@ def score_live_change(
         features = extract_range_features(
             repo_path, base, head, extensions=extensions, exclude_patterns=effective_excludes
         )
-        anchor, excluded_ref = range_anchor(repo_path, base, head), ""
+        # Fix history is read at the fork point, not at ``base``'s tip: with
+        # three-dot syntax the diff starts at the merge-base, so base's later
+        # commits are not part of this change's ground.
+        anchor = range_anchor(repo_path, base, head)
+        excluded_ref = ""
+        history_ref = anchor
     else:
         features = extract_commit_features(
             repo_path, target, extensions=extensions, exclude_patterns=effective_excludes
         )
         anchor, excluded_ref = _commit_anchor(repo_path, target)
+        # A root commit has no parent; its own ref then yields an empty record,
+        # which is the honest answer for the first commit in a repository.
+        history_ref = f"{target}^"
 
     risk = score_change(features)
+    try:
+        pressure = fix_pressure(repo_path, history_ref)
+        fix_history_available = True
+    except FixHistoryUnavailableError:
+        pressure, fix_history_available = {}, False
+    density = change_fix_density(pressure, features.file_churn)
+    fix_bearing = hot_files(pressure, features.file_churn)
     percentile: float | None = None
     priority: str | None = None
     baseline_sample_size = 0
@@ -180,21 +217,39 @@ def score_live_change(
         riskignore_excludes=from_riskignore,
         request_excludes=exclude_patterns,
         working_tree=working_tree,
+        fix_density=round(density, 3),
+        fix_percentile=fix_density_percentile(pressure, density),
+        hot_files=fix_bearing,
+        fix_history_available=fix_history_available,
     )
 
 
 def change_risk_payload(result: ChangeRiskResult) -> dict:
     """Render the machine-readable response shared by the CLI and MCP tool.
 
+    ``fix_history`` leads: it is the block that distinguishes a surgical edit to
+    a file that keeps breaking from a bulk rename of files that never have.
+    ``score`` and ``risk_percentile`` describe the *shape* of the diff and are
+    kept for continuity, labelled for what they measure — see ``score_measures``.
     ``fallback_band`` is the absolute calibrated band, non-null only when there
-    was no baseline to rank against — which is why it is not a peer of
-    ``review_priority``. ``score_unit`` names the unit that band assumes.
+    was no baseline to rank against. ``score_unit`` names the unit that band
+    assumes.
     """
     features, risk = result.features, result.risk
     return {
         "ref": features.ref,
         "working_tree": result.working_tree,
+        "fix_history": {
+            "available": result.fix_history_available,
+            "density": result.fix_density,
+            "percentile": result.fix_percentile,
+            "files": [
+                {"path": path, "churn": churn, "fix_pressure": pressure}
+                for path, churn, pressure in result.hot_files
+            ],
+        },
         "score": risk.score,
+        "score_measures": SCORE_MEASURES,
         "score_unit": SCORE_UNIT,
         "risk_percentile": round(result.percentile, 1) if result.percentile is not None else None,
         "review_priority": result.priority,

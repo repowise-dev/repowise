@@ -14,11 +14,17 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
+    SCORE_MEASURES,
     SCORE_UNIT,
+    FixHistoryUnavailableError,
     RiskNormalizer,
     baseline_samples,
     change_features_from_stored,
+    change_fix_density,
     extract_range_features,
+    fix_density_percentile,
+    fix_pressure,
+    hot_files,
     range_anchor,
     review_priority_classification,
     score_change,
@@ -42,6 +48,8 @@ from repowise.server.schemas import (
     CommitEvolutionResponse,
     CommitResponse,
     CommitStatsResponse,
+    FixHistoryFileResponse,
+    FixHistoryResponse,
     GitMetadataResponse,
     GitSummaryResponse,
     HotspotResponse,
@@ -702,10 +710,29 @@ def get_risk_range(
             percentile = normalizer.percentile(rank_score)
             priority = normalizer.priority(rank_score)
 
+    # Read at the fork point, matching the CLI/MCP scorer: the record predates
+    # the change rather than counting fixes the range itself brought in.
+    try:
+        pressure = fix_pressure(local_path, range_anchor(local_path, base, head))
+        fix_available = True
+    except FixHistoryUnavailableError:
+        pressure, fix_available = {}, False
+    density = change_fix_density(pressure, features.file_churn)
+
     return RiskRangeResponse(
         base=base,
         head=head,
+        fix_history=FixHistoryResponse(
+            available=fix_available,
+            density=round(density, 3),
+            percentile=fix_density_percentile(pressure, density),
+            files=[
+                FixHistoryFileResponse(path=path, churn=churn, fix_pressure=p)
+                for path, churn, p in hot_files(pressure, features.file_churn)
+            ],
+        ),
         score=risk.score,
+        score_measures=SCORE_MEASURES,
         score_unit=SCORE_UNIT,
         risk_percentile=percentile,
         review_priority=priority,

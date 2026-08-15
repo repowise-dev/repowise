@@ -432,11 +432,18 @@ shape of the live diff and needs no index refresh.
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
 | `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables percentile ranking) |
 
-**Returns:** A repo-relative `risk_percentile`, `review_priority`, and
-`classification` — triage on these — plus the raw `score` and the `score_unit`
-it is calibrated on (a single commit, so a PR-sized range reads high by
-construction). `fallback_band` carries the absolute band and appears only when
-no baseline was available. `working_tree` says whether uncommitted work was the
+**Returns:** `fix_history` first — the recency-weighted bug-fix record of the
+files the change touches, with `files` naming where the pressure sits and
+`percentile` ranking it against the repo's own fix-bearing files. Triage on
+this: it is the part that separates a small edit to a fragile file from a large
+edit to a safe one. `available` is false when the history walk could not run.
+
+`score` measures diff size and spread, not where the change lands — see
+`score_measures` — and `score_unit` names the unit it is calibrated on (a single
+commit, so a PR-sized range reads high by construction). `risk_percentile`,
+`review_priority` and `classification` rank that same diff shape against recent
+commits. `fallback_band` carries the absolute band and appears only when no
+baseline was available. `working_tree` says whether uncommitted work was the
 subject. `baseline_sample_size` reports how many filtered commits informed the
 percentile; `features`, `drivers`, and combined `exclude_patterns` make the
 result auditable.

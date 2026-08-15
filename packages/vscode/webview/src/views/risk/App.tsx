@@ -280,13 +280,43 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
           <>There was no baseline of recent commits to rank it against.</>
         )}
       </p>
+      <FixHistoryNote history={r.fix_history} />
       <p className="mt-2.5 text-[var(--color-text-tertiary)]">
-        Raw model score{" "}
-        <strong className="font-semibold tabular-nums">{r.score.toFixed(1)}/10</strong>, anchored
-        to a corpus of single commits — a range spans several, so it reads high by construction.
-        Prefer the ranking above for review order.
+        Diff-size score{" "}
+        <strong className="font-semibold tabular-nums">{r.score.toFixed(1)}/10</strong> — how big
+        and spread out the change is, not where it lands. Anchored to a corpus of single commits,
+        so a range reads high by construction.
       </p>
     </PageLede>
+  );
+}
+
+/**
+ * The bug-fix record of the files this range touches — the part the diff-size
+ * score cannot see. Renders nothing when no touched file has fix history, which
+ * is itself worth not padding out.
+ */
+function FixHistoryNote({ history }: { history: RiskRangeReport["result"]["fix_history"] }) {
+  if (!history.available) {
+    return <p className="mt-2.5">Fix history unavailable — the git history walk failed.</p>;
+  }
+  if (!history.files.length) return null;
+  const [worst] = history.files;
+  return (
+    <p className="mt-2.5">
+      These files have broken before:{" "}
+      <strong className="font-semibold text-[var(--color-text-primary)]">{worst.path}</strong> has{" "}
+      <strong className="font-semibold tabular-nums">{worst.fix_pressure.toFixed(1)}</strong>{" "}
+      recency-weighted prior fixes
+      {history.files.length > 1 ? `, and ${history.files.length - 1} more do too` : ""}
+      {history.percentile != null ? (
+        <>
+          {" "}
+          — {ordinal(history.percentile)} percentile of this repo&apos;s fix-bearing files
+        </>
+      ) : null}
+      .
+    </p>
   );
 }
 

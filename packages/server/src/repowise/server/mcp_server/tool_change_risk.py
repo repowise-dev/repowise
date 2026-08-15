@@ -47,24 +47,23 @@ async def get_change_risk(
 ) -> dict:
     """Score a live commit, ``base..head`` range, or uncommitted work.
 
-    Use this for a pre-merge score of a commit or PR range. It is distinct from
+    Use this for a pre-merge read on a commit or PR range. Distinct from
     ``get_risk``, which assesses indexed files and PR blast radius. Both filters
-    below also apply to the baseline used for the repository percentile.
+    below also apply to the baseline behind the repository percentile.
 
-    Lead with ``risk_percentile``, summarized by ``review_priority`` and
-    ``classification``: it ranks this change against sampled recent commits in
-    the same repository. ``score`` is calibrated per single commit, so a PR-sized
-    change reads high by construction; ``fallback_band`` appears only when there
-    was no baseline to rank against.
+    Lead with ``fix_history``: the recency-weighted bug-fix record of the files
+    touched, ``files`` naming where the pressure sits. It is what separates a
+    surgical edit to a file that keeps breaking from a bulk rename of files that
+    never have. ``score`` measures diff size and spread, not where the change
+    lands (see ``score_measures``); calibrated per commit, so a PR-sized change
+    reads high by construction. ``risk_percentile`` ranks that diff shape against
+    recent commits.
 
-    ``impacted_tests`` names the tests the per-test coverage map proves execute
-    the change's changed *lines* (line-precise, narrower than get_risk's
-    file-level ``tests_to_run``), with ``missing_tests`` buckets for changed
-    lines no test covers. Its ``status`` is ``no_map`` (unknown, run the full
-    suite), never "untested", when no map is ingested.
-
-    ``prior_fixes`` appears only when the changed files carry counted bug fixes:
-    per-file counts, never a commit name; ``concentration`` names where it sits.
+    ``impacted_tests`` names the tests a coverage map proves execute the changed
+    *lines*, with ``missing_tests`` for lines no test covers; ``status`` is
+    ``no_map`` (unknown — run the full suite), never "untested", when no map is
+    ingested. ``prior_fixes`` asks the index the same question git answered
+    above, counting only fixes whose lines overlap this diff.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the

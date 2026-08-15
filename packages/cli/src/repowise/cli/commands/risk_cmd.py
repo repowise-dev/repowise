@@ -38,7 +38,6 @@ from repowise.core.analysis.change_risk import (
     score_live_change,
 )
 
-_PRIORITY_COLOR = {"high": "yellow", "moderate": "dim", "low": "green"}
 _PRIORITY_LEAD = {
     "low": "Lower risk than a typical commit in this repo",
     "moderate": "About as risky as a typical commit in this repo",
@@ -486,21 +485,28 @@ def risk_command(
         click.echo(json.dumps(change_risk_payload(result), indent=2))
         return
 
-    if percentile is not None and priority is not None:
-        pcolor = _PRIORITY_COLOR[priority]
+    # The headline is the fix record, not the score: the score restates diff
+    # size, so leading with it put the least informative number first.
+    if not result.fix_history_available:
         console.print(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
-            f"[{pcolor}]{review_priority_classification(priority)}[/{pcolor}] · "
-            f"{_ordinal(round(percentile))} percentile of recent commits"
+            "[yellow]fix history unavailable[/yellow] (the git history walk failed)"
+        )
+    elif result.hot_files:
+        where = (
+            f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's "
+            "fix-bearing files"
+            if result.fix_percentile is not None
+            else ""
+        )
+        console.print(
+            f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
+            f"[red]touches files that have broken before[/red]{where}"
         )
     else:
-        # No usable baseline (shallow repo, --baseline 0): fall back to the
-        # absolute calibrated band, labelled honestly as such.
-        color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
         console.print(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
-            f"[{color}]{risk.level}[/{color}] (absolute per-commit band — "
-            "no repo baseline to rank against)"
+            "[green]no bug-fix history in the files it touches[/green]"
         )
     if result.working_tree:
         console.print("  [dim]Scoring your uncommitted changes, not the last commit.[/dim]")
@@ -515,20 +521,42 @@ def risk_command(
         f"{'unknown' if features.exp is None else features.exp}"
         + ("  [magenta](fix)[/magenta]" if features.is_fix else "")
     )
+    # The fix record, named in the headline above and itemized here.
+    if result.hot_files:
+        hot = Table(show_header=True)
+        hot.add_column("File")
+        hot.add_column("Lines", justify="right")
+        hot.add_column("Prior fixes", justify="right")
+        for path, churn, pressure in result.hot_files:
+            hot.add_row(path, str(churn), f"{pressure:.1f}")
+        console.print(hot)
+        console.print(
+            "  [dim]Prior fixes are recency-weighted against this change's own date — "
+            "one from a year earlier counts a half.[/dim]"
+        )
+
+    # Diff shape second, and labelled for what it measures rather than as a
+    # verdict. The absolute band appears only when no percentile outranks it.
     if percentile is not None and priority is not None:
         console.print(
-            f"  [dim]{_PRIORITY_LEAD[priority]} ({_ordinal(round(percentile))} percentile).[/dim]"
+            f"\n[bold]Diff shape[/bold]: {review_priority_classification(priority)} · "
+            f"{_ordinal(round(percentile))} percentile of recent commits by size and spread"
         )
-    # Raw score kept as a clearly-secondary, clearly-labelled number. The unit
-    # matters: the corpus is single commits, so a PR-sized range reads high. The
-    # band is deliberately absent here — it is printed above when, and only
-    # when, there is no percentile to prefer over it.
+        console.print(f"  [dim]{_PRIORITY_LEAD[priority]}.[/dim]")
+    else:
+        # No usable baseline (shallow repo, --baseline 0): fall back to the
+        # absolute calibrated band, labelled honestly as such.
+        color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
+        console.print(
+            f"\n[bold]Diff shape[/bold]: [{color}]{risk.level}[/{color}] "
+            "(absolute per-commit band — no repo baseline to rank against)"
+        )
     console.print(
-        f"  [dim]Raw model score: {risk.score:.1f}/10 — corpus-anchored to a single commit; "
-        f"prefer the percentile for review order.[/dim]"
+        f"  [dim]Diff-size score: {risk.score:.1f}/10 — how big and spread out the change is, "
+        f"not where it lands. Corpus-anchored to a single commit.[/dim]"
     )
 
-    table = Table(title="Why this score (each driver vs. the model's baseline commit)")
+    table = Table(title="Diff shape (each driver vs. the model's baseline commit)")
     table.add_column("Driver")
     table.add_column("Value", justify="right")
     table.add_column("Push", justify="right")

@@ -20,7 +20,15 @@ from .features import (
     features_from_file_changes,
     working_tree_is_dirty,
 )
-from .model import SCORE_UNIT, ChangeRisk, RiskDriver, score_change
+from .fix_history import (
+    FixHistoryUnavailableError,
+    change_fix_density,
+    clear_fix_pressure_cache,
+    fix_density_percentile,
+    fix_pressure,
+    hot_files,
+)
+from .model import SCORE_MEASURES, SCORE_UNIT, ChangeRisk, RiskDriver, score_change
 from .normalize import RiskNormalizer, review_priority_classification
 from .service import (
     ChangeRiskResult,
@@ -32,20 +40,27 @@ from .service import (
 )
 
 __all__ = [
+    "SCORE_MEASURES",
     "SCORE_UNIT",
     "WORKING_TREE_REF",
     "ChangeFeatures",
     "ChangeRisk",
     "ChangeRiskResult",
+    "FixHistoryUnavailableError",
     "RiskDriver",
     "RiskNormalizer",
     "baseline_samples",
     "change_features_from_stored",
+    "change_fix_density",
     "change_risk_payload",
+    "clear_fix_pressure_cache",
     "extract_commit_features",
     "extract_range_features",
     "extract_worktree_features",
     "features_from_file_changes",
+    "fix_density_percentile",
+    "fix_pressure",
+    "hot_files",
     "normalize_extensions",
     "range_anchor",
     "review_priority_classification",

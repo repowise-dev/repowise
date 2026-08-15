@@ -50,6 +50,10 @@ class ChangeFeatures:
     author: str = ""
     subject: str = ""
     ref: str = ""  # the commit sha or "base..head" range scored
+    # ``(path, churn)`` per counted file, from the same walk the counts above
+    # come from. Carried so fix-history attribution costs no extra git call.
+    # Empty when the vector was rebuilt from stored metrics, which keep no paths.
+    file_churn: tuple[tuple[str, int], ...] = ()
 
 
 # Generous ceiling: even a 200-commit numstat walk finishes in seconds. The
@@ -82,11 +86,12 @@ def _git(args: list[str], cwd: str, *, check: bool = True) -> str:
 
 def _accumulate_numstat(
     numstat: str, extensions: tuple[str, ...], exclude_patterns: tuple[str, ...]
-) -> tuple[int, int, int, set[str], set[str], list[int]]:
+) -> tuple[int, int, int, set[str], set[str], list[int], list[tuple[str, int]]]:
     la = ld = nf = 0
     dirs: set[str] = set()
     subs: set[str] = set()
     per_file: list[int] = []
+    files: list[tuple[str, int]] = []
     exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
     for row in numstat.strip().split("\n"):
         if not row:
@@ -107,10 +112,11 @@ def _accumulate_numstat(
         churn = a + d
         if churn:
             per_file.append(churn)
+            files.append((path, churn))
         segs = path.split("/")
         dirs.add("/".join(segs[:-1]))
         subs.add(segs[0])
-    return la, ld, nf, dirs, subs, per_file
+    return la, ld, nf, dirs, subs, per_file, files
 
 
 def _entropy(per_file: list[int]) -> float:
@@ -165,6 +171,7 @@ def features_from_file_changes(
     dirs: set[str] = set()
     subs: set[str] = set()
     per_file: list[int] = []
+    files: list[tuple[str, int]] = []
     for path, additions, deletions in changes:
         a = max(int(additions or 0), 0)
         d = max(int(deletions or 0), 0)
@@ -174,6 +181,7 @@ def features_from_file_changes(
         churn = a + d
         if churn:
             per_file.append(churn)
+            files.append((path, churn))
         segs = path.split("/")
         dirs.add("/".join(segs[:-1]))
         subs.add(segs[0])
@@ -189,6 +197,7 @@ def features_from_file_changes(
         author=author,
         subject=subject,
         ref=ref,
+        file_churn=tuple(files),
     )
 
 
@@ -289,7 +298,9 @@ def extract_worktree_features(
     ]
     if rows:
         numstat = numstat.rstrip("\n") + "\n" + "\n".join(rows)
-    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
+    la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
+        numstat, extensions, exclude_patterns
+    )
     author = _git(["config", "user.name"], root, check=False).strip()
     return ChangeFeatures(
         la=la,
@@ -299,6 +310,7 @@ def extract_worktree_features(
         ns=len(subs),
         entropy=_entropy(per_file),
         exp=_author_experience(root, author, "HEAD"),
+        file_churn=tuple(files),
         is_fix=False,
         author=author,
         subject="",
@@ -326,7 +338,9 @@ def extract_commit_features(
     # combined-diff defaults, which can drop every file that matches a parent.
     # No effect on a non-merge commit.
     numstat = _git(["show", sha, "--numstat", "--format=", "-m", "--first-parent"], repo_path)
-    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
+    la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
+        numstat, extensions, exclude_patterns
+    )
     # check=False: a root commit has no parent and that is not an error.
     parent = _git(["rev-parse", "--verify", "--quiet", f"{sha}^"], repo_path, check=False).strip()
     exp = _author_experience(repo_path, author, parent or sha)
@@ -342,6 +356,7 @@ def extract_commit_features(
         author=author,
         subject=subject,
         ref=sha,
+        file_churn=tuple(files),
     )
 
 
@@ -360,7 +375,9 @@ def extract_range_features(
     commit count at *base*.
     """
     numstat = _git(["diff", "--numstat", f"{base}..{head}"], repo_path)
-    la, ld, nf, dirs, subs, per_file = _accumulate_numstat(numstat, extensions, exclude_patterns)
+    la, ld, nf, dirs, subs, per_file, files = _accumulate_numstat(
+        numstat, extensions, exclude_patterns
+    )
     meta = _git(["show", "-s", "--format=%an%x00%s", head], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
     # Any fix commit in the range marks the change as a fix (informational).
@@ -379,4 +396,5 @@ def extract_range_features(
         author=author,
         subject=subject,
         ref=f"{base}..{head}",
+        file_churn=tuple(files),
     )

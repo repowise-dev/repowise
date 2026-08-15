@@ -14,7 +14,14 @@ const REPORT: RiskRangeReport = {
   result: {
     base: "main",
     head: "HEAD",
+    fix_history: {
+      available: true,
+      density: 3.2,
+      percentile: 74,
+      files: [{ path: "src/core.ts", churn: 40, fix_pressure: 5.5 }],
+    },
     score: 7.4,
+    score_measures: "diff size and spread; not where the change lands",
     score_unit: "per-commit",
     risk_percentile: 88,
     review_priority: "high",

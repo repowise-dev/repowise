@@ -1,10 +1,14 @@
 # Change risk (`repowise risk`)
 
-`repowise risk` scores a **change** (a commit or a `base..head` range) for
-defect risk from the shape of its diff, not the health of any file. It is a
-just-in-time / pre-merge signal: complementary to `repowise health` (which
-scores files), and useful as a PR gate because it fires on risky *small* changes
-a file-level delta misses.
+`repowise risk` reports on a **change** (a commit or a `base..head` range): the
+bug-fix history of the files it touches, and the shape of its diff. It is a
+just-in-time / pre-merge signal, complementary to `repowise health`, which
+scores files rather than changes.
+
+**Read `fix_history` first, not `score`.** The 0–10 score measures how big and
+spread out a change is. It does not measure where the change lands, and the two
+are not the same question — see [What the score does and does not
+buy](#what-the-score-does-and-does-not-buy).
 
 ```bash
 repowise risk                 # score uncommitted work, else HEAD
@@ -39,7 +43,66 @@ those patterns apply automatically and are combined with any command-line
 flags. For example, `tests/` excludes that directory recursively, while
 `test_*.py` excludes matching test filenames anywhere in the repository.
 
-## What it measures
+## Fix history: where the change lands
+
+The first block in the result is `fix_history`, and it is the one to act on. It
+answers a question the diff shape cannot: **have these files broken before?**
+
+```
+These files have broken before · 82nd percentile of this repo's fix-bearing files
+┌──────────────────────────────────────────┬───────┬─────────────┐
+│ File                                     │ Lines │ Prior fixes │
+├──────────────────────────────────────────┼───────┼─────────────┤
+│ core/pipeline/persist.py                 │    40 │        21.6 │
+│ cli/commands/update_cmd/command.py       │     6 │        19.3 │
+└──────────────────────────────────────────┴───────┴─────────────┘
+```
+
+- **Prior fixes** is a count of bug-fix commits that previously touched that
+  file, **recency-weighted against the change's own date**: a fix from a year
+  earlier counts a half, from two years a quarter. So the number is
+  "recent-equivalent fixes", not a raw tally, and a file that broke constantly
+  and then settled decays away. Anchoring to the change rather than to today
+  means the same commit scores the same on every re-run.
+- **`density`** is the churn-weighted mean of those per-file numbers. Weighting
+  by churn means the file a change mostly edits dominates the answer rather than
+  a one-line drive-by next door. It is a *ratio*, so unlike the score it does
+  not grow with the size of the diff: one line in a file fixed twenty times
+  outranks a thousand lines in files never fixed at all.
+- **`percentile`** ranks that density against the repository's own fix-bearing
+  files, since a bare "3.4 decayed fixes" means nothing on its own. Both sides
+  are the same unit, so the comparison is like for like. It is `null` when the
+  repo has fewer than eight files with any fix history, or when the change
+  touches none of it.
+
+This comes from one `git log` walk (up to 20 000 commits, memoized per
+repository state) using the same bug-fix classifier the indexer uses. It needs
+no index, no database and no coverage data, so it is available on a repository
+`repowise` has never indexed.
+
+Fix history is read from **before** the change being scored: a commit is ranked
+against the fixes that had already landed when it was written, never against
+fixes it caused. For a range, the record is read at the fork point the diff
+starts from, not at the base branch's current tip.
+
+> **Caveat, stated rather than buried.** The bug-fix classifier is keyword-based
+> and shared with the indexer, so `fix_history` under-reports in two ways.
+>
+> It matches `fix`, `bug`, `patch`, `resolves`, `closes #N`, `fixes #N` — and
+> misses conventions outside that set. Django's `Fixed #12345` is the notable
+> one: on a 4 000-commit sample it classifies 5 commits as fixes where roughly
+> 1 800 use that prefix. (Django also uses `Fixed #N` for features, so the
+> subject line alone cannot separate the two — which is why the classifier has
+> not simply been widened.)
+>
+> It also **excludes** any subject containing `docs`, `typo`, `bump`, `deps`,
+> `chore`, `lint`, `format` or `style`. That keeps cosmetic commits out, but
+> drops genuine fixes like "fix: docs build crash" with them.
+>
+> Where the classifier fires the ranking is good; where a project's convention
+> falls outside it, `fix_history` reads lower than the truth.
+
+## What the diff-shape score measures
 
 The model uses Kamei-style *change* metrics (Kamei et al., "A large-scale
 empirical study of just-in-time quality assurance"):
@@ -64,29 +127,54 @@ log-compressed features (`logit = intercept + Σ coefᵢ·zᵢ`), so every featu
 push on the risk is exact and reported as an attributable driver (the same
 linear / per-finding-attributable contract the file health score holds).
 
-## How to read the result
+## What the score does and does not buy
 
-The headline signal is **repo-relative**. The raw 0–10 score is anchored to the
-offline calibration corpus, and that corpus is **individual commits** (baseline:
-10.5 lines added, 1.7 files). A squash-merged PR, a `base..head` range, or any
-repo whose typical commit is large is several commits' worth of diff read
-against a one-commit scale, so the absolute band skews high: two-thirds of
-commits can read "high" while ranking perfectly normally for *that* repo. The
-*ranking* is sound; the absolute band is not portable. The payload states the
-assumption in `score_unit`.
+The score is a **diff-size statistic**. That is a measured claim, not a hedge:
 
-So the surfaces lead with where the change sits in its **own repo's**
-distribution:
+- `la` (lines added) carries a coefficient 7.6× the next largest, and scoring by
+  `la` alone reproduces the full seven-feature score to within 0.12–0.16 points
+  on every repository tried.
+- On a hand-picked set of small-but-dangerous changes versus large-but-boring
+  ones (47 within-repo pairs across repowise, flask, django and zod), the score
+  ranks the dangerous change above the boring one in **0 of 47** pairs. Ranking
+  by fix density alone gets **46 of 47**.
 
-- **Review priority** / **classification**: `Below typical` / `Typical` /
-  `Elevated` (terciles of the repo's own commit-risk distribution). This is the
-  signal to triage on.
-- **Percentile**: "riskier than N% of this repo's commits".
-- **Raw model score** (0–10): kept for transparency but shown as a secondary,
-  clearly corpus-anchored number, not the thing to act on.
+  That set is constructed, not held out: the pairs were chosen so that the
+  dangerous change is always the smaller one, which means ranking by lines added
+  scores 0 by construction and any signal genuinely independent of size scores
+  near-perfectly. It is a falsification test — "can the score ever do this?" —
+  and not an accuracy estimate. Its value is that the score failed it
+  completely, on cases a reviewer would call obvious.
+
+A refit was measured and rejected rather than shipped. Regrouping the corpus to
+PR granularity (`--first-parent` merge spans) and adding two size-orthogonal
+features made accuracy *worse*: pooled leave-one-repo-out AUC 0.769 for the
+refit against 0.776 for the current feature set and 0.780 for a churn-only
+baseline. Per repository, **lines added alone matches or beats the fitted model
+in five of six repos**. The reason is the labels: a commit is marked
+defect-inducing when a later bug-fix's blame points back at a line it wrote, and
+a larger commit writes more lines, so the label is itself size-biased. Any
+deliberately size-orthogonal feature scores near chance against it — fix density
+lands at 0.46–0.57 AUC — which is a fact about the labels, not about the
+feature. So the model constants are unchanged and the score is reported as what
+it demonstrably is.
+
+`score_measures` states this in the payload. Read the result in this order:
+
+- **`fix_history`**: where the change lands. The signal to triage on.
+- **Review priority** / **classification** / **percentile**: where this change's
+  *diff shape* sits in the repo's own distribution. Useful for "is this a big
+  one for us", not for "is this a dangerous one".
+- **`score`** (0–10): diff size and spread, corpus-anchored to a single commit.
 - **`fallback_band`**: the absolute `low` / `moderate` / `high` band. Present
   *only* when there was no baseline to rank against (a shallow repo, or
   `--baseline 0`), which is why it is not a peer of the review priority.
+
+The score's absolute band is also **unit-blind**. Its corpus is individual
+commits (baseline: 10.5 lines added, 1.7 files), so a squash-merged PR or a
+`base..head` range is several commits' worth of diff read against a one-commit
+scale and skews high: two-thirds of commits can read "high" while ranking
+normally for *that* repo. The payload states the assumption in `score_unit`.
 
 Each **driver** is reported relative to *the model's baseline commit* (the
 calibration-corpus mean), not this repo, so a `+19 / −1` change can legitimately
@@ -134,14 +222,26 @@ Constants are learned offline against the defect corpus (AG-SZZ bug-inducing
 commits as labels, time-ordered evaluation with a right-censoring gap, and a
 leave-one-repo-out comparison to the churn-only baseline). On a 7-repo,
 5-language slice the pooled leave-one-repo-out AUC is **0.772 vs 0.766 for
-churn-only** (Δ +0.0068, 95% CI [-0.0003, +0.0131]): competitive with churn
-across the corpus and stronger on some repos (clap +0.053 on a time-ordered
-split). Diff size dominates the fit, with change entropy risky and author
-experience protective, both literature-consistent. Only the learned constants
-ship; the runtime stays deterministic and zero-LLM.
+churn-only** (Δ +0.0068, 95% CI [-0.0003, +0.0131]).
 
-Recalibrate via `repowise-bench/health-defect/jit_calibration.py`; the constants
-live in `packages/core/src/repowise/core/analysis/change_risk/model.py`.
+Read that number for what it is. A churn-only baseline scores 0.766 on the same
+labels, and lines-added alone scores higher still, so the margin measures very
+little. It is reported because it is the number the constants were selected on,
+not as evidence the score ranks danger — for that claim, see
+[What the score does and does not buy](#what-the-score-does-and-does-not-buy),
+where it fails.
+
+**`fix_history` carries no AUC of its own, deliberately.** Its evidence is the
+47-pair ranking gate (46/47) and the fact that the files it ranks highest in
+this repository are the ones with the longest bug-fix records. It scores near
+chance against the SZZ labels, which — as above — is a property of those labels.
+Quoting a number from a benchmark that structurally cannot see the signal would
+be worse than quoting none.
+
+Only learned constants ship; the runtime stays deterministic, zero-LLM, and
+free of new dependencies. Recalibrate via
+`repowise-bench/health-defect/jit_calibration.py`; the constants live in
+`packages/core/src/repowise/core/analysis/change_risk/model.py`.
 
 ## Cross-repo change risk (workspace mode)
 

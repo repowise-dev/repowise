@@ -370,10 +370,13 @@ refresh.
 - `exclude_patterns` (optional) — gitignore-style paths; combined with root `.riskignore`
 - `baseline` (optional, int) — recent commits for percentile ranking (default `200`)
 
-**Returns:** Repo-relative `risk_percentile`, `review_priority` and
-`classification`, the raw `score` with the `score_unit` it is calibrated on, a
-`fallback_band` when there was no baseline to rank against, plus
-`impacted_tests` when a per-test coverage map is ingested (`repowise coverage add`).
+**Returns:** `fix_history` first — the recency-weighted bug-fix record of the
+files touched, which is what distinguishes a small dangerous change from a large
+boring one. Then the `score` (diff size and spread, per `score_measures`) with
+the `score_unit` it is calibrated on, repo-relative `risk_percentile` /
+`review_priority` / `classification` for that diff shape, a `fallback_band` when
+there was no baseline to rank against, plus `impacted_tests` when a per-test
+coverage map is ingested (`repowise coverage add`).
 
 **When to use:** Before merging a commit or PR range, or on work you have not
 committed yet.

@@ -248,7 +248,11 @@ export function registerLmTools(ctx: RepowiseContext): vscode.Disposable {
       const result = await getRiskRange(repoId, { base, head: "HEAD" });
       return jsonResult({
         base,
+        // First, because the score below measures diff size rather than danger,
+        // and a model handed only the score will read it as a verdict.
+        fix_history: result.fix_history,
         score: result.score,
+        score_measures: result.score_measures,
         score_unit: result.score_unit,
         risk_percentile: result.risk_percentile,
         review_priority: result.review_priority,

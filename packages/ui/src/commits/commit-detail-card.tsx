@@ -82,8 +82,9 @@ export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailC
       </div>
 
       <div className="mt-7">
+        {/* Named for what it measures: diff size, not danger. */}
         <PageLede
-          label="Change-risk score"
+          label="Diff-size score"
           value={c.change_risk_score != null ? c.change_risk_score.toFixed(1) : "—"}
           unit="out of 10"
           badge={<PriorityBadge priority={c.review_priority} />}
