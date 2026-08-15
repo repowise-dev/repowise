@@ -25,6 +25,7 @@ Capture-name conventions (shared across ALL .scm files):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 
@@ -206,6 +207,57 @@ def _build_language_registry() -> dict[str, Language]:
 
 _LANGUAGE_REGISTRY: dict[str, Language] = {}
 
+# Languages already reported as having a config but no installed grammar, so
+# the report is one line per language per process instead of one per file. A
+# repo with a few thousand shell scripts otherwise emitted a few thousand
+# identical lines, all saying the same three facts.
+_MISSING_GRAMMAR_REPORTED: set[str] = set()
+
+
+def missing_grammar_languages(language_tags: Iterable[str]) -> list[str]:
+    """Of *language_tags*, those that parse via tree-sitter but have no grammar.
+
+    Answers the question once, in the parent, before up to eight spawned
+    workers each rediscover it and log their own copy of the answer at a level
+    the CLI discards anyway.
+
+    Deliberately uses ``find_spec`` rather than importing: the whole point is
+    to stay cheap enough to run on every index. Building the real registry here
+    would import every tree-sitter package into the parent process, which is
+    memory the parse pool is about to need for something else.
+
+    A tag with no :data:`LANGUAGE_CONFIGS` entry is not a gap — nothing claims
+    to parse it — so it is skipped rather than reported.
+
+    Ceiling: "importable" is not "loadable". A grammar whose compiled ABI does
+    not match the installed ``tree_sitter`` imports fine and then raises inside
+    ``Language()``, which this cannot see, so that case reports nothing here
+    and stays a per-worker debug line. Reporting it properly means loading the
+    grammars, which is the cost this function exists to avoid.
+    """
+    import importlib.util
+
+    specs = {spec.tag: spec for spec in _LANG_REGISTRY.all_specs()}
+    missing: list[str] = []
+    for tag in language_tags:
+        if tag not in LANGUAGE_CONFIGS:
+            continue
+        spec = specs.get(tag)
+        if spec is None:
+            continue
+        package = spec.grammar_package
+        if not package and spec.shares_grammar_with:
+            shared = specs.get(spec.shares_grammar_with)
+            package = shared.grammar_package if shared else None
+        if not package:
+            continue
+        try:
+            if importlib.util.find_spec(package) is None:
+                missing.append(tag)
+        except (ImportError, ValueError):
+            missing.append(tag)
+    return sorted(missing)
+
 
 def _get_language(tag: str) -> Language | None:
     global _LANGUAGE_REGISTRY
@@ -263,12 +315,12 @@ class ASTParser:
         language = _get_language(grammar_tag)
 
         if config is None or language is None:
-            if config is not None and language is None:
-                log.debug(
-                    "tree-sitter grammar unavailable",
-                    language=lang,
-                    path=file_info.path,
-                )
+            if config is not None and language is None and lang not in _MISSING_GRAMMAR_REPORTED:
+                # Once per language, not once per file: the fact is about the
+                # environment, and it does not become truer on the four
+                # thousandth shell script.
+                _MISSING_GRAMMAR_REPORTED.add(lang)
+                log.debug("tree-sitter grammar unavailable", language=lang)
             # Languages without a grammar may still carry regex-tier import
             # extraction (their specs declare import_support="partial");
             # symbols stay empty — the regex tier claims no symbol knowledge.
