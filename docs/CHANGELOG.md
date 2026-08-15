@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Default OpenAI model is now `gpt-5.6-luna`** (was `gpt-5.4-nano`). Same input
+  price ($0.20/MTok), cheaper output ($1.20 vs $1.25), so it gets its own pricing
+  rows rather than an alias, and nano stays selectable on its own rate. The
+  5.6 family also changed its reasoning ladder: `minimal` is gone and `xhigh` is
+  new, so `--reasoning minimal` is now rejected up front for these models instead
+  of failing as a 400 on the first live call. Despite what the model docs say,
+  the API also rejects `max` for 5.6 (verified live against both `gpt-5.6-luna`
+  and `gpt-5.6-sol`), so it is not offered.
+
+---
+
 ## [0.42.0] — 2026-08-13
 
 repowise shipped real integrations for exactly three agents — Claude Code, Codex and VS Code — with no cheap way to add a fourth. The wiring lived in four unrelated places, each carrying its own copy of what a given agent needs, and the two plugins had already forked from one another with nothing detecting the skew. This cycle puts every agent behind one descriptor seam and then proves it by adding three: **Cursor, OpenCode and Hermes**. A new `repowise agents` command group lists what is wired, adds and removes targets, and prints a config snippet for hosts we write nothing for. A support tier is derived from what a target actually wires rather than declared, so the docs cannot claim more than the code delivers.

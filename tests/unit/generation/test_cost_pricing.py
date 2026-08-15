@@ -25,6 +25,18 @@ def test_nano_models_priced_at_nano_rate_not_fallback() -> None:
         assert pricing != _FALLBACK_PRICING
 
 
+def test_luna_priced_from_its_own_row_not_the_gpt5_flagship_tier() -> None:
+    """The default model's failure mode is over-pricing, not the fallback.
+
+    ``gpt-5.6-luna`` carries no "nano"/"mini" qualifier, so with no exact row
+    ``_family_pricing``'s gpt-5 branch prices it at the flagship $2.50/$15,
+    12.5x over on output, and nowhere near ``_FALLBACK_PRICING``, so the usual
+    "not the fallback" assertion would pass while the number was wrong. Assert
+    the exact published rate instead.
+    """
+    assert get_model_pricing("gpt-5.6-luna") == {"input": 0.20, "output": 1.20}
+
+
 def test_unknown_model_still_falls_back() -> None:
     assert get_model_pricing("totally-made-up-model-9000") == _FALLBACK_PRICING
 

@@ -24,9 +24,9 @@ def test_provider_name():
     assert p.provider_name == "openai"
 
 
-def test_default_model_is_nano():
+def test_default_model_is_luna():
     p = OpenAIProvider(api_key="sk-test")
-    assert p.model_name == "gpt-5.4-nano"
+    assert p.model_name == "gpt-5.6-luna"
 
 
 def test_api_key_from_env(monkeypatch):
@@ -59,6 +59,27 @@ def test_supported_reasoning_modes_are_model_specific():
         api_key="sk-test",
         model="gpt-4o",
     ).supported_reasoning_modes() == ("auto",)
+
+
+def test_gpt56_family_ladder_drops_minimal_and_max():
+    """Pin the 5.6 ladder: it is neither the gpt-5 one nor what the docs say.
+
+    Verified against the live API on 2026-08-15 for both variants. The model
+    docs advertise `max`; the API rejects it with `unsupported_value` and names
+    exactly these five. `minimal` is gone from 5.6 entirely, and offering it
+    fails only on a real call, which is what this pins.
+    """
+    for model in ("gpt-5.6-luna", "gpt-5.6-sol"):
+        assert OpenAIProvider(
+            api_key="sk-test",
+            model=model,
+        ).supported_reasoning_modes() == ("auto", "none", "low", "medium", "high", "xhigh")
+
+    # The generic gpt-5 branch is a prefix of gpt-5.6 and must not win.
+    assert "minimal" in OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.4-nano",
+    ).supported_reasoning_modes()
 
 
 def test_gpt54_model():
@@ -113,7 +134,7 @@ def test_available_model_options_falls_back_to_configured_model(monkeypatch):
 
     options = OpenAIProvider(api_key="sk-test").available_model_options()
 
-    assert options[0].model == "gpt-5.4-nano"
+    assert options[0].model == "gpt-5.6-luna"
     assert options[0].recommended is True
     assert options[0].source == "fallback"
 
@@ -247,6 +268,41 @@ async def test_generate_forwards_minimal_reasoning_effort():
     assert captured_kwargs[0]["reasoning_effort"] == "minimal"
 
 
+async def test_generate_forwards_xhigh_reasoning_effort_for_luna():
+    """The top effort 5.6 does accept must reach the API, not be dropped.
+
+    The mapping used to enumerate the efforts it forwarded, so an effort that
+    passed validation but was missing from that list produced a request with no
+    `reasoning_effort` at all, indistinguishable from success at the call site.
+    """
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6-luna")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="xhigh")
+
+    assert captured_kwargs[0]["reasoning_effort"] == "xhigh"
+
+
+async def test_generate_rejects_max_for_luna():
+    """`max` is a valid repowise mode that no OpenAI model accepts."""
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6-luna")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='max' is not supported"):
+            await provider.generate("system msg", "user msg", reasoning="max")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
+
+
 async def test_generate_forwards_none_reasoning_effort_for_gpt51():
     provider = OpenAIProvider(api_key="sk-test", model="gpt-5.1")
     mock_response = _make_mock_chat_response()
@@ -311,7 +367,7 @@ async def test_generate_rejects_minimal_for_non_reasoning_model():
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-5.1", "gpt-5-pro"],
+    ["gpt-5.1", "gpt-5-pro", "gpt-5.6-luna", "gpt-5.6-sol"],
 )
 async def test_generate_rejects_minimal_for_known_unsupported_reasoning_models(model):
     provider = OpenAIProvider(api_key="sk-test", model=model)

@@ -43,6 +43,11 @@ _PRICING: dict[str, dict[str, float]] = {
     # indexing run ~40x.
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
     "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+    # The default. Mandatory rather than cosmetic: `gpt-5.6-luna` contains
+    # neither "nano" nor "mini", so without this row ``_family_pricing``'s
+    # gpt-5 branch prices it at the flagship $2.50/$15 tier, 12.5x over on
+    # output, with no unknown-model warning to notice it by.
+    "gpt-5.6-luna": {"input": 0.20, "output": 1.20},
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     # Google Gemini

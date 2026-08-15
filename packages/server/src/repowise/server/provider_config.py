@@ -58,8 +58,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "openai",
         "name": "OpenAI",
-        "default_model": "gpt-5.4-nano",
-        "models": ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"],
+        "default_model": "gpt-5.6-luna",
+        "models": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"],
         "env_keys": ["OPENAI_API_KEY"],
         "requires_key": True,
     },
@@ -69,7 +69,7 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "default_model": "google/gemini-3.5-flash-lite",
         "models": [
             "google/gemini-3.5-flash-lite",
-            "openai/gpt-5.4-nano",
+            "openai/gpt-5.6-luna",
             "anthropic/claude-haiku-4-5",
             "anthropic/claude-sonnet-5",
         ],

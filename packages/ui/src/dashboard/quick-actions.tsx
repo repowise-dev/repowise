@@ -22,6 +22,7 @@ const COST_TABLE_EXACT: Record<string, [number, number]> = {
   "gpt-5.4": [0.0025, 0.015],
   "gpt-5.4-mini": [0.00075, 0.0045],
   "gpt-5.4-nano": [0.0002, 0.00125],
+  "gpt-5.6-luna": [0.0002, 0.0012],
   "gemini-3.1-pro-preview": [0.002, 0.012],
   "gemini-3-flash-preview": [0.0005, 0.003],
   "gemini-3.1-flash-lite-preview": [0.00025, 0.0015],
@@ -33,6 +34,7 @@ const COST_TABLE_EXACT: Record<string, [number, number]> = {
 };
 
 const COST_TABLE_PREFIX: [string, [number, number]][] = [
+  ["gpt-5.6-luna", [0.0002, 0.0012]],
   ["gpt-5.4-nano", [0.0002, 0.00125]],
   ["gpt-5.4-mini", [0.00075, 0.0045]],
   ["gpt-5.4", [0.0025, 0.015]],

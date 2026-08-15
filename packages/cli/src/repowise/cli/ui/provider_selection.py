@@ -26,7 +26,7 @@ from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 _PROVIDER_DEFAULTS: dict[str, str] = {
     "gemini": "gemini-3.5-flash-lite",
-    "openai": "gpt-5.4-nano",
+    "openai": "gpt-5.6-luna",
     "anthropic": "claude-haiku-4-5",
     "deepseek": "deepseek-v4-flash",
     "kimi": "kimi-for-coding",
@@ -642,6 +642,11 @@ def interactive_provider_select(
 # family name is a flagship one, so `gpt-5.4-nano` is not mistaken for `gpt-5`.
 _BUDGET_MODEL_TOKENS = (
     "nano",
+    # OpenAI's 5.6 budget tier carries no cheap-tier word in its name, and
+    # `gpt-5` matches it as flagship. Without this, accepting the default
+    # printed a note advising the user to switch to a cheaper model than the
+    # one they were already on.
+    "luna",
     "mini",
     "lite",
     "haiku",

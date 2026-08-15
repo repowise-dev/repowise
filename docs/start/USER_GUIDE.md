@@ -414,7 +414,7 @@ repowise export --format markdown --output ./docs/wiki/   # static hosting
 ### Changing provider or model
 
 ```bash
-repowise init --provider openai --model gpt-5.4-nano --force   # regenerate
+repowise init --provider openai --model gpt-5.6-luna --force   # regenerate
 repowise update --provider gemini                              # just future updates
 ```
 
