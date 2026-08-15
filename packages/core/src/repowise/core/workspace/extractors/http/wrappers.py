@@ -110,6 +110,125 @@ _SINK_CALL_NAMES_BY_SUFFIX: dict[str, frozenset[str]] = {
 }
 
 
+_JS_LIKE = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs"})
+
+# A ``/`` opens a regex literal (rather than dividing) when the previous
+# significant character cannot end an expression. The standard heuristic, and
+# enough to stop a ``/\\)/`` corrupting a parenthesis scan.
+_REGEX_PRECEDERS = frozenset("(,=:[!&|?{};+-*%~^<>")
+
+
+def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
+    """Blank out comments — and optionally string bodies — preserving offsets.
+
+    Every masked character is replaced by a space and newlines are kept, so the
+    result is the same length as *text* and indexes into it interchangeably.
+    That is what lets the call scanner match against masked text while slicing
+    arguments by the same offsets.
+
+    Two callers, two needs. Sink detection masks strings as well, because a
+    ``fetch(`` inside a comment or a string is not a call — without this, a
+    symbol is confirmed an HTTP wrapper by a line like
+    ``// used to fetch(path) directly``, which is the name-guessing failure
+    reappearing through the back door. The call-site scanner masks comments
+    only, since it still has to read the URL literal it is looking for.
+    """
+    if suffix.lower() not in _JS_LIKE:
+        # Python: ``#`` to end of line. Triple-quoted strings are left alone;
+        # no sink pattern here matches inside one without a call following it.
+        if suffix.lower() != ".py":
+            return text
+        out = list(text)
+        i, n, in_str = 0, len(text), ""
+        while i < n:
+            ch = text[i]
+            if in_str:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == in_str:
+                    in_str = ""
+            elif ch in "'\"":
+                in_str = ch
+            elif ch == "#":
+                while i < n and text[i] != "\n":
+                    out[i] = " "
+                    i += 1
+                continue
+            i += 1
+        return "".join(out)
+
+    out = list(text)
+    i, n = 0, len(text)
+    # Stack of open template literals, so a nested `` `x` `` inside ``${...}``
+    # is opened rather than read as closing the outer one.
+    tmpl_depth: list[int] = []
+    quote = ""
+    prev_sig = ""
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                if strings:
+                    out[i] = " "
+                    if i + 1 < n and text[i + 1] != "\n":
+                        out[i + 1] = " "
+                i += 2
+                continue
+            if quote == "`" and ch == "$" and i + 1 < n and text[i + 1] == "{":
+                tmpl_depth.append(1)
+                quote = ""
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            elif strings:
+                out[i] = " " if ch != "\n" else "\n"
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            while i < n and not (text[i] == "*" and i + 1 < n and text[i + 1] == "/"):
+                if text[i] != "\n":
+                    out[i] = " "
+                i += 1
+            for j in range(i, min(i + 2, n)):
+                out[j] = " "
+            i += 2
+            continue
+        if ch == "/" and prev_sig in _REGEX_PRECEDERS:
+            i += 1
+            while i < n and text[i] != "\n":
+                if text[i] == "\\":
+                    out[i] = " "
+                    if i + 1 < n:
+                        out[i + 1] = " "
+                    i += 2
+                    continue
+                if text[i] == "/":
+                    out[i] = " "
+                    i += 1
+                    break
+                out[i] = " "
+                i += 1
+            continue
+        if ch in "'\"`":
+            quote = ch
+        elif tmpl_depth and ch == "}":
+            tmpl_depth.pop()
+            quote = "`"
+        elif tmpl_depth and ch == "{":
+            tmpl_depth[-1] += 1
+        if not ch.isspace():
+            prev_sig = ch
+        i += 1
+    return "".join(out)
+
+
 def sink_patterns(suffix: str) -> tuple[re.Pattern[str], ...]:
     """The sink patterns for *suffix*, or empty when the language has none."""
     return _SINKS_BY_SUFFIX.get(suffix.lower(), ())
@@ -181,7 +300,11 @@ def confirm_wrappers(
     if not patterns:
         return set()
 
-    lines = content.split("\n")
+    # Comments and string bodies are blanked before any sink or hop matching:
+    # a `fetch(` inside `// used to fetch(path) directly` is prose, and
+    # confirming a wrapper on it would reintroduce name-guessing by another
+    # route. Masking preserves offsets, so symbol line ranges still apply.
+    lines = mask_source(content, suffix, strings=True).split("\n")
     by_name = _callable_symbols(parsed)
     if not by_name:
         return set()

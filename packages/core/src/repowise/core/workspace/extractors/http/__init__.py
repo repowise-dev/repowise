@@ -62,10 +62,11 @@ CONSUMER_DIALECTS: tuple[HttpDialect, ...] = (
 # runs its dialect, because nothing reads their decorators yet.
 _INDEX_BACKED_DIALECTS = frozenset({"fastapi"})
 
-# Consumer dialects the index path replaces for a file it produced consumers
-# for. Same per-file, non-empty rule as the provider side: a file whose parse is
-# missing, stale, or yielded nothing keeps its full regex coverage, so the
-# confirmed-wrapper pass can only ever add recall, never subtract it.
+# Consumer dialects whose duplicates the index pass removes. Unlike the
+# provider side this supersedes per *contract id*, not per file: the index pass
+# reads wrapper calls, while the dialect also reads shapes the index pass does
+# not model (``axios.get``), so dropping the dialect wholesale for a file would
+# subtract recall from a change made to add it.
 _INDEX_BACKED_CONSUMER_DIALECTS = frozenset({"js-clients"})
 
 
@@ -170,12 +171,20 @@ class HttpExtractor:
                 if from_parse and dialect.name in _INDEX_BACKED_DIALECTS:
                     continue  # superseded by the index pass above
                 contracts.extend(dialect.extract(ctx))
+            index_ids = {c.contract_id for c in consumers_from_parse}
             for dialect in self.consumer_dialects:
                 if suffix not in dialect.extensions:
                     continue
-                if consumers_from_parse and dialect.name in _INDEX_BACKED_CONSUMER_DIALECTS:
-                    continue  # superseded by the confirmed-wrapper pass above
-                contracts.extend(dialect.extract(ctx))
+                found = dialect.extract(ctx)
+                if index_ids and dialect.name in _INDEX_BACKED_CONSUMER_DIALECTS:
+                    # Supersede per *contract*, not per file. Dropping the whole
+                    # dialect for a file the index read would delete anything
+                    # the index cannot see but the regex can — an ``axios.get``
+                    # beside a confirmed wrapper, say — which is a silent loss
+                    # of recall in a change made to increase it. Only the
+                    # duplicates the index already produced are removed.
+                    found = [c for c in found if c.contract_id not in index_ids]
+                contracts.extend(found)
         return contracts
 
     def _collect_mounts(self, files: list[tuple[str, str, str]]) -> dict[str, str]:

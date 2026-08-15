@@ -120,7 +120,11 @@ class TestClassMethodWrapper:
 
     def test_provenance_is_the_index_layer(self):
         contracts, _u, _c = _run(CLIENT_TS)
-        assert all(c.meta[EXTRACTION_LAYER_KEY] == LAYER_INDEX for c in contracts)
+        # Compared against the literal, not the constant the production code
+        # sets: asserting `== LAYER_INDEX` would move with any rename and could
+        # never fail.
+        assert all(c.meta[EXTRACTION_LAYER_KEY] == "index" for c in contracts)
+        assert LAYER_INDEX == "index"
 
     def test_the_regex_dialect_alone_cannot_see_these(self):
         """Fails before this change: the generic type argument breaks the regex.
@@ -457,6 +461,176 @@ export class HostedApiClient {
         }
         assert all(lk.consumer_repo == "frontend" for lk in links)
         assert all(lk.provider_repo == "backend" for lk in links)
+
+
+class TestLexicalNoiseIsNotEvidence:
+    """Comments and string bodies are not code, and must not confirm anything.
+
+    Every case here was found by review of the first implementation, which
+    searched raw text. Each one made the layer emit a contract for something
+    that is not a call, which is the same name-guessing failure arriving by a
+    different route.
+    """
+
+    def test_a_sink_mentioned_in_a_comment_does_not_confirm_a_wrapper(self):
+        source = (
+            "const cache = new Map<string, string>();\n"
+            "export function niceWrapper(path: string) {\n"
+            "  // TODO: used to fetch(path) directly, now cached\n"
+            "  return cache.get(path);\n"
+            "}\n"
+            'export function go() { return niceWrapper("/users/me"); }\n'
+        )
+        contracts, unresolved, _c = _run(source, "src/lib/cache.ts")
+        assert contracts == []
+        assert unresolved == 0
+
+    def test_a_sink_named_in_a_string_does_not_confirm_a_wrapper(self):
+        source = (
+            "export function describeIt(path: string) {\n"
+            '  return "call fetch(" + path + ") to load";\n'
+            "}\n"
+            'export function go() { return describeIt("/users/me"); }\n'
+        )
+        contracts, _u, _c = _run(source, "src/lib/desc.ts")
+        assert contracts == []
+
+    def test_a_commented_out_call_is_not_a_contract(self):
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  live() { return this.fetch<A>('/live'); }\n"
+            "  // dead() { return this.fetch<A>('/dead'); }\n"
+            "}\n"
+        )
+        contracts, _u, _c = _run(source, "src/lib/c.ts")
+        assert _ids(contracts) == {"http::GET::/live"}
+
+    def test_an_apostrophe_in_a_comment_does_not_swallow_the_call(self):
+        """A stray quote used to desynchronise the argument scanner."""
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  getIt(id: string) {\n"
+            "    return this.fetch<Snap>(\n"
+            "      // don't cache this\n"
+            "      `/snapshots/${id}`\n"
+            "    );\n"
+            "  }\n"
+            "}\n"
+        )
+        contracts, unresolved, _c = _run(source, "src/lib/c.ts")
+        assert _ids(contracts) == {"http::GET::/snapshots/{param}"}
+        assert unresolved == 0
+
+    def test_nested_template_literals_parse(self):
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  q(id: string, f: string) {\n"
+            "    return this.fetch<A>(`/a/${f ? `${id}` : `none`}/b`);\n"
+            "  }\n"
+            "  after() { return this.fetch<A>('/plain'); }\n"
+            "}\n"
+        )
+        contracts, _u, _c = _run(source, "src/lib/c.ts")
+        # The nested-template call normalises to {param}; the crucial part is
+        # that the call *after* it still parses, which a desynced scan loses.
+        assert "http::GET::/plain" in _ids(contracts)
+
+    def test_a_regex_literal_containing_a_paren_does_not_desync(self):
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  a(s: string) { return this.fetch<A>('/x/' + s.replace(/\\)/g, '')); }\n"
+            "  b() { return this.fetch<A>('/after'); }\n"
+            "}\n"
+        )
+        contracts, _u, _c = _run(source, "src/lib/c.ts")
+        assert "http::GET::/after" in _ids(contracts)
+
+
+class TestNothingFoundIsSilentlyDropped:
+    def test_an_unparseable_argument_list_is_counted_not_dropped(self):
+        """A scanner failure must show up in the number, not hide in it."""
+        from repowise.core.workspace.extractors.http import index_clients
+
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  ok() { return this.fetch<A>('/ok'); }\n"
+            "  weird(p: string) { return this.fetch<A>(p); }\n"
+            "}\n"
+        )
+        # Force every paren scan to fail, the way a malformed file would.
+        original = index_clients._match_paren
+        index_clients._match_paren = lambda _c, _i: -1
+        try:
+            contracts, unresolved, _c = _run(source, "src/lib/c.ts")
+        finally:
+            index_clients._match_paren = original
+        assert contracts == []
+        # Both call sites failed to parse; neither vanished.
+        assert unresolved >= 2
+
+
+class TestSupersedeCannotSubtract:
+    """The index pass removes its own duplicates, never another shape."""
+
+    def test_an_axios_call_survives_beside_a_confirmed_wrapper(self, tmp_path):
+        from repowise.core.workspace.extractors.http import HttpExtractor
+
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  wrapped() { return this.fetch<A>('/wrapped'); }\n"
+            "}\n"
+            "export function legacy() { return axios.get('/legacy'); }\n"
+        )
+        parsed = _parse("src/lib/mix.ts", source)
+        got = HttpExtractor().extract(
+            tmp_path,
+            "frontend",
+            None,
+            files=[("src/lib/mix.ts", ".ts", source)],
+            index={"src/lib/mix.ts": parsed},
+            content_hashes={"src/lib/mix.ts": parsed.content_hash},
+        )
+        ids = _ids(got)
+        assert "http::GET::/wrapped" in ids  # from the index pass
+        assert "http::GET::/legacy" in ids  # only the regex dialect sees this
+
+    def test_duplicates_are_not_emitted_twice(self, tmp_path):
+        from repowise.core.workspace.extractors.http import HttpExtractor
+
+        source = (
+            "export async function load() {\n"
+            "  return fetch('/dup');\n"
+            "}\n"
+        )
+        parsed = _parse("src/lib/dup.ts", source)
+        got = HttpExtractor().extract(
+            tmp_path,
+            "frontend",
+            None,
+            files=[("src/lib/dup.ts", ".ts", source)],
+            index={"src/lib/dup.ts": parsed},
+            content_hashes={"src/lib/dup.ts": parsed.content_hash},
+        )
+        dup = [c for c in got if c.contract_id == "http::GET::/dup"]
+        assert len(dup) == 1
 
 
 @pytest.mark.parametrize(
