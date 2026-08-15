@@ -199,18 +199,18 @@ class TestFingerprintDeterminism:
         monkeypatch.setattr(knowledge_graph, "KG_BUILDER_VERSION", "test-next")
         assert compute_kg_fingerprint(gb) != before
 
-    def test_builder_version_is_a_stable_constant(self):
-        """Pins the fold to a constant, not to something that drifts per run.
+    def test_builder_version_is_a_hand_edited_literal(self):
+        """The bump is a decision, so it has to be visible in a diff.
 
-        A value derived from a clock or from the module's own bytes would make
-        every update rebuild the knowledge graph forever — the failure mode
-        opposite to the one the constant exists to fix, and the more expensive
-        of the two.
+        Deliberately asserts the literal. The first cut of this test asserted
+        only ``isinstance(..., str)`` and non-emptiness, which a value derived
+        from the module's own bytes — the exact failure it claimed to guard —
+        would have passed unchanged. There is no way to check "somebody chose
+        this" other than to pin what they chose, and the cost is the honest
+        one: whoever bumps the constant updates this line and sees, in the
+        diff, that they are asking every existing store to re-curate.
         """
-        gb = self._make_graph_builder(["a.py"], [], {"a.py": 0})
-        assert compute_kg_fingerprint(gb) == compute_kg_fingerprint(gb)
-        assert isinstance(knowledge_graph.KG_BUILDER_VERSION, str)
-        assert knowledge_graph.KG_BUILDER_VERSION
+        assert knowledge_graph.KG_BUILDER_VERSION == "2"
 
 
 # ---------------------------------------------------------------------------

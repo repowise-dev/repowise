@@ -1764,9 +1764,13 @@ def run_update(
     flush_cost_tracker(cost_tracker)
 
     # LLM re-enrichment of the refreshed KG (layer naming + summary backfill
-    # from this run's regenerated pages), mirroring the init pipeline. Only
-    # runs when the graph shape changed — carry-forward already preserved the
-    # prior names, so an unchanged KG never pays an enrichment call.
+    # from this run's regenerated pages), mirroring the init pipeline. Runs
+    # whenever the refresh returned a result, which is the graph shape moving
+    # *or* KG_BUILDER_VERSION being bumped by a release — the second is a graph
+    # that did not change, and it still pays here. That is deliberate and it is
+    # the one cost of the version bump: a wider edge map or a new entry-point
+    # ranking changes the layers, and layer names the carry-forward restored
+    # were written against the old ones.
     if knowledge_graph_result is not None:
         try:
             from repowise.core.generation.knowledge_graph import enrich_knowledge_graph

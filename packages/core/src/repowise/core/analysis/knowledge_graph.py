@@ -211,8 +211,8 @@ def _slugify(text: str) -> str:
 # measures the input graph and would let an existing store serve the old
 # artifact indefinitely. See that function for why one bump is one rebuild.
 #
-# "2" for 0.43.0: `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points`
-# changed its ranking, neither of which moves a node or edge count.
+# "2": `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points` changed its
+# ranking, neither of which moves a node or edge count.
 KG_BUILDER_VERSION = "2"
 
 # An unmapped type is dropped from the export entirely (see the
@@ -433,11 +433,23 @@ def compute_kg_fingerprint(graph_builder: Any) -> str:
 
     :data:`KG_BUILDER_VERSION` closes that: bump it in the same commit as a
     change to what the builder or the curation pass emits, and every existing
-    store rebuilds its knowledge graph exactly once, on the next ordinary
-    ``repowise update``. The rebuild is the deterministic skeleton and curation
-    passes over a graph the run already holds — no model, no re-index, nothing
-    for the user to do. One rebuild and not a loop: the new value is stored as
-    the artifact's fingerprint, so the next run matches and skips.
+    store rebuilds its knowledge graph once, on its next ``repowise update``
+    that has work to do. Two limits on that sentence, both deliberate:
+
+    * An update with nothing to do returns ``NOOP`` before the refresh is
+      reached, so a repo with no new commits stays on its old artifact until
+      something changes. That is the right trade — the alternative is making
+      every quiet repo in the world re-curate on a version bump — but it does
+      mean this is not a hard guarantee of "everyone, once".
+    * The rebuild itself is deterministic and model-free (skeleton plus
+      curation over a graph the run already holds, betweenness served from its
+      disk cache). On a **docs** update the non-``None`` result then also
+      triggers one KG layer-enrichment LLM call per five layers, which is real
+      spend the caller pays for a graph whose shape did not change. Index-only
+      and keyless runs never reach it.
+
+    One rebuild and not a loop: the new value is stored as the artifact's
+    fingerprint, so the next run matches and skips.
     """
     g = graph_builder.graph()
     cd = graph_builder.community_detection()
