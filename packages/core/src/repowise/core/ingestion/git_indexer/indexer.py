@@ -98,6 +98,7 @@ class GitIndexer:
         on_commit_done: Callable[[], None] | None = None,
         on_co_change_start: Callable[[int], None] | None = None,
         on_co_change_done: Callable[[], None] | None = None,
+        on_warning: Callable[[str], None] | None = None,
     ) -> tuple[GitIndexSummary, list[dict]]:
         """Full index of all tracked files. Returns summary + list of metadata
         dicts ready for bulk upsert.
@@ -113,11 +114,30 @@ class GitIndexer:
           on_co_change_done() — fired the moment co-change accumulation
                                 completes (BEFORE per-file git indexing
                                 finishes).
+          on_warning(text) — reports a degraded git phase to the caller.
         """
         start = time.monotonic()
         repo = self._get_repo()
         if repo is None:
             return GitIndexSummary(0, 0, 0, 0.0), []
+
+        partial_filter = self._partial_clone_filter(repo)
+        if partial_filter is not None:
+            warning = (
+                "Git history skipped for partial clone "
+                f"(filter: {partial_filter}) to avoid fetching missing objects; "
+                "use a full clone to enable history, churn, and ownership signals."
+            )
+            logger.warning(
+                "git_history_skipped_partial_clone",
+                partial_clone_filter=partial_filter,
+            )
+            if on_warning is not None:
+                with contextlib.suppress(Exception):
+                    on_warning(warning)
+            if on_start is not None:
+                on_start(0)
+            return GitIndexSummary(0, 0, 0, time.monotonic() - start), []
 
         tracked_files = self._get_tracked_files(repo)
         if not tracked_files:
@@ -926,6 +946,41 @@ class GitIndexer:
                 error=str(exc),
             )
             return None
+
+    @staticmethod
+    def _partial_clone_filter(repo: Any) -> str | None:
+        """Return the active partial-clone filter for a promisor remote.
+
+        History walks use ``--numstat``, which needs blob contents. Git silently
+        downloads missing blobs for a promisor remote, turning an otherwise local
+        index into an unbounded network operation. Detection reads local config
+        only and degrades safely when Git cannot answer.
+        """
+        try:
+            promisor_config = repo.git.config(
+                "--get-regexp",
+                r"^remote\..*\.promisor$",
+            )
+        except Exception:
+            return None
+
+        for line in promisor_config.splitlines():
+            key, separator, value = line.partition(" ")
+            if not separator or value.strip().lower() != "true":
+                continue
+            parts = key.split(".")
+            if len(parts) < 3:
+                continue
+            remote = ".".join(parts[1:-1])
+            try:
+                clone_filter = repo.git.config(
+                    "--get",
+                    f"remote.{remote}.partialclonefilter",
+                ).strip()
+            except Exception:
+                clone_filter = ""
+            return clone_filter or "promisor"
+        return None
 
     def _get_tracked_files(self, repo: Any) -> list[str]:
         try:

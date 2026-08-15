@@ -859,6 +859,44 @@ class TestGitUnavailableGraceful:
         assert summary.stable_files == 0
         assert metadata == []
 
+    @pytest.mark.asyncio
+    async def test_partial_clone_skips_history_without_touching_objects(self) -> None:
+        """A promisor clone must not turn local indexing into a network fetch."""
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            "remote.origin.promisor true",
+            "blob:none",
+        ]
+        on_start = MagicMock()
+        on_warning = MagicMock()
+
+        with (
+            patch.object(indexer, "_get_repo", return_value=repo),
+            patch.object(indexer, "_get_tracked_files") as get_tracked_files,
+        ):
+            summary, metadata = await indexer.index_repo(
+                "test-repo-id",
+                on_start=on_start,
+                on_warning=on_warning,
+            )
+
+        assert summary.files_indexed == 0
+        assert metadata == []
+        on_start.assert_called_once_with(0)
+        on_warning.assert_called_once()
+        assert "partial clone" in on_warning.call_args.args[0]
+        assert "blob:none" in on_warning.call_args.args[0]
+        get_tracked_files.assert_not_called()
+        repo.git.log.assert_not_called()
+
+    def test_non_promisor_clone_keeps_history_enabled(self) -> None:
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = RuntimeError("no matching config")
+
+        assert indexer._partial_clone_filter(repo) is None
+
 
 # ---------------------------------------------------------------------------
 # 6. test_co_change_below_threshold_skipped
