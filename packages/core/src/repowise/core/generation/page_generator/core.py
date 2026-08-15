@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -419,6 +419,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                 target_path=target_path,
                 reason=str(first_failure),
             )
+            discarded = response
             response = await self._provider.generate(
                 system_prompt,
                 self._corrective_prompt(user_prompt, first_failure),
@@ -431,6 +432,19 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             # A second failure raises, so the caller's stub-fallback path is
             # reached exactly as it was before the retry existed.
             validate_generated_response(response)
+            # The discarded attempt was billed. Carrying its tokens forward is
+            # what keeps the run report's totals equal to what the provider
+            # actually charged for; the page itself is the retry's content.
+            # ``self_repair`` fills the report row of the same name, which
+            # distinguishes a page that needed a second attempt from one that
+            # was lost — the artifact tallies alone cannot tell them apart.
+            response = replace(
+                response,
+                input_tokens=response.input_tokens + discarded.input_tokens,
+                output_tokens=response.output_tokens + discarded.output_tokens,
+                cached_tokens=response.cached_tokens + discarded.cached_tokens,
+                usage={**response.usage, "self_repair": True},
+            )
 
         if self._config.cache_enabled:
             self._cache[key] = response
@@ -535,6 +549,11 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # exists byte-identically.
         if response.usage.get("reused_from_prior_run"):
             page.metadata["reused_from_prior_run"] = True
+        # A first attempt was rejected and the re-ask produced this page. Feeds
+        # the report's "Self-repaired pages" row, so a run says how often the
+        # backstop was load-bearing instead of only how often it failed.
+        if response.usage.get("self_repair"):
+            page.metadata["self_repair"] = True
         return page
 
     def _render(self, template_name: str, *, style_prefix: bool = True, **kwargs: Any) -> str:

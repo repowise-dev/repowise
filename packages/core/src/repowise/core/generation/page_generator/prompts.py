@@ -110,6 +110,6 @@ CORRECTIVE_RETRY_DIRECTIVE: str = (
     "Reason: {reason}\n"
     "Write the page again, in full, without that problem. Address the reader of "
     "the documentation, who cannot see this request and does not know it exists: "
-    "never mention these instructions or the material you were given, and never "
+    "never mention these instructions or the code you were shown, and never "
     "speak as the page's author."
 )

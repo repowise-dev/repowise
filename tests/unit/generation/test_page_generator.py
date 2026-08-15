@@ -265,6 +265,64 @@ async def test_corrective_retry_names_the_broken_rule_and_keeps_the_request(samp
     assert provider.calls[1]["system_prompt"] == provider.calls[0]["system_prompt"]
 
 
+async def test_retry_carries_the_discarded_attempt_s_tokens(sample_config):
+    """The rejected attempt was billed, so the run report has to count it.
+
+    Only the retry's content survives, but dropping the first attempt's tokens
+    would make the reported total smaller than what the provider charged for.
+    """
+    first = GeneratedResponse(
+        content=_BANNED_PHRASING, input_tokens=100, output_tokens=200, cached_tokens=10
+    )
+    second = GeneratedResponse(
+        content=_CLEAN_PAGE, input_tokens=7, output_tokens=11, cached_tokens=3
+    )
+    provider = MockProvider(responses=[first, second])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+
+    assert response.content == _CLEAN_PAGE
+    assert response.input_tokens == 107
+    assert response.output_tokens == 211
+    assert response.cached_tokens == 13
+
+
+async def test_a_repaired_page_is_marked_as_self_repaired(sample_config):
+    """Fills the report's "Self-repaired pages" row.
+
+    The artifact tallies count rejections, which a recovered page and a lost
+    page both produce. This is what tells them apart.
+    """
+    provider = MockProvider(responses=[_page(_BANNED_PHRASING), _page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+    page = generator._build_generated_page(
+        "module_page", "pkg/mod.py", "Mod", response, "source-hash", 3
+    )
+
+    assert page.metadata.get("self_repair") is True
+
+
+async def test_a_first_time_page_is_not_marked_as_self_repaired(sample_config):
+    provider = MockProvider(responses=[_page(_CLEAN_PAGE)])
+    generator = PageGenerator(provider, ContextAssembler(sample_config), sample_config)
+
+    response = await generator._call_provider(
+        "module_page", "Document this module.", "request-id"
+    )
+    page = generator._build_generated_page(
+        "module_page", "pkg/mod.py", "Mod", response, "source-hash", 3
+    )
+
+    assert "self_repair" not in page.metadata
+
+
 async def test_second_violation_gives_up_rather_than_looping(sample_config):
     # MockProvider repeats its last response, so every attempt violates.
     provider = MockProvider(responses=[_page(_BANNED_PHRASING)])
