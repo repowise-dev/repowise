@@ -34,7 +34,6 @@ def _feat(**kw) -> ChangeFeatures:
 
 def test_score_is_bounded_and_levelled() -> None:
     risk = score_change(_feat(la=200, ld=120, nf=30, nd=12, ns=6, entropy=4.0, exp=0))
-    assert 0.0 <= risk.probability <= 1.0
     assert 0.0 <= risk.score <= 10.0
     assert risk.level in {"low", "moderate", "high"}
 
@@ -45,7 +44,6 @@ def test_logit_is_exact_sum_of_driver_contributions() -> None:
     f = _feat(la=50, ld=10, nf=5, nd=3, ns=2, entropy=2.0, exp=8)
     risk = score_change(f)
     logit = float(_CONSTANTS["intercept"]) + sum(d.contribution for d in risk.drivers)
-    assert risk.probability == pytest.approx(_sigmoid(logit))
     assert risk.score == pytest.approx(round(10.0 * _sigmoid(logit), 1))
 
 
@@ -78,7 +76,7 @@ def test_unknown_experience_is_neutral() -> None:
     logit = float(_CONSTANTS["intercept"]) + sum(
         d.contribution for d in risk.drivers if d.feature != "exp"
     )
-    assert risk.probability == pytest.approx(_sigmoid(logit))
+    assert risk.score == pytest.approx(round(10.0 * _sigmoid(logit), 1))
 
 
 def test_top_drivers_sorted_by_magnitude() -> None:
@@ -278,7 +276,7 @@ def test_score_change_on_real_commit(git_repo: Path) -> None:
     risk = score_change(f)
     assert 0.0 <= risk.score <= 10.0
     assert risk.features is f
-    assert not math.isnan(risk.probability)
+    assert not math.isnan(risk.score)
 
 
 def test_extract_commit_features_bad_revspec_raises(git_repo: Path) -> None:
@@ -333,13 +331,13 @@ def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
 
     baseline.clear_baseline_cache()
     calls = {"n": 0}
-    real = baseline.baseline_scores
+    real = baseline.baseline_samples
 
     def _counting(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+    monkeypatch.setattr(baseline, "baseline_samples", _counting)
 
     first = score_live_change(str(git_repo), "HEAD", baseline=200)
     second = score_live_change(str(git_repo), "HEAD", baseline=200)
@@ -353,6 +351,55 @@ def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
     score_live_change(str(git_repo), "HEAD", baseline=200)
     assert calls["n"] == 2
 
+    baseline.clear_baseline_cache()
+
+
+def test_baseline_cache_shared_across_distinct_commits(git_repo: Path, monkeypatch) -> None:
+    # The memo exists for the long-lived MCP server that scores many changes
+    # against one repo state. Keying it on the target defeated that, so two
+    # different merged commits must now share a single walk.
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+    older = _commit(git_repo, {"src/a.py": "a = 1\n"}, "feat: a", author="Dev")
+    newer = _commit(git_repo, {"src/b.py": "b = 2\n"}, "feat: b", author="Dev")
+
+    baseline.clear_baseline_cache()
+    calls = {"n": 0}
+    real = baseline.baseline_samples
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(baseline, "baseline_samples", _counting)
+
+    first = score_live_change(str(git_repo), older, baseline=200)
+    second = score_live_change(str(git_repo), newer, baseline=200)
+    third = score_live_change(str(git_repo), baseline=200)  # clean tree -> HEAD
+
+    assert calls["n"] == 1
+    # Each still excludes only itself, so every sample is the same size.
+    assert first.baseline_sample_size == second.baseline_sample_size
+    assert third.baseline_sample_size == first.baseline_sample_size
+
+    baseline.clear_baseline_cache()
+
+
+def test_commit_does_not_rank_against_itself(git_repo: Path) -> None:
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+
+    baseline.clear_baseline_cache()
+    samples = baseline.baseline_samples(str(git_repo), "HEAD", 200, ())
+    result = score_live_change(str(git_repo), "HEAD", baseline=200)
+
+    # The cached walk holds every commit; the ranking drops exactly one - the
+    # target - so the two sizes differ by one and no more.
+    assert result.baseline_sample_size == len(samples) - 1
     baseline.clear_baseline_cache()
 
 
@@ -371,13 +418,13 @@ def test_baseline_cache_isolated_by_filters(git_repo: Path, monkeypatch) -> None
 
     baseline.clear_baseline_cache()
     calls = {"n": 0}
-    real = baseline.baseline_scores
+    real = baseline.baseline_samples
 
     def _counting(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+    monkeypatch.setattr(baseline, "baseline_samples", _counting)
 
     score_live_change(str(git_repo), "HEAD", baseline=200)
     score_live_change(str(git_repo), "HEAD", baseline=200, extensions=("py",))
@@ -385,3 +432,138 @@ def test_baseline_cache_isolated_by_filters(git_repo: Path, monkeypatch) -> None
     assert calls["n"] == 2
 
     baseline.clear_baseline_cache()
+
+
+# ---------------------------------------------------------------------------
+# The unit actually scored: working tree, merge commits, unknown authors.
+# ---------------------------------------------------------------------------
+
+
+def test_default_revspec_scores_the_uncommitted_change(git_repo: Path) -> None:
+    """No revspec + a dirty tree means the code the caller just wrote."""
+    _commit(git_repo, {"src/a.py": "x = 1\n"}, "feat: a", author="Dev")
+    (git_repo / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")  # unstaged
+    (git_repo / "src" / "staged.py").write_text("s = 1\n", encoding="utf-8")
+    _git(["add", "src/staged.py"], git_repo)
+    (git_repo / "src" / "new.py").write_text("n = 1\nm = 2\n", encoding="utf-8")  # untracked
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is True
+    assert result.features.ref == "working tree"
+    assert result.features.nf == 3  # unstaged edit, staged add, untracked add
+    assert result.features.la == 4  # 1 + 1 + 2
+    assert change_risk_payload(result)["working_tree"] is True
+
+
+def test_dirt_the_filters_drop_falls_back_to_head(git_repo: Path) -> None:
+    """A tree dirty only in excluded paths is not a change we can score."""
+    _commit(git_repo, {"src/a.py": "x = 1\n"}, "feat: a", author="Dev")
+    (git_repo / "notes.md").write_text("scratch\n", encoding="utf-8")
+
+    result = score_live_change(str(git_repo), extensions=(".py",), baseline=0)
+
+    assert result.working_tree is False
+    assert result.features.ref == "HEAD"
+    assert result.features.nf == 1  # the committed src/a.py, not an empty change
+
+
+def test_explicit_head_scores_the_commit_even_when_dirty(git_repo: Path) -> None:
+    """An explicit revspec always means committed refs."""
+    _commit(git_repo, {"src/a.py": "x = 1\n"}, "feat: a", author="Dev")
+    (git_repo / "src" / "dirty.py").write_text("d = 1\n", encoding="utf-8")
+
+    result = score_live_change(str(git_repo), "HEAD", baseline=0)
+
+    assert result.working_tree is False
+    assert result.features.nf == 1
+    assert result.features.la == 1
+    assert change_risk_payload(result)["working_tree"] is False
+
+
+def test_default_revspec_falls_back_to_head_when_clean(git_repo: Path) -> None:
+    head = _commit(git_repo, {"src/a.py": "x = 1\n"}, "feat: a", author="Dev")
+
+    result = score_live_change(str(git_repo), baseline=0)
+
+    assert result.working_tree is False
+    assert result.features.ref == "HEAD"
+    assert result.features.subject == "feat: a"
+    assert head  # the tree is clean, so the commit is the subject
+
+
+def test_merge_commit_scores_its_first_parent_diff(git_repo: Path) -> None:
+    """A merge is scored for what it brought onto the first parent.
+
+    Combined-diff semantics drop every file that matches a parent, which would
+    score a whole merged PR as an empty change.
+    """
+    _git(["checkout", "-q", "-b", "side"], git_repo)
+    _commit(git_repo, {"side.py": "s = 1\ns2 = 2\n"}, "feat: side", author="Dev")
+    _git(["checkout", "-q", "-"], git_repo)
+    _commit(git_repo, {"main.py": "m = 1\n"}, "feat: main", author="Dev")
+    _git(
+        ["-c", "user.name=Dev", "-c", "user.email=t@e.com", "merge", "-q", "--no-ff", "side",
+         "-m", "merge: side"],
+        git_repo,
+    )
+
+    f = extract_commit_features(str(git_repo), "HEAD", extensions=(".py",))
+
+    # side.py is exactly what the merge added to the first parent; main.py was
+    # already there. The reverse holds for the second parent, so a combined
+    # diff would report neither.
+    assert f.nf == 1
+    assert f.la == 2
+    assert f.exp is not None  # ``sha^`` is the first parent, so the walk resolves
+
+
+def test_failed_author_lookup_is_unknown_not_zero(git_repo: Path, monkeypatch) -> None:
+    """A lookup that fails must not read as a first-ever commit.
+
+    ``exp=0`` is a real value the model pushes risk up for; ``None`` is the
+    neutral path it already has for a caller with no history to read.
+    """
+    from repowise.core.analysis.change_risk import features as feature_mod
+
+    _commit(git_repo, {"a.py": "x = 1\n"}, "feat: a", author="Dev")
+    real_git = feature_mod._git
+
+    def _fail_rev_list(args, cwd, *, check=True):
+        if args[:1] == ["rev-list"]:
+            return "fatal: bad revision\n"  # what check=False yields on error
+        return real_git(args, cwd, check=check)
+
+    monkeypatch.setattr(feature_mod, "_git", _fail_rev_list)
+    f = extract_commit_features(str(git_repo), "HEAD")
+
+    assert f.exp is None
+    exp_driver = next(d for d in score_change(f).drivers if d.feature == "exp")
+    assert exp_driver.contribution == 0.0
+
+
+def test_collinear_diffusion_features_are_not_reported_as_drivers() -> None:
+    """nf/nd/ns still enter the logit; they just stop explaining it."""
+    risk = score_change(_feat(la=300, ld=20, nf=25, nd=10, ns=5, entropy=3.0, exp=50))
+
+    reported = {d.feature for d in risk.top_drivers}
+    assert reported.isdisjoint({"nf", "nd", "ns"})
+    assert {"la", "ld", "entropy", "exp"} <= reported
+    # The full attribution is untouched, so the logit still reconstructs.
+    logit = float(_CONSTANTS["intercept"]) + sum(d.contribution for d in risk.drivers)
+    assert risk.score == pytest.approx(round(10.0 * _sigmoid(logit), 1))
+
+
+def test_payload_offers_the_absolute_band_only_as_a_fallback(git_repo: Path) -> None:
+    for i in range(12):
+        _commit(git_repo, {f"f{i}.py": f"x = {i}\n"}, f"feat: {i}", author="Dev")
+
+    ranked = change_risk_payload(score_live_change(str(git_repo), "HEAD", baseline=200))
+    unranked = change_risk_payload(score_live_change(str(git_repo), "HEAD", baseline=0))
+
+    assert ranked["review_priority"] is not None
+    assert ranked["fallback_band"] is None
+    assert unranked["review_priority"] is None
+    assert unranked["fallback_band"] in {"low", "moderate", "high"}
+    assert unranked["score_unit"] == "per-commit"
+    assert "probability" not in ranked and "level" not in ranked

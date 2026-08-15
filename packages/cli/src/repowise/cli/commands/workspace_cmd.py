@@ -47,6 +47,61 @@ def _require_workspace(start: Path | None = None) -> tuple[Path, WorkspaceConfig
     return ws_root, ws_config
 
 
+def _format_age(generated_at: str | None) -> str:
+    """Render an ISO timestamp as a short age, or say it is missing."""
+    from datetime import datetime
+
+    if not generated_at:
+        return "never built"
+    try:
+        stamped = datetime.fromisoformat(generated_at)
+    except ValueError:
+        return f"stamped {generated_at}"
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=UTC)
+    seconds = (datetime.now(UTC) - stamped).total_seconds()
+    if seconds < 90:
+        return "just now"
+    if seconds < 5400:
+        return f"{round(seconds / 60)} minutes ago"
+    if seconds < 172800:
+        return f"{round(seconds / 3600)} hours ago"
+    return f"{round(seconds / 86400)} days ago"
+
+
+def _report_artifact_provenance(
+    ws_root: Path,
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
+    generated_at: str | None,
+    artifact_repos: list[str],
+) -> None:
+    """Print how old the artifact is, and flag config/artifact disagreement.
+
+    Commands that read a persisted artifact otherwise present it as the state
+    of the tree right now. When the config and the artifact list different
+    repos, that gap is itself the finding — it means the artifact describes a
+    workspace that no longer exists, or that the config lost a repo.
+    """
+    console.print(f"[dim]Read from .repowise-workspace/, built {_format_age(generated_at)}.[/dim]")
+
+    configured = {e.alias for e in ws_config.repos}
+    covered = set(artifact_repos)
+    missing_from_config = sorted(covered - configured)
+    missing_from_artifact = sorted(configured - covered)
+    if missing_from_config:
+        console.print(
+            f"[yellow]![/yellow] Covers {', '.join(missing_from_config)}, which "
+            f"{'is' if len(missing_from_config) == 1 else 'are'} no longer in "
+            f"{ws_root.name}/.repowise-workspace.yaml."
+        )
+    if missing_from_artifact:
+        console.print(
+            f"[yellow]![/yellow] {', '.join(missing_from_artifact)} "
+            f"{'is' if len(missing_from_artifact) == 1 else 'are'} configured but "
+            "absent from this artifact; re-run 'repowise update --workspace'."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Command group
 # ---------------------------------------------------------------------------
@@ -796,13 +851,25 @@ def workspace_remove(alias: str) -> None:
     help="Auto-add all discovered repos without prompting.",
 )
 @click.option(
+    "--exclude",
+    "exclude_globs",
+    multiple=True,
+    metavar="GLOB",
+    help=(
+        "Skip discovered repos whose path matches this glob, relative to the "
+        "workspace root (e.g. 'test-repos/*'). Repeatable."
+    ),
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
     default=False,
     help="Show debug logs from the pipeline.",
 )
-def workspace_scan(path: str | None, yes: bool, verbose: bool) -> None:
+def workspace_scan(
+    path: str | None, yes: bool, exclude_globs: tuple[str, ...], verbose: bool
+) -> None:
     """Scan the workspace root for new repos not yet in the config."""
     configure_cli_logging(verbose=verbose)
 
@@ -824,6 +891,22 @@ def workspace_scan(path: str | None, yes: bool, verbose: bool) -> None:
         if r.path.as_posix() not in existing_paths and r.alias not in existing_aliases
     ]
 
+    if exclude_globs:
+        from fnmatch import fnmatchcase
+
+        def _excluded(repo_path: Path) -> bool:
+            try:
+                rel = repo_path.relative_to(ws_root).as_posix()
+            except ValueError:
+                rel = repo_path.as_posix()
+            return any(fnmatchcase(rel, g) for g in exclude_globs)
+
+        before = len(new_repos)
+        new_repos = [r for r in new_repos if not _excluded(r.path)]
+        skipped = before - len(new_repos)
+        if skipped:
+            console.print(f"[dim]Excluded {skipped} repo(s) by --exclude.[/dim]")
+
     if not new_repos:
         console.print("[green]No new repositories discovered.[/green]")
         return
@@ -834,6 +917,18 @@ def workspace_scan(path: str | None, yes: bool, verbose: bool) -> None:
         console.print(f"  [cyan]{repo.alias}[/cyan] — {repo.path}{indexed_marker}")
 
     console.print()
+
+    # A scan of a directory full of fixtures can find a hundred repos, and
+    # prompting per repo with no way out but Ctrl-C is not a choice. Ask once
+    # before starting, so declining everything costs one keystroke.
+    if not yes and not click.confirm(
+        f"Review these {len(new_repos)} repo(s) one at a time?", default=True
+    ):
+        console.print(
+            "\nNo repos added. Narrow the scan with [bold]--exclude 'dir/*'[/bold] "
+            "or add all with [bold]--yes[/bold]."
+        )
+        return
 
     added = 0
     for repo in new_repos:
@@ -927,7 +1022,7 @@ def workspace_diagnostics(
 
     fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
-    ws_root, _ws_config = _require_workspace(start)
+    ws_root, ws_config = _require_workspace(start)
 
     graph = load_system_graph(ws_root)
     if graph is None:
@@ -948,6 +1043,7 @@ def workspace_diagnostics(
     if fmt == "json":
         emit_json(
             {
+                "generated_at": graph.generated_at or None,
                 "total_providers": diag.total_providers,
                 "total_consumers": diag.total_consumers,
                 "total_links": diag.total_links,
@@ -956,9 +1052,17 @@ def workspace_diagnostics(
                 "unmatched_consumers": [u.to_dict() for u in unmatched],
                 "unmatched_by_reason": diag.unmatched_by_reason,
                 "orphan_providers": [o.to_dict() for o in orphans],
+                "providers_by_layer": diag.providers_by_layer,
+                "consumers_by_layer": diag.consumers_by_layer,
+                "http_consumers_unresolved": diag.http_consumers_unresolved,
+                "http_consumer_coverage": diag.http_consumer_coverage,
             }
         )
         return
+
+    _report_artifact_provenance(
+        ws_root, ws_config, graph.generated_at, [r.repo for r in diag.repo_breakdown]
+    )
 
     # Per-repo provider/consumer breakdown
     table = Table(title=f"Contract extraction — {ws_root.name}")
@@ -980,6 +1084,35 @@ def workspace_diagnostics(
     )
     if diag.weak_link_count:
         console.print(f"  [yellow]{diag.weak_link_count}[/yellow] weak (low-confidence) link(s).")
+
+    # Extraction coverage. Only two honest numbers exist here: which tier
+    # produced each contract, and how many client calls were located but not
+    # resolved. There is no count of route decorators nobody recognised, so no
+    # provider recall percentage is claimed.
+    def _layers(counts: dict[str, int]) -> str:
+        return ", ".join(f"{n} {layer}" for layer, n in sorted(counts.items()))
+
+    if diag.providers_by_layer or diag.consumers_by_layer:
+        console.print("\n  [bold]Extraction coverage[/bold]")
+        if diag.providers_by_layer:
+            layers = _layers(diag.providers_by_layer)
+            console.print(f"    Providers   {diag.total_providers} ({layers})")
+        if diag.consumers_by_layer:
+            layers = _layers(diag.consumers_by_layer)
+            console.print(f"    Consumers   {diag.total_consumers} ({layers})")
+        coverage = diag.http_consumer_coverage
+        if coverage is not None:
+            http_consumers = sum(r.consumers_by_type.get("http", 0) for r in diag.repo_breakdown)
+            console.print(
+                f"    HTTP calls  {http_consumers} of "
+                f"{http_consumers + diag.http_consumers_unresolved} resolved to an "
+                f"endpoint ([bold]{coverage * 100:.0f}%[/bold]); "
+                f"{diag.http_consumers_unresolved} located but not statically resolvable."
+            )
+        console.print(
+            "    [dim]'index' contracts come from the parsed symbol table, 'regex' "
+            "from a text dialect. Calls no dialect recognises are not counted here.[/dim]"
+        )
 
     # Unmatched consumers grouped by reason
     if unmatched:
@@ -1057,6 +1190,18 @@ def workspace_check(path: str | None, fmt: str, as_json: bool) -> None:
         if report.has_findings:
             sys.exit(1)
         return
+
+    # State the scope before the verdict. "No cycles" over an empty graph and
+    # "no cycles" over 7 services across 3 repos are the same sentence and very
+    # different results, and only one of them is a pass.
+    _report_artifact_provenance(
+        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
+    )
+    console.print(
+        f"Checked [bold]{len(graph.nodes)}[/bold] service(s) across "
+        f"[bold]{len({n.repo for n in graph.nodes})}[/bold] repo(s) against "
+        f"[bold]{report.rules_evaluated}[/bold] declared rule(s)."
+    )
 
     rule_count = report.rules_evaluated
     if rule_count == 0:
@@ -1157,6 +1302,10 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
             "relationships."
         )
         return
+
+    _report_artifact_provenance(
+        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
+    )
 
     score_color = "green" if metrics.score >= 8 else "yellow" if metrics.score >= 4 else "red"
     console.print(

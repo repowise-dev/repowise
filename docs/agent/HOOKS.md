@@ -24,7 +24,7 @@ crashes or blocks your agent.
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read-intelligence notices, and edit-time "governed by" decision notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a `Read` / `Edit` / `Write` / `Grep` / `Glob` / `NotebookEdit` that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Command-rewrite (distill)** | Claude Code | `repowise hook rewrite install` (opt-in) | `Bash` / `PowerShell` | Rewrites noisy commands to `repowise distill <cmd>`; auto-allowed by default, set `permission: ask` to approve each one |
-| **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / UserPromptSubmit / edit / Bash | Reminds Codex to use the MCP tools and flags stale context after edits |
+| **Codex context + staleness** | Codex | `repowise init --codex` | SessionStart / edit / shell | Reminds Codex to use the MCP tools and flags stale context after edits |
 
 Every agent hook records what it said and whether the agent acted on it — see
 [`repowise hook stats`](#is-any-of-this-actually-helping--repowise-hook-stats).
@@ -182,9 +182,17 @@ Two rules bound how wrong this can be. It is **never applied twice in a row for
 the same file**, so if a context compaction dropped the earlier copy, one more
 Read always returns the content; the notice says exactly that. And a Read that
 any surface replaced records no content observation at all, so the agent is
-never told it already has bytes that a skeleton stood in for. Savings appear
-under the `read_reread` filter, and a repo with it off still gets the
-counterfactual.
+never told it already has bytes that a skeleton stood in for.
+
+That second rule is also what makes this a **narrow surface rather than a broad
+one**, and it is worth knowing before you turn it on. The two Read surfaces are
+substitutes, and the skeleton takes the valuable half first: on a large indexed
+file the first Read is served as a skeleton and records no content observation,
+so the second Read has nothing to compare against and is served whole. What
+reaches the collapse is small files, unindexed files, and third-and-later reads
+of the same range. Expect a modest, steady trim rather than a headline. Savings
+appear under the `read_reread` filter, and a repo with it off still gets the
+counterfactual, so you can see what it would have done before enabling it.
 
 **Searches that time out.** On Windows a `Glob` can exhaust ripgrep's 20-second
 budget and return nothing at all — not "no matches", nothing, after twenty
@@ -240,8 +248,9 @@ to be confidently wrong:
   not on disk right now, and pointing back at the failed path is the worst
   thing this surface could say.
 
-Measured over 435 sessions in this repo: 86 path-not-found failures on the file
-tools, of which the rescue speaks to 18. The gap is the point.
+Most path-not-found failures therefore get silence, and that gap is the design
+rather than a shortfall in it. `repowise hook stats` reports what this surface
+actually did on your machine.
 
 ---
 
@@ -281,13 +290,27 @@ Per-repo behavior lives under `distill.commands` in `.repowise/config.yaml`
 Written to project-local `.codex/hooks.json` by `repowise init --codex` (they do
 not touch your global `~/.codex/config.toml`):
 
-- **SessionStart / UserPromptSubmit** → a short developer note reminding Codex to
-  use the repowise MCP tools for architecture, search, risk, decisions, and
-  dead-code analysis.
+- **SessionStart** → a short developer note reminding Codex to use the repowise
+  MCP tools for architecture, search, risk, decisions, and dead-code analysis,
+  plus the same relevance-ranked standing decisions Claude Code receives.
 - **PostToolUse** (the shell tool, and `apply_patch` / `Edit` / `Write`) → after
   a successful `git commit`, `merge`, `rebase`, `cherry-pick` or `pull`, compares
   `HEAD` against the last indexed commit and flags that indexed context may be
   stale, pointing at `repowise update`.
+
+`UserPromptSubmit` is no longer registered here. It carried no matcher, so it
+fired on every prompt, and what it returned was the
+static MCP-usage note `SessionStart` had already delivered in the same session:
+one process start per prompt to repeat a block the agent was holding.
+
+An install that predates the retirement is repaired in place the next time this
+repo's `.codex/hooks.json` is written, because the merge is additive and could
+not otherwise retire anything. That means `repowise agents refresh`, or a
+`repowise init` that selects Codex (the interactive checklist pre-ticks it when
+the repo is already wired, and `--codex` selects it outright). A plain
+`repowise init --yes` does not write Codex config at all, so it does not
+migrate either. A hook *you* wrote on that event is left alone, and a timeout
+you raised yourself is never moved.
 
 Codex names its shell tool `shell_command` on current releases and `Bash` on
 older ones, so the matcher covers both. The Claude Code hook deliberately does
@@ -335,8 +358,8 @@ and `.codex/hooks.json` (Codex when `--codex` is passed):
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` [^guard] |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` [^guard] |
 | Claude Code | `PreToolUse` (opt-in) | `Bash\|PowerShell` | `repowise-rewrite` |
-| Codex | `SessionStart` / `UserPromptSubmit` | lifecycle | context reminder |
-| Codex | `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | staleness check |
+| Codex | `SessionStart` | `startup\|resume\|clear` | context reminder |
+| Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | staleness check |
 
 [^guard]: The command is written wrapped in a presence check rather than as the
     bare name:

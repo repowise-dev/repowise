@@ -50,7 +50,10 @@ from repowise.cli.ui import (
     BRAND,
     BRAND_STYLE,
     ERR,
+    OK,
     OWL_SPINNER,
+    VALUE,
+    WARN,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -131,7 +134,7 @@ def _run_workspace_generation(
     # a dozen times, which makes plain text easier to miss, not harder.
     console.print(
         f"    Writing [bold]{concept_page_count(plans):,}[/bold] subsystem pages with "
-        f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
     )
     structural = structural_page_summary(plans)
     if structural:
@@ -145,7 +148,7 @@ def _run_workspace_generation(
         est, yes=yes, message=f"    Continue with {repo_path.name} at this cost?"
     ):
         console.print(
-            "    [yellow]Skipped.[/yellow] "
+            f"    [{WARN}]Skipped.[/] "
             "[dim]Index will be saved without docs; "
             "future `repowise update` runs default to index-only.[/dim]"
         )
@@ -273,6 +276,10 @@ class _WorkspaceCtx:
     embedder_was_requested: bool
     resolved_commit_limit: int
     run_mode: str = "standard"
+    #: Mirrors the single-repo flag. A workspace writes project files per repo,
+    #: so --no-editor-setup has to reach every one of them, not just the
+    #: primary's client registration.
+    editor_setup: bool = True
 
 
 @dataclass
@@ -337,7 +344,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             )
         repo_phase_timings: dict[str, float] = callback.timings
         console.print(
-            f"    [green]✓[/green] {result.file_count:,} files, {result.symbol_count:,} symbols"
+            f"    [{OK}]✓[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
         )
     except Exception as exc:
         console.print(f"    [{ERR}]✗ Failed: {exc}[/]\n")
@@ -374,14 +381,14 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         pages_generated = len(generated_pages)
         docs_mode = "deterministic"
         console.print(
-            f"    [green]✓[/green] Rendered {len(generated_pages)} pages from structure "
+            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure "
             "(no model)\n"
         )
 
     if ctx.dry_run:
         console.print(
-            "    [yellow]Dry run — `.repowise/` created; "
-            "no DB, state, or pages written for this repo.[/yellow]\n"
+            f"    [{WARN}]Dry run — `.repowise/` created; "
+            "no DB, state, or pages written for this repo.[/]\n"
         )
         skip_reason = "dry run"
     elif ctx.run_mode == "fast":
@@ -419,7 +426,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
 
             pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
             docs_mode = "llm"
-            console.print(f"    [green]✓[/green] Generated {pages_generated} pages\n")
+            console.print(f"    [{OK}]✓[/] Generated {pages_generated} pages\n")
         except CostGateDeclined:
             # Declining only ever meant "not at that price". Fall back to the
             # free template renderer rather than leaving the repo with no wiki
@@ -494,6 +501,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         console,
         repo.path,
         options=ctx.editor_options,
+        no_editor_setup=not ctx.editor_setup,
     )
 
     # Persist provider/model config per-repo when doing full generation
@@ -551,9 +559,9 @@ def _run_cross_repo_analysis(ws_config: Any, root: Any, selected: list[Any], err
             from repowise.core.workspace.update import run_cross_repo_hooks
 
             run_async(run_cross_repo_hooks(ws_config, root, indexed_aliases))
-            console.print("  [green]✓[/green] Cross-repo analysis complete")
+            console.print(f"  [{OK}]✓[/] Cross-repo analysis complete")
         except Exception as exc:
-            console.print(f"  [yellow]⚠ Cross-repo analysis failed: {exc}[/yellow]")
+            console.print(f"  [{WARN}]⚠ Cross-repo analysis failed: {exc}[/]")
 
 
 def _workspace_init(
@@ -619,7 +627,7 @@ def _workspace_init(
     )
 
     if not selected:
-        console.print("[yellow]No repositories selected. Aborting.[/yellow]")
+        console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
         return
 
     # Step 2: Select primary repo
@@ -705,15 +713,15 @@ def _workspace_init(
             # the initial resolution happened before the key was available.
             embedder_name_resolved = resolve_embedder(embedder_name)
             console.print(
-                f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
-                f"Model: [cyan]{provider.model_name}[/cyan]"
+                f"  Provider: [{VALUE}]{provider.provider_name}[/] / "
+                f"Model: [{VALUE}]{provider.model_name}[/]"
             )
-            console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]\n")
+            console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]\n")
             if resolved_reasoning != "auto":
-                console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]\n")
+                console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]\n")
         except Exception as exc:
             console.print(
-                f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]"
+                f"  [{WARN}]Provider setup failed ({exc}); falling back to index-only.[/]"
             )
             index_only = True
             provider = None
@@ -737,12 +745,12 @@ def _workspace_init(
         # later distill-hook decline can gate every selected path); dry-run
         # only means nothing is *written* into those directories or the workspace.
         console.print(
-            "  [yellow]Dry run — `.repowise/` directories are created, "
-            "but no config, index, or pages are written.[/yellow]"
+            f"  [{WARN}]Dry run — `.repowise/` directories are created, "
+            "but no config, index, or pages are written.[/]"
         )
     else:
         config_path = ws_config.save(root)
-        console.print(f"  [green]✓[/green] Created {config_path.name}")
+        console.print(f"  [{OK}]✓[/] Created {config_path.name}")
     console.print()
 
     # Step 4: Index each selected repo (always generate_docs=False; generation is separate)
@@ -775,6 +783,7 @@ def _workspace_init(
         provider=provider,
         ws_config=ws_config,
         editor_options=editor_options,
+        editor_setup=editor_setup,
         index_only=index_only,
         dry_run=dry_run,
         force=force,

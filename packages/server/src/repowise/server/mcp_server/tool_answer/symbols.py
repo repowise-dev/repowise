@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
@@ -473,6 +473,12 @@ def attach_truncation_contract(
     end at all, which is never a cut: it is tested explicitly rather than left
     to ``indexed_end > end_served``, which would only agree with it while
     ``end_served`` stays non-negative.
+
+    ``indexed_end`` is trusted to lie within the live file, which is
+    ``check_symbol_bounds``'s job rather than this one's: it now clamps to
+    ``len(lines)`` on every return, so a stored end that overshoots cannot reach
+    here and flag a body served WHOLE as truncated (D8). Clamping again here
+    would be a second owner and a second disk read.
     """
     if indexed_end and indexed_end > end_served:
         entry["truncated"] = True
@@ -1181,8 +1187,12 @@ def _skip_regex(raw: str, i: int) -> int:
 
 def _walk_string_state(
     lines: tuple[str, ...], *, backticks: bool
-) -> tuple[set[int], bool]:
-    """(lines starting inside a string/comment, template literal left open at EOF).
+) -> tuple[set[int], set[int], bool]:
+    """(lines starting inside a string, inside a block comment, literal left open).
+
+    The two sets are kept apart because callers need to tell them apart and this
+    is a hot path: a string body proves the enclosing expression is still open,
+    a comment between two declarations proves nothing.
 
     ``stack`` models template-literal nesting: a ``None`` frame is the string
     part of a backtick literal, an ``int`` frame is the unclosed-brace depth
@@ -1208,13 +1218,22 @@ def _walk_string_state(
     precision, measured as 1,926 fabrications against 60 on the 16 corpus files
     where a flat walk and this one disagree.
     """
-    masked: set[int] = set()
+    strings: set[int] = set()
+    comments: set[int] = set()
     delim: str | None = None
     in_block = False
+    # Line the currently-open ``delim`` run or ``/* */`` block started on. The
+    # two are mutually exclusive (a frame is only ever opened at code level), so
+    # one variable serves both.
+    open_line = 0
     stack: list[int | None] = []
     for n, raw in enumerate(lines, 1):
-        if delim is not None or in_block or (stack and stack[-1] is None):
-            masked.add(n)
+        # The three states are mutually exclusive: a frame is only ever pushed
+        # at code level, so an if/elif chain is faithful to the walk below.
+        if delim is not None or (stack and stack[-1] is None):
+            strings.add(n)
+        elif in_block:
+            comments.add(n)
         elif not stack and not _QUOTEISH_RE.search(raw):
             # Nothing on this line can open a string or comment, so the
             # character walk below cannot change state. Most lines are this
@@ -1270,25 +1289,25 @@ def _walk_string_state(
                 continue
             if delim is not None:
                 if raw.startswith(delim, i):
-                    delim, i = None, i + len(delim)
+                    delim, open_line, i = None, 0, i + len(delim)
                 else:
                     i += 1
                 continue
             if in_block:
                 if raw.startswith("*/", i):
-                    in_block, i = False, i + 2
+                    in_block, open_line, i = False, 0, i + 2
                 else:
                     i += 1
                 continue
             if raw.startswith('"""', i) or raw.startswith("'''", i):
-                delim, i = raw[i : i + 3], i + 3
+                delim, open_line, i = raw[i : i + 3], n, i + 3
                 continue
             if backticks and raw[i] == "`":
                 stack.append(None)
                 i += 1
                 continue
             if raw.startswith("/*", i):
-                in_block, i = True, i + 2
+                in_block, open_line, i = True, n, i + 2
                 continue
             if raw[i] == "#" or raw.startswith("//", i):
                 break
@@ -1304,7 +1323,20 @@ def _walk_string_state(
             if not raw[i].isspace():
                 prev = raw[i]
             i += 1
-    return masked, bool(stack)
+    # A run still open at EOF is a walk that lost track, not a file with an
+    # unterminated construct, and masking to EOF hides every definition below
+    # it. The template-literal stack has had this containment since the backtick
+    # work; ``delim`` and ``/* */`` never did, and both fire on the same shape --
+    # a delimiter belonging to another language, sitting inside a string this
+    # walk cannot see. Measured on Rust: ``${0%/*}`` in a raw string masked 103
+    # lines and cost 6 real ``fn``; ``description = """#`` masked 3,002 and cost
+    # 10. Discarding the trailing run under-masks instead, which costs a
+    # spurious name in a list rather than an absent real one.
+    if delim is not None:
+        strings = {n for n in strings if n < open_line}
+    elif in_block:
+        comments = {n for n in comments if n < open_line}
+    return strings, comments, bool(stack)
 
 
 def _has_backtick_strings(file_path: str) -> bool:
@@ -1313,10 +1345,20 @@ def _has_backtick_strings(file_path: str) -> bool:
     return dot != -1 and file_path[dot:].lower() in _BACKTICK_STRING_SUFFIXES
 
 
+class _Masked(NamedTuple):
+    """1-based line numbers, split by what is hiding them.
+
+    ``all`` is precomputed rather than unioned per call: every caller wants it,
+    and this is a cached whole-file walk.
+    """
+
+    strings: frozenset[int]
+    comments: frozenset[int]
+    all: frozenset[int]
+
+
 @lru_cache(maxsize=8)
-def _string_masked_lines(
-    lines: tuple[str, ...], backticks: bool = True
-) -> frozenset[int]:
+def _string_masked_lines(lines: tuple[str, ...], backticks: bool = True) -> _Masked:
     """1-based line numbers that START inside a multi-line string or comment.
 
     Repowise's own docstrings are full of indented ``def``/``class`` examples,
@@ -1347,7 +1389,9 @@ def _string_masked_lines(
     synthetic 1.2 MB file with one stray backtick on line 1. Bounded at two
     walks, and the cache means it is paid once per file.
     """
-    masked, template_left_open = _walk_string_state(lines, backticks=backticks)
+    strings, comments, template_left_open = _walk_string_state(
+        lines, backticks=backticks
+    )
     if template_left_open:
         # The lexer-lite lost track: a template literal opened and never closed,
         # so every line below it is masked to EOF and every definition there is
@@ -1355,8 +1399,10 @@ def _string_masked_lines(
         # missing symbols -- so it must not be the one we ship. Fall back to the
         # pre-backtick walk for this file, which under-masks instead: the cost is
         # a spurious name in a list, not an absent real one.
-        masked, _ = _walk_string_state(lines, backticks=False)
-    return frozenset(masked)
+        strings, comments, _ = _walk_string_state(lines, backticks=False)
+    return _Masked(
+        frozenset(strings), frozenset(comments), frozenset(strings | comments)
+    )
 
 
 def _indent_width(raw: str) -> int:
@@ -1409,7 +1455,8 @@ def withheld_definitions(
     lines = text.splitlines()
     if lo < 1 or lo > len(lines):
         return []
-    masked = _string_masked_lines(tuple(lines), _has_backtick_strings(path))
+    mask = _string_masked_lines(tuple(lines), _has_backtick_strings(path))
+    masked = mask.all
 
     def _entry(line_no: int, m: re.Match[str], *, cut: bool = False) -> dict:
         name = m.group("name")
@@ -1460,7 +1507,16 @@ def withheld_definitions(
         and n not in masked
         and lines[n - 1].strip()[0] not in ")]}{"
     ]
-    if _usable:
+    if lo in mask.strings:
+        # The cut is INSIDE a multi-line string, so the expression holding that
+        # string -- and everything enclosing it -- is still open at ``lo``.
+        # Without this the anchor reads from the first line BELOW the string,
+        # usually a top-level declaration at column 0, and the walk dies at once
+        # (D9: 8 real definitions lost across cli/cli and mui). A block COMMENT
+        # cannot stand in for this: one sitting between two methods would report
+        # the preceding method as continuing when it has already ended.
+        anchor = _UNBOUNDED_INDENT
+    elif _usable:
         anchor = _indent_width(lines[_usable[0] - 1])
     elif any(lines[n - 1].strip() for n in range(lo, _end + 1)):
         # Every withheld line is a string body or a bracket tail, so whatever

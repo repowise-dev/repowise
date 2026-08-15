@@ -426,18 +426,27 @@ shape of the live diff and needs no index refresh.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `revspec` | string | No | Commit or `base..head` range to score (default `"HEAD"`) |
+| `revspec` | string | No | Commit or `base..head` range to score. Omit it to score uncommitted work, or pass `HEAD` when the tree is clean |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
 | `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables percentile ranking) |
 
-**Returns:** The corpus-calibrated `score`, `probability`, and `level`, plus a
-repo-relative `risk_percentile`, `review_priority`, and `classification`.
-`baseline_sample_size` reports how many filtered commits informed the percentile;
-`features`, `drivers`, and combined `exclude_patterns` make the result auditable.
-Use the percentile and review priority for triage; the raw score is secondary
-context when no repository baseline is available.
+**Returns:** `fix_history` first — the recency-weighted bug-fix record of the
+files the change touches, with `files` naming where the pressure sits and
+`percentile` ranking it against the repo's own fix-bearing files. Triage on
+this: it is the part that separates a small edit to a fragile file from a large
+edit to a safe one. `available` is false when the history walk could not run.
+
+`score` measures diff size and spread, not where the change lands — see
+`score_measures` — and `score_unit` names the unit it is calibrated on (a single
+commit, so a PR-sized range reads high by construction). `risk_percentile`,
+`review_priority` and `classification` rank that same diff shape against recent
+commits. `fallback_band` carries the absolute band and appears only when no
+baseline was available. `working_tree` says whether uncommitted work was the
+subject. `baseline_sample_size` reports how many filtered commits informed the
+percentile; `features`, `drivers`, and combined `exclude_patterns` make the
+result auditable.
 
 It also returns `impacted_tests`: the tests the per-test coverage map proves
 execute the change's changed *lines* (line-precise, so a narrower set than
@@ -456,6 +465,12 @@ When the changed files carry counted bug fixes, the response also holds
 those fixes replaced (`overlapping_lines`), and how long ago the most recent
 was (`last_fix_days_ago`). `total_fixes` counts distinct commits, not rows,
 and `files` is capped at ten with `truncated` reporting overflow.
+
+Each file also carries how much of *this* change sits in it — `changed_lines`
+and `share_of_change` — with `changed_lines_in_fixed_files` as the total across
+them. That join is what lets the response say where the risk sits rather than
+only that some touched file has a past: the score is whole-change, so when one
+returned file holds at least half the changed lines, `concentration` names it.
 
 `overlapping_lines` is labelled `approximate` in the payload, and that label is
 load-bearing: a past fix's ranges are numbered against its own parent commit,
@@ -902,7 +917,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 In addition to the MCP tools above, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
 - **Claude Code PostToolUse**: broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
-- **Codex SessionStart/UserPromptSubmit**: Codex receives concise repowise MCP workflow guidance when a session or prompt starts.
+- **Codex SessionStart**: Codex receives concise repowise MCP workflow guidance when a session starts.
 - **Codex PostToolUse**: after edits or git operations, Codex receives a freshness reminder when indexed context may be stale.
 
 Hooks are lightweight reminders. MCP tools are for deeper, on-demand investigation. See [Auto-Sync](../scale/AUTO_SYNC.md) and [Codex Integration](CODEX.md) for details.

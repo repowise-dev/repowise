@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.ids import is_external
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import DeadCodeFinding, Page, WikiSymbol
@@ -197,9 +198,16 @@ async def file_detail(
     metrics = await crud.get_health_metrics(session, repo_id, file_paths=[file_path])
     metric = metrics[0] if metrics else None
     # Degree is read once (graph node only) and shared by the health-signals
-    # block below and the graph-context block further down.
+    # block below and the graph-context block further down. Scoped to file
+    # dependencies because both places state it as one: the signals panel
+    # renders it as "N files depend on this", and the graph panel as
+    # "Dependents (N)" above the dependents list.
     degrees = (
-        await crud.get_node_degree_counts(session, repo_id, file_path) if node is not None else None
+        await crud.get_node_degree_counts(
+            session, repo_id, file_path, edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES)
+        )
+        if node is not None
+        else None
     )
 
     if node is None and git_meta is None and metric is None:
@@ -282,8 +290,26 @@ async def file_detail(
         all_files = await crud.get_all_file_metrics(session, repo_id)
         assert degrees is not None  # node is not None here, so degrees was loaded
         meta = parse_community_meta(node)
+        # Dependencies only. Unfiltered, this served the file's own `defines`
+        # edges as "dependencies", so a file depended on its own functions —
+        # and since the limit is per direction, a file with more symbols than
+        # the limit could return containment rows and none of its real
+        # imports. The type filter is what fixed that; the ranked cut inside
+        # ``get_graph_edges_for_node`` is what keeps the rows it returns —
+        # 40 per direction, so up to 80 — from being an arbitrary window.
+        # Both halves are then shown 20 at a time in that order. Most of what
+        # the ranking buys *here* is determinism rather than importance: 97.5%
+        # of the edge types this filter admits carry confidence 1.0, so on the
+        # 2,271 over-cap nodes in the corpus where the kept set moves, only
+        # 23% move because of confidence and the rest because of the path
+        # tiebreak.
         edges = await crud.get_graph_edges_for_node(
-            session, repo_id, file_path, direction="both", limit=40
+            session,
+            repo_id,
+            file_path,
+            direction="both",
+            edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
+            limit=40,
         )
         neighbor_ids = {
             e.source_node_id if e.source_node_id != file_path else e.target_node_id for e in edges

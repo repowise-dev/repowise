@@ -180,9 +180,15 @@ def check_symbol_bounds(row: WikiSymbol, source_text: str) -> BoundsCheck:
             start_line=located[0], end_line=located[1], verified=True, corrected=corrected
         )
 
+    # Unverified, but the end is still clamped to the live file: nothing can be
+    # served past EOF, and the cheap path above already clamps. Leaving this one
+    # return raw is what let a stored end that overshoots flag a body served
+    # WHOLE as truncated, with a continuation pointing past the last line (D8).
+    # Every consumer of an unverified bound inherited it -- get_answer's
+    # hydrator, get_symbol and get_context all read this same return.
     return BoundsCheck(
         start_line=row.start_line,
-        end_line=row.end_line,
+        end_line=min(row.end_line, len(lines)) if row.end_line else row.end_line,
         verified=False,
         approximate=True,
     )

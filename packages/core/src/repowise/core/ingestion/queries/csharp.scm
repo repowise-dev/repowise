@@ -231,3 +231,15 @@
   (parameter_list
     (parameter
       type: (_) @param.type)))
+
+; Generic type arguments are type uses even when they occur on an invocation
+; rather than in a declaration, e.g. `services.AddScoped<IService, Service>()`.
+; The pattern is global so nested arguments are captured recursively by their
+; own `type_argument_list` node.
+(type_argument_list
+  (_) @param.type)
+
+; `typeof(Service)` is an explicit type reference with an unambiguous type
+; field, so it uses the same extraction and resolution path.
+(typeof_expression
+  type: (_) @param.type)

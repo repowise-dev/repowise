@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._meta import resolve_indexed_commit
@@ -60,14 +61,21 @@ async def health_overview(
         session, repo_id, metrics=metrics, findings=findings
     )
 
-    # Pull hotspot_health from the latest snapshot (KPIs aren't recomputed
-    # on every overview hit — the snapshot is authoritative). Scalars only:
-    # a full snapshot entity drags its per-file score map, and this route reads
-    # none of it.
+    # Hotspot health is recomputed from the metrics already loaded above rather
+    # than read off the latest snapshot. The snapshot was described here as
+    # authoritative, and it is not: ``repowise update`` re-scores health and
+    # calls ``save_health_metrics`` without ``save_health_snapshot``
+    # (``update_cmd/persistence.py``), so after any update this route served a
+    # figure from the previous full index while every other number on the page
+    # came from the fresh rows. Measured stale on 3 of 42 local indexes, this
+    # repo among them (4.62 against 5.08 live) — a lower bound, since a corpus
+    # of frozen clones mostly has nothing to have gone stale against.
+    #
+    # It costs no query: ``metrics`` is already in hand, and the hotspot path
+    # set is one scalar column. The snapshot is still read, for ``taken_at``.
     snapshot = await crud.get_health_snapshot_headline(session, repo_id)
-    hotspot_health = (
-        round(snapshot.hotspot_health, 2) if snapshot.hotspot_health is not None else None
-    )
+    hotspot_paths = await crud.get_hotspot_file_paths(session, repo_id)
+    hotspot_health_value = hotspot_health(metrics, hotspot_paths)
 
     last_indexed_at = _resolve_last_indexed_at(snapshot.taken_at, repo.updated_at)
 
@@ -79,7 +87,7 @@ async def health_overview(
     avg = summary.get("average_health")
     summary = {
         **summary,
-        "hotspot_health": hotspot_health,
+        "hotspot_health": hotspot_health_value,
         "severity_breakdown": _severity_breakdown(findings),
         "band": band_for(float(avg)) if avg is not None else None,
     }

@@ -55,7 +55,14 @@ class PRBlastRadiusAnalyzer:
 
         # 2. Transitive affected files
         transitive_affected = await self._transitive_affected(changed_files, max_depth)
-        all_affected_paths = list(changed_set | {e["path"] for e in transitive_affected})
+        # Sorted, because this list is cut before it is shown. ``test_gaps``
+        # preserves this order and ``get_risk``'s PR directive renders three of
+        # it as ``missing_tests``, the third line an agent is told to read.
+        # A bare set union is hash-ordered, so which three appeared varied
+        # between processes on identical input. The scale is a PR's own changed
+        # files, not the whole affected set — ``directives`` filters to those
+        # before cutting — so this is a handful of paths, reported stably.
+        all_affected_paths = sorted(changed_set | {e["path"] for e in transitive_affected})
 
         # 3. Co-change warnings
         cochange_warnings = await self._cochange_warnings(changed_files, changed_set)
@@ -155,7 +162,13 @@ class PRBlastRadiusAnalyzer:
         :meth:`_cochange_warnings`.
         """
         visited: dict[str, int] = {}  # path -> depth at which it was first reached
-        frontier = list(set(changed_files))
+        # Sorted, not just deduped. This walk's output is cut twice downstream
+        # — ``will_break`` takes 15 of it, and that is the first field
+        # ``get_risk``'s PR directive tells an agent to read — so the order
+        # inside a depth band decides what an agent is shown. A hash-ordered
+        # seed plus an unordered ``SELECT DISTINCT`` made that order vary
+        # between processes on identical input.
+        frontier = sorted(set(changed_files))
 
         for depth in range(1, max_depth + 1):
             if not frontier:
@@ -182,7 +195,12 @@ class PRBlastRadiusAnalyzer:
                     next_frontier.append(src)
             frontier = next_frontier
 
-        return [{"path": p, "depth": d} for p, d in sorted(visited.items(), key=lambda x: x[1])]
+        # Depth first, then path: a sort on depth alone is stable, so files
+        # sharing a depth kept the row order the query happened to return.
+        return [
+            {"path": p, "depth": d}
+            for p, d in sorted(visited.items(), key=lambda item: (item[1], item[0]))
+        ]
 
     async def _cochange_warnings(
         self, changed_files: list[str], changed_set: set[str]

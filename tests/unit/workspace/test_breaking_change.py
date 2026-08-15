@@ -287,3 +287,30 @@ def test_load_missing_report_returns_none(tmp_path):
 def test_save_returns_path(tmp_path):
     out = save_breaking_change_report(BreakingChangeReport(), tmp_path)
     assert out.name == "breaking_changes.json"
+
+
+# ---------------------------------------------------------------------------
+# Never-ran vs found-nothing
+# ---------------------------------------------------------------------------
+
+
+def test_detection_stamps_its_own_report():
+    """Before this, run_breaking_change_detection never passed a timestamp, so
+    every persisted report claimed to have never run."""
+    report = detect_breaking_changes(ContractStore(), ContractStore())
+    assert report.ran
+    assert report.to_dict()["generated_at"]
+
+
+def test_an_unbuilt_report_is_not_a_clean_one():
+    report = BreakingChangeReport()
+    assert not report.ran
+    assert report.generated_at is None
+    assert not report.has_changes
+    assert report.to_dict()["generated_at"] is None
+
+
+def test_legacy_empty_string_stamp_reads_as_never_ran():
+    restored = BreakingChangeReport.from_dict({"generated_at": "", "changes": []})
+    assert restored.generated_at is None
+    assert not restored.ran

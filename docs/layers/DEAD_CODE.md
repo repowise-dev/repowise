@@ -77,12 +77,25 @@ Then it only ever goes down. Two caps apply:
 - **Dynamic imports nearby.** If any file in the same directory uses a runtime
   loader, confidence is capped at `0.40`.
 - **Runtime-load risk factors.** If the path looks like config, environment,
-  bootstrap, database, or script code (`config`, `settings`, `env`, `bootstrap`,
-  `startup`, `entrypoint`, `database`, `db`, `schema`, `seed`, `migration`, or a
-  `scripts/` / `bin/` / `tasks/` directory), confidence is capped at `0.40` and
-  the finding carries an evidence line explaining why. These are exactly the
-  files wired up by a config key or a string path rather than an import, so
-  "nothing imports it" is weak evidence.
+  bootstrap, database, script, or runtime-asset code, confidence is capped at
+  `0.40` and the finding carries an evidence line explaining why. These are
+  exactly the files wired up by a config key or a string path rather than an
+  import, so "nothing imports it" is weak evidence. The full token set, matched
+  against the filename split on `. _ -` and against directory segments:
+
+  | Factor | Filename tokens | Directory segments |
+  |---|---|---|
+  | `config` | `config`, `configs`, `configuration`, `conf`, `settings`, `setting`, `setup` | `config/`, `configs/`, `settings/` |
+  | `environment` | `env`, `environment`, `environ`, `dotenv` | `env/`, `environments/` |
+  | `bootstrap` | `bootstrap`, `startup`, `entrypoint` | `bootstrap/` |
+  | `database` | `database`, `db`, `schema`, `seed`, `seeds`, `migration`, `migrations`, `datastore`, `sqlite` | `database/`, `db/`, `migrations/` |
+  | `script` | — | `scripts/`, `bin/`, `tasks/` |
+  | `asset` | `sw`, plus the token pair `service` + `worker` | `public/`, `static/`, `www/` |
+
+  Broad identifiers (`app`, `main`, `index`, `core`, `base`, `util`) are
+  deliberately excluded: they would cap ordinary modules. `src/assets/` is
+  likewise absent, because that is the Vite / Vue / Angular convention for
+  *bundled* source, which is imported normally.
 
 ## Confidence tiers and `safe_to_delete`
 

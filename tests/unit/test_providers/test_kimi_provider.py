@@ -200,7 +200,7 @@ async def test_kimi_for_coding_pins_sampling_parameters():
         )
 
     kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
-    assert kwargs["temperature"] == 0.6
+    assert kwargs["temperature"] == 1.0
     assert kwargs["top_p"] == 0.95
     assert "presence_penalty" not in kwargs
     assert "frequency_penalty" not in kwargs
@@ -218,7 +218,7 @@ async def test_kimi_for_coding_highspeed_pins_sampling_parameters():
         await provider.generate("system", "user", temperature=0.3)
 
     kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
-    assert kwargs["temperature"] == 0.6
+    assert kwargs["temperature"] == 1.0
     assert kwargs["top_p"] == 0.95
     assert "extra_body" not in kwargs
 
@@ -370,7 +370,7 @@ async def test_stream_chat_uses_kimi_sampling_parameters():
             events.append(event)
 
     kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
-    assert kwargs["temperature"] == 0.6
+    assert kwargs["temperature"] == 1.0
     assert kwargs["top_p"] == 0.95
     assert "presence_penalty" not in kwargs
     assert "frequency_penalty" not in kwargs

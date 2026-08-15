@@ -559,7 +559,36 @@ async def get_graph_edges_for_node(
     edge_types:
         Optional filter, e.g. ``["calls"]`` or ``["extends", "implements"]``.
     limit:
-        Max edges per direction.
+        Max edges per direction. **The cut is ranked**: rows come back most
+        confident first, ties broken on the other endpoint's id. Without an
+        ``ORDER BY`` the survivors were whichever rows the table handed over,
+        so a node with more adjacent edges than *limit* could return its
+        containment rows and none of its real calls — the failure
+        ``routers/files.py`` documents at its own call site rather than fixing
+        here. What the consumers do afterwards is the argument for ranking at
+        this end: ``mcp_server/_graph_utils`` and ``tool_symbol`` drop anything
+        below 0.5, so an unranked cut can hand them 50 rows and leave them
+        nothing; and ``routers/symbols`` and ``routers/graph/intelligence``
+        **sort by confidence after** the cut, which presented a
+        confident-looking order over an arbitrary subset — ranking was already
+        the contract there, applied one step too late.
+
+        On SQLite the unranked form was not arbitrary in practice: the rows
+        arrive in index order, which is stable but is promised by no query
+        planner and by no other backend. Deterministic, and still the wrong
+        rows.
+
+        **It costs something, on one direction only.** ``graph_edges`` is
+        indexed on ``(repository_id, source_node_id, target_node_id,
+        edge_type)``, so the *callees* branch seeks and then sorts a narrow
+        match set, while the *callers* branch filters on ``target_node_id``,
+        which that index cannot serve — it scanned before and now also builds a
+        temp b-tree, losing the early exit the bare ``LIMIT`` gave it. Measured
+        on django's 120k-edge index: the hottest node (1,525 inbound edges)
+        goes 10.9 ms to 38.2 ms; a low-degree node is unchanged at ~37 ms
+        because it was already scanning. The fix is an index on
+        ``(repository_id, target_node_id)``, which is a migration and is not
+        this change.
     """
     results: list[GraphEdge] = []
 
@@ -570,7 +599,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -581,7 +612,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -791,24 +824,31 @@ async def get_node_degree_counts(
     session: AsyncSession,
     repository_id: str,
     node_id: str,
+    *,
+    edge_types: list[str] | None = None,
 ) -> dict[str, int]:
-    """Return in-degree and out-degree for a node from edge counts."""
-    in_result = await session.execute(
-        select(func.count())
-        .select_from(GraphEdge)
-        .where(
-            GraphEdge.repository_id == repository_id,
-            GraphEdge.target_node_id == node_id,
-        )
+    """Return in-degree and out-degree for a node from edge counts.
+
+    ``edge_types`` narrows the count the same way it narrows
+    :func:`get_graph_edges_for_node`. A caller that presents degree beside a
+    list of neighbours should pass the view it used for that list, or the
+    count and the list describe different graphs — a file's unfiltered
+    in-degree is rendered as "Dependents (N)" above a dependents list, and
+    the two disagreed by the file's own symbol count.
+    """
+    in_q = select(func.count()).select_from(GraphEdge).where(
+        GraphEdge.repository_id == repository_id,
+        GraphEdge.target_node_id == node_id,
     )
-    out_result = await session.execute(
-        select(func.count())
-        .select_from(GraphEdge)
-        .where(
-            GraphEdge.repository_id == repository_id,
-            GraphEdge.source_node_id == node_id,
-        )
+    out_q = select(func.count()).select_from(GraphEdge).where(
+        GraphEdge.repository_id == repository_id,
+        GraphEdge.source_node_id == node_id,
     )
+    if edge_types:
+        in_q = in_q.where(GraphEdge.edge_type.in_(edge_types))
+        out_q = out_q.where(GraphEdge.edge_type.in_(edge_types))
+    in_result = await session.execute(in_q)
+    out_result = await session.execute(out_q)
     return {
         "in_degree": in_result.scalar() or 0,
         "out_degree": out_result.scalar() or 0,
@@ -819,12 +859,18 @@ async def get_node_degree_counts_bulk(
     session: AsyncSession,
     repository_id: str,
     node_ids: list[str],
+    *,
+    edge_types: list[str] | None = None,
 ) -> dict[str, dict[str, int]]:
     """Return ``node_id -> {in_degree, out_degree}`` for many nodes at once.
 
     Three queries total instead of three per node (existence, then one grouped
     count per direction). Callers that need degrees for a set of files were
     otherwise forced into an N+1.
+
+    ``edge_types`` narrows the count exactly as it does in
+    :func:`get_node_degree_counts`. The two must stay in step: they are the
+    single and bulk halves of one question, and both feed ``file_signals``.
 
     A node absent from the graph is absent from the result, mirroring
     ``get_graph_node`` returning ``None``: consumers distinguish "not a graph
@@ -855,14 +901,13 @@ async def get_node_degree_counts_bulk(
         (GraphEdge.source_node_id, "out_degree"),
     ):
         for i in range(0, len(present), _BATCH_SIZE):
-            rows = await session.execute(
-                select(column, func.count())
-                .where(
-                    GraphEdge.repository_id == repository_id,
-                    column.in_(present[i : i + _BATCH_SIZE]),
-                )
-                .group_by(column)
+            q = select(column, func.count()).where(
+                GraphEdge.repository_id == repository_id,
+                column.in_(present[i : i + _BATCH_SIZE]),
             )
+            if edge_types:
+                q = q.where(GraphEdge.edge_type.in_(edge_types))
+            rows = await session.execute(q.group_by(column))
             for node_id, count in rows.all():
                 counts[node_id][key] = count or 0
     return counts

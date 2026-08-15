@@ -205,6 +205,16 @@ def _slugify(text: str) -> str:
 # Edge type mapping
 # ---------------------------------------------------------------------------
 
+# Bump when the builder or the curation pass changes what it emits from an
+# unchanged graph — a wider `_EDGE_TYPE_MAP`, a different entry-point ranking,
+# a new node field. Folded into `compute_kg_fingerprint`, which otherwise only
+# measures the input graph and would let an existing store serve the old
+# artifact indefinitely. See that function for why one bump is one rebuild.
+#
+# "2": `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points` changed its
+# ranking, neither of which moves a node or edge count.
+KG_BUILDER_VERSION = "2"
+
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
 # missing — framework, the three dynamic_* kinds, reads and method_implements —
@@ -410,10 +420,41 @@ def build_knowledge_graph_skeleton(
 
 
 def compute_kg_fingerprint(graph_builder: Any) -> str:
-    """Compute a fingerprint from the graph state for incremental skip logic."""
+    """Compute a fingerprint from the graph state for incremental skip logic.
+
+    The four graph measures describe the *input* graph. They cannot see a
+    change in how this module turns that graph into an export, and the export
+    is not total: :data:`_EDGE_TYPE_MAP` drops every unmapped edge type. So
+    widening that map — six types in 0.43.0 — changes what the knowledge graph
+    contains while all four measures hold still, and the stored artifact would
+    keep the narrower edge set until some unrelated commit happened to move a
+    node or edge count. Same for the ordering the curation pass applies to
+    ``project.entry_points``, which every orientation surface reads.
+
+    :data:`KG_BUILDER_VERSION` closes that: bump it in the same commit as a
+    change to what the builder or the curation pass emits, and every existing
+    store rebuilds its knowledge graph once, on its next ``repowise update``
+    that has work to do. Two limits on that sentence, both deliberate:
+
+    * An update with nothing to do returns ``NOOP`` before the refresh is
+      reached, so a repo with no new commits stays on its old artifact until
+      something changes. That is the right trade — the alternative is making
+      every quiet repo in the world re-curate on a version bump — but it does
+      mean this is not a hard guarantee of "everyone, once".
+    * The rebuild itself is deterministic and model-free (skeleton plus
+      curation over a graph the run already holds, betweenness served from its
+      disk cache). On a **docs** update the non-``None`` result then also
+      triggers one KG layer-enrichment LLM call per five layers, which is real
+      spend the caller pays for a graph whose shape did not change. Index-only
+      and keyless runs never reach it.
+
+    One rebuild and not a loop: the new value is stored as the artifact's
+    fingerprint, so the next run matches and skips.
+    """
     g = graph_builder.graph()
     cd = graph_builder.community_detection()
     parts = [
+        KG_BUILDER_VERSION,
         str(g.number_of_nodes()),
         str(g.number_of_edges()),
         str(len(set(cd.values()))),

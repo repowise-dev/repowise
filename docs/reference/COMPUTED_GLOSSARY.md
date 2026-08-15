@@ -30,7 +30,7 @@ workspace overlays, MCP responses, and CLI output.
 | Test file flag | Whether a file looks like a test/spec/fixture file. | `FileTraverser._build_file_info()` and community/test-gap helpers | `tests/test_auth.py -> is_test=true` |
 | Config file flag | Whether a file is classified as configuration. | `FileTraverser._build_file_info()` | `pyproject.toml -> is_config=true` |
 | API contract flag | Whether a file is an API contract format. | `FileTraverser._build_file_info()` | `openapi.yaml -> is_api_contract=true` |
-| Entry point flag | Whether a filename or language-specific entry pattern marks a file as a starting point. | `FileTraverser._build_file_info()` | `main.py`, `server.ts`, `Dockerfile` depending on rules |
+| Entry point flag | Whether a file may be where execution starts: a filename, stem or `[project.scripts]` target says so, *and* the shared candidacy rule does not rule it out (a config/markup/infra language, or a re-export glue leaf below the package root). | `traverser._is_entry_point()`, `entry_candidacy.not_an_execution_start()` | `main.py`, `server.ts` yes; `Dockerfile`, `docs/index.md`, `a/b/c/index.ts` no |
 | Traversal stats | Counts of included files and skip reasons. | `TraversalStats` in `traverser.py` | `{included: 240, skipped_binary: 3, skipped_generated: 12}` |
 | Package info | A package/workspace detected from manifests near the repo root. | `FileTraverser._detect_monorepo()` | `{name: "core", path: "packages/core", manifest_file: "pyproject.toml"}` |
 | Repo structure | High-level structure summary used by overview generation. | `FileTraverser.get_repo_structure()` | `{is_monorepo: true, total_files: 820, entry_points: ["packages/cli/src/.../main.py"]}` |

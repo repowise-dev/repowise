@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from repowise.core.generation.entry_points import is_glue_leaf
+from repowise.core.entry_candidacy import non_code_entry_languages, not_an_execution_start
 from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer, is_support_path
 from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
@@ -49,23 +49,6 @@ _ENTRY_FILENAME_STEMS: frozenset[str] = _LANG_REGISTRY.entry_filename_stems()
 # A genuine entry whose forward BFS reaches no more than this many files is a
 # wiring stub (supervision/bootstrap); the widest-fanout file then co-anchors.
 _STUB_ENTRY_REACH = 3
-
-# Languages whose files can never be execution entry points, however
-# entry-like their stem is: docs/data/config (``is_code=False`` —
-# docs/index.md is not a program's front door, and neither is
-# schema.graphql or an openapi index) plus build/deploy wiring
-# (``is_infra`` — a Dockerfile or deploy.sh wires the system rather than
-# starting its control flow; infra pages close the tour instead). Both
-# sets derive from the registry; the lowercase aliases guard against
-# unnormalized language strings from older indexes (none is a spec tag).
-_NON_CODE_ALIASES: frozenset[str] = frozenset(
-    {"md", "yml", "txt", "html", "css", "csv", "xml", "svg", "rst", "text", "ini", "cmake"}
-)
-_NON_CODE_LANGUAGES: frozenset[str] = (
-    _LANG_REGISTRY.config_languages()
-    | _LANG_REGISTRY.infra_languages()
-    | _NON_CODE_ALIASES
-)
 
 # Upper bound on tour stops — long enough to teach the spine, short enough to
 # stay a tour and not a table of contents.
@@ -118,8 +101,11 @@ def score_entry_points(
       * PageRank in the top 10% of all files ........... +1
 
     Both entry bonuses are withheld from doc/data languages — ``docs/index.md``
-    must never outrank a real ``main.py``, even when ingestion's stem rule
-    flagged it — from test files (``tests/testserver/server.py`` is a fixture,
+    must never outrank a real ``main.py``. Ingestion applies the same rule to
+    the flag now, so on a current index this half is belt-and-braces; it still
+    binds on rows written before that landed, which is what the unnormalized
+    language aliases in the shared set exist for. They are withheld too from
+    test files (``tests/testserver/server.py`` is a fixture,
     not where a reader enters the system), from example/demo dirs (every
     ``examples/*/main.go`` is an entry by *name*; none is the system), and from
     deep generic-glue leaves (a resolver's nested ``index.py`` dispatches, it
@@ -141,10 +127,9 @@ def score_entry_points(
         score = 0.0
         language = (getattr(fi, "language", "") or "").lower()
         entry_eligible = (
-            language not in _NON_CODE_LANGUAGES
+            not not_an_execution_start(path, language)
             and infer_layer(path, language) not in ADJACENT_LAYERS
             and not is_support_path(path)
-            and not is_glue_leaf(path)
         )
         if entry_eligible and getattr(fi, "is_entry_point", False):
             score += 3.0
@@ -271,13 +256,17 @@ def build_tour(
     # just the best-available anchor — the step reasons must not overclaim.
     genuine_entries = bool(seeds)
 
-    # Docs, config, and test files can't anchor a walk.
+    # Docs, config, and test files can't anchor a walk. Deliberately not the
+    # full candidacy rule: a deep glue leaf is a poor *entry point* but still a
+    # legitimate walk anchor, so ``not_an_execution_start``'s second half is
+    # withheld here on purpose.
+    non_code = non_code_entry_languages()
     ineligible = {
         p.file_info.path
         for p in parsed_files
         if getattr(p, "file_info", None)
         and (
-            (getattr(p.file_info, "language", "") or "").lower() in _NON_CODE_LANGUAGES
+            (getattr(p.file_info, "language", "") or "").lower() in non_code
             or infer_layer(p.file_info.path, p.file_info.language) in ADJACENT_LAYERS
             or is_support_path(p.file_info.path)
         )
@@ -331,7 +320,7 @@ def build_tour(
         p.file_info.path
         for p in parsed_files
         if getattr(p, "file_info", None)
-        and (getattr(p.file_info, "language", "") or "").lower() in _NON_CODE_LANGUAGES
+        and (getattr(p.file_info, "language", "") or "").lower() in non_code
     }
     reached = set(depths)
     max_reached = max(depths.values(), default=-1)

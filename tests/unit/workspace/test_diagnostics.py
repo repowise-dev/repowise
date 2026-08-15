@@ -8,6 +8,11 @@ from repowise.core.workspace.diagnostics import (
     UnmatchedReason,
     build_diagnostics,
 )
+from repowise.core.workspace.extractors.from_index import (
+    EXTRACTION_LAYER_KEY,
+    LAYER_INDEX,
+    LAYER_REGEX,
+)
 
 
 def _provider(
@@ -147,4 +152,77 @@ def test_round_trip_serialization():
 
     diag = build_diagnostics(contracts, links)
     restored = ExtractionDiagnostics.from_dict(diag.to_dict())
+    assert restored.to_dict() == diag.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Extraction coverage — the by-layer split and the unresolved denominator
+# ---------------------------------------------------------------------------
+
+
+def test_layer_split_reads_the_provenance_each_contract_carries():
+    index_provider = _provider("api", "http::GET::/a")
+    index_provider.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX
+    regex_provider = _provider("api", "http::GET::/b")
+    regex_provider.meta[EXTRACTION_LAYER_KEY] = LAYER_REGEX
+
+    diag = build_diagnostics([index_provider, regex_provider], [])
+
+    assert diag.providers_by_layer == {LAYER_INDEX: 1, LAYER_REGEX: 1}
+    assert diag.repo_breakdown[0].providers_by_layer == {LAYER_INDEX: 1, LAYER_REGEX: 1}
+
+
+def test_contract_with_no_recorded_layer_counts_as_regex():
+    """Absence of provenance must not vanish from the totals."""
+    diag = build_diagnostics([_provider("api", "http::GET::/a")], [])
+    assert diag.providers_by_layer == {LAYER_REGEX: 1}
+
+
+def test_unresolved_calls_reach_the_diagnostics_from_the_extraction_stats():
+    contracts = [_consumer("web", "http::GET::/u")]
+    stats = {"web": {"http_consumer_unresolved": 3}}
+
+    diag = build_diagnostics(contracts, [], stats)
+
+    assert diag.http_consumers_unresolved == 3
+    assert diag.repo_breakdown[0].http_consumers_unresolved == 3
+    # 1 resolved of 4 located.
+    assert diag.http_consumer_coverage == 0.25
+
+
+def test_unresolved_calls_counted_for_a_repo_with_no_contracts():
+    """A repo where every call failed to resolve has no breakdown row, and is
+    exactly the repo whose misses must not disappear."""
+    stats = {"ghost": {"http_consumer_unresolved": 9}}
+    diag = build_diagnostics([_consumer("web", "http::GET::/u")], [], stats)
+    assert diag.http_consumers_unresolved == 9
+    assert [r.repo for r in diag.repo_breakdown] == ["web"]
+
+
+def test_coverage_is_none_rather_than_perfect_when_nothing_was_located():
+    """0/0 is not 100%."""
+    assert build_diagnostics([], []).http_consumer_coverage is None
+    assert build_diagnostics([_provider("api", "http::GET::/a")], []).http_consumer_coverage is None
+
+
+def test_coverage_ignores_non_http_consumers():
+    """The unresolved counter only counts HTTP calls, so the denominator must
+    not be padded with grpc/topic consumers."""
+    contracts = [
+        _consumer("web", "http::GET::/u", ctype="http"),
+        _consumer("web", "grpc::Svc::M", ctype="grpc"),
+    ]
+    diag = build_diagnostics(contracts, [], {"web": {"http_consumer_unresolved": 1}})
+    assert diag.http_consumer_coverage == 0.5
+
+
+def test_coverage_survives_a_serialization_round_trip():
+    from repowise.core.workspace.diagnostics import ExtractionDiagnostics
+
+    diag = build_diagnostics(
+        [_consumer("web", "http::GET::/u")], [], {"web": {"http_consumer_unresolved": 1}}
+    )
+    restored = ExtractionDiagnostics.from_dict(diag.to_dict())
+    assert restored.http_consumers_unresolved == 1
+    assert restored.http_consumer_coverage == 0.5
     assert restored.to_dict() == diag.to_dict()

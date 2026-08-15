@@ -32,13 +32,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult, _slugify
-from repowise.core.generation.entry_points import (
-    CONVENTIONAL_ENTRY_STEMS as _CONVENTIONAL_ENTRY_STEMS,
+from repowise.core.entry_candidacy import (
+    conventional_entry_stems,
+    not_an_execution_start,
 )
-from repowise.core.generation.entry_points import (
-    is_glue_leaf,
-    rank_entry_points,
-)
+from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
@@ -66,12 +64,6 @@ _FIXTURE_CAMEL_RES = _LANG_REGISTRY.camel_fixture_res_by_extension()
 # Test-project dir suffixes (.Tests/.Specs) — when present, the suite's
 # face must come from inside one.
 _TEST_PROJECT_DIR_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_dir_suffixes()
-# Config/markup/data + infra languages — a server.json or a Dockerfile
-# describes or wires the system, it is never where execution starts, so it
-# never belongs on the orientation entry-point list.
-_NON_CODE_ENTRY_LANGUAGES: frozenset[str] = (
-    _LANG_REGISTRY.config_languages() | _LANG_REGISTRY.infra_languages()
-)
 
 # Honest-degradation thresholds. Density = (imports + tested_by)
 # edges per dominant-language file — the same definition the validation
@@ -183,6 +175,10 @@ _MAX_LAYERS = 15
 # teaches a reader nothing, so it is demoted in the presentation view. Runtime
 # entries that survive are ranked by ``pagerank + betweenness`` and the surfaced
 # set is capped — the full ranked list is kept as ``entry_candidates``.
+# Only *shallow* barrels reach here now: ingestion's candidacy rule drops the
+# deep ones before the flag is set. Demotion still earns its keep, because a
+# package-root ``index.ts`` is a legal entry by candidacy and still a poor
+# thing to lead a reader with.
 _BARREL_STEMS = frozenset({"index"})
 _SUBSTANTIVE_KINDS = frozenset(
     {"function", "method", "class", "struct", "interface", "enum", "trait", "impl", "macro"}
@@ -873,13 +869,6 @@ def _curate_entry_points(
     except Exception:  # pragma: no cover - defensive
         betweenness = {}
 
-    def _not_an_execution_start(path: str, language: str) -> bool:
-        # Config/data files (server.json) describe the system and deep
-        # generic-glue leaves (a resolver's index.py) dispatch within it —
-        # neither is where a reader enters. Barrel demotion is handled
-        # separately (it mutates tags), so this covers only candidacy.
-        return language in _NON_CODE_ENTRY_LANGUAGES or is_glue_leaf(path)
-
     candidates: list[tuple[str, float, float]] = []
     for node in kg.nodes:
         nid = node.get("id", "")
@@ -902,7 +891,7 @@ def _curate_entry_points(
                 new_tags.append("barrel")
             node["tags"] = new_tags
             continue
-        if _not_an_execution_start(path, language):
+        if not_an_execution_start(path, language):
             continue
         candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
@@ -919,11 +908,11 @@ def _curate_entry_points(
             pf = pf_by_path.get(path)
             if pf is not None and _is_barrel(pf):
                 continue
-            if _not_an_execution_start(path, language):
+            if not_an_execution_start(path, language):
                 continue
             candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
-    ranked = rank_entry_points(candidates, _CONVENTIONAL_ENTRY_STEMS)
+    ranked = rank_entry_points(candidates, conventional_entry_stems())
     kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
 

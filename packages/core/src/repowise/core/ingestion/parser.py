@@ -581,6 +581,41 @@ class ASTParser:
                             k -= 1
                         break
 
+            # C#: [Obsolete] / [System.Obsolete] are ``attribute_list`` nodes.
+            # In tree-sitter-c-sharp the attribute_list is child[0] of the
+            # declaration node itself (method_declaration, class_declaration, etc.),
+            # NOT a preceding sibling in the class body. Iterate def_node.children
+            # and collect attribute_list nodes until the first non-attribute child.
+            # Strip the outer [ ] so the inner content matches the same
+            # _DEPRECATED_DECORATOR_BASES the analyzer uses for every other lang.
+            csharp_attrs: list[str] = []
+            if file_info.language == "csharp":
+                for child in def_node.children:
+                    if child.type != "attribute_list":
+                        break
+                    attr_text = _node_text(child, src).strip()
+                    # "[Obsolete]" → "Obsolete"
+                    if attr_text.startswith("[") and attr_text.endswith("]"):
+                        csharp_attrs.append(attr_text[1:-1])
+
+            # C/C++: [[deprecated]] / [[deprecated("reason")]] are
+            # ``attribute_declaration`` nodes. In tree-sitter-cpp the
+            # attribute_declaration is child[0] of function_definition itself
+            # (NOT a preceding sibling at translation_unit level). Iterate
+            # def_node.children and collect attribute_declaration nodes until
+            # the first non-attribute child.
+            # Strip the outer [[ ]] so the inner content lands in the same
+            # checker as the Rust and C# forms.
+            cpp_attrs: list[str] = []
+            if file_info.language in ("cpp", "c"):
+                for child in def_node.children:
+                    if child.type != "attribute_declaration":
+                        break
+                    attr_text = _node_text(child, src).strip()
+                    # "[[deprecated]]" → "deprecated"
+                    if attr_text.startswith("[[") and attr_text.endswith("]]"):
+                        cpp_attrs.append(attr_text[2:-2])
+
             visibility = config.visibility_fn(name, modifier_texts)
             is_exported_symbol = False
             # C/C++ visibility is dictated by AST context (access
@@ -657,7 +692,12 @@ class ASTParser:
                     start_line=start_line,
                     end_line=end_line,
                     docstring=docstring,
-                    decorators=[m for m in modifier_texts if m.startswith("@")] + rust_attrs,
+                    decorators=(
+                        [m for m in modifier_texts if m.startswith("@")]
+                        + rust_attrs
+                        + csharp_attrs
+                        + cpp_attrs
+                    ),
                     visibility=visibility,  # type: ignore[arg-type]
                     is_async=is_async,
                     language=file_info.language,
@@ -839,9 +879,11 @@ class ASTParser:
             # call_expression, which would otherwise fall into the CommonJS
             # branch below and be dropped on the floor — a dynamic import
             # holds no ``require()`` for ``collect_cjs_requires`` to find.
-            # ``imported_names`` is empty because the construct binds a module
-            # namespace at runtime, not a static name; the file-to-file edge is
-            # what reachability needs.
+            # The construct binds a module namespace at runtime, so record a
+            # wildcard rather than a static name.  Downstream unused-export
+            # analysis treats ``*`` as namespace consumption and therefore
+            # keeps the target's exports live without a broad analyzer
+            # exemption.
             if (
                 file_info.language in _TS_JS_LANGUAGES
                 and stmt_node.type == "call_expression"
@@ -852,7 +894,7 @@ class ASTParser:
                     Import(
                         raw_statement=raw,
                         module_path=module_text,
-                        imported_names=[],
+                        imported_names=["*"],
                         is_relative=module_text.startswith("."),
                         resolved_file=None,
                         bindings=[],

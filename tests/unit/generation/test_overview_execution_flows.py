@@ -154,24 +154,18 @@ def test_conventional_entry_point_survives_having_no_importers(
 @pytest.mark.parametrize(
     "path",
     [
-        "internal/scheduler/queue.go",  # Go imports name a package
-        "src/main/java/app/Queue.java",
-        "src/Queue.kt",
-        "src/engine/queue.cpp",
-        "include/engine/queue.h",
         "src/features/api/index.ts",  # barrel: reached by the names it forwards
         "pkg/sub/__init__.py",
+        "scripts/release.sh",  # never-flag glob: CI invokes it by name
+        "app/dashboard/page.tsx",  # never-flag glob: a file-system route
     ],
 )
 def test_filter_bails_out_where_dead_code_is_kinder(sample_config, sample_repo_structure, path):
     """The analyzer rescues these from unreachable_file, so the flow stays.
 
-    The barrels are rescued by the shared predicate outright. The
-    package-granular languages are rescued because this caller passes no
-    package map, which the predicate reads as "not checked" and answers
-    reachable — the forgiving direction, chosen at the call site rather than
-    falling out of what state happened to be available. Over-dropping empties
-    the section silently, which is the failure being avoided.
+    The barrels the shared predicate always rescued. The never-flag globs it
+    did not: the matcher used to live on the analyzer, so this caller could
+    not ask and dropped a flow the dead-code pass would never have reported.
     """
     graph = _graph_with({path: {"is_entry_point": False}}, imports=[])
     flows = [_flow(f"{path}::f", 0.95, ["a", "b"])]
@@ -182,6 +176,85 @@ def test_filter_bails_out_where_dead_code_is_kinder(sample_config, sample_repo_s
     )
 
     assert [f["entry_point"] for f in ctx.execution_flows] == [f"{path}::f"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "internal/scheduler/queue.go",  # Go imports name a package
+        "src/main/java/app/Queue.java",
+        "src/Queue.kt",
+        "src/engine/queue.cpp",
+        "include/engine/queue.h",
+    ],
+)
+def test_package_granular_languages_are_answered_not_assumed(
+    sample_config, sample_repo_structure, path
+):
+    """This caller supplies the package map, so it gets a real answer.
+
+    It used to pass ``package_files=None``, which the predicate reads as "not
+    checked" and resolves to reachable, so a Go / JVM / C-C++ file with no
+    package sibling and no importer kept its flow while the dead-code pass
+    reported the same file. The sibling case below is the other half: the map
+    rescues a real package member rather than blanket-dropping the language.
+    """
+    graph = _graph_with({path: {"is_entry_point": False}}, imports=[])
+    flows = [_flow(f"{path}::f", 0.95, ["a", "b"])]
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_Builder(flows, graph)
+    )
+
+    assert ctx.execution_flows == []
+
+
+@pytest.mark.parametrize("path", ["cmd/app/main.go", "internal/api/service.pb.go"])
+def test_never_flag_wins_over_the_package_map(sample_config, sample_repo_structure, path):
+    """Precedence, and it is the one thing these two changes could get wrong.
+
+    Both arrived in the same change: the never-flag globs moved into the
+    predicate, and this caller started supplying the package map. A generated
+    ``.pb.go`` in a package with no live sibling is answered "unreachable" by
+    the map and "exempt" by the globs, so the order of those two checks decides
+    the flow. The globs run first, matching the analyzer, which has always
+    treated a never-flag path as reached from outside the graph.
+    """
+    graph = _graph_with({path: {"is_entry_point": False}}, imports=[])
+    flows = [_flow(f"{path}::f", 0.95, ["a", "b"])]
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_Builder(flows, graph)
+    )
+
+    assert [f["entry_point"] for f in ctx.execution_flows] == [f"{path}::f"]
+
+
+def test_a_live_package_sibling_still_rescues_the_flow(sample_config, sample_repo_structure):
+    """The package map is granularity, not a blanket drop.
+
+    ``queue.go`` has no importer of its own, but ``server.go`` beside it in the
+    same package does, and a Go import names the package. So the flow stays —
+    which is the whole reason the map exists rather than a file-level rule.
+    """
+    graph = _graph_with(
+        {
+            "internal/scheduler/queue.go": {"is_entry_point": False},
+            "internal/scheduler/server.go": {"is_entry_point": False},
+            "cmd/app/main.go": {"is_entry_point": True},
+        },
+        imports=[("cmd/app/main.go", "internal/scheduler/server.go")],
+    )
+    flows = [_flow("internal/scheduler/queue.go::f", 0.95, ["a", "b"])]
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_Builder(flows, graph)
+    )
+
+    assert [f["entry_point"] for f in ctx.execution_flows] == ["internal/scheduler/queue.go::f"]
 
 
 @pytest.mark.parametrize("attr", ["is_api_contract", "is_never_flag"])
@@ -260,9 +333,12 @@ def test_barrels_rank_below_real_entry_points(sample_config, sample_repo_structu
     includes ``index``, so a buried re-export barrel arrived indistinguishable
     from a front door and could lead the list.
 
-    Demoted rather than dropped: ``packages/cli/src/index.ts`` is a genuine
-    package front door in a monorepo, and dropping every glue stem would lose
-    it.
+    The ranking demotes rather than drops, and that is still its contract: it
+    orders what it is handed and holds no candidacy rule. Ingestion now drops
+    deep glue leaves before the flag is set, so the buried paths below no
+    longer arrive from a current index — this pins the ordering against a
+    list built by hand, and against rows written by an older index that still
+    carries them.
     """
     # ``sample_repo_structure`` is module-scoped, so mutating it in place leaks
     # into every later test in this file.

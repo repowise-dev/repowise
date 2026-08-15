@@ -365,6 +365,8 @@ _BUILTIN_CSHARP_TYPES: frozenset[str] = frozenset(
 )
 
 _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
+    "type_argument_list": "generic_argument",
+    "typeof_expression": "typeof",
     "constructor_declaration": "ctor_param",
     "method_declaration": "method_param",
     "delegate_declaration": "delegate_param",
@@ -426,10 +428,9 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
 
     The point of returning the head identifier is that the
     DotNetProjectIndex type-name lookup is keyed by unqualified type
-    name. Generic-arg recursion is intentionally NOT done here — each
-    generic arg is captured in its own ``@param.type`` if it's a real
-    parameter type, and the resolver doesn't currently track generic
-    instantiation graphs.
+    name. Generic-arg recursion is intentionally NOT done here — each generic
+    argument is captured from its own ``type_argument_list`` node, including
+    nested arguments and invocation-only type uses.
     """
     head_node: Node | None = type_node
 

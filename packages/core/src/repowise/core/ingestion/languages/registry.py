@@ -30,11 +30,12 @@ _GENERIC_ENTRY_STEMS: frozenset[str] = frozenset(
     {"main", "index", "app", "server", "cli", "bootstrap", "entry"}
 )
 
-# Stems the traverser's is_entry_point *flag* accepts for any language —
-# deliberately a different (tighter on cli/bootstrap/entry, looser on
-# run/start) set than the tour-bonus stems above: the flag is strong
-# evidence, the tour stem a weak bonus. Per-language flag stems
-# (wsgi/asgi → python) live on the specs.
+# Stems that are entry-point evidence on their own, for any language. The
+# traverser flags on this *unioned* with the tour-bonus stems above (see
+# ``traverser._ENTRY_POINT_STEMS``): the two were hand-kept and disagreed both
+# ways, so this one keeps run/start, which the tour set lacks, and inherits
+# cli/bootstrap/entry, which it lacked. Per-language flag stems (wsgi/asgi →
+# python) live on the specs.
 _GENERIC_ENTRY_FLAG_STEMS: frozenset[str] = frozenset(
     {"main", "index", "app", "run", "server", "start"}
 )
@@ -227,7 +228,12 @@ class LanguageRegistry:
         return spec.import_support if spec else "none"
 
     def entry_filename_stems(self) -> frozenset[str]:
-        """Generic + per-language entry-point filename stems (tour bonus set)."""
+        """Generic + per-language entry-point filename stems.
+
+        Read by the tour's stem bonus and, minus the glue stems, by
+        :func:`repowise.core.entry_candidacy.conventional_entry_stems` — which
+        both the wiki ranking and the traverser's flag consume.
+        """
         return _GENERIC_ENTRY_STEMS | frozenset(
             stem for s in self._specs.values() for stem in s.entry_stems
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -305,3 +306,41 @@ class TestFindWorkspaceRoot:
         deep = ws / "repo" / "src" / "pkg"
         deep.mkdir(parents=True)
         assert find_workspace_root(deep) == ws.resolve()
+
+
+# ---------------------------------------------------------------------------
+# Losing a repo must leave a trace
+# ---------------------------------------------------------------------------
+
+
+def test_save_warns_when_it_drops_a_repo(tmp_path, caplog):
+    """A config rewrite that shrinks the workspace is exactly what went
+    unexplained once, and it left nothing behind to explain it."""
+    WorkspaceConfig(
+        repos=[RepoEntry(path="a", alias="a"), RepoEntry(path="b", alias="b")]
+    ).save(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="repowise.workspace.config"):
+        WorkspaceConfig(repos=[RepoEntry(path="a", alias="a")]).save(tmp_path)
+
+    assert "down from 2" in caplog.text
+    assert "dropping: b" in caplog.text
+    # The write still happens — a removal may be intended.
+    assert WorkspaceConfig.load(tmp_path).repo_aliases() == ["a"]
+
+
+def test_save_is_quiet_when_adding_a_repo(tmp_path, caplog):
+    WorkspaceConfig(repos=[RepoEntry(path="a", alias="a")]).save(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="repowise.workspace.config"):
+        WorkspaceConfig(
+            repos=[RepoEntry(path="a", alias="a"), RepoEntry(path="b", alias="b")]
+        ).save(tmp_path)
+
+    assert caplog.text == ""
+
+
+def test_first_save_does_not_warn(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="repowise.workspace.config"):
+        WorkspaceConfig(repos=[RepoEntry(path="a", alias="a")]).save(tmp_path)
+    assert caplog.text == ""

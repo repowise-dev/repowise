@@ -7,10 +7,18 @@
  * adapters fill defaults before passing data to components.
  */
 
+/**
+ * `dismissed` is a tombstone and `deprecated` is a retirement, and the
+ * difference is load-bearing: the engine skips a dismissed record on every
+ * re-extraction and hides it from listings, where a deprecated one keeps being
+ * re-derived and keeps its row. The union omitted `dismissed` while the engine
+ * had always accepted it, which left the UI no way to say it.
+ */
 export type DecisionStatus =
   | "proposed"
   | "active"
   | "deprecated"
+  | "dismissed"
   | "superseded";
 
 export type DecisionSource =

@@ -307,6 +307,10 @@ def test_system_graph_json_shape_is_locked():
         "unmatched_consumers",
         "unmatched_by_reason",
         "orphan_providers",
+        "providers_by_layer",
+        "consumers_by_layer",
+        "http_consumers_unresolved",
+        "http_consumer_coverage",
     }
 
 

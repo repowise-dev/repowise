@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import iso_utc
+from repowise.core.ingestion.models import SYMBOL_USE_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -391,13 +392,21 @@ async def symbol_detail(
     )
     [symbol] = await _attach_blame(session, repo_id, [symbol])
 
-    # Callers/callees from the symbol graph (call + heritage edges).
+    # Callers/callees from the symbol graph. The filter is what makes the
+    # comment true: unfiltered, a symbol's inbound containment edge — from its
+    # own declaring file or class, which 34,570 of 34,808 symbols on this repo
+    # have — was served as a caller.
     callers: list[dict] = []
     callees: list[dict] = []
     node = await crud.get_graph_node(session, repo_id, symbol_id)
     if node is not None:
         edges = await crud.get_graph_edges_for_node(
-            session, repo_id, symbol_id, direction="both", limit=40
+            session,
+            repo_id,
+            symbol_id,
+            direction="both",
+            edge_types=sorted(SYMBOL_USE_EDGE_TYPES),
+            limit=40,
         )
         other_ids = {
             e.source_node_id if e.source_node_id != symbol_id else e.target_node_id for e in edges
@@ -417,15 +426,20 @@ async def symbol_detail(
                 if other and other.file_path
                 else (other_id.split("::")[0] if "::" in other_id else other_id),
                 "start_line": other.start_line if other else None,
-                "edge_type": e.edge_type or "calls",
+                "edge_type": e.edge_type,
                 "confidence": round(e.confidence or 0.0, 3),
             }
             (callers if inbound else callees).append(entry)
         callers.sort(key=lambda x: (-x["confidence"], x["name"]))
         callees.sort(key=lambda x: (-x["confidence"], x["name"]))
 
+    # Scoped to the same edges as `callers`/`callees`, which sit beside these
+    # two in one `graph` object. Unscoped, every symbol's in-degree carried the
+    # containment edge from its own declaring file or class.
     degrees = (
-        await crud.get_node_degree_counts(session, repo_id, symbol_id)
+        await crud.get_node_degree_counts(
+            session, repo_id, symbol_id, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
+        )
         if node is not None
         else {"in_degree": 0, "out_degree": 0}
     )

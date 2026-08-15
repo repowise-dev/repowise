@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
@@ -26,7 +27,24 @@ async def dependency_path(
     When no direct path exists, returns visual context with nearest common
     ancestors, shared neighbors, and bridge suggestions.
     """
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # Drop the temporal relation only — the same rule the MCP twin
+    # (`get_dependency_path`) applies, for the same reasons. A ``co_changes``
+    # edge records that two files move together in history, so leaving it in
+    # makes it a free hop and this endpoint reports a "dependency path" no
+    # code creates.
+    #
+    # Containment stays, unlike in the consumers that answer "what depends on
+    # this file". ``defines`` is the only bridge from the file layer to the
+    # symbol layer, and no edge points back the other way, so excluding it
+    # cannot suppress a false file-to-file path — there is none to suppress —
+    # while it does delete the real ones: a --defines--> a::foo --calls-->
+    # b::bar is how a caller asks which file reaches a function.
+    edge_result = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+        )
+    )
     edges = edge_result.scalars().all()
 
     node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
@@ -40,6 +58,10 @@ async def dependency_path(
         ) from None
 
     graph: nx.DiGraph = nx.DiGraph()
+    # Seed every indexed node, not just the endpoints of surviving edges. A
+    # file whose only edges were temporal is still indexed, so building from
+    # edges alone made the 404 below untrue for it.
+    graph.add_nodes_from(n.node_id for n in nodes)
     for e in edges:
         graph.add_edge(e.source_node_id, e.target_node_id)
 

@@ -187,6 +187,13 @@ class CrossRepoOverlay:
     co_changes: list[CrossRepoCoChange] = field(default_factory=list)
     package_deps: list[CrossRepoPackageDep] = field(default_factory=list)
     repo_summaries: dict[str, dict] = field(default_factory=dict)
+    #: How many pairs cleared the strength/session thresholds before
+    #: ``_MAX_EDGES`` / ``_MAX_EDGES_PER_REPO_PAIR`` trimmed ``co_changes``.
+    #: Equal to ``len(co_changes)`` when nothing was dropped. Not a count of
+    #: every pair in git history: ``_MAX_FILES_PER_SESSION_SIDE`` bounds each
+    #: session before pairing, so pairs involving an evicted file are in
+    #: neither number.
+    total_co_changes: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -195,16 +202,19 @@ class CrossRepoOverlay:
             "co_changes": [asdict(c) for c in self.co_changes],
             "package_deps": [asdict(d) for d in self.package_deps],
             "repo_summaries": self.repo_summaries,
+            "total_co_changes": self.total_co_changes or len(self.co_changes),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> CrossRepoOverlay:
+        co_changes = [CrossRepoCoChange(**c) for c in data.get("co_changes", [])]
         return cls(
             version=data.get("version", 1),
             generated_at=data.get("generated_at", ""),
-            co_changes=[CrossRepoCoChange(**c) for c in data.get("co_changes", [])],
+            co_changes=co_changes,
             package_deps=[CrossRepoPackageDep(**d) for d in data.get("package_deps", [])],
             repo_summaries=data.get("repo_summaries", {}),
+            total_co_changes=data.get("total_co_changes", len(co_changes)),
         )
 
 
@@ -383,7 +393,7 @@ def detect_cross_repo_co_changes(
     commit_limit: int = _DEFAULT_COMMIT_LIMIT,
     min_score: float = _MIN_CROSS_REPO_SCORE,
     min_sessions: int = _MIN_CO_SESSIONS,
-) -> list[CrossRepoCoChange]:
+) -> tuple[list[CrossRepoCoChange], int]:
     """Find files across repos that the same author changes in the same
     work sessions.
 
@@ -401,9 +411,14 @@ def detect_cross_repo_co_changes(
        recent work that also touched the partner"
     6. Keep pairs with >= min_sessions co-sessions and strength >= min_score,
        cap per repo pair, then globally
+
+    Returns the capped list and the number of pairs that cleared step 6's
+    thresholds before capping, so the caller can say how much it is showing.
+    That total is measured after step 3's per-session file cap, so it bounds
+    what this miner scored, not what git history contains.
     """
     if len(repo_paths) < 2:
-        return []
+        return [], 0
 
     now_ts = time.time()
     window_seconds = time_window_hours * 3600
@@ -429,7 +444,7 @@ def detect_cross_repo_co_changes(
     repo_commits = _drop_ubiquitous_files(filtered)
 
     if len(repo_commits) < 2:
-        return []
+        return [], 0
 
     # Step 3: Group all commits by author identity, tagged with repo alias
     author_commits: dict[str, list[tuple[str, _GitCommit]]] = defaultdict(list)
@@ -543,7 +558,15 @@ def detect_cross_repo_co_changes(
         capped.append(r)
         if len(capped) >= _MAX_EDGES:
             break
-    return capped
+    if len(capped) < len(results):
+        _log.info(
+            "Co-change mining kept %d of %d qualifying pairs (caps: %d total, %d per repo pair)",
+            len(capped),
+            len(results),
+            _MAX_EDGES,
+            _MAX_EDGES_PER_REPO_PAIR,
+        )
+    return capped, len(results)
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +588,15 @@ def _resolve_target_repo(
             ):
                 return alias
     except Exception:
-        pass
+        # A manifest reference that cannot be resolved to a path is the one
+        # way this returns None without having compared anything, so it is
+        # worth distinguishing from "resolved fine, matched no repo".
+        _log.warning(
+            "Could not resolve manifest reference %r relative to %s",
+            relative_ref,
+            source_repo_path,
+            exc_info=True,
+        )
     return None
 
 
@@ -1001,7 +1032,9 @@ async def run_cross_repo_analysis(
     # Co-change detection (CPU-bound git subprocess calls)
     import asyncio
 
-    co_changes = await asyncio.to_thread(detect_cross_repo_co_changes, repo_paths)
+    co_changes, total_co_changes = await asyncio.to_thread(
+        detect_cross_repo_co_changes, repo_paths
+    )
 
     # Package dependency detection (file I/O)
     package_deps = await asyncio.to_thread(detect_package_dependencies, repo_paths)
@@ -1015,6 +1048,7 @@ async def run_cross_repo_analysis(
         co_changes=co_changes,
         package_deps=package_deps,
         repo_summaries=repo_summaries,
+        total_co_changes=total_co_changes,
     )
 
     # Persist

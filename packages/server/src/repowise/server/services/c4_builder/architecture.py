@@ -450,9 +450,22 @@ async def build_architecture_view(
     edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     all_edges: list[GraphEdge] = list(edge_result.scalars())
 
+    # The edges this view actually returns. Degree is counted from the same
+    # list the arrows are drawn from: counting every row instead made one
+    # response disagree with itself, because a file's out-degree included the
+    # `defines` edge to each symbol it declares and none of those are shown
+    # when symbols are excluded.
+    view_edges = [
+        e
+        for e in all_edges
+        if (include_symbols or e.edge_type not in _SYMBOL_EDGE_TYPES)
+        and e.source_node_id in node_id_set
+        and e.target_node_id in node_id_set
+    ]
+
     in_degree: dict[str, int] = defaultdict(int)
     out_degree: dict[str, int] = defaultdict(int)
-    for e in all_edges:
+    for e in view_edges:
         out_degree[e.source_node_id] += 1
         in_degree[e.target_node_id] += 1
 
@@ -588,16 +601,12 @@ async def build_architecture_view(
 
     # -- Build ArchEdges --
     arch_edges: list[ArchEdge] = []
-    for e in all_edges:
-        if not include_symbols and e.edge_type in _SYMBOL_EDGE_TYPES:
-            continue
-        if e.source_node_id not in node_id_set or e.target_node_id not in node_id_set:
-            continue
+    for e in view_edges:
         arch_edges.append(
             ArchEdge(
                 source=e.source_node_id,
                 target=e.target_node_id,
-                edge_type=e.edge_type or "imports",
+                edge_type=e.edge_type,
                 direction="forward",
                 weight=e.confidence,
                 confidence=e.confidence,

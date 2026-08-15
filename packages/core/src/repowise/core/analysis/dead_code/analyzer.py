@@ -12,10 +12,9 @@ this package.
 from __future__ import annotations
 
 import fnmatch
-import os
 import re
+from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +25,10 @@ from .constants import (
     _DEFAULT_DYNAMIC_PATTERNS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
-    _NEVER_FLAG_PATTERNS,
     _NEVER_PACKAGE_DIRS,
     _NON_CODE_LANGUAGES,
     _is_fixture_path,
+    never_flag_match,
 )
 from .contract_methods import is_contract_method
 from .dynamic_markers import (
@@ -38,12 +37,18 @@ from .dynamic_markers import (
     read_source_text,
 )
 from .file_reachability import (
+    PackageFileMap,
     ReachabilityRescues,
     build_package_file_map,
     is_file_reachable,
 )
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
-from .risk_factors import RISK_CAP_CONFIDENCE, path_risk_factors, risk_evidence
+from .risk_factors import (
+    RISK_CAP_CONFIDENCE,
+    SAFE_CONFIDENCE_THRESHOLD,
+    path_risk_factors,
+    risk_evidence,
+)
 
 #: Identifier shape, matched over raw bytes so an unindexed file never has to
 #: be decoded (these files are large by definition, and a decode would double
@@ -67,6 +72,120 @@ _IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
 #: keeps it from ever becoming the expensive thing.
 _UNINDEXED_SCAN_PER_FILE_BYTES = 4 * 1024 * 1024
 _UNINDEXED_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# Deprecation detection
+# ---------------------------------------------------------------------------
+
+#: Normalised decorator/annotation bases (after stripping leading ``@`` and
+#: any call-argument ``(…)`` tail) that signal a symbol is deprecated.
+#:
+#: Rust inner-attr form (``deprecated``), C# stripped form (``Obsolete``), and
+#: C++ stripped form (``deprecated``) are included verbatim because the
+#: respective sibling-walk extractors in ``parser.py`` already strip the
+#: language-specific bracket pairs before storing.
+_DEPRECATED_DECORATOR_BASES: frozenset[str] = frozenset(
+    {
+        # Python / TypeScript / Scala / Swift
+        "deprecated",
+        "typing.deprecated",
+        "warnings.deprecated",
+        # Java / Kotlin (case-sensitive annotation names)
+        "Deprecated",
+        "kotlin.Deprecated",
+        "java.lang.Deprecated",
+        # C# (inner attr text after stripping [ ])
+        "Obsolete",
+        "System.Obsolete",
+        "System.ObsoleteAttribute",
+    }
+)
+
+
+#: Regex that strips quoted string literals from a decorator/annotation text
+#: before splitting on ``@`` boundaries.  Without this,
+#: ``@app.route("/deprecated")`` would produce a token whose paren-stripped
+#: base is ``app.route`` (correct), but a hypothetical annotation whose
+#: *argument* contains ``@something`` would create a spurious token.
+_QUOTED_STR_RE: re.Pattern[str] = re.compile(r'"[^"]*"')
+
+
+def _decorator_base(raw: str) -> str:
+    """Return the normalised base name of a single decorator/annotation token.
+
+    Strips a leading ``@``, trims whitespace, and drops any call-argument
+    ``(…)`` tail.  For multi-word tokens (e.g. a Java modifier blob fragment
+    ``"Deprecated\n    public"``) only the first whitespace-delimited word is
+    kept, so visibility keywords that trail the annotation name are discarded.
+
+    This function handles ONE token.  Callers that receive multi-annotation
+    blobs (Java/Kotlin ``modifiers`` node) must split on ``@`` first.
+    """
+    base = raw.lstrip("@").strip()
+    paren = base.find("(")
+    if paren >= 0:
+        base = base[:paren].strip()
+    else:
+        # Handle trailing visibility keywords in modifier blobs:
+        # "Deprecated\n    public" → "Deprecated"
+        parts = base.split()
+        base = parts[0] if parts else base
+    return base
+
+
+def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
+    """Return True when the symbol is marked deprecated by name suffix or annotation.
+
+    Two mechanisms are checked in order:
+
+    1. **Name suffix**: the name ends with ``_DEPRECATED``, ``_LEGACY``, or
+       ``_COMPAT`` (original naming-convention check, preserved for backward
+       compatibility).
+
+    2. **Decorator / annotation**: each entry in *decorators* is treated as a
+       possibly multi-annotation modifier blob (Java/Kotlin ``modifiers`` node
+       delivers all annotations concatenated with whitespace in a single
+       string).  Each entry is first cleaned of quoted substrings (to avoid
+       matching paths like ``"/deprecated"`` inside ``@app.route("/deprecated")``),
+       then split on ``@`` boundaries so every individual annotation is checked
+       independently.  Each token is normalised via :func:`_decorator_base` and
+       tested against ``_DEPRECATED_DECORATOR_BASES`` and the lower-cased
+       ``"deprecated"`` catch-all.
+
+    The *decorators* list is produced by ``parser.py`` ``_extract_symbols``:
+    - Python / Scala / Swift: full decorator text with leading ``@``
+      (e.g. ``"@deprecated"``, ``"@typing.deprecated"``).
+    - Java / Kotlin: full modifier-node text — one blob per declaration that
+      may contain several annotations plus visibility keywords
+      (e.g. ``"@Deprecated\n    public"``,
+      ``"@Override\n  @Deprecated\n  public"``).
+    - Rust: inner attribute content stripped of ``#[…]``
+      (e.g. ``"deprecated"`` from ``#[deprecated]``).
+    - C#: inner attribute content stripped of ``[…]``
+      (e.g. ``"Obsolete"`` from ``[Obsolete]``).
+    - C++: inner attribute content stripped of ``[[…]]``
+      (e.g. ``"deprecated"`` from ``[[deprecated]]``).
+    """
+    # 1. Name suffix
+    if any(sym_name.endswith(s) for s in ("_DEPRECATED", "_LEGACY", "_COMPAT")):
+        return True
+    # 2. Decorator / annotation
+    for raw in decorators:
+        # Strip quoted strings first so path arguments like "/deprecated"
+        # inside ``@app.route("/deprecated")`` do not create false tokens.
+        cleaned = _QUOTED_STR_RE.sub('""', raw)
+        # Split on '@' to tokenize modifier blobs.  A leading '@' produces
+        # an empty first element which the ``if not token`` guard discards.
+        # No-'@' forms (Rust/C#/C++ inner attrs: "deprecated", "Obsolete")
+        # yield a single token equal to the whole string.
+        for token in cleaned.split("@"):
+            token = token.strip()
+            if not token:
+                continue
+            base = _decorator_base(token)
+            if base in _DEPRECATED_DECORATOR_BASES or base.lower() == "deprecated":
+                return True
+    return False
 
 # Symbol kinds that cannot be independently imported by name in any
 # supported language. Flagging them as "unused exports" is a guaranteed
@@ -479,94 +598,6 @@ def _is_synthetic_node(node: str) -> bool:
     return node.startswith("external:") or node.startswith("framework:")
 
 
-@lru_cache(maxsize=8)
-def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
-    """Compile *patterns* into one alternation regex equivalent to fnmatch.
-
-    ``fnmatch.fnmatch(path, p)`` normcases both sides and matches the
-    translated glob; doing that per (node x pattern) costs ~540 fnmatch
-    calls per node and dominated the whole dead-code pass (measured: 50s of
-    a 51s analyze() on a 13k-node graph, mostly Windows ``normcase``).
-    One pre-normcased alternation keeps the exact same match semantics at
-    one regex match per node.
-    """
-    return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
-
-
-@lru_cache(maxsize=8)
-def _never_flag_suffix_index(
-    patterns: tuple[str, ...],
-) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]], tuple[int, ...]]:
-    """Split *patterns* into suffix-keyed buckets that can be skipped wholesale.
-
-    ``_never_flag_regex`` puts all 579 patterns in one alternation, and
-    ``.match()`` tries every branch at position 0 — most of them beginning
-    ``.*``, so each branch scans the path. Measured cold on a 63k-node repo
-    that is 206 microseconds per unique path and 12.8s of an 18.1s dead-code
-    analysis, the single largest cost in the pass.
-
-    The filter is sound because ``fnmatch.translate`` ends *each* alternative
-    with ``\\Z`` and the join keeps that per-branch (``(?s:A)\\Z|(?s:B)\\Z``),
-    so every branch has to match the whole string. A pattern whose text after
-    its last ``*`` is the literal ``S`` can therefore only match a path ending
-    in ``S``: testing it against a path that does not end in ``S`` is wasted
-    work, never a dropped match. Patterns ending in ``*`` constrain nothing at
-    the tail and stay in one always-tried group.
-
-    Within a bucket the branches keep their original translated form, so the
-    atomic groups ``fnmatch`` emits for interior ``*literal`` runs — which
-    commit to the first occurrence and never retry a later one — behave
-    exactly as they did in the single alternation. Alternation order does not
-    matter to a boolean "did anything match".
-
-    Returns ``(always_tried_regex_or_None, {suffix: regex}, suffix_lengths)``.
-    """
-    always: list[str] = []
-    by_suffix: dict[str, list[str]] = {}
-    for pattern in patterns:
-        norm = os.path.normcase(pattern)
-        # No pattern in the set uses ``?`` or a character class (checked by
-        # test_never_flag_suffix_index_covers_pattern_shapes), so the text
-        # after the last ``*`` is a plain literal tail.
-        suffix = norm.rsplit("*", 1)[-1]
-        translated = fnmatch.translate(norm)
-        if suffix:
-            by_suffix.setdefault(suffix, []).append(translated)
-        else:
-            always.append(translated)
-    compiled = {s: re.compile("|".join(v)) for s, v in by_suffix.items()}
-    return (
-        re.compile("|".join(always)) if always else None,
-        compiled,
-        tuple(sorted({len(s) for s in compiled})),
-    )
-
-
-@lru_cache(maxsize=131072)
-def _never_flag_regex_match(path: str) -> bool:
-    """Memoized never-flag match for the default pattern set.
-
-    Equivalent to ``_never_flag_regex(_NEVER_FLAG_PATTERNS).match(...)``, and
-    pinned to it path-for-path by ``test_never_flag_regex.py``. Pure function
-    of *path*: the pattern set is a module constant, so process-wide
-    memoization is sound. The detector passes ask about the same node ids
-    repeatedly (every graph node is checked by the unreachable-files and the
-    unused-exports passes), which is what the cache is for; this function is
-    what the *first* ask of each id costs.
-    """
-    norm = os.path.normcase(path)
-    always, by_suffix, suffix_lengths = _never_flag_suffix_index(_NEVER_FLAG_PATTERNS)
-    if always is not None and always.match(norm):
-        return True
-    for length in suffix_lengths:
-        if length > len(norm):
-            break
-        bucket = by_suffix.get(norm[-length:])
-        if bucket is not None and bucket.match(norm):
-            return True
-    return False
-
-
 class DeadCodeAnalyzer:
     """Detects unreachable files, unused exports, unused internals, and
     zombie packages using the dependency graph and git metadata.
@@ -631,20 +662,23 @@ class DeadCodeAnalyzer:
         self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
             parsed_files or {}, source_map
         )
-        # Lazily-built rescue state for the shared reachability predicate: the
-        # package-directory maps for Go / JVM / C-C++ plus the bundler-alias
-        # targets found above. Built on first use so a graph that never
-        # reaches the unreachable-files pass never pays for it.
-        self._rescues: ReachabilityRescues | None = None
+        # Lazily-built package-directory maps for Go / JVM / C-C++, the one
+        # piece of the rescue state that costs a graph scan. Built on first use
+        # so a graph that never reaches the unreachable-files pass never pays
+        # for it. Cached here rather than on the ``ReachabilityRescues`` object
+        # because the whitelist arrives per ``analyze()`` call and the map does
+        # not.
+        self._package_files: PackageFileMap | None = None
 
-    def _reachability_rescues(self) -> ReachabilityRescues:
-        """Return the cached rescue state, building it on first use."""
-        if self._rescues is None:
-            self._rescues = ReachabilityRescues(
-                bundler_alias_targets=frozenset(self._bundler_alias_targets),
-                package_files=build_package_file_map(self.graph),
-            )
-        return self._rescues
+    def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
+        """Assemble the rescue state the shared predicate reads."""
+        if self._package_files is None:
+            self._package_files = build_package_file_map(self.graph)
+        return ReachabilityRescues(
+            bundler_alias_targets=frozenset(self._bundler_alias_targets),
+            whitelist=frozenset(whitelist),
+            package_files=self._package_files,
+        )
 
     def analyze(
         self,
@@ -691,16 +725,20 @@ class DeadCodeAnalyzer:
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
 
-        min_conf = cfg.get("min_confidence", 0.4)
+        min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
         findings = [f for f in findings if f.confidence >= min_conf]
 
         now = datetime.now(UTC)
         deletable = sum(f.lines for f in findings if f.safe_to_delete)
 
-        high = sum(1 for f in findings if f.confidence >= 0.7)
-        medium = sum(1 for f in findings if 0.4 <= f.confidence < 0.7)
-        low = sum(1 for f in findings if f.confidence < 0.4)
+        high = sum(1 for f in findings if f.confidence >= SAFE_CONFIDENCE_THRESHOLD)
+        medium = sum(
+            1
+            for f in findings
+            if RISK_CAP_CONFIDENCE <= f.confidence < SAFE_CONFIDENCE_THRESHOLD
+        )
+        low = sum(1 for f in findings if f.confidence < RISK_CAP_CONFIDENCE)
 
         return DeadCodeReport(
             repo_id="",
@@ -721,31 +759,34 @@ class DeadCodeAnalyzer:
         dynamic_patterns: tuple[str, ...],
         whitelist: set[str],
     ) -> list[DeadCodeFindingData]:
-        """Detect files with in_degree == 0 that are not entry points, tests, or config."""
+        """Detect files nothing can reach that are not tests, fixtures, or config."""
         findings = []
+
+        # One object for the whole pass rather than one per node: the rescues
+        # do not vary by candidate.
+        rescues = self._reachability_rescues(whitelist)
 
         for node in self.graph.nodes():
             if _is_synthetic_node(str(node)):
                 continue
 
             node_data = self.graph.nodes[node]
+            # The three skips left here are *scoping*, not reachability: a test
+            # file is perfectly reachable, it is just not something this pass
+            # reports. Everything that answers "can anything get to this file"
+            # — entry points, API contracts, never-flag globs, the whitelist,
+            # barrels, bundler-alias shims and the package-granular languages
+            # (Go / JVM / C-C++) — lives in the predicate, which the overview
+            # assembler calls with the same state so the two cannot disagree.
+            # See :mod:`file_reachability`.
             if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
-                continue
-            if node_data.get("is_entry_point", False):
                 continue
             if node_data.get("is_test", False):
                 continue
             if _is_fixture_path(str(node)):
                 continue
-            if self._should_never_flag(str(node), whitelist):
-                continue
 
-            # Barrels, API contracts, bundler-alias shims and the
-            # package-granular languages (Go / JVM / C-C++) are all rescued
-            # inside the shared predicate, which the overview assembler calls
-            # with the same state so the two passes cannot disagree about what
-            # "reachable" means. See :mod:`file_reachability`.
-            if is_file_reachable(str(node), self.graph, self._reachability_rescues()):
+            if is_file_reachable(str(node), self.graph, rescues):
                 continue
 
             finding = self._make_unreachable_finding(str(node), node_data, dynamic_patterns)
@@ -859,9 +900,14 @@ class DeadCodeAnalyzer:
         else:
             confidence = 0.4
 
+        # The ladder above is an evidence scale, not a tier boundary: its rungs
+        # stay literal so moving a threshold does not silently re-score how
+        # strong the git signal is. Everything below compares against or caps
+        # to a threshold, so it reads the constants.
+
         # Reduce confidence when dynamic imports exist in the same package.
         if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
-            confidence = min(confidence, 0.4)
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
         # Runtime-load risk factors (config / bootstrap / database /
         # environment / script / asset). These are files the never-flag allowlist
@@ -873,14 +919,14 @@ class DeadCodeAnalyzer:
         if risk_factors:
             confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-        safe = confidence >= 0.7
+        safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
         if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
             safe = False
 
         evidence = ["in_degree=0 (no files import this)"]
         if commit_90d == 0:
             evidence.append("No commits in last 90 days")
-        if self._dynamic_import_files and confidence <= 0.4:
+        if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
             evidence.append("Package uses dynamic imports or runtime-resolved edges")
         risk_line = risk_evidence(risk_factors)
         if risk_line:
@@ -922,9 +968,14 @@ class DeadCodeAnalyzer:
             # Framework-instantiated files (Spring stereotypes, JAX-RS
             # resources, Quarkus components, Spring Data repos, …) have
             # no source-level caller; the runtime constructs them via
-            # classpath scanning. Mirror the entry-point skip the
-            # ``_detect_unreachable_files`` pass already does so an
-            # ``@RestController`` class isn't reported as unused.
+            # classpath scanning, so an ``@RestController`` class must not be
+            # reported as an unused export.
+            #
+            # Deliberately not ``is_file_reachable``, which the sibling
+            # unreachable-files pass uses: this pass asks about *symbols*, and
+            # the predicate's barrel rescue is scoped to files on purpose — a
+            # genuine symbol defined in a barrel nobody imports should still be
+            # flagged. See ``BARREL_FILENAMES``'s scope note.
             if node_data.get("is_entry_point", False):
                 continue
             if node_data.get("is_test", False):
@@ -1102,11 +1153,6 @@ class DeadCodeAnalyzer:
                 # suffix check sees the attribute path itself.
                 decorators = sym.get("decorators", [])
 
-                def _decorator_base(d: str) -> str:
-                    stripped = d.lstrip("@")
-                    paren = stripped.find("(")
-                    return stripped[:paren] if paren >= 0 else stripped
-
                 if any(
                     _decorator_base(d).startswith(prefix)
                     for d in decorators
@@ -1151,8 +1197,8 @@ class DeadCodeAnalyzer:
                 if local_refs and sym_name in local_refs:
                     continue
 
-                is_deprecated = any(
-                    sym_name.endswith(suffix) for suffix in ("_DEPRECATED", "_LEGACY", "_COMPAT")
+                is_deprecated = _is_symbol_deprecated(
+                    sym_name, sym.get("decorators") or []
                 )
 
                 # ``export { local as alias }`` publishes the symbol under the
@@ -1216,7 +1262,7 @@ class DeadCodeAnalyzer:
                 # confident dead code. Generic across all languages
                 # (C#, Java, Kotlin, Scala, Swift protocols, TS).
                 if sym.get("kind") == "interface" and not self._file_has_implementors(node):
-                    confidence = min(confidence, 0.4)
+                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
                 # COM / IUnknown / IDispatch contract methods
                 # (``QueryInterface``, ``AddRef``, ``Release``, …) are
@@ -1225,7 +1271,7 @@ class DeadCodeAnalyzer:
                 # safe-to-delete threshold so we never ship them as
                 # confident dead code on Windows / COM-heavy C++ repos.
                 if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
-                    confidence = min(confidence, 0.4)
+                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
                 # Runtime-load risk factors for the defining file (config /
                 # bootstrap / database / environment / script / asset): symbols in
@@ -1235,7 +1281,7 @@ class DeadCodeAnalyzer:
                 if risk_factors:
                     confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-                safe = confidence >= 0.7
+                safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
 
                 git_meta = self.git_meta_map.get(str(node), {})
 
@@ -1339,19 +1385,14 @@ class DeadCodeAnalyzer:
             decorators = node_data.get("decorators") or []
             if decorators:
 
-                def _dec_base(d: str) -> str:
-                    stripped = d.lstrip("@")
-                    paren = stripped.find("(")
-                    return stripped[:paren] if paren >= 0 else stripped
-
                 if any(
-                    _dec_base(d).startswith(prefix)
+                    _decorator_base(d).startswith(prefix)
                     for d in decorators
                     for prefix in _FRAMEWORK_DECORATORS
                 ):
                     continue
                 if any(
-                    _dec_base(d).endswith(suffix)
+                    _decorator_base(d).endswith(suffix)
                     for d in decorators
                     for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
                 ):
@@ -1385,6 +1426,12 @@ class DeadCodeAnalyzer:
                 continue
 
             git_meta = self.git_meta_map.get(file_path, {})
+            # Private symbols keep the standard 0.65 base confidence even if deprecated.
+            # A private symbol has no external consumer by construction —
+            # deprecated + uncalled is the strongest possible delete signal and
+            # must not be buried below the default min_confidence floor.
+            # (0.3 is reserved for unused *exports*, where an invisible consumer
+            # outside the repo may still import it.)
             findings.append(
                 DeadCodeFindingData(
                     kind=DeadCodeKind.UNUSED_INTERNAL,
@@ -1528,10 +1575,16 @@ class DeadCodeAnalyzer:
     # ------------------------------------------------------------------
 
     def _should_never_flag(self, path: str, whitelist: set[str]) -> bool:
-        """Return True if path should never be flagged as dead."""
+        """Return True if path should never be flagged as dead.
+
+        Used by the unused-export, unused-internal and zombie-package passes.
+        The unreachable-files pass does not call it: every limb below is also
+        asked by :func:`is_file_reachable`, which that pass calls anyway, and
+        two spellings of one rule is what this phase exists to remove.
+        """
         if path in whitelist:
             return True
-        if _never_flag_regex_match(path):
+        if never_flag_match(path):
             return True
         # Workspace-driven never-flag — set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo

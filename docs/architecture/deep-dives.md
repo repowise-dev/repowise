@@ -32,16 +32,21 @@ Repowise's dead code analyzer finds these automatically using **pure graph trave
 
 ```
 For each node in the dependency graph:
-    Skip if: external package, non-code language, entry point, test file,
-             fixture directory, __init__.py, config file, migration, etc.
+    Skip if: external package, non-code language, test file, fixture directory
 
-    if in_degree(node) == 0:
-        This file has zero importers → candidate for dead code
+    if not is_file_reachable(node):
+        Nothing can get to this file → candidate for dead code
 ```
 
-`in_degree` is just the count of incoming edges — files that import this one. If nobody imports it and it's not an entry point or test, it's suspicious.
+`is_file_reachable` is the single predicate for "can anything get to this file",
+shared with the repo-overview assembler so the two cannot disagree. It rescues
+entry points, API contracts, never-flag paths (`__init__.py`, config files,
+migrations, shell scripts), bundler-alias shims and the package-granular
+languages, and otherwise asks whether any *dependency* edge points at the file.
+That last part is not a raw `in_degree`: a co-change edge ("these two files were
+committed together"), a file's own symbols and a self-import are all excluded.
 
-**Why in_degree alone isn't enough:**
+**Why an import edge alone isn't enough:**
 
 Consider `plugin_auth.py`. Nothing imports it directly because the plugin framework loads it dynamically at runtime via `importlib.import_module()`. The graph doesn't capture dynamic imports as edges because they don't appear in the AST as static import statements.
 
@@ -101,13 +106,20 @@ Files in the same package as `importlib.import_module()` or `__import__()` calls
 This is where it gets interesting. A file with zero importers might be dead, or it might be actively used via dynamic loading. Git history helps distinguish:
 
 ```
-if no_commits_in_90_days AND file_older_than_180_days:
-    confidence = 1.0     # Almost certainly dead
-    reasoning: Nobody imports it AND nobody has touched it in 6 months
+if no_commits_in_90_days AND last_commit_over_364_days_ago:
+    confidence = 1.0     # Almost certainly dead — untouched for a year+
+
+elif no_commits_in_90_days AND last_commit_over_179_days_ago:
+    confidence = 0.9
+
+elif no_commits_in_90_days AND last_commit_over_89_days_ago:
+    confidence = 0.8
+
+elif no_commits_in_90_days AND file_under_30_days_old:
+    confidence = 0.55    # Recently created — may be work in progress
 
 elif no_commits_in_90_days:
-    confidence = 0.7     # Probably dead
-    reasoning: Nobody imports it AND no recent activity, but file isn't ancient
+    confidence = 0.7     # No recent activity, and no commit date to age it by
 
 else:  # has recent commits
     confidence = 0.4     # Suspicious but uncertain
@@ -115,15 +127,21 @@ else:  # has recent commits
               (maybe dynamically loaded, maybe a script run manually)
 ```
 
+The rungs are an evidence scale, not tier boundaries. The high/medium tier cuts
+are `SAFE_CONFIDENCE_THRESHOLD` and `RISK_CAP_CONFIDENCE` in
+`core/analysis/dead_code/risk_factors.py`, which every comparison reads by name.
+
 **Intuition:** If a file is truly dead, it stops receiving commits. Active files — even dynamically loaded ones — still get bug fixes and updates. The combination of in_degree=0 (structural signal) and no-recent-commits (behavioral signal) gives high confidence.
 
 **safe_to_delete computation:**
 
 ```
-safe_to_delete = (confidence >= 0.7) AND (not matches_dynamic_patterns)
+safe_to_delete = (confidence >= SAFE_CONFIDENCE_THRESHOLD)   # 0.7
+                 AND (not matches_dynamic_patterns)
+                 AND (no runtime-load risk factors on the path)
 ```
 
-A file is only marked safe to delete if we're confident it's dead AND it doesn't look like a plugin/handler/adapter that might be dynamically loaded.
+A file is only marked safe to delete if we're confident it's dead, it doesn't look like a plugin/handler/adapter that might be dynamically loaded, and its path doesn't look like config / bootstrap / database / environment / script / runtime-asset code. That last condition is re-derived at read time by `effective_safe_to_delete`, so a finding persisted before the risk factors existed is still evaluated against them.
 
 #### Strategy 2: Unused Exports
 

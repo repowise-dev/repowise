@@ -1,4 +1,8 @@
-"""Pure ranking and candidacy rules for orientation entry points.
+"""Pure ranking rules for orientation entry points.
+
+Candidacy — *may* this file be an entry point at all — lives in
+:mod:`repowise.core.entry_candidacy`, which ingestion also reads. This module
+owns the second question: given the candidates, which comes first?
 
 The orientation entry-point list answers one question: *where does execution
 start?* That is not the same as *what is most central?* Centrality signals
@@ -11,54 +15,36 @@ This module ranks candidates by execution-start evidence instead — a
 conventional entry filename and a shallow path — and uses centrality only to
 break ties. It is deliberately free of any DB/graph/LLM dependency so the
 ordering can be unit-tested directly.
+
+Three callable shapes, one rule: :func:`orientation_entry_points` for a
+``RepoStructure``, :func:`rank_entry_point_paths` for bare paths, and
+:func:`rank_entry_points` for callers holding centrality.
+
+One ordering of entry points is deliberately not this one:
+``tour.tour_landmark_paths`` orders by ``score_entry_points`` and truncates,
+because it answers a *selection* question — which files are guaranteed a page —
+and its score reads the ``is_entry_point`` flag itself, which this key never
+sees. Sharing the key there would decide page selection on filename, depth and
+centrality with the one direct piece of evidence dropped.
+
+**Ranking cannot rescue bad candidacy, and the corpus still shows it.** On
+``spring-petclinic`` the Spring stamper flags 24 entity and controller classes
+and never flags ``PetClinicApplication.java``, so no ordering over that set can
+name the front door: the best this key can do is pick a different wrong file.
+That is a candidacy gap, tracked separately.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Any
 
-from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
-
-# Generic module stems that *dispatch or re-export* rather than start a program.
-# ``index`` (a JS/TS barrel or a per-language resolver shell) and ``mod`` (a Rust
-# module root) gather siblings; they are glue, not a control-flow front door.
-# Distinct from the registry's broader generic-entry set (main/app/server/cli/…),
-# which are genuine execution starts.
-GLUE_STEMS: frozenset[str] = frozenset({"index", "mod"})
-
-# A glue-stem file is only plausibly a real entry when it sits at or very near a
-# package root. Buried deeper, it is a dispatch/re-export leaf (a resolver's
-# ``index.py`` nested under ``ingestion/resolvers/dotnet/``), never where a
-# reader enters the system.
-SHALLOW_ENTRY_DEPTH = 1
-
-# Filename stems that name a real execution start, minus the glue stems above
-# so ``index``/``mod`` cannot be both at once. Registry-derived rather than
-# written out, so a language that adds an entry stem is covered here too.
-# Defined here, next to the ranking that reads it, because the KG curator and
-# the wiki surfaces must answer "is this a conventional entry name" the same
-# way. The registry is a pure data table, so this module keeps its promise of
-# no DB / graph / LLM dependency.
-CONVENTIONAL_ENTRY_STEMS: frozenset[str] = _LANG_REGISTRY.entry_filename_stems() - GLUE_STEMS
-
-
-def entry_point_depth(path: str) -> int:
-    """Directory depth — 0 for a root file, 1 for one level deep, etc."""
-    return max(0, len(PurePosixPath(path).parts) - 1)
-
-
-def is_glue_leaf(path: str) -> bool:
-    """True for a generic-glue stem nested below the shallow band.
-
-    These define real symbols (so :func:`_is_barrel` keeps them) yet are
-    dispatch/re-export leaves, not execution entry points — excluded from the
-    orientation entry-point list and never seeded as a tour entry point.
-    """
-    return (
-        PurePosixPath(path).stem.lower() in GLUE_STEMS
-        and entry_point_depth(path) > SHALLOW_ENTRY_DEPTH
-    )
+from repowise.core.entry_candidacy import (
+    GLUE_STEMS,
+    conventional_entry_stems,
+    entry_point_depth,
+)
 
 
 def _name_bucket(path: str, conventional_stems: frozenset[str]) -> int:
@@ -99,11 +85,24 @@ def entry_point_rank_key(
     )
 
 
+def rank_entry_point_paths(paths: Iterable[str]) -> list[str]:
+    """Rank bare paths, best entry first, with no centrality to break ties.
+
+    The sibling for callers that hold a set or a query result rather than a
+    ``RepoStructure``. Centrality is only a tiebreak between paths that already
+    agree on name and depth, and the path component keeps the order total, so
+    omitting it costs nothing but determinism-preserving arbitrariness.
+    Callers that do hold centrality should use :func:`rank_entry_points`.
+    """
+    stems = conventional_entry_stems()
+    return sorted(paths, key=lambda p: entry_point_rank_key(p, conventional_stems=stems))
+
+
 def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -> list[str]:
     """The repository's entry points, ordered the way every surface should show them.
 
     ``RepoStructure.entry_points`` arrives ``sorted()`` by path
-    (``ingestion/traverser.py:470``) — deterministic, and meaningless as an
+    (``ingestion/traverser.py:480``) — deterministic, and meaningless as an
     orientation order. Lexicographic order puts ``.github/`` first, then
     ``apps/``, ``benchmarks/``, ``crates/``, ``docs/``; ``src/main.py`` sorts
     near the end. Six surfaces read that field. One ranked it and five took a
@@ -111,50 +110,54 @@ def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -
     its list with ``.github/scripts/telemetry-pr-check.js``, fastapi with a
     German docs page, pydantic with ``docs/index.md``.
 
-    Ranked, not filtered, which is the same trade the overview already makes:
-    ``packages/cli/src/index.ts`` is a genuine package front door in a
-    monorepo, so dropping every glue stem would lose it, while ranking demotes
-    glue below every real entry without losing one. The knowledge-graph
-    curator filters as well, because it owns a candidacy question this does
-    not: it is choosing what may appear at all, not ordering what already has.
+    Ranked, not filtered — this function still holds no candidacy rule of its
+    own. What changed is where candidacy runs: ``not_an_execution_start`` is
+    now applied to the ingestion flag this list projects, so the input arrives
+    already free of config files and deep glue leaves rather than carrying them
+    to be demoted. That does cost the case this docstring used to argue: a deep
+    ``packages/cli/src/index.ts`` was a genuine package front door that ranking
+    kept and filtering loses. It was bought back deliberately, because the same
+    flag also exempts a file from dead-code detection and the knowledge-graph
+    curator was already dropping those paths outright, so the two surfaces
+    disagreed about the same file. Ranking demotes glue that survives
+    candidacy — a shallow ``cli/index.ts`` — below every real entry.
 
-    ``CONVENTIONAL_ENTRY_STEMS`` is passed, which the overview's own call did
+    The conventional-stem set is passed, which the overview's own call did
     not do — ``sorted(..., key=entry_point_rank_key)`` calls the key
     positionally, so its ``conventional_stems`` defaulted to empty. Without the
     set the key degenerates to "glue last, then shallowest first", and depth
-    alone is a bad primary signal: on the 41 indexed repos under
-    ``test-repos/`` it puts a ``.github/scripts`` helper ahead of
-    ``src/runner/main.cpp``, ``packages/cli/README.md`` first on dub, and a
-    Cypress config first on jhipster. With the set those lead with
-    ``src/runner/main.cpp``, ``apps/web/lib/axiom/server.ts`` and
-    ``src/main/docker/app.yml``.
+    alone is a bad primary signal: measured on the 41 indexed repos it put a
+    ``.github/scripts`` helper ahead of ``src/runner/main.cpp``.
 
-    It is a net win and not a clean sweep. Of the 24 repos whose leader moves,
-    two get worse, and one of those is the stem set's own doing: osv-scalibr
-    demotes ``binary/scalibr/scalibr.go``, the actual product binary, below
-    ``linter/plugger/main.go``, because a binary named after its repo is not a
-    conventional stem and ``main`` is. See the backlog.
+    That measurement predates candidacy running at ingestion, and its other
+    examples cannot recur: it also named ``packages/cli/README.md`` leading dub
+    and ``src/main/docker/app.yml`` leading jhipster, and markdown and yaml are
+    non-code languages that no longer reach this list at all. Ranking still
+    needs the stem set — a neutrally-named code file at depth 1 would otherwise
+    outrank ``src/runner/main.cpp`` on depth alone — but the case for it is now
+    narrower than the numbers it was argued from.
+
+    It is a net win and not a clean sweep. Of the 24 repos whose leader moved
+    in that measurement, two got worse, and one of those is the stem set's own
+    doing: osv-scalibr demotes ``binary/scalibr/scalibr.go``, the actual
+    product binary, below ``linter/plugger/main.go``, because a binary named
+    after its repo is not a conventional stem and ``main`` is. See the backlog.
 
     Ceiling, deliberate: no centrality is threaded through, so the
     ``pagerank`` / ``betweenness`` tiebreak :func:`entry_point_rank_key`
     accepts stays at zero. Every caller here holds a ``RepoStructure`` and not
     a graph, and it only separates paths that already agree on name and depth.
 
-    Separately, and NOT addressed here: ordering cannot fix candidacy, and
-    candidacy is the larger defect. ``repo_structure.entry_points`` carries
-    ``.github/workflows/main.yml``, ``README.md`` and test files, so some
-    repos lead with one whatever the order. The knowledge-graph curator drops
-    those (``kg_curation._not_an_execution_start``) and the wiki surfaces do
-    not; sharing that rule is the follow-up. Same for the heuristic's own
-    false positives: ``app`` is a generic entry stem, so a React
-    ``src/components/App.tsx`` is published as an execution entry point, as is
-    any ``run.py`` / ``server.ts`` at any depth.
+    What candidacy still does not cover, since ordering cannot fix it here:
+    ``repo_structure.entry_points`` no longer carries
+    ``.github/workflows/main.yml`` or ``README.md`` (both non-code languages),
+    but it does still carry test files — the curator's adjacent-layer and
+    support-path exclusions stay at the curator, where the layer map is. Same
+    for the heuristic's own false positives: ``app`` is a generic entry stem,
+    so a React ``src/components/App.tsx`` is published as an execution entry
+    point, as is any ``run.py`` / ``server.ts`` at any depth.
     """
-    paths = list(getattr(repo_structure, "entry_points", None) or [])
-    ranked = sorted(
-        paths,
-        key=lambda p: entry_point_rank_key(p, conventional_stems=CONVENTIONAL_ENTRY_STEMS),
-    )
+    ranked = rank_entry_point_paths(getattr(repo_structure, "entry_points", None) or [])
     return ranked if limit is None else ranked[:limit]
 
 

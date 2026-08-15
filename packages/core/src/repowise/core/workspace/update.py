@@ -16,7 +16,10 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
 
 # Per-repo update lock — the shared single-flight guard (one implementation
 # for the CLI update command and this workspace updater, which used to carry
@@ -904,7 +907,22 @@ async def run_cross_repo_hooks(
     from .conformance import run_conformance_check
     from .contracts import ContractStore, load_contract_store, run_contract_extraction
     from .cross_repo import CrossRepoOverlay, run_cross_repo_analysis
-    from .system_graph import SystemGraph, run_system_graph_build
+    from .system_graph import (
+        SystemGraph,
+        _detect_boundaries_by_repo,
+        run_system_graph_build,
+    )
+
+    # Service boundaries, detected once for the whole workspace. Contract
+    # extraction and the system-graph build both need them and each used to walk
+    # every repo for its own copy.
+    boundaries_by_repo: dict[str, list[ServiceBoundary]] = {}
+    try:
+        boundaries_by_repo = await asyncio.to_thread(
+            _detect_boundaries_by_repo, ws_config, workspace_root
+        )
+    except Exception:
+        _log.warning("Service boundary detection failed", exc_info=True)
 
     overlay = CrossRepoOverlay()
     try:
@@ -920,7 +938,9 @@ async def run_cross_repo_hooks(
     # Contract extraction (overwrites contracts.json).
     store = ContractStore()
     try:
-        store = await run_contract_extraction(ws_config, workspace_root, changed_repos)
+        store = await run_contract_extraction(
+            ws_config, workspace_root, changed_repos, boundaries_by_repo or None
+        )
     except Exception:
         _log.warning("Contract extraction failed", exc_info=True)
 
@@ -928,7 +948,9 @@ async def run_cross_repo_hooks(
     # view reads. Built last so it folds in the contracts and overlay above.
     system_graph: SystemGraph | None = None
     try:
-        system_graph = await run_system_graph_build(ws_config, workspace_root, store, overlay)
+        system_graph = await run_system_graph_build(
+            ws_config, workspace_root, store, overlay, boundaries_by_repo or None
+        )
     except Exception:
         _log.warning("System graph build failed", exc_info=True)
 

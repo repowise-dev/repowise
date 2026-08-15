@@ -291,6 +291,10 @@ export function DecisionsTable({
           <option value="active">Active</option>
           <option value="proposed">Proposed</option>
           <option value="deprecated">Deprecated</option>
+          {/* Dismissed records are excluded from every default listing, so
+              without this option a dismissal is a one-way door: nothing in the
+              UI could show what had been dismissed, or undo one. */}
+          <option value="dismissed">Dismissed</option>
           <option value="superseded">Superseded</option>
         </select>
         <select

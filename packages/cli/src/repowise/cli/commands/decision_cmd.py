@@ -8,6 +8,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
+from repowise.cli.commands import _tool_adapters as _ta
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -81,34 +82,99 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
 
 @decision_group.command("add")
 @click.argument("path", required=False, default=None)
-def decision_add(path: str | None) -> None:
-    """Interactively add a new architectural decision."""
-    repo_path = _resolve_decision_repo(path)
+@click.option("--title", default=None, help="Decision title (short).")
+@click.option("--context", default=None, help="What forced this decision?")
+@click.option("--decision", "decision_text", default=None, help="What was chosen?")
+@click.option("--rationale", default=None, help="Why it was chosen.")
+@click.option(
+    "--alternative", "alternatives", multiple=True, help="A rejected alternative. Repeatable."
+)
+@click.option(
+    "--consequence", "consequences", multiple=True, help="A tradeoff accepted. Repeatable."
+)
+@click.option(
+    "--affects", "affected", multiple=True, help="A file or module this governs. Repeatable."
+)
+@click.option("--tag", "tags", multiple=True, help="A tag. Repeatable.")
+@format_option()
+def decision_add(
+    path: str | None,
+    title: str | None,
+    context: str | None,
+    decision_text: str | None,
+    rationale: str | None,
+    alternatives: tuple[str, ...],
+    consequences: tuple[str, ...],
+    affected: tuple[str, ...],
+    tags: tuple[str, ...],
+    fmt: str,
+) -> None:
+    """Add an architectural decision, interactively or from flags.
+
+    With both --title and --decision, records without prompting and prints the
+    new id, so a script or an agent can call it. Everything else is optional.
+
+    A flag-driven record lands as `proposed`, where the prompts record `active`.
+    A person answering eight questions has reviewed the decision; a caller
+    inferring one from a diff has not, and the store should be able to tell
+    them apart. Promote with `repowise decision confirm <id>`.
+    """
+    # Flags and prompts are the two paths, and a half-filled command line is
+    # neither: falling through to the prompts would hang a caller that has no
+    # stdin, which is the failure this command exists to stop having.
+    non_interactive = bool(title and decision_text)
+    if not non_interactive:
+        flagged = any((title, context, decision_text, rationale)) or any(
+            (alternatives, consequences, affected, tags)
+        )
+        if flagged or fmt == "json":
+            _ta.emit_error(
+                {
+                    "error": "--title and --decision are both required to add a "
+                    "decision without prompting.",
+                    "guidance": "Run `repowise decision add` with no flags to be "
+                    "prompted for each field instead.",
+                },
+                fmt,
+            )
+
+    repo_path = _resolve_decision_repo(path, fmt)
     ensure_repowise_dir(repo_path)
 
-    console.print("[bold]Add Architectural Decision[/bold]\n")
+    status = "proposed" if non_interactive else "active"
+    alternatives_list = list(alternatives)
+    consequences_list = list(consequences)
+    affected_files = list(affected)
+    tags_list = list(tags)
 
-    title = click.prompt("Decision title (short)")
-    context = click.prompt("Context (what forced this decision?)", default="")
-    decision_text = click.prompt("Decision (what was chosen?)")
-    rationale = click.prompt("Rationale (why?)", default="")
+    if not non_interactive:
+        console.print("[bold]Add Architectural Decision[/bold]\n")
 
-    alternatives_raw = click.prompt("Rejected alternatives (comma-separated, optional)", default="")
-    alternatives = [a.strip() for a in alternatives_raw.split(",") if a.strip()]
+        title = click.prompt("Decision title (short)")
+        context = click.prompt("Context (what forced this decision?)", default="")
+        decision_text = click.prompt("Decision (what was chosen?)")
+        rationale = click.prompt("Rationale (why?)", default="")
 
-    consequences_raw = click.prompt(
-        "Tradeoffs/consequences (comma-separated, optional)", default=""
-    )
-    consequences = [c.strip() for c in consequences_raw.split(",") if c.strip()]
+        alternatives_raw = click.prompt(
+            "Rejected alternatives (comma-separated, optional)", default=""
+        )
+        alternatives_list = [a.strip() for a in alternatives_raw.split(",") if a.strip()]
 
-    affected_raw = click.prompt("Affected files/modules (comma-separated, optional)", default="")
-    affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
+        consequences_raw = click.prompt(
+            "Tradeoffs/consequences (comma-separated, optional)", default=""
+        )
+        consequences_list = [c.strip() for c in consequences_raw.split(",") if c.strip()]
 
-    tags_raw = click.prompt(
-        "Tags (comma-separated: auth, database, api, performance, security, infra, testing)",
-        default="",
-    )
-    tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+        affected_raw = click.prompt(
+            "Affected files/modules (comma-separated, optional)", default=""
+        )
+        affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
+
+        tags_raw = click.prompt(
+            "Tags (comma-separated: auth, database, api, performance, security, infra, testing)",
+            default="",
+        )
+        tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
 
     async def _persist() -> str:
         from repowise.core.persistence import (
@@ -131,15 +197,15 @@ def decision_add(path: str | None) -> None:
                 session,
                 repository_id=repo.id,
                 title=title,
-                status="active",
-                context=context,
+                status=status,
+                context=context or "",
                 decision=decision_text,
-                rationale=rationale,
-                alternatives=alternatives,
-                consequences=consequences,
+                rationale=rationale or "",
+                alternatives=alternatives_list,
+                consequences=consequences_list,
                 affected_files=affected_files,
                 affected_modules=[],
-                tags=tags,
+                tags=tags_list,
                 source="cli",
                 confidence=1.0,
             )
@@ -149,7 +215,21 @@ def decision_add(path: str | None) -> None:
         return decision_id
 
     decision_id = run_async(_persist())
-    console.print(f"\n[green]Decision recorded[/green] — ID: [bold]{decision_id[:8]}[/bold]")
+
+    if fmt == "json":
+        # The full id, not the table's 8-char prefix — a caller that parses
+        # this is about to pass it back to `confirm` or `show`.
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "decision": {"id": decision_id, "title": title, "status": status},
+            }
+        )
+        return
+    console.print(
+        f"\n[green]Decision recorded[/green] [dim]({status})[/dim] — "
+        f"ID: [bold]{decision_id[:8]}[/bold]"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,12 +1,15 @@
-"""Tests for the pure entry-point ranking/candidacy rules (generation.entry_points)."""
+"""Tests for the pure entry-point candidacy and ranking rules."""
 
 from __future__ import annotations
 
-from repowise.core.generation.entry_points import (
+from repowise.core.entry_candidacy import (
     GLUE_STEMS,
     entry_point_depth,
-    entry_point_rank_key,
     is_glue_leaf,
+    not_an_execution_start,
+)
+from repowise.core.generation.entry_points import (
+    entry_point_rank_key,
     rank_entry_points,
 )
 
@@ -33,6 +36,46 @@ def test_is_glue_leaf_only_for_deep_generic_stems():
     assert not is_glue_leaf("src/index.ts")
     # Non-generic stems are never glue leaves, however deep.
     assert not is_glue_leaf("a/b/c/d/main.py")
+
+
+def test_not_an_execution_start_is_language_or_glue_leaf():
+    # Config/data and infra languages describe or wire the system.
+    assert not_an_execution_start("api/server.json", "json")
+    assert not_an_execution_start("deploy/Dockerfile", "dockerfile")
+    # Deep generic-glue leaves dispatch within it.
+    assert not_an_execution_start("core/ingestion/resolvers/dotnet/index.py", "python")
+    # A real code entry is neither, at any depth.
+    assert not not_an_execution_start("src/main.py", "python")
+    assert not not_an_execution_start("a/b/c/d/main.py", "python")
+    # Only a *shallow* glue stem survives candidacy. A monorepo package barrel
+    # is dropped here even though ``orientation_entry_points`` keeps it by
+    # ranking it last — candidacy and ordering answer different questions.
+    assert not not_an_execution_start("src/index.ts", "typescript")
+    assert not_an_execution_start("packages/cli/src/index.ts", "typescript")
+
+
+def test_every_consumer_calls_the_shared_rule_not_a_copy():
+    # Four surfaces answer "may this file be an entry point": ingestion's flag,
+    # the KG curator's list, the tour's scorer, and the wiki's ranking. Each is
+    # unchanged *by construction* only while it holds this exact object; a
+    # re-inlined copy reopens the divergence this closed. Scope, honestly: this
+    # pins the module binding, not the call sites. A copy that left the import
+    # in place still passes here — ruff's unused-import rule catches that half.
+    from repowise.core.analysis import kg_curation
+    from repowise.core.generation import tour
+    from repowise.core.ingestion import traverser
+
+    assert kg_curation.not_an_execution_start is not_an_execution_start
+    assert tour.not_an_execution_start is not_an_execution_start
+    assert traverser.not_an_execution_start is not_an_execution_start
+
+
+# The flag/ranking stem union (B23) is pinned by
+# ``test_stem_union_widens_the_flag_without_dropping_a_stem`` in the traverser
+# tests, which builds real files and fails without the change. Nothing is
+# asserted about the two sets here: ``conventional_entry_stems()`` is *defined*
+# as the registry stems minus ``GLUE_STEMS``, so every relation between them —
+# disjointness included — is set algebra that holds for any content.
 
 
 def test_glue_leaf_never_outranks_a_real_entry():

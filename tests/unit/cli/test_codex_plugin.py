@@ -40,10 +40,27 @@ def test_codex_plugin_mcp_uses_repowise_no_path_mode() -> None:
     assert config["repowise"]["startup_timeout_sec"] == 20
 
 
+def test_codex_plugin_hooks_are_byte_identical_to_what_the_cli_installs() -> None:
+    """The plugin file and ``hooks_config()`` are one shape, pinned to each other.
+
+    They were two hand-maintained copies, and a third copy of the same literals
+    lived in this test's assertions — so retiring an event or moving a timeout
+    took three coordinated edits, and missing one left the plugin re-installing
+    the shape the CLI had just dropped. Equality against the generator makes the
+    drift impossible to commit instead of merely unlikely.
+    """
+    from repowise.cli.agent_targets.targets.codex import hooks_config
+
+    assert _load_json(PLUGIN_ROOT / "hooks" / "hooks.json") == hooks_config()
+
+
 def test_codex_plugin_hooks_match_supported_codex_events() -> None:
     hooks = _load_json(PLUGIN_ROOT / "hooks" / "hooks.json")["hooks"]
 
-    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse"}
+    # UserPromptSubmit is deliberately absent: it fired an unmatched hook on
+    # every prompt to re-emit the byte-identical block SessionStart already
+    # carries. See ``_RETIRED_EVENTS`` in the Codex target.
+    assert set(hooks) == {"SessionStart", "PostToolUse"}
     assert hooks["SessionStart"][0]["matcher"] == "startup|resume|clear"
     assert [entry["matcher"] for entry in hooks["PostToolUse"]] == [
         SHELL_TOOL_MATCHER,
@@ -56,13 +73,7 @@ def test_codex_plugin_hooks_match_supported_codex_events() -> None:
         for entry in entries
         for hook in entry["hooks"]
     ]
-    assert commands == ["repowise-augment --client codex"] * 4
-    assert [
-        hook["timeout"]
-        for entries in hooks.values()
-        for entry in entries
-        for hook in entry["hooks"]
-    ] == [30] * 4
+    assert commands == ["repowise-augment --client codex"] * 3
 
 
 def test_codex_shell_matcher_covers_the_names_codex_actually_sends() -> None:

@@ -41,6 +41,33 @@ export function deadCodeConfidenceTier(confidence: number): "high" | "medium" | 
   return "low";
 }
 
+/**
+ * Human-readable label per runtime-load risk factor.
+ *
+ * Mirrors `_FACTOR_BLURB` in `core/analysis/dead_code/risk_factors.py`, which
+ * is where the engine's own evidence line gets its wording. The slugs are an
+ * API vocabulary, not English: joining them straight into a sentence renders
+ * "Runtime-load risk (config, asset)" where the engine says
+ * "configuration, runtime-loaded web asset".
+ *
+ * Keyed on every tag `path_risk_factors` can emit; a contract test
+ * (`tests/unit/dead_code/test_confidence_parity.py`) fails when the two key
+ * sets drift, so a new engine factor cannot ship without a label here.
+ */
+export const DEAD_CODE_RISK_FACTOR_LABELS: Record<string, string> = {
+  config: "configuration",
+  environment: "environment/bootstrap",
+  bootstrap: "bootstrap/entry-point",
+  database: "database/schema",
+  script: "script/task",
+  asset: "runtime-loaded web asset",
+};
+
+/** Label for one risk factor, falling back to the raw slug for an unknown tag. */
+export function deadCodeRiskFactorLabel(factor: string): string {
+  return DEAD_CODE_RISK_FACTOR_LABELS[factor] ?? factor;
+}
+
 export interface DeadCodeFinding {
   id: string;
   kind: string;

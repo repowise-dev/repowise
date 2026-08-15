@@ -14,11 +14,13 @@ set and carried a list of the languages where the analyzer was known to be
 kinder, standing in for per-language helpers it could not reach. This module
 is that predicate with its state passed in, so both callers get one answer.
 
-Leaf in its own imports: the three per-language reachability helpers and
-:mod:`repowise.core.ids`, and nothing else from either subsystem. It does not
-reach the analyzer, and in particular it holds none of the analysis-time state
-that made the analyzer's version uncallable, which is the coupling that
-mattered.
+Leaf in its own imports: the three per-language reachability helpers,
+:mod:`constants` for the never-flag globs, and :mod:`repowise.core.ids`.
+Nothing else from either subsystem. It does not reach the analyzer, and in
+particular it holds none of the analysis-time state that made the analyzer's
+version uncallable, which is the coupling that mattered — ``constants`` is a
+sibling of the analyzer, not the analyzer, and its only non-stdlib import is
+the language registry.
 
 It is not a free import, though, and the difference is worth stating rather
 than implying. ``dead_code/__init__`` eagerly re-exports ``DeadCodeAnalyzer``,
@@ -42,6 +44,7 @@ from typing import Any
 
 from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
+from .constants import never_flag_match
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
@@ -115,26 +118,33 @@ class ReachabilityRescues:
     files in a live package carry no file-level in-edge at all; a caller
     without the map would call an entire language unreachable. ``None`` means
     "not checked", and the predicate resolves an unchecked package-granular
-    file to reachable. That is the deliberate asymmetry, and it runs one way:
-    a missed drop leaves one wrong flow on a page, an over-eager drop silently
-    empties the section.
+    file to reachable — the forgiving direction, since a missed drop leaves
+    one wrong flow on a page while an over-eager drop silently empties the
+    section. Both production callers now supply the map, so that default is a
+    safety net for a caller that cannot, not a stance either of them takes.
+
+    ``whitelist`` is the path-exact exemption list from ``analyze()``'s config
+    argument. It is here so the analyzer's unreachable-files pass has *no*
+    reachability limb left of its own; no CLI path populates it today, so it is
+    empty in every shipped run. The assembler has no config to read and passes
+    none, which makes it narrower by exactly the paths an API caller listed.
 
     ``bundler_alias_targets`` is a narrow allowlist — a handful of shim paths
     per repo — and defaults to empty. A caller that omits it is stricter than
     the analyzer for exactly those paths, and no wider.
 
-    Ceiling, deliberate: the analyzer applies two further rescues this
-    predicate does not, the never-flag glob set and the user whitelist, both
-    of which live outside the graph (``analyzer._never_flag_regex_match``, and
-    dead-code config). Same for ``bundler_alias_targets``, which needs a
-    source scan of the bundler configs. The upgrade path is to thread that
-    state to the second caller — for the glob set, by moving the matcher down
-    to :mod:`constants` where its pattern list already lives — not to widen
-    the defaults into a blanket rescue. A blanket rescue would answer
-    "reachable" for every unimported TS/JS file and stop being a predicate.
+    Ceiling, deliberate: ``bundler_alias_targets`` is still caller-supplied
+    because finding it needs a source scan of the bundler configs, which this
+    module has no business doing. The never-flag glob set used to be listed
+    here too; it is a pure function of a path, so it moved into
+    :mod:`constants` and the predicate now applies it to every caller. What
+    must *not* happen is widening the defaults into a blanket rescue: that
+    would answer "reachable" for every unimported TS/JS file and stop this
+    being a predicate.
     """
 
     bundler_alias_targets: AbstractSet[str] = frozenset()
+    whitelist: AbstractSet[str] = frozenset()
     package_files: PackageFileMap | None = None
 
 
@@ -269,6 +279,14 @@ def is_file_reachable(
     # Workspace-driven never-flag, set by language warmups that read the build
     # manifest (Gradle non-``main`` source sets, Cargo ``[[example]]`` targets).
     if node_data.get("is_never_flag", False):
+        return True
+    # Convention globs: shell scripts invoked by name, framework file-system
+    # routes, migration scripts. Reached from outside the import graph the same
+    # way an entry point is, so this belongs to the question, not to the
+    # analyzer that used to own the matcher.
+    if never_flag_match(path):
+        return True
+    if path in rescues.whitelist:
         return True
     if PurePosixPath(path).name in BARREL_FILENAMES:
         return True

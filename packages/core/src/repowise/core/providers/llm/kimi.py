@@ -98,7 +98,10 @@ def _kimi_temperature(
     requested: float,
 ) -> float:
     if model.startswith("kimi-for-coding"):
-        return 0.6
+        # The Kimi coding endpoint rejects any temperature other than 1 for
+        # these models ("invalid temperature: only 1 is allowed for this
+        # model"), so the requested value cannot be honoured here.
+        return 1.0
     if model.startswith(("kimi-k2.5", "kimi-k2.6")):
         return 0.6 if normalize_reasoning(reasoning) in ("off", "none") else 1.0
     return requested

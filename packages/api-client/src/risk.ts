@@ -18,14 +18,42 @@ export interface RiskRangeParams {
   baseline?: number;
 }
 
+export interface FixHistoryFile {
+  path: string;
+  churn: number;
+  /** Prior bug fixes on this file, recency-weighted (a year ago counts a half). */
+  fix_pressure: number;
+}
+
+/**
+ * Bug-fix history of the files a change touches — the part of the answer that
+ * does not grow with the diff, and the part `score` cannot see.
+ */
+export interface FixHistory {
+  /** False when the history walk could not run — not the same as "no fixes". */
+  available: boolean;
+  /** Churn-weighted mean fix pressure across the changed files. */
+  density: number;
+  /** Rank against this repo's own fix-bearing files; null if too few to rank. */
+  percentile: number | null;
+  files: FixHistoryFile[];
+}
+
 export interface RiskRangeResponse {
   base: string;
   head: string;
+  /** Where the change lands. Read before `score`. */
+  fix_history: FixHistory;
   score: number;
-  probability: number;
-  level: string;
+  /** What `score` measures: diff size and spread, not where the change lands. */
+  score_measures: string;
+  /** The unit `score` is calibrated on: a single commit, not a whole range. */
+  score_unit: string;
   risk_percentile: number | null;
   review_priority: string | null;
+  classification: string | null;
+  /** Absolute band, present only when there was no baseline to rank against. */
+  fallback_band: string | null;
   is_fix: boolean;
   features: Record<string, number | null>;
   drivers: RiskDriverResponse[];

@@ -158,12 +158,41 @@ def test_module_reference_declarator_is_import_not_symbol(
     parser: ASTParser, source: str, name: str, module: str, language: str
 ) -> None:
     result = _parse(parser, source, language=language)
-    assert any(i.module_path == module for i in result.imports), (
-        f"{source!r} lost its import edge"
-    )
+    assert any(i.module_path == module for i in result.imports), f"{source!r} lost its import edge"
     assert name not in {s.name for s in result.symbols}, (
         f"{source!r} was indexed as a symbol as well as an import"
     )
+
+
+@pytest.mark.parametrize("language", ["javascript", "typescript"])
+def test_literal_dynamic_import_records_namespace_consumption(
+    parser: ASTParser, language: str
+) -> None:
+    result = _parse(parser, "import('./lazy');\n", language=language)
+    imp = next(i for i in result.imports if i.module_path == "./lazy")
+    assert imp.imported_names == ["*"]
+
+
+@pytest.mark.parametrize("language", ["javascript", "typescript"])
+def test_nonliteral_dynamic_import_does_not_invent_precise_import(
+    parser: ASTParser, language: str
+) -> None:
+    result = _parse(parser, "const path = './lazy';\nimport(path);\n", language=language)
+    assert result.imports == []
+
+
+@pytest.mark.parametrize("language", ["javascript", "typescript"])
+def test_dynamic_import_namespace_does_not_change_static_or_commonjs_imports(
+    parser: ASTParser, language: str
+) -> None:
+    result = _parse(
+        parser,
+        "import { named } from './static';\nconst svc = require('./cjs');\n",
+        language=language,
+    )
+    imported_names = {imp.module_path: imp.imported_names for imp in result.imports}
+    assert imported_names["./static"] == ["named"]
+    assert imported_names["./cjs"] == ["svc"]
 
 
 @pytest.mark.parametrize("cast", ["as Foo", "satisfies Foo"])

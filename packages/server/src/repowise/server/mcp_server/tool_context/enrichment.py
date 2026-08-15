@@ -16,7 +16,10 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import file_signals
-from repowise.core.ingestion.models import SYMBOL_USE_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    FILE_DEPENDENCY_EDGE_TYPES,
+    SYMBOL_USE_EDGE_TYPES,
+)
 from repowise.core.persistence.crud import (
     get_all_file_metrics,
     get_community_members,
@@ -55,6 +58,11 @@ _MIN_CALL_CONFIDENCE = 0.7
 # entry in an Express handler's caller list. Taking the shared view whole is
 # still right: hand-trimming a member here is how the private sets started.
 _CALL_EDGE_TYPES = sorted(SYMBOL_USE_EDGE_TYPES)
+
+# Degree reported for a FILE. `file_signals` states it as "N files depend on
+# this", so it is counted over file dependencies rather than every adjacent
+# row, which would add one per symbol the file declares.
+_FILE_DEPENDENCY_EDGE_TYPES = sorted(FILE_DEPENDENCY_EDGE_TYPES)
 
 
 def _unique_by_symbol(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -332,7 +340,18 @@ async def _resolve_metrics(
     except (json.JSONDecodeError, TypeError):
         meta = {}
 
-    degrees = await get_node_degree_counts(session, repo_id, node.node_id)
+    # Scoped by layer, because "degree" means a different edge set on each: a
+    # file's neighbours are files, a symbol's are symbols. Unscoped, a symbol's
+    # in-degree always counted the containment edge from its own declaring file
+    # or class, and a file's out-degree counted one edge per symbol it declares.
+    degrees = await get_node_degree_counts(
+        session,
+        repo_id,
+        node.node_id,
+        edge_types=(
+            _CALL_EDGE_TYPES if node.node_type == "symbol" else _FILE_DEPENDENCY_EDGE_TYPES
+        ),
+    )
 
     # Percentile computation against same-type peers
     all_nodes = await get_all_file_metrics(session, repo_id)
@@ -517,7 +536,11 @@ async def _resolve_health(
     git_meta = await get_git_metadata(session, repo_id, file_path)
     node = await get_graph_node(session, repo_id, file_path)
     degrees = (
-        await get_node_degree_counts(session, repo_id, file_path) if node is not None else None
+        await get_node_degree_counts(
+            session, repo_id, file_path, edge_types=_FILE_DEPENDENCY_EDGE_TYPES
+        )
+        if node is not None
+        else None
     )
     signals = {k: v for k, v in asdict(file_signals(git_meta, degrees)).items() if v is not None}
     if signals:

@@ -172,19 +172,59 @@ export interface GraphPathArtifact {
   data: GraphPathArtifactData;
 }
 
-/** `get_why` — decision register search results / health dashboard. */
+/** `get_why` — decision register search / path lookup / health dashboard. */
 export interface DecisionsArtifactData {
-  mode: "health" | "search";
+  mode: "health" | "search" | "path";
   query?: string;
+  path?: string;
+  summary?: string;
+  /** Health mode: counters from `get_decision_health_summary`. */
+  counts?: Record<string, number>;
+  /** @deprecated Legacy chat fixture field; prefer `counts`. */
   total_decisions?: number;
+  /** @deprecated Legacy chat fixture field; unused by MCP wire format. */
   by_source?: Record<string, number>;
-  decisions?: Array<{ title: string; status?: string }>;
+  stale_decisions?: Array<{
+    title: string;
+    status?: string;
+    affected_files?: string[];
+    staleness_score?: number;
+  }>;
+  proposed_awaiting_review?: Array<{
+    title: string;
+    source?: string;
+    confidence?: number;
+  }>;
+  ungoverned_hotspots?: Array<string | { file_path?: string; path?: string }>;
+  /** Search/path mode: governing or matched decisions (MCP wire). */
+  decisions?: Array<{
+    title: string;
+    status?: string;
+    decision?: string;
+    rationale?: string;
+    affected_files?: string[];
+  }>;
+  /**
+   * @deprecated Legacy chat fixture shape. MCP search/path return `decisions`.
+   * Renderers still accept this for stored conversations.
+   */
   results?: Array<{
     title: string;
     decision: string;
     rationale?: string;
     affected_files?: string[];
   }>;
+  origin_story?: {
+    first_commit?: { date?: string; author?: string; message?: string };
+    primary_author?: string;
+    [k: string]: unknown;
+  };
+  alignment?: {
+    score?: number;
+    label?: string;
+    summary?: string;
+    [k: string]: unknown;
+  };
 }
 export interface DecisionsArtifact {
   type: "decisions";

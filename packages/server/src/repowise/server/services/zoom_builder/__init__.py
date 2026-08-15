@@ -67,10 +67,13 @@ def assemble_zoom_map(
     file_nodes = [n for n in view.nodes if n.line_range is None and n.id == n.file_path]
 
     # Use the curated, cleaned entry-point list (Phase-1 ranking) rather than the
-    # raw ingestion ``is_entry_point`` flag, which still tags barrels, configs
-    # (server.json), and leaf resolvers (dotnet/index.py). Driving both the
-    # execution bonus and the displayed leaf flag off the curated set keeps the
-    # "how it runs" signal honest.
+    # raw ingestion ``is_entry_point`` flag. Candidacy now runs at ingestion,
+    # so the flag no longer tags configs (server.json) or leaf resolvers
+    # (dotnet/index.py); what the curated set still adds on top is the
+    # adjacent-layer and support-path exclusions, which need a layer map, and
+    # barrel demotion, which needs parsed files. Driving both the execution
+    # bonus and the displayed leaf flag off it keeps the "how it runs" signal
+    # honest.
     curated_entries = set(view.entry_points)
 
     file_stats = [

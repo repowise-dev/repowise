@@ -97,9 +97,24 @@ def try_acquire_update_lock(repo_path: Path, target_commit: str | None) -> dict[
             with contextlib.suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
         return None
-    # Lost the create race twice in a row: someone else just acquired a
-    # fresh lock — report it. A still-unreadable lock degrades to acquired.
-    return read_update_lock(repo_path)
+    # Both create attempts lost a race against a stale lock that was then
+    # unlinked. Rather than falling through to a bare ``read_update_lock``
+    # — which can return ``None`` ("acquired") with *no lock file on disk*,
+    # letting a caller proceed without holding the lock — make one final
+    # exclusive create. Winner: return ``None`` (owned). Loser: report the
+    # fresh winner. Still-unreadable degrades to acquired, as everywhere.
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(data, encoding="utf-8")
+        os.link(tmp_path, lock_path)
+    except FileExistsError:
+        return read_update_lock(repo_path)
+    except OSError:
+        return None
+    finally:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+    return None
 
 
 def release_update_lock(repo_path: Path) -> None:

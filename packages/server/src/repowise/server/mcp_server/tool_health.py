@@ -17,14 +17,17 @@ from repowise.core.analysis.health.defect_accuracy import compute_defect_accurac
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
+from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_all_git_metadata,
     get_coverage_summary,
     get_file_language_map,
     get_git_metadata_bulk,
+    get_hotspot_file_paths,
     get_node_degree_counts_bulk,
     get_refactoring_suggestions,
     get_test_file_paths,
@@ -755,6 +758,7 @@ def _code_only(
 def _compute_kpis(
     metrics: list[HealthFileMetric],
     *,
+    hotspot_paths: set[str] | None = None,
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
     lang_by_path: dict[str, str] | None = None,
@@ -763,6 +767,7 @@ def _compute_kpis(
         return {
             "file_count": 0,
             "average_health": 10.0,
+            "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
             "maintainability_average": None,
@@ -796,6 +801,11 @@ def _compute_kpis(
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        # ``None`` when the repo has no hotspot files, which is a real answer:
+        # the alternative is averaging an empty set to a perfect 10.0 and
+        # reporting it as a score, the same fabricated-10.0 problem the comment
+        # above objects to for non-code rows.
+        "hotspot_health": hotspot_health(metrics, hotspot_paths or set()),
         **code_kpis,
         # NLOC-weighted (``average_health``) vs plain file mean. When these
         # diverge, a few large low-scoring files are holding the headline down —
@@ -1140,6 +1150,15 @@ async def get_health(
             else all_metrics
         )
 
+        # Hotspot health was the one repo KPI this tool never returned, while
+        # ``get_overview`` invented its own definition for it — so the canonical
+        # persisted number was surfaced by neither. One scalar column, gated the
+        # same way as the language map below: ``targets`` mode builds no ``kpis``
+        # block at all, so scoping the call must not pay for this read.
+        hotspot_paths: set[str] = set()
+        if not scoped and wants("kpis"):
+            hotspot_paths = await get_hotspot_file_paths(session, repository.id)
+
         # Dashboard perf headline: coverage (how much of the analyzed code the
         # perf pass ran on) + open performance-finding count. Both feed ``kpis``
         # alone, so a projection that drops kpis skips the language-map read.
@@ -1229,7 +1248,10 @@ async def get_health(
                 session, repository.id, list(effective_targets)
             )
             degrees_by_path = await get_node_degree_counts_bulk(
-                session, repository.id, list(effective_targets)
+                session,
+                repository.id,
+                list(effective_targets),
+                edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
             )
             for path in effective_targets:
                 signals_by_path[path] = asdict(
@@ -1337,6 +1359,7 @@ async def get_health(
     # findings compete for a ranked list, not about what the score means.
     kpis = _compute_kpis(
         metric_rows if scoped else all_metrics,
+        hotspot_paths=hotspot_paths,
         performance_findings=perf_findings_count,
         coverage=perf_coverage,
         lang_by_path=lang_by_path,

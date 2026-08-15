@@ -26,6 +26,7 @@ from repowise.core.workspace.contracts import (
     ContractLink,
     normalize_contract_id,
 )
+from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
 
 # ---------------------------------------------------------------------------
 # Constants (single source of truth)
@@ -68,6 +69,14 @@ class RepoDiagnostics:
     consumers_by_type: dict[str, int] = field(default_factory=dict)
     provider_count: int = 0
     consumer_count: int = 0
+    #: Contracts by the tier that produced them — ``index`` (the parsed symbol
+    #: table) or ``regex`` (a text dialect). The regex share is where recall is
+    #: least certain, so it is worth seeing per repo.
+    providers_by_layer: dict[str, int] = field(default_factory=dict)
+    consumers_by_layer: dict[str, int] = field(default_factory=dict)
+    #: Calls that reached a confirmed HTTP wrapper but whose path could not be
+    #: resolved statically. Real endpoint calls, located and then not named.
+    http_consumers_unresolved: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,6 +121,28 @@ class ExtractionDiagnostics:
     unmatched_consumers: list[UnmatchedConsumer] = field(default_factory=list)
     unmatched_by_reason: dict[str, int] = field(default_factory=dict)
     orphan_providers: list[OrphanProvider] = field(default_factory=list)
+    #: Workspace-wide rollups of the per-repo layer split.
+    providers_by_layer: dict[str, int] = field(default_factory=dict)
+    consumers_by_layer: dict[str, int] = field(default_factory=dict)
+    #: HTTP client calls located but not resolvable to an endpoint, workspace
+    #: wide. This is the only miss count extraction can actually observe.
+    http_consumers_unresolved: int = 0
+
+    @property
+    def http_consumer_coverage(self) -> float | None:
+        """Share of located HTTP client calls that became a contract.
+
+        ``None`` when nothing was located, because 0/0 is not 100%. This is a
+        genuine ratio over calls extraction *saw*: it says nothing about calls
+        no dialect recognised, and must not be presented as total recall.
+        """
+        http_consumers = sum(
+            r.consumers_by_type.get("http", 0) for r in self.repo_breakdown
+        )
+        denominator = http_consumers + self.http_consumers_unresolved
+        if denominator == 0:
+            return None
+        return http_consumers / denominator
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +154,10 @@ class ExtractionDiagnostics:
             "unmatched_consumers": [u.to_dict() for u in self.unmatched_consumers],
             "unmatched_by_reason": self.unmatched_by_reason,
             "orphan_providers": [o.to_dict() for o in self.orphan_providers],
+            "providers_by_layer": self.providers_by_layer,
+            "consumers_by_layer": self.consumers_by_layer,
+            "http_consumers_unresolved": self.http_consumers_unresolved,
+            "http_consumer_coverage": self.http_consumer_coverage,
         }
 
     @classmethod
@@ -139,6 +174,9 @@ class ExtractionDiagnostics:
                     consumers_by_type=r.get("consumers_by_type", {}),
                     provider_count=r.get("provider_count", 0),
                     consumer_count=r.get("consumer_count", 0),
+                    providers_by_layer=r.get("providers_by_layer", {}),
+                    consumers_by_layer=r.get("consumers_by_layer", {}),
+                    http_consumers_unresolved=r.get("http_consumers_unresolved", 0),
                 )
                 for r in data.get("repo_breakdown", [])
             ],
@@ -162,6 +200,9 @@ class ExtractionDiagnostics:
                 )
                 for o in data.get("orphan_providers", [])
             ],
+            providers_by_layer=data.get("providers_by_layer", {}),
+            consumers_by_layer=data.get("consumers_by_layer", {}),
+            http_consumers_unresolved=data.get("http_consumers_unresolved", 0),
         )
 
 
@@ -196,29 +237,44 @@ def _classify_unmatched(
 def build_diagnostics(
     contracts: list[Contract],
     links: list[ContractLink],
+    extraction_stats: dict[str, dict[str, int]] | None = None,
 ) -> ExtractionDiagnostics:
     """Compute extraction diagnostics from contracts and matched links.
 
     Pure and O(contracts + links). The reported orphan/unmatched lists let a
     workspace owner see exactly which endpoints failed to connect and why,
     rather than just a bare link total.
+
+    *extraction_stats* is :attr:`ContractStore.extraction_stats` — the counters
+    the extractors recorded for work they located but could not turn into a
+    contract. Omitting it costs the coverage figures, not the rest.
     """
+    stats_by_repo = extraction_stats or {}
     providers = [c for c in contracts if c.role == "provider"]
     consumers = [c for c in contracts if c.role == "consumer"]
 
     # Per-repo breakdown ----------------------------------------------------
     repos = sorted({c.repo for c in contracts})
     breakdown: list[RepoDiagnostics] = []
+    prov_by_layer_all: dict[str, int] = defaultdict(int)
+    cons_by_layer_all: dict[str, int] = defaultdict(int)
     for repo in repos:
         prov_by_type: dict[str, int] = defaultdict(int)
         cons_by_type: dict[str, int] = defaultdict(int)
+        prov_by_layer: dict[str, int] = defaultdict(int)
+        cons_by_layer: dict[str, int] = defaultdict(int)
         for c in contracts:
             if c.repo != repo:
                 continue
+            layer = str(c.meta.get(EXTRACTION_LAYER_KEY, LAYER_REGEX))
             if c.role == "provider":
                 prov_by_type[c.contract_type] += 1
+                prov_by_layer[layer] += 1
+                prov_by_layer_all[layer] += 1
             elif c.role == "consumer":
                 cons_by_type[c.contract_type] += 1
+                cons_by_layer[layer] += 1
+                cons_by_layer_all[layer] += 1
         breakdown.append(
             RepoDiagnostics(
                 repo=repo,
@@ -226,6 +282,11 @@ def build_diagnostics(
                 consumers_by_type=dict(sorted(cons_by_type.items())),
                 provider_count=sum(prov_by_type.values()),
                 consumer_count=sum(cons_by_type.values()),
+                providers_by_layer=dict(sorted(prov_by_layer.items())),
+                consumers_by_layer=dict(sorted(cons_by_layer.items())),
+                http_consumers_unresolved=stats_by_repo.get(repo, {}).get(
+                    "http_consumer_unresolved", 0
+                ),
             )
         )
 
@@ -286,4 +347,12 @@ def build_diagnostics(
         unmatched_consumers=unmatched,
         unmatched_by_reason=dict(sorted(by_reason.items())),
         orphan_providers=orphans,
+        providers_by_layer=dict(sorted(prov_by_layer_all.items())),
+        consumers_by_layer=dict(sorted(cons_by_layer_all.items())),
+        # Summed from the stats, not from the per-repo breakdown: a repo whose
+        # every call went unresolved has no contracts and so no breakdown row,
+        # and it is exactly the repo whose misses matter most.
+        http_consumers_unresolved=sum(
+            s.get("http_consumer_unresolved", 0) for s in stats_by_repo.values()
+        ),
     )

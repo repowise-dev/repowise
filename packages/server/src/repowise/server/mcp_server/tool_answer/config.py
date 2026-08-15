@@ -8,6 +8,8 @@ with a coverage re-ranker, not of any particular codebase.
 
 from __future__ import annotations
 
+import os
+
 from repowise.server.mcp_server._query_terms import STOPWORDS
 
 # How many top retrieval hits to enrich with WikiSymbol context. Enriching
@@ -402,7 +404,19 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # degraded returns, so a degraded payload has never been written to it. The
 # synthesised shape is untouched. A bump here would invalidate every keyed
 # install's cache, and re-synthesis is real provider spend, for nothing.
-_ANSWER_SCHEMA_VERSION = 15
+# v16: the same scanner again, in three places, and unlike the degraded rework
+# above every one of them changes the SYNTHESISED payload, which is the shape
+# that gets cached. (1) A run left open at end of file no longer masks to EOF,
+# so definitions below a phantom `"""` or `/*` are listed again — 26 real Rust
+# definitions across two corpus files, one of which had 3,002 lines masked.
+# (2) A cut inside a multi-line string keeps the symbol enclosing it, which
+# changes which entry is the HEADLINE `body_continues`, and therefore the note
+# and the get_symbol pointer. (3) An unverified symbol bound is clamped to the
+# live file, so a body served whole is no longer flagged `truncated` — and
+# v13/v14 cap confidence on that flag, so a cached row can carry a `medium`
+# this version would not produce. Cached pre-v16 rows carry all three, so they
+# must bypass.
+_ANSWER_SCHEMA_VERSION = 16
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
@@ -489,3 +503,92 @@ material if no signature, docstring, or source body in the excerpts is
 relevant. Do not assert that what you were shown is the complete set
 of sites; qualify causal claims when a symbol's body was truncated.
 """
+
+
+# --- Feature flags -----------------------------------------------------------
+# Every REPOWISE_ANSWER_* switch, read at call time so a test or an eval arm can
+# flip one between calls. Each is independently reversible on purpose: they were
+# added one at a time and an A/B must be able to switch one without the others.
+
+# Always-synthesize. Default ON: synthesis runs for every retrieval and the
+# post-synthesis grading cascade demotes confidence instead of the tool
+# abstaining, so coverage matches a research assistant that answers every
+# question. Falsey restores the legacy abstain-on-ambiguous behaviour.
+_ALWAYS_SYNTHESIZE_ENV = "REPOWISE_ANSWER_ALWAYS_SYNTHESIZE"
+# Retriever-agreement confidence lift (the measured FTS + vector pair).
+_AGREEMENT_CONFIDENCE_ENV = "REPOWISE_ANSWER_AGREEMENT_CONFIDENCE"
+# The keyless-only half of that signal (FTS + symbol in place of FTS + vector,
+# which a keyless index can never produce). Its own flag on purpose: it
+# substitutes a leg the fusion already prices at a third weight, so it must be
+# reversible WITHOUT also switching off the measured half.
+_SYMBOL_AGREEMENT_ENV = "REPOWISE_ANSWER_SYMBOL_AGREEMENT"
+# Keep the exact_symbol union fast path from hijacking a "how does X work"
+# mechanism question, whose real answer often lives in a different file than the
+# named symbol's body.
+_UNION_MECHANISM_DEFER_ENV = "REPOWISE_ANSWER_UNION_MECHANISM_DEFER"
+# Require the answer's central named mechanism symbol to be grounded in served
+# source before a mechanism/how answer may be stamped high.
+_CLAIM_SUPPORT_GATE_ENV = "REPOWISE_ANSWER_CLAIM_SUPPORT_GATE"
+# Let strong answer-grounding earn "high" on a non-dominant retrieval (a rank-1
+# hit buried in a sibling cluster), not only a clear numeric dominance margin.
+_EARN_HIGH_GROUNDING_ENV = "REPOWISE_ANSWER_EARN_HIGH_GROUNDING"
+
+# Test/eval hook: skip the answer cache entirely (both read and write). The
+# cache keys on (repo, question) only — not on feature-flag state — so an A/B
+# eval that flips the flags above between arms would otherwise read the first
+# arm's cached answers. Off by default.
+_DISABLE_CACHE_ENV = "REPOWISE_ANSWER_DISABLE_CACHE"
+
+# Opt-in: strip re-read evidence from high-confidence answers. A high answer's
+# contract is "cite this, do not re-read the source", so the bodies, quotes,
+# flow_path and candidate evidence are payload the consumer was told it does not
+# need. Off by default; only safe once high-confidence answers are reliable
+# enough that the prose + citation suffices, else the agent calls get_symbol and
+# adds a round-trip.
+_LEAN_HIGH_ENV = "REPOWISE_ANSWER_LEAN_HIGH"
+
+# Re-read evidence stripped from a lean high answer. NOT stripped: answer,
+# citations, confidence, retrieval_quality, fallback_targets, note, _meta.
+_LEAN_HIGH_DROP_KEYS = ("symbol_bodies", "quotes", "flow_path", "best_guesses", "code_rationale")
+
+
+def _flag_on(env_name: str) -> bool:
+    """A REPOWISE_* feature flag: on by default, off for {0,false,no,off}."""
+    return os.environ.get(env_name, "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _opt_in(env_name: str) -> bool:
+    """A REPOWISE_* feature flag: off by default, on for {1,true,yes,on}."""
+    return os.environ.get(env_name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _always_synthesize() -> bool:
+    """Whether to always synthesize (default) or keep the legacy abstain gate."""
+    return _flag_on(_ALWAYS_SYNTHESIZE_ENV)
+
+
+def _agreement_confidence_enabled() -> bool:
+    """Whether retriever-agreement lifts confidence (default) or pure ratio rules.
+
+    Falsey restores the exact prior RRF-compressed ratio/gap behaviour, for A/B
+    measurement and instant reversibility.
+    """
+    return _flag_on(_AGREEMENT_CONFIDENCE_ENV)
+
+
+def _symbol_agreement_enabled() -> bool:
+    """Whether a keyless index may read agreement from FTS + the symbol leg.
+
+    Independently reversible from :func:`_agreement_confidence_enabled`, which
+    governs the measured FTS + vector pair. Off restores the state where a
+    keyless index simply cannot earn the agreement lift.
+    """
+    return _flag_on(_SYMBOL_AGREEMENT_ENV)
+
+
+def _cache_disabled() -> bool:
+    return _opt_in(_DISABLE_CACHE_ENV)
+
+
+def _lean_high() -> bool:
+    return _opt_in(_LEAN_HIGH_ENV)

@@ -8,15 +8,20 @@ happens here.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console
 from repowise.cli.ui import (
-    build_analysis_summary_panel,
+    ERR,
+    OK,
+    WARN,
     build_completion_panel,
     build_contextual_next_steps,
-    build_mcp_status_lines,
+    build_status_notes,
     format_elapsed,
+    print_analysis_summary,
+    print_files_written,
 )
 
 
@@ -54,23 +59,22 @@ def show_analysis_summary(result: Any) -> None:
         pass
 
     console.print()
-    console.print(
-        build_analysis_summary_panel(
-            file_count=result.file_count,
-            symbol_count=result.symbol_count,
-            graph_nodes=_graph.number_of_nodes(),
-            graph_edges=_graph.number_of_edges(),
-            dead_unreachable=_dc_unreachable_pre,
-            dead_unused=_dc_unused_pre,
-            dead_lines=_dc_lines_pre,
-            decision_count=_n_decisions_pre,
-            git_files=result.git_summary.files_indexed if result.git_summary else 0,
-            hotspot_count=result.git_summary.hotspots
-            if result.git_summary and hasattr(result.git_summary, "hotspots")
-            else 0,
-            community_count=_community_count,
-            lang_summary=_lang_summary,
-        )
+    print_analysis_summary(
+        console,
+        file_count=result.file_count,
+        symbol_count=result.symbol_count,
+        graph_nodes=_graph.number_of_nodes(),
+        graph_edges=_graph.number_of_edges(),
+        dead_unreachable=_dc_unreachable_pre,
+        dead_unused=_dc_unused_pre,
+        dead_lines=_dc_lines_pre,
+        decision_count=_n_decisions_pre,
+        git_files=result.git_summary.files_indexed if result.git_summary else 0,
+        hotspot_count=result.git_summary.hotspots
+        if result.git_summary and hasattr(result.git_summary, "hotspots")
+        else 0,
+        community_count=_community_count,
+        lang_summary=_lang_summary,
     )
 
 
@@ -118,12 +122,17 @@ def show_completion(
     run_mode: str,
     provider: Any,
     setup: Any = None,
+    files_written: list[Path] | None = None,
 ) -> None:
     """Render the final completion panel (index-only or full mode).
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot, so the next-step panel and the MCP status note reflect what setup
     actually did. Passed as ``None`` only by callers with nothing to report.
+
+    *files_written* is what editor setup put in the working tree, straight from
+    the writers. Printed below the panel and dim: it is a receipt, and the run's
+    result is the panel above it.
     """
     elapsed = time.monotonic() - start
 
@@ -233,7 +242,7 @@ def show_completion(
                 "  Re-run without [bold]--mode fast[/bold] to render the wiki from "
                 "structure.[/dim]"
             )
-        for _line in build_mcp_status_lines(setup):
+        for _line in build_status_notes(setup):
             console.print(_line)
         console.print()
         _render_defect_accuracy(result)
@@ -295,9 +304,11 @@ def show_completion(
         # A concise, dynamic MCP note (who is connected, how others connect)
         # replaces the old wall of manual per-client config: init already wrote
         # the Claude Code / VS Code registrations and repo `.mcp.json`.
-        for _line in build_mcp_status_lines(setup):
+        for _line in build_status_notes(setup):
             console.print(_line)
         console.print()
+
+    print_files_written(console, Path(repo_path), files_written or [])
 
     _show_generation_checks(result)
 
@@ -320,7 +331,7 @@ def _show_generation_checks(result: Any) -> None:
         # A first index that could not check itself must not read like one that
         # checked itself clean. The run still exits 0; the wiki is written.
         console.print(
-            f"[bold red]Generation checks did not run:[/bold red] {type(exc).__name__}: {exc}"
+            f"[{ERR}]Generation checks did not run:[/] {type(exc).__name__}: {exc}"
         )
 
 
@@ -379,10 +390,10 @@ def show_workspace_completion(
         for alias, (count, reason) in docs_outcomes.items():
             if reason:
                 console.print(
-                    f"  [yellow]✗[/yellow] {alias:<20} [yellow]skipped[/yellow]  [dim]({reason})[/dim]"
+                    f"  [{WARN}]✗[/] {alias:<20} [{WARN}]skipped[/]  [dim]({reason})[/dim]"
                 )
             else:
-                console.print(f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]")
+                console.print(f"  [{OK}]✓[/] {alias:<20} [{OK}]{count} pages[/]")
         if docs_skipped:
             first = docs_skipped[0][0]
             console.print()

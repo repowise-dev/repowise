@@ -330,6 +330,35 @@ class TestPayload:
         assert any(n.startswith("a") for n in names)
         assert any(n.startswith("z") for n in names), names
 
+    def test_entry_point_hints_are_ranked_not_alphabetical(self):
+        """The hint is truncated to three, so the sort picks which three.
+
+        Alphabetical by basename put ``api.ts`` and the two barrels ahead of
+        ``main.py``, and this feeds the prompt that names the group.
+        """
+        from repowise.core.generation.concept_tree.grouping import ConceptGroup
+
+        members = [
+            "src/api.ts",
+            "src/deep/nested/index.ts",
+            "src/bootstrap.py",
+            "src/main.py",
+            "src/zzz/server.py",
+        ]
+        group = ConceptGroup(members=members, dirs=["src"], target_path="src")
+        payload, _ = build_payload([group], entry_points=set(members))
+        assert payload["groups"][0]["entry_points"] == ["bootstrap.py", "main.py", "server.py"]
+
+    def test_entry_point_hints_only_cover_the_group(self):
+        """A repo-wide entry set is filtered to this group's own members."""
+        from repowise.core.generation.concept_tree.grouping import ConceptGroup
+
+        group = ConceptGroup(members=["src/main.py"], dirs=["src"], target_path="src")
+        payload, _ = build_payload(
+            [group], entry_points={"src/main.py", "other/cli.py"}
+        )
+        assert payload["groups"][0]["entry_points"] == ["main.py"]
+
     def test_sibling_directories_are_shown_relative_to_what_they_share(self):
         from repowise.core.generation.concept_tree.grouping import ConceptGroup
 

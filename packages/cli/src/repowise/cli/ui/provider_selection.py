@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 
-from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, WARN
+from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, VALUE, WARN
 from repowise.cli.ui.env_persistence import _save_key_to_dotenv
 from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -322,7 +322,7 @@ def _interactive_provider_name(
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()
-        console.print(f"  [bold]{chosen}[/bold] requires [cyan]{env_var}[/cyan].")
+        console.print(f"  [bold]{chosen}[/bold] requires [{VALUE}]{env_var}[/].")
         if signup_url:
             console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
         console.print()

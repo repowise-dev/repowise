@@ -437,7 +437,10 @@ async def _curated_entry_points(session: AsyncSession, repo_id: str) -> list[str
     """Return the curated entry-point paths persisted at index time.
 
     These are the ranked, cleaned execution starts (Phase 1) — not the raw
-    ingestion ``is_entry_point`` flags, which still include barrels/configs.
+    ingestion ``is_entry_point`` flags, which still include shallow barrels and
+    test/example paths. Candidacy drops configs and deep glue leaves at
+    ingestion now; the curator owns the layer/support and barrel exclusions
+    that need a layer map or parsed files.
     """
     project_meta = await get_kg_project_meta(session, repo_id)
     if not project_meta:

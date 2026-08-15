@@ -5,6 +5,7 @@ import { EmptyState } from "../shared/empty-state";
 import { VirtualizedTable } from "../shared/virtualized-table";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
 import { cn } from "../lib/cn";
+import { formatDate, formatDateTime } from "../lib/format";
 import { ChevronRight } from "lucide-react";
 
 export interface RepoPairSummary {
@@ -91,8 +92,11 @@ export function RepoPairTable({ repoPairs, onSelectPair, selectedPairId }: RepoP
           </div>
         </td>
         <td className={`px-3 py-2 text-right text-xs text-[var(--color-text-tertiary)] ${HIDE_BELOW_LG}`}>
-          <span title={p.lastDate ? new Date(p.lastDate).toLocaleString() : undefined}>
-            {p.lastDate ? new Date(p.lastDate).toLocaleDateString() : "—"}
+          {/* formatDate, not toLocaleDateString(): the bare call resolves the
+              ambient locale, so Node and the browser can render the same date
+              differently and hydration fails. */}
+          <span title={p.lastDate ? formatDateTime(p.lastDate) : undefined}>
+            {p.lastDate ? formatDate(p.lastDate) : "—"}
           </span>
         </td>
         {onSelectPair ? (

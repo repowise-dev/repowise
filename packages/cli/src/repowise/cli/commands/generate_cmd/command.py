@@ -356,7 +356,9 @@ def _write_state(repo_path: Path, state: dict, provider: Any, outcome: Any) -> N
     upgrade leaves a mixed wiki, so it keeps its current mode rather than
     over-claiming that everything is written.
     """
-    state["last_sync_commit"] = get_head_commit(repo_path)
+    head = get_head_commit(repo_path)
+    if head is not None:
+        state["last_sync_commit"] = head
     state["total_pages"] = outcome.total_pages
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name

@@ -172,6 +172,14 @@ export function SystemMapConformancePanel({
 }: SystemMapConformancePanelProps) {
   if (!report) return null;
 
+  // The report lists at most MAX_CYCLES; total_cycles is how many exist. Say
+  // so when they differ rather than passing the cap off as the count.
+  const totalCycles = report.total_cycles ?? report.cycle_count;
+  const cycleSummary =
+    totalCycles > report.cycle_count
+      ? `${report.cycle_count} of ${totalCycles} cycle(s)`
+      : `${report.cycle_count} cycle(s)`;
+
   return (
     <div style={panelStyle}>
       <div
@@ -211,7 +219,9 @@ export function SystemMapConformancePanel({
         <div style={{ color: "var(--color-text-tertiary)", fontSize: 11 }}>
           {loading
             ? "Checking the latest update…"
-            : `${report.violation_count} violation(s), ${report.cycle_count} cycle(s) from ${report.rules_evaluated} rule(s)`}
+            : !report.generated_at
+              ? "Not yet checked"
+              : `${report.violation_count} violation(s), ${cycleSummary} from ${report.rules_evaluated} rule(s)`}
         </div>
       </div>
 
@@ -226,9 +236,14 @@ export function SystemMapConformancePanel({
           }}
         >
           <RefreshCw size={12} />
-          {report.rules_evaluated > 0
-            ? "No rule violations or dependency cycles."
-            : "No dependency cycles. Declare conformance rules to enforce allowed dependencies."}
+          {/* An unstamped report is one the checker never wrote a result into.
+              Reporting its zeros as "no violations" is the failure this panel
+              exists to avoid. */}
+          {!report.generated_at
+            ? "This workspace has not been checked. Run a workspace update to produce a result."
+            : report.rules_evaluated > 0
+              ? "No rule violations or dependency cycles."
+              : "No dependency cycles. Declare conformance rules to enforce allowed dependencies."}
         </div>
       )}
 

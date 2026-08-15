@@ -19,6 +19,20 @@ Two hooks feed it:
 Same operational rules as the rest of augment: stdlib-only on the hook path,
 unknown tool-output shapes are skipped rather than guessed, and any failure
 degrades to silence.
+
+**A near-zero firing count is this surface working, not this surface failing.**
+Worth writing down, because in ``repowise hook stats`` it sits among rows that
+carry real action rates and so reads like a dead code path, and it has been
+proposed for deletion on exactly that basis. It cannot fire more often than the
+repowise MCP tools are called, and their share of an agent's tool calls is the
+low number this KPI exists to observe. The count therefore tracks adoption, and
+cutting the surface for having a low one would delete the instrument to make the
+reading go away. Keeping it costs nothing to weigh against that: ``chars=0``, no
+emission, no tokens, and the only work on the hook's critical path is a coverage
+check against the session state file.
+
+Retire it when there is a *better* measure of whether MCP answers land. Never
+because this one reads low.
 """
 
 from __future__ import annotations

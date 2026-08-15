@@ -2,16 +2,38 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 from click.testing import CliRunner
 
 from repowise.cli import __version__
+from repowise.cli.commands.generate_cmd.command import _write_state
 from repowise.cli.main import cli
 
 
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+def test_generate_state_preserves_sync_commit_when_head_is_unavailable():
+    state = {"last_sync_commit": "known-good-commit"}
+    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0)
+    provider = SimpleNamespace(provider_name="mock", model_name="mock")
+
+    with (
+        patch(
+            "repowise.cli.commands.generate_cmd.command.get_head_commit",
+            return_value=None,
+        ),
+        patch("repowise.cli.commands.generate_cmd.command.save_state"),
+    ):
+        _write_state(Path("/tmp/not-a-git-repository"), state, provider, outcome)
+
+    assert state["last_sync_commit"] == "known-good-commit"
 
 
 # ---------------------------------------------------------------------------

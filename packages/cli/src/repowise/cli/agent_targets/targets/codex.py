@@ -132,32 +132,126 @@ def server_table(repo_path: Path) -> dict[str, object]:
     }
 
 
+#: Seconds a Codex augment hook may run before Codex gives up on it. This is a
+#: ceiling for a pathological case rather than a budget: the hook does local
+#: SQLite and ``git`` reads with no network and no LLM, so a normal fire is well
+#: under a second and most of that is interpreter start. Matches the Claude Code
+#: entries, which have carried 10 since they were written; Codex shipped 30 only
+#: because the two were never reconciled.
+_HOOK_TIMEOUT = 10
+
+#: Timeouts this entry has shipped with, current one excluded. A migration moves
+#: only these exact values, so a user who raised the timeout on purpose keeps it.
+_LEGACY_HOOK_TIMEOUTS = (30,)
+
+#: Events we used to register on and no longer do. ``UserPromptSubmit`` fired an
+#: unmatched context hook on **every** prompt, and what it emitted was the
+#: freshness line ``SessionStart`` already carries — so a turn paid one process
+#: start per prompt to repeat a block it was given at startup. The Claude Code
+#: entries never registered it. Migration removes ours from an existing file; a
+#: hook the user wrote on the same event is untouched.
+_RETIRED_EVENTS = ("UserPromptSubmit",)
+
+
 def hooks_config() -> dict[str, object]:
-    """Project-local Codex hooks for context injection and freshness checks."""
+    """Project-local Codex hooks for context injection and freshness checks.
+
+    The shell matcher stays, and that asymmetry with Claude Code is deliberate.
+    Claude Code dropped ``Bash``/``PowerShell`` from its augment matcher on
+    measurement (51% of invocations, 0.7% of emissions), but it kept ``Read``,
+    ``Grep`` and ``Glob``, which is where its emissions come from. Codex has
+    none of those tools, so the shell is the only surface a hook can reach it
+    on: dropping it here would not trim a matcher, it would leave Codex with
+    startup and edits alone.
+    """
     from repowise.cli.agent_adapters.codex import SHELL_TOOL_MATCHER
 
     context_hook = {
         "type": "command",
         "command": "repowise-augment --client codex",
-        "timeout": 30,
+        "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Loading repowise context...",
     }
     freshness_hook = {
         "type": "command",
         "command": "repowise-augment --client codex",
-        "timeout": 30,
+        "timeout": _HOOK_TIMEOUT,
         "statusMessage": "Checking repowise freshness...",
     }
     return {
         "hooks": {
             "SessionStart": [{"matcher": "startup|resume|clear", "hooks": [context_hook]}],
-            "UserPromptSubmit": [{"hooks": [context_hook]}],
             "PostToolUse": [
                 {"matcher": SHELL_TOOL_MATCHER, "hooks": [freshness_hook]},
                 {"matcher": "apply_patch|Edit|Write", "hooks": [freshness_hook]},
             ],
         }
     }
+
+
+def _migrate_hooks_config(hooks: dict) -> None:
+    """Repair our own entries in an existing ``.codex/hooks.json``, in place.
+
+    The twin of :func:`~repowise.cli.editor_integrations.claude_config._migrate_legacy_hook`,
+    and it exists because the merge in :func:`write_hooks_config` is purely
+    *additive*: it appends an entry when no entry carries our hook for that
+    matcher, and does nothing at all when one does. So a shape we stopped
+    shipping survives on an existing install forever, and reinstalling is not a
+    repair anyone would think to try, because the install reports success either
+    way.
+
+    Two repairs, both scoped to hooks whose command is ours:
+
+    * **Retired events are dropped** — see :data:`_RETIRED_EVENTS`.
+    * **Legacy timeouts move to** :data:`_HOOK_TIMEOUT`, and only from the values
+      we shipped, so a user who raised it keeps their number.
+
+    Returns nothing on purpose. The obvious shape here is a ``changed`` boolean,
+    and the Claude Code twin does return one — but its caller needs it to decide
+    whether to write at all, and this one does not: ``write_json_config`` renders
+    the merged document and diffs it against what is on disk, so the
+    CREATED/UPDATED/UNCHANGED verdict is already computed from the bytes. A
+    boolean here would be tracked through three branches and then dropped.
+    """
+    for event in _RETIRED_EVENTS:
+        entries = hooks.get(event)
+        if not isinstance(entries, list) or not entries:
+            continue
+        surviving: list[object] = []
+        for entry in entries:
+            inner = entry.get("hooks") if isinstance(entry, dict) else None
+            if not isinstance(inner, list):
+                surviving.append(entry)
+                continue
+            remaining = [h for h in inner if not (isinstance(h, dict) and _is_augment_hook(h))]
+            if len(remaining) == len(inner):
+                surviving.append(entry)
+                continue
+            # A group that held only our hook goes with it; a group the user
+            # also wrote in keeps everything except ours. Same rule as
+            # ``remove_hooks_config``, for the same reason.
+            if remaining:
+                entry["hooks"] = remaining
+                surviving.append(entry)
+        # Iterating ``_RETIRED_EVENTS`` rather than ``hooks`` is what makes this
+        # pop safe: the loop never walks the dict being mutated.
+        if surviving:
+            hooks[event] = surviving
+        else:
+            hooks.pop(event)
+
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            inner = entry.get("hooks") if isinstance(entry, dict) else None
+            if not isinstance(inner, list):
+                continue
+            for hook in inner:
+                if not isinstance(hook, dict) or not _is_augment_hook(hook):
+                    continue
+                if hook.get("timeout") in _LEGACY_HOOK_TIMEOUTS:
+                    hook["timeout"] = _HOOK_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +347,9 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
     """Merge repowise hooks into ``.codex/hooks.json`` and enable the feature.
 
     Additive per matcher group: a matcher that already carries one of our hooks
-    is left alone, so a user who narrowed or annotated an entry keeps it.
+    is left alone, so a user who narrowed or annotated an entry keeps it. That
+    rule is why :func:`_migrate_hooks_config` runs first — additive alone can
+    never retire a shape, only ever add one.
 
     Returns both writes — the hooks file *and* ``config.toml``'s feature flag —
     because they are genuinely two files and reporting only the first would hide
@@ -278,6 +374,8 @@ def write_hooks_config(repo_path: Path) -> tuple[FileWrite, FileWrite]:
             f"Cannot update {hooks_path}: hooks must contain a JSON object. "
             "Fix or remove it and retry; no changes were written."
         )
+
+    _migrate_hooks_config(hooks)
 
     for event, entries in new_config["hooks"].items():
         event_hooks = hooks.setdefault(event, [])
@@ -807,16 +905,39 @@ def _combined(first: FileAction, second: FileAction) -> FileAction:
 
 
 def _is_augment_hook(hook: dict) -> bool:
-    cmd = hook.get("command", "")
+    """True when *hook*'s command is ours. Any other shape is False.
+
+    ``hook.get("command", "")`` was the original, and it assumes the value is a
+    string. This reads a file the user owns, where ``"command": 7`` is a shape
+    to answer rather than to raise ``TypeError`` on, part-way through a write
+    that has already rewritten other entries. The Claude Code twin was hardened
+    for exactly this; the Codex half was missed, and the migration above walks
+    every event in the document, which is where such a value would sit.
+    """
+    cmd = hook.get("command")
+    if not isinstance(cmd, str):
+        return False
     return "repowise-augment" in cmd or "repowise augment" in cmd
 
 
 def _has_augment_hook_for_matcher(hook_list: list, matcher: object) -> bool:
+    """True when some entry for *matcher* already carries our hook.
+
+    Every shape is guarded for the same reason :func:`_is_augment_hook` is: this
+    walks a file the user owns, and a bare string or a null under ``hooks`` used
+    to raise out of the middle of ``write_hooks_config`` rather than being
+    answered. A shape we cannot read carries nothing of ours, which makes the
+    install append its entry — the safe direction, since a duplicate matcher is
+    inert where a missing hook is silent.
+    """
     for entry in hook_list:
-        if entry.get("matcher") != matcher:
+        if not isinstance(entry, dict) or entry.get("matcher") != matcher:
             continue
-        for hook in entry.get("hooks", []):
-            if _is_augment_hook(hook):
+        inner = entry.get("hooks")
+        if not isinstance(inner, list):
+            continue
+        for hook in inner:
+            if isinstance(hook, dict) and _is_augment_hook(hook):
                 return True
     return False
 

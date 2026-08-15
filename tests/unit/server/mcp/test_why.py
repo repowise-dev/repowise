@@ -183,6 +183,51 @@ async def test_get_why_no_args(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_one_target_and_no_query_answers_about_that_target(setup_mcp):
+    """A named file with nothing asked about it is a question about that file.
+
+    The no-query branch reached the health dashboard before it looked at
+    targets, so this returned the same repo-wide summary for every file — an
+    answer that never mentioned what was asked about.
+    """
+    from repowise.server.mcp_server import get_why
+
+    result = await get_why(targets=["src/auth/service.py"])
+
+    assert result["mode"] == "path"
+    assert result["path"] == "src/auth/service.py"
+    assert result["decisions"]
+
+
+@pytest.mark.asyncio
+async def test_targets_and_no_query_differ_by_target(setup_mcp):
+    """Two different files must not produce one answer.
+
+    The dashboard is byte-identical whatever it is asked about, so equality
+    here is the whole symptom rather than a proxy for it.
+    """
+    from repowise.server.mcp_server import get_why
+
+    first = await get_why(targets=["src/auth/service.py"])
+    second = await get_why(targets=["src/db/models.py"])
+
+    assert first != second
+
+
+@pytest.mark.asyncio
+async def test_every_target_is_answered_when_several_are_named(setup_mcp):
+    """Answering only the first target would be the same silent drop, halved."""
+    from repowise.server.mcp_server import get_why
+
+    targets = ["src/auth/service.py", "src/db/models.py"]
+    result = await get_why(targets=targets)
+
+    assert result["mode"] == "path"
+    assert result["paths"] == targets
+    assert sorted(result["target_context"]) == sorted(targets)
+
+
+@pytest.mark.asyncio
 async def test_get_why_module_path(setup_mcp):
     from repowise.server.mcp_server import get_why
 
@@ -240,17 +285,43 @@ async def test_get_why_targets_surfaces_code_rationale(setup_mcp, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_why_semantic_decision_namespace_filtering(setup_mcp):
+async def test_get_why_semantic_decision_namespace_filtering(session, setup_mcp):
     """Mode 3 semantic path: over-fetch from page store, keep only decision: hits.
 
     Upserts a decision vector under the 'decision:' prefix and a noise page
     without the prefix into the shared vector store.  Confirms that get_why
     surfaces the decision hit with the prefix stripped, and excludes the noise
     page from the decisions list.
+
+    A stored record is seeded alongside them because the semantic lanes now run
+    only once something has cleared the relevance floor: a question no stored
+    record answers returns before embedding anything, rather than serving the
+    three nearest vectors to a store that has nothing to say.
     """
+    import json
+
     import repowise.server.mcp_server as mcp_mod
     from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
+    from repowise.core.persistence.models import DecisionRecord
     from repowise.server.mcp_server import get_why
+
+    session.add(
+        DecisionRecord(
+            id="dec-redis",
+            repository_id=setup_mcp,
+            title="Redis for caching",
+            status="proposed",
+            context="caching",
+            decision="Use Redis for caching",
+            rationale="Redis caching reduces latency",
+            affected_files_json=json.dumps([]),
+            affected_modules_json=json.dumps([]),
+            source="pr",
+            confidence=0.8,
+            staleness_score=0.0,
+        )
+    )
+    await session.flush()
 
     vs = mcp_mod._vector_store
 

@@ -53,13 +53,15 @@ class LanguageSpec:
 
     # Filename stems that mark an executable/wiring entry point *for this
     # language only* (cross-language stems like "main"/"index" live in the
-    # registry's generic set). Union feeds the tour's entry-stem bonus.
+    # registry's generic set). The union feeds the tour's entry-stem bonus
+    # and, minus the glue stems, the traverser's is_entry_point flag.
     entry_stems: tuple[str, ...] = ()
 
     # Stems this language contributes to the traverser's is_entry_point
-    # *flag* (strong evidence — python's wsgi/asgi). Distinct from
-    # entry_stems: the flag set is deliberately tighter than the tour's
-    # weak-bonus stem set.
+    # *flag* (python's wsgi/asgi). Distinct from entry_stems in origin, not
+    # in strength: the traverser flags on the union of the two, so a stem in
+    # either field is evidence. Kept apart because the wiki's ranking reads
+    # only entry_stems.
     entry_flag_stems: tuple[str, ...] = ()
 
     # Test-shaped filename rules this language contributes to layer

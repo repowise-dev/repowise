@@ -77,6 +77,8 @@ from .git import (
     CommitEvolutionResponse,
     CommitResponse,
     CommitStatsResponse,
+    FixHistoryFileResponse,
+    FixHistoryResponse,
     GitMetadataResponse,
     GitSummaryResponse,
     HotspotResponse,
@@ -159,6 +161,8 @@ from .pagination import Paginated
 from .repository import (
     RepoCreate,
     RepoResponse,
+    ReposSummaryResponse,
+    RepoSummaryRow,
     RepoUpdate,
 )
 from .search import (
@@ -292,6 +296,8 @@ __all__ = [
     "ExecutionFlowsResponse",
     "ExternalSystemEntry",
     "ExternalSystemsResponse",
+    "FixHistoryFileResponse",
+    "FixHistoryResponse",
     "GitMetadataResponse",
     "GitSummaryResponse",
     "GoverningDecisionRef",
@@ -333,7 +339,9 @@ __all__ = [
     "RepoCreate",
     "RepoResponse",
     "RepoStatsResponse",
+    "RepoSummaryRow",
     "RepoUpdate",
+    "ReposSummaryResponse",
     "ReviewerEntry",
     "ReviewerSuggestion",
     "ReviewerSuggestionsResponse",

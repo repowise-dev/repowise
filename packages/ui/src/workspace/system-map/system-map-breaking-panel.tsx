@@ -171,13 +171,19 @@ export function SystemMapBreakingPanel({
         <div style={{ color: "var(--color-text-tertiary)", fontSize: 11 }}>
           {loading
             ? "Checking the latest update…"
-            : `${report.breaking_count} breaking, ${report.warning_count} warning across ${report.impacted_repos.length} repo(s)`}
+            : !report.generated_at
+              ? "Not yet checked"
+              : `${report.breaking_count} breaking, ${report.warning_count} warning across ${report.impacted_repos.length} repo(s)`}
         </div>
       </div>
 
       {!loading && report.changes.length === 0 && (
         <div style={{ padding: "12px", color: "var(--color-text-tertiary)" }}>
-          No breaking changes in the most recent update.
+          {/* No timestamp means detection never wrote a result here, so an
+              empty change list is silence rather than an all-clear. */}
+          {!report.generated_at
+            ? "Breaking-change detection has not run for this workspace. Run a workspace update to produce a result."
+            : "No breaking changes in the most recent update."}
         </div>
       )}
 

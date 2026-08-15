@@ -252,7 +252,7 @@ function CenteredState({
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
       {icon}
-      <p className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</p>
+      <p className="text-[15px] font-semibold text-[var(--color-text-primary)]">{title}</p>
       {detail && (
         <p className="max-w-sm text-xs text-[var(--color-text-secondary)]">{detail}</p>
       )}

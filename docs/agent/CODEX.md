@@ -55,10 +55,11 @@ codex mcp list
 
 Repowise writes hooks to `.codex/hooks.json`, not inline `[hooks]` tables. The default hooks call the import-isolated `repowise-augment` entry point for:
 
-- `SessionStart` to add Repowise MCP workflow guidance.
-- `UserPromptSubmit` to remind Codex when Repowise context is available.
+- `SessionStart` to add Repowise MCP workflow guidance and the standing decisions relevant to the session.
 - `PostToolUse` for `Bash|shell_command` to detect git operations that make the wiki stale. On current Codex the shell calls arrive as `shell_command`; `Bash` is kept in the set for older and future builds. See [HOOKS.md](HOOKS.md) for why `exec` is deliberately excluded.
 - `PostToolUse` for `apply_patch`, `Edit`, and `Write` to remind Codex after edits.
+
+`UserPromptSubmit` is no longer among them. It ran unmatched on every prompt and returned the same static guidance `SessionStart` had already delivered, so it repeated a block the agent was holding. An existing `.codex/hooks.json` is repaired the next time something writes it: `repowise agents refresh`, or a `repowise init` that selects Codex. Hooks you added yourself are untouched, and so is a timeout you raised yourself. This file is project-local, so the repair happens per repo rather than once per machine.
 
 Claude Code has its own search-result enrichment hook path for `Grep` and `Glob`. Codex setup stays focused on lifecycle guidance and freshness checks instead of trying to reuse that Claude-specific search enrichment.
 

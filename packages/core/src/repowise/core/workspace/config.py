@@ -6,11 +6,14 @@ Pure data module with no CLI or DB dependencies. Handles the
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+_log = logging.getLogger("repowise.workspace.config")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -276,6 +279,7 @@ class WorkspaceConfig:
         Returns the path to the written file.
         """
         config_path = workspace_root / WORKSPACE_CONFIG_FILENAME
+        self._warn_if_dropping_repos(config_path)
         content = yaml.dump(
             self.to_dict(),
             default_flow_style=False,
@@ -284,6 +288,36 @@ class WorkspaceConfig:
         )
         config_path.write_text(content, encoding="utf-8")
         return config_path
+
+    def _warn_if_dropping_repos(self, config_path: Path) -> None:
+        """Log loudly when this write removes repos the file already had.
+
+        Every caller that saves for an unrelated reason (syncing a commit
+        stamp, adding a repo) goes through here, so a partial failure that
+        silently shrank the workspace leaves a trace instead of nothing. This
+        does not block the write — a removal may well be intended.
+        """
+        if not config_path.is_file():
+            return
+        try:
+            existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            previous = {
+                str(e.get("alias") or e.get("path"))
+                for e in existing.get("repos", [])
+                if isinstance(e, dict)
+            }
+        except Exception:
+            _log.warning("Could not read %s before overwriting it", config_path, exc_info=True)
+            return
+        dropped = previous - {e.alias for e in self.repos}
+        if dropped:
+            _log.warning(
+                "Writing %s with %d repo(s), down from %d — dropping: %s",
+                config_path,
+                len(self.repos),
+                len(previous),
+                ", ".join(sorted(dropped)),
+            )
 
     @classmethod
     def load(cls, workspace_root: Path) -> WorkspaceConfig:

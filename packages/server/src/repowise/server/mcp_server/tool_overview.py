@@ -16,6 +16,7 @@ from repowise.core.analysis.health.grading import (
 from repowise.core.analysis.health.grading import (
     distribution as health_distribution,
 )
+from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
@@ -25,6 +26,9 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.crud import (
     get_health_summary as _get_health_summary,
+)
+from repowise.core.persistence.crud import (
+    get_hotspot_file_paths,
 )
 from repowise.core.persistence.crud import (
     get_kg_layers as _get_kg_layers,
@@ -726,16 +730,17 @@ async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
         if not metrics_rows:
             return {}
         health_summary = await _get_health_summary(session, repository.id, metrics=metrics_rows)
-        # Hotspot health: NLOC-weighted avg over the top-25% files by NLOC,
-        # matching the dashboard KPI definition.
-        sorted_by_nloc = sorted(metrics_rows, key=lambda m: m.nloc or 0, reverse=True)
-        top_q = sorted_by_nloc[: max(1, len(sorted_by_nloc) // 4)]
-        tot = sum(max(m.nloc, 1) for m in top_q)
-        hotspot_avg = sum(m.score * max(m.nloc, 1) for m in top_q) / tot if tot else 10.0
+        # Hotspot health from the one owner, over the rows already loaded above.
+        # This used to average the top 25% of files *by NLOC* under a comment
+        # claiming it matched the dashboard; it never did. That ranks size, not
+        # churn, and it disagreed with the persisted KPI on all 42 local indexes
+        # (median 2.67 of 10, worst 6.46), reading higher on 31 of them. It also
+        # sorted every file row to produce one float.
+        hotspot_paths = await get_hotspot_file_paths(session, repository.id)
         return {
             "average_health": health_summary["average_health"],
             "band": band_for(float(health_summary["average_health"])),
-            "hotspot_health": round(hotspot_avg, 2),
+            "hotspot_health": hotspot_health(metrics_rows, hotspot_paths),
             "worst_performer_path": health_summary["worst_performer_path"],
             "worst_performer_score": health_summary["worst_performer_score"],
             "open_findings": health_summary["open_findings"],

@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -328,6 +329,8 @@ class OpenCodeProvider(BaseProvider):
             "json",
             "--dir",
             str(self._repo_path),
+            "--title",
+            f"repowise_auto_{uuid.uuid4().hex}",
         ]
         if self._model:
             cmd.extend(["--model", self._model])

@@ -471,17 +471,25 @@ async def run_system_graph_build(
     workspace_root: Path,
     store: ContractStore,
     overlay: CrossRepoOverlay,
+    boundaries_by_repo: dict[str, list[ServiceBoundary]] | None = None,
 ) -> SystemGraph:
     """Build and persist the system graph from the latest contracts + overlay.
 
     Called from ``run_cross_repo_hooks`` after contract extraction and
     cross-repo analysis. Boundary detection (a filesystem walk) runs off-thread.
-    """
-    boundaries_by_repo = await asyncio.to_thread(
-        _detect_boundaries_by_repo, ws_config, workspace_root
-    )
 
-    diagnostics = build_diagnostics(store.contracts, store.contract_links)
+    *boundaries_by_repo* is the map ``run_cross_repo_hooks`` already computed
+    for contract extraction. Both consumers need the same answer, so passing it
+    in halves the boundary walks per update; None re-detects for direct callers.
+    """
+    if boundaries_by_repo is None:
+        boundaries_by_repo = await asyncio.to_thread(
+            _detect_boundaries_by_repo, ws_config, workspace_root
+        )
+
+    diagnostics = build_diagnostics(
+        store.contracts, store.contract_links, store.extraction_stats
+    )
     graph = build_system_graph(
         store.contracts,
         store.contract_links,

@@ -81,6 +81,13 @@ const CONFIRM_COPY: Record<
     confirmLabel: "Deprecate",
     destructive: true,
   },
+  dismissed: {
+    title: "Dismiss decision?",
+    description:
+      "This proposal will be hidden from the list and indexing will not raise it again. Nothing in your code changes.",
+    confirmLabel: "Dismiss",
+    destructive: true,
+  },
 };
 
 export interface DecisionDetailProps {
@@ -469,8 +476,15 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               >
                 Confirm
               </button>
+              {/* Dismissing a proposal and deprecating a decision are not the
+                  same act, and this button used to send `deprecated` for both.
+                  A dismissal says the proposal was never right, so the engine
+                  never raises it again; deprecation says a real decision has
+                  been retired, and the record keeps being re-derived and keeps
+                  its row. Sending the wrong one meant a dismissed proposal came
+                  back on the next index. */}
               <button
-                onClick={() => handleStatusChange("deprecated")}
+                onClick={() => handleStatusChange("dismissed")}
                 disabled={loading}
                 className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
               >
@@ -491,8 +505,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         {status === "proposed" && (
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Confirm marks this as an accurate, current decision for your team.
-            Dismiss hides it from the active list as inaccurate or no longer
-            relevant. Neither changes any code.
+            Dismiss hides it and stops indexing from raising it again, for a
+            proposal that was never right. Neither changes any code.
           </p>
         )}
         {status === "active" && (

@@ -26,7 +26,9 @@ asymmetric, durable value:
     * Skip otherwise: a focused result set means the agent already
       found what it wanted; further graph context is just noise.
 
-Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
+Codex SessionStart: adds short repowise MCP usage guidance. (``UserPromptSubmit``
+is still answered for installs predating its retirement, but nothing we ship
+registers it any more — see :mod:`.codex`.)
 
   SessionStart (Claude Code)
     * Emits a one-paragraph context block: whether the index is current,

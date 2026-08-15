@@ -137,6 +137,10 @@ def project(payload: dict) -> dict:
         out["query"] = payload["query"]
     if payload.get("path"):
         out["path"] = payload["path"]
+    # Several --targets and no query: the paths asked about, since there is no
+    # single ``path`` naming them and ``target_context`` is keyed by them.
+    if payload.get("paths"):
+        out["paths"] = payload["paths"]
     if payload.get("summary"):
         out["summary"] = payload["summary"]
     if payload.get("counts"):
@@ -235,7 +239,7 @@ def project(payload: dict) -> dict:
     "--target",
     "targets",
     multiple=True,
-    help="File path to anchor the search to. Repeatable.",
+    help="File path to anchor the search to, or to ask about when QUERY is omitted. Repeatable.",
 )
 @_ta.target_options
 def why_command(
@@ -251,8 +255,8 @@ def why_command(
 
     QUERY is a question ("why is auth using JWT?"), a file path (its governing
     decisions, origin story and alignment score), or omitted for the decision
-    health dashboard. Falls back to git archaeology when a path has no
-    decisions, so it is never empty.
+    health dashboard — or for the --targets, when any are named. Falls back to
+    git archaeology when a path has no decisions, so it is never empty.
     """
     fmt = _ta.resolve_format_for(fmt, full)
     repo_path = _ta.resolve_indexed_repo(

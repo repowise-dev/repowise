@@ -101,7 +101,9 @@ export function extractSources(
       const decisions = (result.decisions as Array<Record<string, unknown>>)
         ?? (result.matching_decisions as Array<Record<string, unknown>>)
         ?? [];
-      for (const d of decisions) {
+      const stale = (result.stale_decisions as Array<Record<string, unknown>>) ?? [];
+      const rows = [...decisions, ...stale];
+      for (const d of rows) {
         const affectedFiles = (d.affected_files as string[]) ?? [];
         for (const filePath of affectedFiles.slice(0, 3)) {
           const pageId = `file_page:${filePath}`;

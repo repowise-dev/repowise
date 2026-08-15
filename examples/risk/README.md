@@ -14,17 +14,21 @@ Works without `repowise init` (index is optional).
 cd /path/to/your-repo
 ```
 
-## 1. Score HEAD or a range
+## 1. Score your current change, a commit, or a range
 
 ```bash
-repowise risk                 # score HEAD
+repowise risk                 # score uncommitted work, else HEAD
+repowise risk HEAD            # score the last commit
 repowise risk main..HEAD      # whole branch / PR as one change
 repowise risk HEAD~5..HEAD    # recent local work
 ```
 
-The headline is **repo-relative**: percentile and review priority
-(`Below typical` / `Typical` / `Elevated`) among recent commits. The raw
-0–10 model score is secondary context.
+The headline is **fix history**: which of the touched files have needed bug
+fixes before, recency-weighted, and where that sits among this repo's
+fix-bearing files. Below it, the diff shape — percentile and review priority
+(`Below typical` / `Typical` / `Elevated`) among recent commits, and the 0–10
+score, which measures how large and spread out the change is rather than how
+dangerous.
 
 ## 2. Narrow what counts
 

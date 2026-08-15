@@ -452,7 +452,9 @@ def compute_architecture_metrics(
         for node in graph.nodes
     ]
 
-    cycle_count = len(detect_cycles(graph))
+    # The true count, not the reporting cap: a workspace with 500 cycles must
+    # not score the same as one with 50.
+    _, cycle_count = detect_cycles(graph)
     score = architecture_score(propagation_cost, core_ratio, cycle_count, conformance_violations)
     architecture_type = (
         ARCH_CORE_PERIPHERY if core_ratio >= CORE_PERIPHERY_MIN_RATIO else ARCH_HIERARCHICAL

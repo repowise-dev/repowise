@@ -46,10 +46,13 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
         return SimpleNamespace(path=str(repo))
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    # Explicit revspec, so the uncommitted .riskignore does not become the
+    # subject of the score.
     result = await module.get_change_risk(
-        extensions=["py", "md"], exclude_patterns=["docs/"], baseline=0
+        "HEAD", extensions=["py", "md"], exclude_patterns=["docs/"], baseline=0
     )
 
+    assert result["working_tree"] is False
     assert result["features"] == {
         "la": 1,
         "ld": 0,
