@@ -6,10 +6,11 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .baseline import baseline_scores_cached
+from .baseline import baseline_samples_cached, scores_excluding
 from .features import (
     GIT_TIMEOUT_SECONDS,
     ChangeFeatures,
+    _git,
     extract_commit_features,
     extract_range_features,
     extract_worktree_features,
@@ -55,6 +56,44 @@ def riskignore_patterns(repo_path: str) -> tuple[str, ...]:
         for line in ignore_file.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     )
+
+
+def _commit_anchor(repo_path: str, target: str) -> tuple[str, str]:
+    """Return ``(anchor, resolved sha)`` for a commit target.
+
+    A commit in ``HEAD``'s history is ranked against the repo's current sample
+    rather than building a private one, so every such target in a process shares
+    a single walk. A commit that is not (another branch, an unrelated ref) keeps
+    its own anchor, since HEAD's history is not its cohort.
+
+    The sha comes back because self-exclusion needs it: the sample holds commit
+    shas, while the target is whatever the caller spelled — ``"HEAD"`` most of
+    the time, which matches no sha and so excluded nothing.
+    """
+    # ^{commit} peels an annotated tag to the commit it points at. Without it the
+    # tag object's own sha comes back, which is in no sample and is never equal
+    # to a merge-base, so both the anchor and the self-exclusion below miss.
+    target_sha = _git(
+        ["rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"], repo_path, check=False
+    ).strip()
+    if target == "HEAD" or not target_sha:
+        return "HEAD" if target == "HEAD" else target, target_sha
+    # merge-base == the target itself is exactly "target is an ancestor of HEAD",
+    # read off stdout because _git does not surface a return code.
+    merge_base = _git(["merge-base", target, "HEAD"], repo_path, check=False).strip()
+    return ("HEAD" if merge_base == target_sha else target), target_sha
+
+
+def range_anchor(repo_path: str, base: str, head: str) -> str:
+    """Anchor a range's baseline to where its two sides diverged.
+
+    Keeps the range's own commits out of the distribution it is measured
+    against, and lets ranges off the same fork point share one memoized walk.
+    Note this also drops commits that landed on *base* after the fork: they are
+    cohort members, but including them would mean re-walking per head.
+    """
+    merge_base = _git(["merge-base", base, head], repo_path, check=False).strip()
+    return merge_base or base
 
 
 def normalize_extensions(extensions: tuple[str, ...]) -> tuple[str, ...]:
@@ -105,26 +144,26 @@ def score_live_change(
         features = extract_range_features(
             repo_path, base, head, extensions=extensions, exclude_patterns=effective_excludes
         )
-        anchor, excluded_ref = head, ""
+        anchor, excluded_ref = range_anchor(repo_path, base, head), ""
     else:
         features = extract_commit_features(
             repo_path, target, extensions=extensions, exclude_patterns=effective_excludes
         )
-        anchor, excluded_ref = target, features.ref
+        anchor, excluded_ref = _commit_anchor(repo_path, target)
 
     risk = score_change(features)
     percentile: float | None = None
     priority: str | None = None
     baseline_sample_size = 0
     if baseline:
-        scores = baseline_scores_cached(
+        samples = baseline_samples_cached(
             repo_path,
             anchor,
             baseline,
             extensions,
-            excluded_ref=excluded_ref,
             exclude_patterns=effective_excludes,
         )
+        scores = scores_excluding(samples, excluded_ref)
         baseline_sample_size = len(scores)
         if len(scores) >= _MIN_BASELINE:
             normalizer = RiskNormalizer.from_scores(scores)

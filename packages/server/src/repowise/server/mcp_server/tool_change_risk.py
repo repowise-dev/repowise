@@ -64,7 +64,7 @@ async def get_change_risk(
     suite), never "untested", when no map is ingested.
 
     ``prior_fixes`` appears only when the changed files carry counted bug fixes:
-    per-file counts, never a commit name.
+    per-file counts, never a commit name; ``concentration`` names where it sits.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the
@@ -120,13 +120,36 @@ async def get_change_risk(
     prior_fixes = await _prior_fixes_block(ctx, changed)
     if prior_fixes is not None:
         payload["prior_fixes"] = prior_fixes
-    # source: live_git marks that this response is computed from the working
-    # checkout's git, not the index, so index freshness does not apply to it.
+    # source: live_git marks that the *score* is computed from the working
+    # checkout's git. The two blocks above are index-backed, so the freshness
+    # fields do apply to them, scoped to the change's files. None (not []) when
+    # there are none, so a degraded read keeps the repo-level staleness warning
+    # instead of reading as "nothing served, nothing to warn about".
     payload["_meta"] = _build_meta(
         timing_ms=(time.perf_counter() - started) * 1000,
+        repository=await _repository(ctx),
+        targets=sorted(changed) or None,
         extra={"source": "live_git"},
     )
     return payload
+
+
+async def _repository(ctx: Any) -> Any | None:
+    """The indexed repository row, or ``None`` without an index.
+
+    Only ``_meta`` needs it: the per-file blocks below resolve their own repo id
+    inside the session they query in.
+    """
+    from repowise.core.persistence.database import get_session
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None:
+        return None
+    try:
+        async with get_session(session_factory) as session:
+            return await _get_repo(session)
+    except (LookupError, SQLAlchemyError):
+        return None
 
 
 def _normalize_revspec(revspec: str | None) -> str:
@@ -292,10 +315,22 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
     if not events:
         return None
 
+    # Share of the change's own churn, so the fix counts below say where in this
+    # change the risk sits rather than only that some touched file has a past.
+    total_changed = sum(len(lines) for lines in changed.values())
     per_file: dict[str, dict[str, Any]] = {}
     for event in events:
         entry = per_file.setdefault(
-            event.file_path, {"file_path": event.file_path, "fix_count": 0, "overlapping_lines": 0}
+            event.file_path,
+            {
+                "file_path": event.file_path,
+                "fix_count": 0,
+                "overlapping_lines": 0,
+                "changed_lines": len(changed[event.file_path]),
+                "share_of_change": round(len(changed[event.file_path]) / total_changed, 3)
+                if total_changed
+                else 0.0,
+            },
         )
         entry["fix_count"] += 1
         entry["overlapping_lines"] += _overlap_count(
@@ -316,11 +351,12 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
     # changed files as "3 past bug fixes". The per-file counts are per-file and
     # stay as they are.
     total = len({event.fix_sha for event in events})
-    return {
+    block = {
         "files": files[:_PRIOR_FIXES_LIMIT],
         "truncated": len(files) > _PRIOR_FIXES_LIMIT,
         "total_fixes": total,
         "files_with_fixes": len(files),
+        "changed_lines_in_fixed_files": sum(f["changed_lines"] for f in per_file.values()),
         "line_overlap": "approximate",
         "summary": (
             f"{total} past bug-fix commit(s) touched {len(files)} of the changed file(s). "
@@ -328,6 +364,37 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
             "parent commit); the per-file counts are not."
         ),
     }
+    # Only over the files actually returned, so the sentence never names a path
+    # the reader cannot find anywhere else in the block.
+    concentration = _concentration(files[:_PRIOR_FIXES_LIMIT])
+    if concentration is not None:
+        block["concentration"] = concentration
+    return block
+
+
+#: A file has to carry this much of the change's lines before the response will
+#: say the risk sits there. Below it the change is spread out and naming one
+#: file would be a stronger claim than the numbers support.
+_CONCENTRATION_SHARE = 0.5
+
+
+def _concentration(files: list[dict[str, Any]]) -> str | None:
+    """Name the fix-carrying file that holds most of this change, if one does.
+
+    The score itself is whole-change, so this is the only place the response
+    says *where* the risk sits: the file with both the past and the churn.
+    """
+    if not files:
+        return None
+    # Negated path so ties break toward the first file the sorted list shows,
+    # matching the ascending file_path tiebreak the block is sorted by.
+    top = min(files, key=lambda f: (-f["share_of_change"], -f["fix_count"], f["file_path"]))
+    if top["share_of_change"] < _CONCENTRATION_SHARE:
+        return None
+    return (
+        f"{top['file_path']} carries {top['share_of_change']:.0%} of the changed lines "
+        f"and {top['fix_count']} past bug fix(es)."
+    )
 
 
 def _overlap_count(changed_lines_now: set[int], old_ranges_json: str) -> int:

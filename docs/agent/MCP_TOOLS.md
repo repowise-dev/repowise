@@ -459,6 +459,12 @@ those fixes replaced (`overlapping_lines`), and how long ago the most recent
 was (`last_fix_days_ago`). `total_fixes` counts distinct commits, not rows,
 and `files` is capped at ten with `truncated` reporting overflow.
 
+Each file also carries how much of *this* change sits in it — `changed_lines`
+and `share_of_change` — with `changed_lines_in_fixed_files` as the total across
+them. That join is what lets the response say where the risk sits rather than
+only that some touched file has a past: the score is whole-change, so when one
+returned file holds at least half the changed lines, `concentration` names it.
+
 `overlapping_lines` is labelled `approximate` in the payload, and that label is
 load-bearing: a past fix's ranges are numbered against its own parent commit,
 so anything that moved lines in between shifts them. Read it as "this

@@ -16,11 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.change_risk import (
     SCORE_UNIT,
     RiskNormalizer,
-    baseline_scores,
+    baseline_samples,
     change_features_from_stored,
     extract_range_features,
+    range_anchor,
     review_priority_classification,
     score_change,
+    scores_excluding,
 )
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
@@ -688,7 +690,10 @@ def get_risk_range(
     percentile: float | None = None
     priority: str | None = None
     if baseline:
-        scores = baseline_scores(local_path, head, baseline, (), excluded_ref="")
+        # Same anchor rule as the CLI/MCP scorer, so both surfaces rank a range
+        # against the history it forked from rather than against its own commits.
+        samples = baseline_samples(local_path, range_anchor(local_path, base, head), baseline, ())
+        scores = scores_excluding(samples, "")
         if len(scores) >= _MIN_BASELINE:
             normalizer = RiskNormalizer.from_scores(scores)
             # Rank with experience unknown, matching the baseline (diff-shape

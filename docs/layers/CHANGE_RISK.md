@@ -106,6 +106,28 @@ The `repowise risk` CLI samples the repo's recent commits live (`--baseline`,
 default 200) to compute this percentile; in the web UI it is precomputed from the
 indexed commit history.
 
+### What the sample is anchored to
+
+The sample is the recent history the change is measured against, and where it
+starts depends on what is being scored:
+
+| Subject | Sample runs back from | Why |
+|---|---|---|
+| A commit already in `HEAD`'s history | `HEAD` | Ranked against how the repo commits *now*. |
+| A commit that is not (another branch) | that commit | `HEAD`'s history is not its cohort. |
+| A `base..head` range | the merge-base of the two sides | The range's own commits stay out of the distribution it is measured against. |
+| Uncommitted work | `HEAD` | Same subject, same cohort as scoring `HEAD`. |
+
+A change never ranks against itself: the target's own score is removed from the
+sample before the percentile is taken.
+
+Because the sample depends only on that anchor and the active filters, and not
+on the individual change, one walk is reused for every change scored against the
+same history in the same process. A long-running MCP server pays for the walk
+once and answers subsequent `get_change_risk` calls without repeating it. A new
+commit, a moved branch, or a different set of filters produces a different
+anchor or a different filter set, and so a fresh walk.
+
 ## Calibration & accuracy
 
 Constants are learned offline against the defect corpus (AG-SZZ bug-inducing

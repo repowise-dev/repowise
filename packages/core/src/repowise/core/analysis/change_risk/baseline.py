@@ -19,8 +19,10 @@ from .model import score_change
 # of a default get_change_risk call and is identical for every change scored
 # against the same repo state. Keyed on the *resolved anchor sha* (not the ref
 # name) so a new commit on HEAD busts the entry, plus every other input that
-# changes the sample (sample size, filters, the self-excluded ref).
-_BASELINE_CACHE: dict[tuple, list[float]] = {}
+# changes the sample (sample size, filters). Deliberately NOT keyed on the
+# target being scored: the sample is stored whole and the target's own score is
+# dropped when ranking, so two changes against the same history share one walk.
+_BASELINE_CACHE: dict[tuple, list[tuple[str, float]]] = {}
 # Crude bound so a long-lived MCP server that scores many distinct changes does
 # not grow the memo without limit. On overflow the whole cache is dropped
 # (correctness is unaffected; the next call just recomputes). Upgrade to an LRU
@@ -37,28 +39,47 @@ def _resolve_anchor_sha(repo_path: str, anchor: str) -> str | None:
     """Resolve *anchor* to a full sha for cache keying, or None if it cannot be.
 
     check=False: a bad anchor is not fatal here - it just means we skip caching
-    and let :func:`baseline_scores` compute (and degrade) as it normally would.
+    and let :func:`baseline_samples` compute (and degrade) as it normally would.
     """
     sha = _git(["rev-parse", "--verify", "--quiet", anchor], repo_path, check=False).strip()
     return sha or None
 
 
-def baseline_scores(
+def scores_excluding(samples: list[tuple[str, float]], excluded_ref: str) -> list[float]:
+    """Drop the target commit's own score from a sample, keeping the rest.
+
+    Self-exclusion is a rank-time filter, not a property of the sample, so the
+    walk is cached whole and each target removes only itself. *excluded_ref* is
+    a commit sha, full or abbreviated - a ref *name* matches nothing, since the
+    sample is keyed by sha. Empty means nothing to exclude (a range or an
+    uncommitted change is not in the sample to begin with). An abbreviation
+    short enough to prefix-match several shas will drop all of them.
+    """
+    if not excluded_ref:
+        return [score for _, score in samples]
+    return [
+        score
+        for sha, score in samples
+        if not (sha.startswith(excluded_ref) or excluded_ref.startswith(sha))
+    ]
+
+
+def baseline_samples(
     repo_path: str,
     anchor: str,
     limit: int,
     extensions: tuple[str, ...],
-    excluded_ref: str,
     exclude_patterns: tuple[str, ...] = (),
-) -> list[float]:
+) -> list[tuple[str, float]]:
     """Score the repo's recent commits to build a local risk distribution.
+
+    Returns ``(sha, score)`` pairs so a caller can exclude the change it is
+    ranking (see :func:`scores_excluding`) without needing a sample of its own.
 
     One ``git log --numstat`` call (no per-commit author lookup), so it stays
     cheap enough for a pre-merge gate. Experience is left unknown for the
     baseline; the target is ranked with experience likewise unknown, so the
     comparison is like-with-like: a diff-shape percentile within this repo.
-    *excluded_ref* is a full or abbreviated Git ref for the target commit to
-    omit from its own sample. It is unrelated to path exclusions.
     *exclude_patterns* use gitignore syntax and are applied to every sampled
     commit, matching the target change's filtering.
     """
@@ -77,16 +98,13 @@ def baseline_scores(
         timeout=GIT_TIMEOUT_SECONDS,
     ).stdout
 
-    scores: list[float] = []
+    samples: list[tuple[str, float]] = []
     exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
     for block in out.split("\x1e"):
         lines = block.strip().split("\n")
         if not lines or not lines[0]:
             continue
         sha, rows = lines[0].strip(), lines[1:]
-        # Do not let the target commit rank against itself (short or full ref).
-        if excluded_ref and (sha.startswith(excluded_ref) or excluded_ref.startswith(sha)):
-            continue
         changes: list[tuple[str, int, int]] = []
         for row in rows:
             parts = row.split("\t")
@@ -103,36 +121,33 @@ def baseline_scores(
         if not changes:
             continue
         feats = features_from_file_changes(changes, exp=None)
-        scores.append(score_change(feats).score)
-    return scores
+        samples.append((sha, score_change(feats).score))
+    return samples
 
 
-def baseline_scores_cached(
+def baseline_samples_cached(
     repo_path: str,
     anchor: str,
     limit: int,
     extensions: tuple[str, ...],
-    excluded_ref: str,
     exclude_patterns: tuple[str, ...] = (),
-) -> list[float]:
-    """Memoized :func:`baseline_scores`, keyed on the resolved anchor sha.
+) -> list[tuple[str, float]]:
+    """Memoized :func:`baseline_samples`, keyed on the resolved anchor sha.
 
-    Same result as :func:`baseline_scores` for the same inputs; it just skips the
-    200-commit git walk when an identical sample was already computed this
+    Same result as :func:`baseline_samples` for the same inputs; it just skips
+    the 200-commit git walk when an identical sample was already computed this
     process. The anchor is resolved to a sha so ``HEAD`` (or a branch ref) busts
     the entry as soon as a new commit lands. When the anchor cannot be resolved
     the call falls through to an uncached computation.
     """
     sha = _resolve_anchor_sha(repo_path, anchor)
     if sha is None:
-        return baseline_scores(
-            repo_path, anchor, limit, extensions, excluded_ref, exclude_patterns
-        )
-    key = (repo_path, sha, limit, extensions, excluded_ref, exclude_patterns)
+        return baseline_samples(repo_path, anchor, limit, extensions, exclude_patterns)
+    key = (repo_path, sha, limit, extensions, exclude_patterns)
     if key in _BASELINE_CACHE:
         return _BASELINE_CACHE[key]
-    scores = baseline_scores(repo_path, anchor, limit, extensions, excluded_ref, exclude_patterns)
+    samples = baseline_samples(repo_path, anchor, limit, extensions, exclude_patterns)
     if len(_BASELINE_CACHE) >= _BASELINE_CACHE_MAX:
         _BASELINE_CACHE.clear()
-    _BASELINE_CACHE[key] = scores
-    return scores
+    _BASELINE_CACHE[key] = samples
+    return samples

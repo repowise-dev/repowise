@@ -9,7 +9,7 @@ and is a natural pre-merge / PR gate.
 
 from __future__ import annotations
 
-from .baseline import baseline_scores
+from .baseline import baseline_samples, scores_excluding
 from .features import (
     WORKING_TREE_REF,
     ChangeFeatures,
@@ -26,6 +26,7 @@ from .service import (
     ChangeRiskResult,
     change_risk_payload,
     normalize_extensions,
+    range_anchor,
     riskignore_patterns,
     score_live_change,
 )
@@ -38,7 +39,7 @@ __all__ = [
     "ChangeRiskResult",
     "RiskDriver",
     "RiskNormalizer",
-    "baseline_scores",
+    "baseline_samples",
     "change_features_from_stored",
     "change_risk_payload",
     "extract_commit_features",
@@ -46,9 +47,11 @@ __all__ = [
     "extract_worktree_features",
     "features_from_file_changes",
     "normalize_extensions",
+    "range_anchor",
     "review_priority_classification",
     "riskignore_patterns",
     "score_change",
     "score_live_change",
+    "scores_excluding",
     "working_tree_is_dirty",
 ]

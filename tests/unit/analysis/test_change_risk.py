@@ -331,13 +331,13 @@ def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
 
     baseline.clear_baseline_cache()
     calls = {"n": 0}
-    real = baseline.baseline_scores
+    real = baseline.baseline_samples
 
     def _counting(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+    monkeypatch.setattr(baseline, "baseline_samples", _counting)
 
     first = score_live_change(str(git_repo), "HEAD", baseline=200)
     second = score_live_change(str(git_repo), "HEAD", baseline=200)
@@ -351,6 +351,55 @@ def test_baseline_cache_hits_on_second_call_and_busts_on_new_commit(
     score_live_change(str(git_repo), "HEAD", baseline=200)
     assert calls["n"] == 2
 
+    baseline.clear_baseline_cache()
+
+
+def test_baseline_cache_shared_across_distinct_commits(git_repo: Path, monkeypatch) -> None:
+    # The memo exists for the long-lived MCP server that scores many changes
+    # against one repo state. Keying it on the target defeated that, so two
+    # different merged commits must now share a single walk.
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+    older = _commit(git_repo, {"src/a.py": "a = 1\n"}, "feat: a", author="Dev")
+    newer = _commit(git_repo, {"src/b.py": "b = 2\n"}, "feat: b", author="Dev")
+
+    baseline.clear_baseline_cache()
+    calls = {"n": 0}
+    real = baseline.baseline_samples
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(baseline, "baseline_samples", _counting)
+
+    first = score_live_change(str(git_repo), older, baseline=200)
+    second = score_live_change(str(git_repo), newer, baseline=200)
+    third = score_live_change(str(git_repo), baseline=200)  # clean tree -> HEAD
+
+    assert calls["n"] == 1
+    # Each still excludes only itself, so every sample is the same size.
+    assert first.baseline_sample_size == second.baseline_sample_size
+    assert third.baseline_sample_size == first.baseline_sample_size
+
+    baseline.clear_baseline_cache()
+
+
+def test_commit_does_not_rank_against_itself(git_repo: Path) -> None:
+    from repowise.core.analysis.change_risk import baseline
+
+    for i in range(10):
+        _commit(git_repo, {f"src/f{i}.py": f"x = {i}\n"}, f"feat: file {i}", author="Dev")
+
+    baseline.clear_baseline_cache()
+    samples = baseline.baseline_samples(str(git_repo), "HEAD", 200, ())
+    result = score_live_change(str(git_repo), "HEAD", baseline=200)
+
+    # The cached walk holds every commit; the ranking drops exactly one - the
+    # target - so the two sizes differ by one and no more.
+    assert result.baseline_sample_size == len(samples) - 1
     baseline.clear_baseline_cache()
 
 
@@ -369,13 +418,13 @@ def test_baseline_cache_isolated_by_filters(git_repo: Path, monkeypatch) -> None
 
     baseline.clear_baseline_cache()
     calls = {"n": 0}
-    real = baseline.baseline_scores
+    real = baseline.baseline_samples
 
     def _counting(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(baseline, "baseline_scores", _counting)
+    monkeypatch.setattr(baseline, "baseline_samples", _counting)
 
     score_live_change(str(git_repo), "HEAD", baseline=200)
     score_live_change(str(git_repo), "HEAD", baseline=200, extensions=("py",))
