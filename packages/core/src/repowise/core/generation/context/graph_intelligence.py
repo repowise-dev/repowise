@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
+#: How many entries each extractor returns. Both were bare literals at the
+#: ``return``; naming them lets a caller and a test say which cut it means.
+MAX_CALL_ENTRIES = 15
+MAX_HERITAGE_ENTRIES = 10
+
 
 def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
     """Bucket symbol nodes by ``file_path`` in one pass over the graph.
@@ -16,7 +21,8 @@ def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
     graph node per file — O(files x nodes) across a generation run. Callers
     that assemble context for many files build this index once and pass it
     in; per-file extraction becomes a dict lookup. Buckets preserve the
-    graph's node iteration order, so results are byte-identical to the scan.
+    graph's node iteration order, and both extractors rank what they collect
+    before returning it, so results are byte-identical to the scan.
     """
     index: dict[str, list[tuple[Any, dict]]] = {}
     try:
@@ -80,7 +86,14 @@ def extract_call_graph(
                     )
     except Exception:
         pass
-    # Deduplicate and cap
+    # Rank, then deduplicate, then cap. The cut used to keep whichever 15 the
+    # graph happened to yield first, so a file's most confident call edges
+    # could be dropped in favour of arbitrary ones. ``confidence`` is already
+    # on every entry — it is the resolver's own certainty that this call is
+    # real — so the entries it is least sure about are the ones to lose.
+    # Ranking before the dedup also means a pair kept once is kept at its
+    # highest confidence rather than at whichever copy came first.
+    entries.sort(key=lambda e: (-float(e.get("confidence") or 0.0), e["caller"], e["callee"]))
     seen: set[str] = set()
     unique: list[dict] = []
     for e in entries:
@@ -88,7 +101,7 @@ def extract_call_graph(
         if key not in seen:
             seen.add(key)
             unique.append(e)
-    return unique[:15]
+    return unique[:MAX_CALL_ENTRIES]
 
 
 def extract_heritage(
@@ -110,6 +123,7 @@ def extract_heritage(
                             "parent": tdata.get("name", target),
                             "kind": etype,
                             "parent_file": tdata.get("file_path", ""),
+                            "confidence": edata.get("confidence", 0.0),
                         }
                     )
             for source, _, edata in graph.in_edges(node, data=True):
@@ -122,11 +136,20 @@ def extract_heritage(
                             "parent": data.get("name", node),
                             "kind": etype,
                             "child_file": sdata.get("file_path", ""),
+                            "confidence": edata.get("confidence", 0.0),
                         }
                     )
     except Exception:
         pass
-    return entries[:10]
+    # Same cut as ``extract_call_graph``, same reason to rank it. The resolver
+    # scores an inheritance edge it matched inside the file well above one it
+    # guessed from a bare name, and the corpus spreads across that range rather
+    # than sitting on a default, so the low-confidence guesses are what a full
+    # list should lose. ``confidence`` is carried on the entry for the same
+    # reason ``extract_call_graph`` carries it: the caller re-ranks these when
+    # it merges several files' lists into one.
+    entries.sort(key=lambda e: (-float(e.get("confidence") or 0.0), e["child"], e["parent"]))
+    return entries[:MAX_HERITAGE_ENTRIES]
 
 
 def extract_community_meta(file_path: str, graph: Any) -> tuple[str, float]:

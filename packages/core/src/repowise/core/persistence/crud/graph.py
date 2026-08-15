@@ -559,7 +559,15 @@ async def get_graph_edges_for_node(
     edge_types:
         Optional filter, e.g. ``["calls"]`` or ``["extends", "implements"]``.
     limit:
-        Max edges per direction.
+        Max edges per direction. **The cut is ranked**: rows come back most
+        confident first, ties broken on the other endpoint's id. Without an
+        ``ORDER BY`` the survivors were whichever rows the table handed over,
+        so a node with more adjacent edges than *limit* could return its
+        containment rows and none of its real calls — the failure
+        ``routers/files.py`` documents at its own call site — and two
+        identical calls could disagree. Every consumer here either filters on
+        ``confidence`` afterwards or shows the result directly, so ordering by
+        it means the rows that survive are the ones that pass.
     """
     results: list[GraphEdge] = []
 
@@ -570,7 +578,7 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(GraphEdge.confidence.desc(), GraphEdge.source_node_id).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -581,7 +589,7 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(GraphEdge.confidence.desc(), GraphEdge.target_node_id).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 

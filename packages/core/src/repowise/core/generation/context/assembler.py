@@ -60,6 +60,11 @@ _MAX_TOP_FILES = 20
 # public surface.
 _MAX_CONCEPT_ROWS = 40
 
+# The module page's "Class hierarchy" section: how many classes it shows, and
+# how many any one file may contribute so a single dense file cannot fill it.
+_MAX_KEY_CLASSES = 10
+_MAX_CLASSES_PER_FILE = 5
+
 # Identifier word splits: a snake_case underscore, or the boundary before a
 # capital that starts a new word. The second pattern keeps acronym runs whole —
 # ``HTTPAdapter`` is two words, not nine — which matters because the acronym is
@@ -541,12 +546,22 @@ class ContextAssembler:
                 {"name": name, "file_count": count} for name, count in owner_counts.most_common(3)
             ]
 
-        # Key classes: collect classes with heritage info from file contexts
+        # Key classes: the classes with heritage info, most central file first.
+        # ``module_page.j2`` renders this under a "Class hierarchy" heading, so
+        # the ten it keeps are the ten a reader is told matter. Taking them in
+        # ``file_contexts`` order meant the first two files with classes filled
+        # the list and every later file contributed nothing, whatever was in
+        # it. The rank is the file's PageRank — the same key ``key_files`` uses
+        # a few lines up, so one module page cannot call two files its most
+        # important — with the path breaking ties, since leaf files share a
+        # PageRank in bulk. Each file's own entries arrive already ranked by
+        # ``extract_heritage``; the per-file cap stays so one dense file cannot
+        # take every slot.
         key_classes: list[dict] = []
-        for fc in file_contexts:
-            for h in fc.heritage[:5]:  # cap per file
+        for fc in sorted(file_contexts, key=lambda fc: (-fc.pagerank_score, fc.file_path)):
+            for h in fc.heritage[:_MAX_CLASSES_PER_FILE]:
                 key_classes.append(h)
-        key_classes = key_classes[:10]  # cap total
+        key_classes = key_classes[:_MAX_KEY_CLASSES]
 
         # Where the page's files actually live: the directories that hold one
         # directly, not every ancestor of every file, so the list reads as the

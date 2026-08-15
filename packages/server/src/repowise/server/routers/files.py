@@ -292,9 +292,12 @@ async def file_detail(
         meta = parse_community_meta(node)
         # Dependencies only. Unfiltered, this served the file's own `defines`
         # edges as "dependencies", so a file depended on its own functions —
-        # and since the limit is per direction and the query has no ORDER BY,
-        # a file with more symbols than the limit could return containment
-        # rows and none of its real imports.
+        # and since the limit is per direction, a file with more symbols than
+        # the limit could return containment rows and none of its real
+        # imports. The type filter is what fixed that; the ranked cut inside
+        # ``get_graph_edges_for_node`` is what keeps the 40 it does return
+        # from being an arbitrary 40. Both halves are then shown 20 at a time,
+        # in that ranked order.
         edges = await crud.get_graph_edges_for_node(
             session,
             repo_id,

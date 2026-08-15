@@ -55,7 +55,13 @@ class PRBlastRadiusAnalyzer:
 
         # 2. Transitive affected files
         transitive_affected = await self._transitive_affected(changed_files, max_depth)
-        all_affected_paths = list(changed_set | {e["path"] for e in transitive_affected})
+        # Sorted, because this list is cut before it is shown. ``test_gaps``
+        # preserves this order and ``get_risk``'s PR directive renders its
+        # first three as ``missing_tests`` — the line the tool's own contract
+        # tells an agent to read first. A bare set union is hash-ordered, so
+        # those three were three arbitrary files of the gap set, and two runs
+        # of the same command in different processes could name different ones.
+        all_affected_paths = sorted(changed_set | {e["path"] for e in transitive_affected})
 
         # 3. Co-change warnings
         cochange_warnings = await self._cochange_warnings(changed_files, changed_set)
