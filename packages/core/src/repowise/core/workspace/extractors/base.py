@@ -12,7 +12,7 @@ descend into sibling/vendored repos rooted under the workspace.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -39,6 +39,15 @@ _TEST_FILE_PATTERNS = (
 )
 
 
+# Repowise's own contract-extractor sources. Their docstrings and comments spell
+# out the syntax each dialect matches (``@app.get("/path")``, ``topic::orders``,
+# ``AuthServiceStub``), so scanning them yields contracts for endpoints and
+# queues that do not exist — on this repo, 14 of them. A regex over raw text
+# cannot tell an example in a comment from a live route; excluding the tree that
+# is nothing *but* examples is the cheap half of that fix.
+_SELF_EXCLUDE_GLOBS = ("*/repowise/core/workspace/extractors/*",)
+
+
 def is_test_path(rel_path: str) -> bool:
     """True when *rel_path* (POSIX) lives in a test tree or is a test file."""
     parts = rel_path.split("/")
@@ -55,16 +64,18 @@ def make_exclude_predicate(
 ) -> Callable[[str], bool]:
     """Build a ``rel_path -> bool`` skip predicate for contract extraction.
 
-    Skips the default test/spec trees (unless *exclude_tests* is False) plus any
+    Skips the default test/spec trees (unless *exclude_tests* is False), the
+    extractors' own source tree (see :data:`_SELF_EXCLUDE_GLOBS`), plus any
     user-supplied ``extra_globs`` (matched against the full POSIX path and the
     bare filename).
     """
+    globs = _SELF_EXCLUDE_GLOBS + tuple(extra_globs)
 
     def skip(rel_path: str) -> bool:
         if exclude_tests and is_test_path(rel_path):
             return True
         name = rel_path.rsplit("/", 1)[-1]
-        return any(fnmatch(rel_path, g) or fnmatch(name, g) for g in extra_globs)
+        return any(fnmatch(rel_path, g) or fnmatch(name, g) for g in globs)
 
     return skip
 
@@ -87,10 +98,34 @@ class ScanContext:
     mounts: Mapping[str, str] = field(default_factory=dict)
 
 
+# One scanned source file: ``(rel_path, suffix, content)``.
+SourceFile = tuple[str, str, str]
+
+
+def select_files(
+    repo_path: Path,
+    extensions: frozenset[str],
+    exclude: Callable[[str], bool] | None,
+    files: Sequence[SourceFile] | None,
+    content_hashes: dict[str, str] | None = None,
+) -> list[SourceFile]:
+    """Filter an already-walked *files* list, or walk *repo_path* when it is None.
+
+    Five extractors each used to walk the repo independently, so a repo was
+    traversed and every matching file re-read once per extractor. The
+    orchestrator now walks once and passes the result down; *files* being None
+    keeps the standalone call (and every direct test) working unchanged.
+    """
+    if files is None:
+        return list(iter_source_files(repo_path, extensions, exclude, content_hashes))
+    return [f for f in files if f[1] in extensions]
+
+
 def iter_source_files(
     repo_root: Path,
     extensions: frozenset[str],
     exclude: Callable[[str], bool] | None = None,
+    content_hashes: dict[str, str] | None = None,
 ) -> Iterator[tuple[str, str, str]]:
     """Yield ``(rel_path, suffix, content)`` for each scannable source file.
 
@@ -109,6 +144,14 @@ def iter_source_files(
     Only files whose lower-cased suffix is in *extensions* are yielded.
     Oversized, binary, generated, and ignored files are already excluded by the
     traverser. Unreadable files are silently skipped.
+
+    When *content_hashes* is given it is filled with ``rel_path -> sha256`` of
+    each file's raw bytes — the same key the ingestion parse cache is stored
+    under, so a caller can tell a matching parse from a stale one. Files are
+    read as bytes and decoded here rather than via ``read_text`` so that hash
+    describes the bytes on disk; the newline translation ``read_text`` would
+    have applied is reproduced verbatim, leaving every dialect's input
+    unchanged.
     """
     from repowise.core.ingestion.traverser import FileTraverser
 
@@ -124,7 +167,16 @@ def iter_source_files(
         if exclude is not None and exclude(info.path):
             continue
         try:
-            content = Path(info.abs_path).read_text(encoding="utf-8", errors="replace")
+            raw = Path(info.abs_path).read_bytes()
         except OSError:
             continue
+        content = raw.decode("utf-8", errors="replace")
+        # Universal newlines, as ``read_text`` applied before this read moved
+        # to bytes. Dialect regexes are written against ``\n``.
+        if "\r" in content:
+            content = content.replace("\r\n", "\n").replace("\r", "\n")
+        if content_hashes is not None:
+            from repowise.core.ingestion.models import compute_content_hash
+
+            content_hashes[info.path] = compute_content_hash(raw)
         yield info.path, suffix, content

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..base import ScanContext, iter_source_files
+from ..base import ScanContext, select_files
 from .csharp import CSharpGrpcDialect
 from .dialect import GrpcDialect
 from .go import GoGrpcDialect
@@ -21,10 +21,12 @@ from .python import PythonGrpcDialect
 from .typescript import TypeScriptGrpcDialect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from repowise.core.workspace.contracts import Contract
+
+    from ..base import SourceFile
 
 # One dialect per language/IDL; extension sets are disjoint, so exactly one runs
 # per file.
@@ -50,16 +52,22 @@ class GrpcExtractor:
 
     dialects: tuple[GrpcDialect, ...] = DIALECTS
 
+    @classmethod
+    def source_extensions(cls) -> frozenset[str]:
+        """Every extension this extractor's dialects claim."""
+        return _union_extensions(cls.dialects)
+
     def extract(
         self,
         repo_path: Path,
         repo_alias: str = "",
         exclude: Callable[[str], bool] | None = None,
+        files: Sequence[SourceFile] | None = None,
     ) -> list[Contract]:
-        all_exts = _union_extensions(self.dialects)
-
         contracts: list[Contract] = []
-        for rel_path, suffix, content in iter_source_files(repo_path, all_exts, exclude):
+        for rel_path, suffix, content in select_files(
+            repo_path, self.source_extensions(), exclude, files
+        ):
             ctx = ScanContext(repo_alias, rel_path, suffix, content)
             for dialect in self.dialects:
                 if suffix in dialect.extensions:
