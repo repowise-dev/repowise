@@ -1356,6 +1356,9 @@ def init_command(
     # state.json persistence below and for any future "profile" tooling
     # that wants to introspect a run.
     phase_timings: dict[str, float] = callback.timings
+    # Same idea, for the failures rather than the durations: what the run
+    # degraded on, in a place an agent can read after the terminal is gone.
+    run_warnings: list[str] = list(rich_callback.warnings)
 
     # ---- Analysis summary (shown between analysis and generation) ----
     show_analysis_summary(result)
@@ -1469,8 +1472,28 @@ def init_command(
         "Saving to database and building search index",
     )
 
-    with console.status("  Persisting to database…", spinner=OWL_SPINNER):
-        run_async(persist_result(result, repo_path))
+    # A bar rather than the old indeterminate spinner: full-text indexing walks
+    # every generated page one await at a time, so on a few thousand pages this
+    # stage ran for minutes with nothing on screen but a spinner, immediately
+    # after a generation bar that had just claimed to be finished. The columns
+    # are the index run's, minus the cost one — nothing here spends tokens.
+    with Progress(
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as persist_bar:
+        persist_callback = RichProgressCallback(persist_bar, console)
+        # Announced before the work starts and re-announced with a real total
+        # once the page loop knows one, so the stage is never silent.
+        persist_callback.on_phase_start("persist", None)
+        run_async(persist_result(result, repo_path, persist_callback))
+        persist_callback.on_phase_done("persist")
+    # Persistence has its own callback, so its warnings need folding into the
+    # run record explicitly — the state write below is the last chance.
+    run_warnings.extend(persist_callback.warnings)
     console.print(f"  [{OK}]✓[/] Database updated")
 
     # Persist the onboarding choice so subsequent `repowise update` runs
@@ -1564,6 +1587,12 @@ def init_command(
     base_state["include_submodules"] = include_submodules
     if phase_timings:
         base_state["phase_timings"] = phase_timings
+    # Cleared before it is set: ``base_state`` came from the previous run's
+    # state.json, and a fixed re-run must not inherit its predecessor's
+    # degradation report (see save_full_state_and_config for the same rule).
+    base_state.pop("degraded", None)
+    if run_warnings:
+        base_state["degraded"] = run_warnings
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         base_state["knowledge_graph"] = build_kg_state(kg)
@@ -1622,6 +1651,7 @@ def init_command(
             result=result,
             provider=provider,
             phase_timings=phase_timings,
+            degraded=run_warnings,
             embedder_name_resolved=embedder_name_resolved,
             exclude_patterns=exclude_patterns,
             commit_limit=commit_limit,

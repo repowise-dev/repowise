@@ -12,12 +12,19 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cost_estimator.estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
 
 logger = structlog.get_logger(__name__)
+
+# Page types rendered from a Jinja template with no provider call. Reused from
+# the cost estimator rather than restated: that set is already the answer to
+# "does this page cost tokens", and a second copy here would be the thing that
+# drifts the first time a page type changes tier.
+_FREE_PAGE_TYPES = STRUCTURAL_PAGE_TYPES
 
 
 async def run_generation(
@@ -100,16 +107,46 @@ async def run_generation(
     # phase so the terminal UI shows them as a distinct, named step rather
     # than blending into the long file_page run.
     _pages_done = 0
+    _llm_pages_done = 0
 
     def on_page_done(page_type: str) -> None:
-        nonlocal _pages_done
+        nonlocal _pages_done, _llm_pages_done
         _pages_done += 1
-        if progress:
-            phase = "onboarding" if page_type == "onboarding" else "generation"
-            progress.on_item_done(phase)
-            # Push live cost update if the callback supports it
-            if cost_tracker is not None and hasattr(progress, "set_cost"):
-                progress.set_cost(cost_tracker.session_cost)
+        if not progress:
+            return
+        # Onboarding keeps its own named step, and also advances the overall
+        # bar. It used to do only the former while ``_announce_total`` counted
+        # onboarding slots into the overall total, so that bar's denominator
+        # included pages that could never tick it and it never reached 100%
+        # on its own — ``on_phase_done`` forcing it there at the end is what
+        # hid the arithmetic.
+        if page_type == "onboarding":
+            progress.on_item_done("onboarding")
+        progress.on_item_done("generation")
+
+        # One bar counting 4,229 items where ~4,134 are free template renders
+        # and ~95 are paid model calls reads as frozen: the cheap levels run
+        # first, so it sprints to 97% and then crawls for another quarter of an
+        # hour with the cost figure sitting still. The paid work gets its own
+        # counter so that stretch has something visibly moving in it.
+        #
+        # Counted rather than announced up front: the per-tier totals are known
+        # only inside the level builders, which this phase does not own. An
+        # indeterminate counter states what is true without inventing a
+        # denominator.
+        #
+        # Counts by page *type*, not by whether a call was made, so a resume or
+        # update run that reuses a cached page still counts it here. The tier
+        # is right; on a heavily-reused run the count overstates the calls.
+        if page_type not in _FREE_PAGE_TYPES:
+            _llm_pages_done += 1
+            if _llm_pages_done == 1:
+                progress.on_phase_start("generation.llm", None)
+            progress.on_item_done("generation.llm")
+
+        # Push live cost update if the callback supports it
+        if cost_tracker is not None and hasattr(progress, "set_cost"):
+            progress.set_cost(cost_tracker.session_cost)
 
     if progress:
         progress.on_phase_start("generation", None)
@@ -192,6 +229,7 @@ async def run_generation(
         # Surface the FAQ-weighted budget tilt when session demand shaped it
         # (silent on fresh repos with no history — nothing to weight yet).
     _phase_done(progress, "onboarding")
+    _phase_done(progress, "generation.llm")
     _phase_done(progress, "generation")
 
     return generated_pages

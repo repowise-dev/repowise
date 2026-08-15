@@ -106,10 +106,16 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
         logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
 
 
-async def persist_result(result: Any, repo_path: Path) -> None:
+async def persist_result(result: Any, repo_path: Path, progress: Any | None = None) -> None:
     """Persist a PipelineResult to the local SQLite database.
 
     Handles both index-only (no pages) and full (with pages + FTS) modes.
+
+    *progress* is optional and reports the full-text indexing loop below, the
+    one part of persistence whose length is known in advance and proportional
+    to the wiki. Everything after "Generated N pages" used to happen under a
+    single indeterminate spinner, so on a repo of a few thousand pages the run
+    sat silent for minutes with no way to tell work from a hang.
     """
     from datetime import UTC, datetime
 
@@ -237,6 +243,8 @@ async def persist_result(result: Any, repo_path: Path) -> None:
     if fts is not None and swept_page_ids:
         await fts.delete_many(swept_page_ids)
     if fts is not None and result.generated_pages:
+        if progress is not None:
+            progress.on_phase_start("persist", len(result.generated_pages))
         for page in result.generated_pages:
             await fts.index(
                 page.page_id,
@@ -245,6 +253,10 @@ async def persist_result(result: Any, repo_path: Path) -> None:
                 summary=page.summary,
                 target_path=page.target_path,
             )
+            if progress is not None:
+                progress.on_item_done("persist")
+        if progress is not None:
+            progress.on_phase_done("persist")
     await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
@@ -305,6 +317,7 @@ def save_full_state_and_config(
     result: Any,
     provider: Any,
     phase_timings: dict[str, float],
+    degraded: list[str] | None = None,
     embedder_name_resolved: str,
     exclude_patterns: list[str],
     commit_limit: int | None,
@@ -358,6 +371,18 @@ def save_full_state_and_config(
     state["total_tokens"] = total_tokens
     if phase_timings:
         state["phase_timings"] = phase_timings
+    # What this run degraded on. A scripted run exits 0 either way, so without
+    # this an agent records a clean index for a run that skipped, say, execution
+    # flow tracing entirely.
+    #
+    # Cleared first, because ``state`` is the *previous* run's dict read back
+    # from disk. Only setting it would let one bad run mark a repo degraded
+    # forever: the re-run that fixed the problem writes no key, the stale list
+    # is re-serialised verbatim, and every later ``update`` carries it on. The
+    # key describes this run or it is absent.
+    state.pop("degraded", None)
+    if degraded:
+        state["degraded"] = list(degraded)
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
