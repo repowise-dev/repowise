@@ -37,6 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.fsutils import atomic_write_text
 from repowise.core.workspace.config import (
     WORKSPACE_DATA_DIR,
     WorkspaceConfig,
@@ -429,9 +430,10 @@ def save_system_graph(graph: SystemGraph, workspace_root: Path) -> Path:
     """Write the system graph to ``.repowise-workspace/system_graph.json``."""
     data_dir = ensure_workspace_data_dir(workspace_root)
     out_path = data_dir / SYSTEM_GRAPH_FILENAME
-    out_path.write_text(
-        json.dumps(graph.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(
+        out_path, json.dumps(graph.to_dict(), indent=2, ensure_ascii=False)
     )
     return out_path
 

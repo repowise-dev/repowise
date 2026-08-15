@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.fsutils import atomic_write_text
 from repowise.core.workspace.config import WORKSPACE_DATA_DIR, ensure_workspace_data_dir
 from repowise.core.workspace.contract_schema import ContractSchema, SchemaField
 from repowise.core.workspace.contracts import (
@@ -576,9 +577,10 @@ def save_breaking_change_report(report: BreakingChangeReport, workspace_root: Pa
     """Write the report to ``.repowise-workspace/breaking_changes.json``."""
     data_dir = ensure_workspace_data_dir(workspace_root)
     out_path = data_dir / BREAKING_CHANGES_FILENAME
-    out_path.write_text(
-        json.dumps(report.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(
+        out_path, json.dumps(report.to_dict(), indent=2, ensure_ascii=False)
     )
     return out_path
 

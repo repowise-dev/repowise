@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..fsutils import atomic_write_text
 from .config import WorkspaceConfig, ensure_workspace_data_dir
 
 _log = logging.getLogger("repowise.workspace.cross_repo")
@@ -1005,9 +1006,10 @@ def save_overlay(overlay: CrossRepoOverlay, workspace_root: Path) -> Path:
     """Save overlay to ``.repowise-workspace/cross_repo_edges.json``."""
     data_dir = ensure_workspace_data_dir(workspace_root)
     out_path = data_dir / CROSS_REPO_EDGES_FILENAME
-    out_path.write_text(
-        json.dumps(overlay.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(
+        out_path, json.dumps(overlay.to_dict(), indent=2, ensure_ascii=False)
     )
     return out_path
 

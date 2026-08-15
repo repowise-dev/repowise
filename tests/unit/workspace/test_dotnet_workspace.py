@@ -14,7 +14,11 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
+import pytest
+
+from repowise.core import fs_walk
 from repowise.core.workspace.cross_repo import (
+    _index_csproj_files,
     _scan_csproj,
     detect_package_dependencies,
 )
@@ -228,3 +232,54 @@ class TestScanCsproj:
         deps = detect_package_dependencies(repos)
         kinds = {d.kind for d in deps}
         assert "dotnet_project_ref" in kinds
+
+    def test_detect_package_dependencies_walks_each_repo_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The .csproj scan must not re-walk every tree once per repo.
+
+        The assembly-name map spans the whole workspace but does not depend on
+        the repo being scanned, so building it per repo cost R*R + R tree
+        walks. One walk per repo is the floor: each repo's project files have
+        to be found once.
+        """
+        repos = self._two_repo_workspace(tmp_path)
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
+            _csproj(packages=["Acme.Common"])
+        )
+
+        walked: list[Path] = []
+        real_iter_glob = fs_walk.iter_glob
+
+        def counting_iter_glob(root, patterns, **kwargs):
+            if patterns == "*.csproj":
+                walked.append(Path(root))
+            return real_iter_glob(root, patterns, **kwargs)
+
+        monkeypatch.setattr(fs_walk, "iter_glob", counting_iter_glob)
+
+        deps = detect_package_dependencies(repos)
+
+        assert len(walked) == len(repos), (
+            f"expected one *.csproj walk per repo ({len(repos)}), got {len(walked)}: {walked}"
+        )
+        # The saving must not have cost us the dependency itself.
+        assert any(d.kind == "dotnet_nuget_internal" for d in deps)
+
+    def test_shared_index_matches_standalone_scan(self, tmp_path: Path) -> None:
+        """A shared index must produce exactly what an isolated scan produces."""
+        repos = self._two_repo_workspace(tmp_path)
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
+            _csproj(
+                deps=[r"..\..\..\shared-libs\src\Common\Common.csproj"],
+                packages=["Acme.Common", "Newtonsoft.Json"],
+            )
+        )
+
+        standalone = _scan_csproj(repos["api"], repos, alias="api")
+        shared = _scan_csproj(
+            repos["api"], repos, alias="api", csproj_index=_index_csproj_files(repos)
+        )
+
+        assert standalone == shared
+        assert standalone  # guard against both sides being vacuously empty
