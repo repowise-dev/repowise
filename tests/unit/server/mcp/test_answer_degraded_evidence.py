@@ -20,7 +20,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from repowise.server.mcp_server.tool_answer import symbols as symbols_mod
-from repowise.server.mcp_server.tool_answer.answer import _degraded_payload
+from repowise.server.mcp_server.tool_answer.answer import (
+    _degraded_payload,
+    _drop_duplicated_guess_excerpts,
+)
 
 
 def _tree(tmp_path, *, body_lines: int = 6) -> SimpleNamespace:
@@ -51,10 +54,11 @@ def _hits(*, end_line: int, name: str = "Flask") -> list[dict]:
     ]
 
 
-async def _degraded(ctx, hits, question_ids):
+async def _degraded(ctx, hits, question_ids, question="what is Flask"):
     return await _degraded_payload(
         reason="no-llm-provider",
         note="DEGRADED: no LLM provider configured",
+        question=question,
         hits=hits,
         fallback_targets=["src/flask/app.py"],
         repository=None,
@@ -116,7 +120,10 @@ async def test_degraded_selects_only_symbols_the_question_named(tmp_path):
 
     assert "symbol_bodies" not in payload
     assert payload["citations"] == []
-    assert "next_action_hint" not in payload
+    # A hint is still given — it just cannot be a body hint, because no body was
+    # served. Nothing here may name symbol_bodies or tell the caller to read one.
+    assert "symbol_bodies" not in payload["next_action_hint"]
+    assert "body" not in payload["next_action_hint"]
 
 
 async def test_degraded_keeps_the_truncation_contract(tmp_path):
@@ -179,12 +186,14 @@ async def test_degraded_hint_never_advertises_an_unresolvable_id(tmp_path, monke
     assert "src/flask/app.py:122-200" in hint
 
 
-async def test_degraded_with_no_anchor_match_is_unchanged(tmp_path):
-    """The no-evidence degraded payload keeps its old shape.
+async def test_degraded_with_no_anchor_match_keeps_its_verdict(tmp_path):
+    """The no-body degraded payload keeps every judgement it was making.
 
-    This path is still reached (a question that names nothing indexed), and the
-    reply it gives (ranked hits plus where to look) is the right one. The fix
-    adds a branch; it must not rewrite the branch that was already correct.
+    This path is still reached (a question that names nothing indexed). It has
+    since gained the choosing evidence (best_guesses, and code_rationale where
+    the source carries any), but the verdict it reports about itself — low
+    confidence, the degradation reason, an `answer` that describes a ranking and
+    not a body — must be exactly what it was.
     """
     ctx = _tree(tmp_path)
     payload = await _degraded(ctx, _hits(end_line=6), set())
@@ -216,6 +225,7 @@ async def _quality(hits, **kw):
     payload = await _degraded_payload(
         reason="no-llm-provider",
         note="DEGRADED",
+        question="how does the module work",
         hits=hits,
         fallback_targets=["pkg/m0.py"],
         repository=None,
@@ -262,6 +272,7 @@ async def test_degraded_keeps_confidence_low():
     payload = await _degraded_payload(
         reason="no-llm-provider",
         note="DEGRADED",
+        question="how does the module work",
         hits=_scored(6.0, 1.0),
         fallback_targets=["pkg/m0.py"],
         repository=None,
@@ -280,6 +291,7 @@ async def test_degraded_hint_says_what_is_missing_not_what_to_doubt():
     payload = await _degraded_payload(
         reason="no-llm-provider",
         note="DEGRADED",
+        question="how does the module work",
         hits=_scored(6.0, 1.0),
         fallback_targets=["pkg/m0.py"],
         repository=None,
@@ -295,6 +307,7 @@ async def test_degraded_hint_still_pushes_back_on_weak_retrieval():
     payload = await _degraded_payload(
         reason="no-llm-provider",
         note="DEGRADED",
+        question="how does the module work",
         hits=_scored(6.0, 5.9),
         fallback_targets=["pkg/m0.py"],
         repository=None,
@@ -349,3 +362,137 @@ async def test_degraded_note_names_symbol_bodies_when_it_has_them(tmp_path):
 
     assert "symbol_bodies" in payload["note"]
     assert "symbol_bodies" in payload["_meta"]["hint"]
+
+
+# --- the choosing evidence, which never needed an LLM either (D12) ----------
+#
+# The legacy abstain path builds per-candidate justifications and mines
+# rationale comments from source, with no provider. The no-provider path is the
+# same situation with a different cause and got neither: 0 of 26 on both fields
+# in the paired keyless arm.
+
+
+async def test_degraded_carries_the_candidate_justifications(tmp_path):
+    """Why each ranked file is in the running — the pick-one signal.
+
+    Without it the reply is a ranked list with no stated reason, which is the
+    pointers-only shape that sends an agent into a Grep spree.
+    """
+    ctx = _tree(tmp_path)
+    payload = await _degraded(ctx, _hits(end_line=6), {"Blueprint"})
+
+    assert [g["file"] for g in payload["best_guesses"]] == ["src/flask/app.py"]
+    assert payload["best_guesses"][0]["why_relevant"]
+
+
+async def test_degraded_names_where_to_start_when_it_has_no_body(tmp_path):
+    """A payload with no body still owes the caller one next step."""
+    ctx = _tree(tmp_path)
+    payload = await _degraded(ctx, _hits(end_line=6), {"Blueprint"})
+
+    assert payload["next_action_hint"].startswith("Start from src/flask/app.py")
+
+
+async def test_degraded_body_hint_still_wins_over_the_candidate_hint(tmp_path):
+    """The two hints are exclusive; the candidate one must not overwrite the body one."""
+    ctx = _tree(tmp_path)
+    payload = await _degraded(ctx, _hits(end_line=6), {"Flask"})
+
+    assert "Read the Flask body" in payload["next_action_hint"]
+    assert "Start from" not in payload["next_action_hint"]
+
+
+async def test_degraded_mines_rationale_comments_from_the_candidates(tmp_path):
+    """A rationale comment is a cited answer, not a pointer — and needs no provider."""
+    src = tmp_path / "pkg"
+    src.mkdir()
+    (src / "cache.py").write_text(
+        "# The TTL is 300 seconds because the upstream feed refreshes every\n"
+        "# five minutes; polling faster only burns quota.\n"
+        "TTL = 300\n",
+        encoding="utf-8",
+    )
+    ctx = SimpleNamespace(path=str(tmp_path), session_factory=None)
+    hits = [{"target_path": "pkg/cache.py", "title": "cache", "summary": "s", "score": 4.0}]
+
+    payload = await _degraded_payload(
+        reason="no-llm-provider",
+        note="DEGRADED",
+        question="why is the TTL 300 seconds",
+        hits=hits,
+        fallback_targets=["pkg/cache.py"],
+        repository=None,
+        t0=0.0,
+        ctx=ctx,
+        question_ids=set(),
+        exclude_spec=None,
+    )
+
+    assert payload["code_rationale"]
+    assert "upstream feed" in payload["code_rationale"][0]["comment"]
+    assert "code_rationale" in payload["note"]
+
+
+async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
+    """`best_guesses[].excerpt` and `retrieval[].excerpt` are the same bytes.
+
+    Redundant here and not on the abstain path, which ships `retrieval: []`.
+    Measured at 21.3% of one payload before the serve-time drop existed.
+    """
+    ctx = _tree(tmp_path)
+    hits = _hits(end_line=6)
+    hits[0]["excerpt"] = "x" * 1500
+    payload = await _degraded(ctx, hits, {"Blueprint"})
+
+    assert payload["retrieval"][0]["excerpt"] == "x" * 1500
+    assert "excerpt" not in payload["best_guesses"][0]
+
+
+async def test_degraded_keeps_the_guess_excerpt_when_nothing_duplicates_it(tmp_path):
+    """The drop is keyed on the duplicate being present, so it stays lossless."""
+    payload = {
+        "best_guesses": [{"file": "a.py", "excerpt": "only copy of this content"}],
+        "retrieval": [],
+    }
+    _drop_duplicated_guess_excerpts(payload)
+
+    assert payload["best_guesses"][0]["excerpt"] == "only copy of this content"
+
+
+# --- _first_resolvable_id: the second-id path -------------------------------
+#
+# The guard walks the withheld ids and returns the first one `get_symbol` would
+# answer. Every id on the measured corpus resolved, so "the first is dead, the
+# second is live" has no natural case — only a fixture reaches it.
+
+
+async def test_first_resolvable_id_falls_through_to_the_second(tmp_path):
+    from repowise.server.mcp_server.tool_answer.answer import _first_resolvable_id
+
+    (tmp_path / "m.py").write_text("def real_one():\n    pass\n", encoding="utf-8")
+    ctx = SimpleNamespace(path=str(tmp_path), session_factory=None)
+
+    picked = await _first_resolvable_id(
+        ["m.py::Fabricated", "m.py::real_one"], ctx, None, None
+    )
+
+    assert picked == "m.py::real_one"
+
+
+async def test_first_resolvable_id_gives_up_when_none_resolve(tmp_path):
+    """None, not the first id anyway — a dead pointer is worse than no pointer."""
+    from repowise.server.mcp_server.tool_answer.answer import _first_resolvable_id
+
+    (tmp_path / "m.py").write_text("def real_one():\n    pass\n", encoding="utf-8")
+    ctx = SimpleNamespace(path=str(tmp_path), session_factory=None)
+
+    assert await _first_resolvable_id(["m.py::Nope", "m.py::AlsoNope"], ctx, None, None) is None
+
+
+async def test_first_resolvable_id_keeps_an_id_whose_file_cannot_be_read(tmp_path):
+    """Absence of evidence, not evidence of fabrication."""
+    from repowise.server.mcp_server.tool_answer.answer import _first_resolvable_id
+
+    ctx = SimpleNamespace(path=str(tmp_path), session_factory=None)
+
+    assert await _first_resolvable_id(["gone.py::Thing"], ctx, None, None) == "gone.py::Thing"

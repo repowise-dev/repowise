@@ -115,6 +115,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
     expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
 )
+from repowise.server.mcp_server._page_paths import hit_file_path
 from repowise.server.mcp_server._symbol_lookup import (
     bare_name,
     parse_symbol_id,
@@ -405,12 +406,18 @@ def _build_best_guesses(hits: list[dict]) -> list[dict]:
     """Decision-shaped candidate list: per-file justification, score, excerpt.
 
     The evidence an ambiguous-retrieval reply carries so the agent can pick ONE
-    file to verify instead of skimming five. Shared by the legacy abstain path
-    and the always-synthesize low/medium fold-in.
+    file to verify instead of skimming five. Shared by the legacy abstain path,
+    the always-synthesize low/medium fold-in, and the degraded paths.
+
+    ``file`` is resolved through ``hit_file_path``, and a hit resolving to no
+    file is skipped — both for the reason ``serialize_candidates`` does it
+    (finding A15): a ``symbol_spotlight`` page's ``target_path`` is
+    ``file.py::Symbol`` and a module page's is a group key, neither of which a
+    consumer can open. This field is named "file" and gets Read.
     """
     return [
         {
-            "file": h.get("target_path"),
+            "file": hit_file_path(h),
             "why_relevant": _candidate_justification(h),
             "score": round(h.get("score", 0.0), 3),
             # Absent rather than null. It was `null` in all six wire samples
@@ -420,7 +427,7 @@ def _build_best_guesses(hits: list[dict]) -> list[dict]:
             **({"excerpt": h["excerpt"]} if h.get("excerpt") else {}),
         }
         for h in hits[:_GATED_RETURN_HITS]
-        if h.get("target_path")
+        if hit_file_path(h)
     ]
 
 
@@ -787,7 +794,7 @@ def _rationale_anchors(h: dict) -> list[tuple[str, int | None]]:
     return anchors
 
 
-def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], question: str):
+async def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], question: str):
     """Mine in-code rationale comments for a low-confidence answer.
 
     The wiki/decision corpus failed to ground the question; the "why" may be a
@@ -796,6 +803,10 @@ def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], q
     line boost on their definition, then fallback_targets fill the rest — for
     comment blocks carrying a rationale marker overlapping the question.
     Best-effort: returns [] on any failure, never raises into the tool path.
+
+    Off the loop, like the sibling live-source miner on the value fast path.
+    Measured 13.3 ms over 234 KB of django candidates — small per call, and
+    every concurrent request pays it if it runs where the loop can feel it.
     """
     repo_root = getattr(ctx, "path", None)
     if not repo_root:
@@ -810,7 +821,9 @@ def _gather_code_rationale(ctx, hits: list[dict], fallback_targets: list[str], q
                 near_lines[path] = near_line
     candidates.extend(p for p in (fallback_targets or []) if p)
     try:
-        return _mine_rationale(repo_root, candidates, question, near_lines=near_lines)
+        return await asyncio.to_thread(
+            _mine_rationale, repo_root, candidates, question, near_lines=near_lines
+        )
     except Exception:  # best-effort enrichment, never break the response
         return []
 
@@ -1239,6 +1252,7 @@ async def _degraded_payload(
     *,
     reason: str,
     note: str,
+    question: str,
     hits: list[dict],
     fallback_targets: list[str],
     repository,
@@ -1289,6 +1303,12 @@ async def _degraded_payload(
     keyed arm went on to cite. The same rule the synthesised path uses answers
     that question here, and it stays honest in the other direction: 14 of the 26
     retrievals were genuinely weak in both arms and still grade "weak".
+
+    ``best_guesses`` and ``code_rationale`` are here for the same reason as the
+    bodies: neither needs a provider, and the legacy abstain path has built both
+    from ``hits`` alone for as long as it has existed. Measured 0 of 26 here, so
+    the tool answered better when the reason for not synthesising was "retrieval
+    was ambiguous" than when it was "you have no key".
     """
     retrieval_quality = _retrieval_quality(hits, agreement_dominant)
     repo_root = _repo_root(ctx)
@@ -1304,6 +1324,12 @@ async def _degraded_payload(
 
     summary = _degraded_summary(reason, symbol_bodies, len(hits))
 
+    best_guesses = _build_best_guesses(hits)
+    # No quotes to check against here — there is no prose to quote from.
+    code_rationale = _drop_already_surfaced(
+        await _gather_code_rationale(ctx, hits, fallback_targets, question), symbol_bodies
+    )
+
     payload: dict = {
         "answer": summary,
         "citations": citations,
@@ -1314,6 +1340,14 @@ async def _degraded_payload(
         "retrieval": _serialize_hits(hits),
         "note": note,
     }
+    if best_guesses:
+        payload["best_guesses"] = best_guesses
+    if code_rationale:
+        payload["code_rationale"] = code_rationale
+        payload["note"] += (
+            " code_rationale carries rationale comments mined from the candidate "
+            "source — they may already answer the question."
+        )
     if symbol_bodies:
         payload["symbol_bodies"] = symbol_bodies
         payload["grounding"] = "symbol_body"
@@ -1323,6 +1357,16 @@ async def _degraded_payload(
         payload["note"] += (
             " symbol_bodies carries the live body of the symbol(s) you named, so "
             "answer from that rather than re-reading the file."
+        )
+    elif best_guesses and retrieval_quality != "weak":
+        # No body, so the next step is a choice between files. Not on a weak
+        # retrieval: `_meta.hint` there says "refine the query rather than
+        # reading these files in order", and two hints that disagree are worse
+        # than one. Names `best_guesses`, not its excerpt — that copy is dropped
+        # on the way out, since this path always has a populated `retrieval`.
+        payload["next_action_hint"] = (
+            f"Start from {best_guesses[0]['file']} — it ranked highest, and "
+            "best_guesses says why each candidate is in the running."
         )
     payload["_meta"] = {
         **_build_meta(
@@ -1339,7 +1383,12 @@ async def _degraded_payload(
         ),
         "degraded": reason,
     }
-    return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
+    # The serve-time cuts, which this return had never been routed through. It
+    # is now the only path carrying `best_guesses` beside a populated
+    # `retrieval`, so without the drop every excerpt ships twice.
+    return _trim_served_payload(
+        _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
+    )
 
 
 async def _degraded_next_action(
@@ -1547,7 +1596,13 @@ async def _run_retrieval_pipeline(
 
 
 def _union_answer_payload(
-    question: str, question_ids: set[str], homonyms: dict, ctx, repository, t0: float
+    question: str,
+    question_ids: set[str],
+    homonyms: dict,
+    ctx,
+    repository,
+    t0: float,
+    retrieval_quality: str,
 ) -> dict | None:
     """The answer-by-union reply, or None to let synthesis handle the question.
 
@@ -1638,6 +1693,11 @@ def _union_answer_payload(
                 ),
                 "citations": cited,
                 "confidence": _union_confidence,
+                # Rates the `candidates` shortlist, not the bodies: the union
+                # answers by exact name and the note offers that shortlist for
+                # "if you meant something else". It is the one body-serving
+                # return that had no rating at all.
+                "retrieval_quality": retrieval_quality,
                 "grounding": "exact_symbol",
                 "symbol_bodies": union_bodies,
                 "fallback_targets": [b["path"] for b in union_bodies],
@@ -2016,6 +2076,27 @@ async def get_answer(
     homonyms = retrieved.homonyms
     flow_paths = retrieved.flow_paths
 
+    # Agreement dominance recovers the "both retrievers rank this #1" signal that
+    # RRF fusion compresses out of the numeric score. Computed once and OR'd into
+    # every place dominance is decided, so it can only LIFT a retrieval.
+    # Read the vector leg's own recorded status rather than inferring it from
+    # `hits`, which is capped to 5 by here: "no _vec_rank in the top 5" is also
+    # what a timed-out, errored, scope-filtered or simply outranked vector leg
+    # looks like, and those must NOT fall back to the symbol leg.
+    #
+    # Above the early returns because they rate their retrieval too. Pure over
+    # `hits` and the recorded leg status, both settled by the pipeline call above.
+    agreement_dominant = (
+        _agreement_dominant(
+            hits,
+            vector_leg_keyless=(
+                _symbol_agreement_enabled() and _retrieval_legs().get("vector") == "keyless"
+            ),
+        )
+        if _agreement_confidence_enabled()
+        else False
+    )
+
     # --- Qualified-miss guard ----------------------------------------------
     # The question qualified a symbol (``Parent.leaf``) but the exact-name scan
     # found the leaf only under OTHER parents. Return not-found rather than
@@ -2038,7 +2119,15 @@ async def get_answer(
             resolved_pool,
         )
 
-    union_payload = _union_answer_payload(question, question_ids, homonyms, ctx, repository, t0)
+    union_payload = _union_answer_payload(
+        question,
+        question_ids,
+        homonyms,
+        ctx,
+        repository,
+        t0,
+        _retrieval_quality(hits, agreement_dominant),
+    )
     if union_payload is not None:
         return _with_candidates(union_payload, resolved_pool)
 
@@ -2103,24 +2192,6 @@ async def get_answer(
     # (typical 0.15-0.25), so a coverage threshold over-fires. Default dominant
     # for a lone hit (nothing to be ambiguous against).
     always_synthesize = _always_synthesize()
-    # Agreement dominance recovers the "both retrievers rank this #1" signal
-    # that RRF fusion compresses out of the numeric score. Computed once and
-    # OR'd into every place the ratio/gap gate decides dominance, so it can
-    # only LIFT a retrieval — never demote one the ratio already trusts.
-    # Read the vector leg's own recorded status rather than inferring it from
-    # `hits`, which is capped to 5 by here: "no _vec_rank in the top 5" is also
-    # what a timed-out, errored, scope-filtered or simply outranked vector leg
-    # looks like, and those must NOT fall back to the symbol leg.
-    agreement_dominant = (
-        _agreement_dominant(
-            hits,
-            vector_leg_keyless=(
-                _symbol_agreement_enabled() and _retrieval_legs().get("vector") == "keyless"
-            ),
-        )
-        if _agreement_confidence_enabled()
-        else False
-    )
     dominant = True
     if len(hits) >= 2:
         top_score = hits[0].get("score", 0.0)
@@ -2145,7 +2216,7 @@ async def get_answer(
         best_guesses = _build_best_guesses(hits)
         # Mine source comments for rationale the wiki/decision corpus missed —
         # turns "go Read these 5 files" into a cited why.
-        code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+        code_rationale = await _gather_code_rationale(ctx, hits, fallback_targets, question)
         has_excerpts = any("excerpt" in g for g in best_guesses)
         gated: dict = {
             "answer": "",
@@ -2251,6 +2322,7 @@ async def get_answer(
         return await _degraded_payload(
             reason=reason,
             note=note,
+            question=question,
             hits=hits,
             fallback_targets=fallback_targets,
             repository=repository,
@@ -2438,7 +2510,7 @@ async def get_answer(
         # The hedge often means the rationale isn't in the wiki at all — it's a
         # code comment. Mine the candidate source for it before sending the
         # agent off to Read.
-        code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+        code_rationale = await _gather_code_rationale(ctx, hits, fallback_targets, question)
         # A comment already visible in symbol_bodies must not surface twice.
         code_rationale = _drop_already_surfaced(code_rationale, symbol_bodies)
         if code_rationale:
@@ -2497,7 +2569,7 @@ async def get_answer(
             # decision corpus never captured. Mine the candidate source for it
             # — the same lever the gated/hedged paths use — so the downgrade
             # ships a lead, not just a warning.
-            code_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+            code_rationale = await _gather_code_rationale(ctx, hits, fallback_targets, question)
             code_rationale = _drop_already_surfaced(code_rationale, symbol_bodies, quotes)
             if code_rationale:
                 payload["code_rationale"] = code_rationale
@@ -2639,7 +2711,7 @@ async def get_answer(
         # the win is the answer AND the cited comment in one call (no re-read),
         # unless a gate above already attached code_rationale.
         if "code_rationale" not in payload and any(h.get("_concept_anchored") for h in hits):
-            concept_rationale = _gather_code_rationale(ctx, hits, fallback_targets, question)
+            concept_rationale = await _gather_code_rationale(ctx, hits, fallback_targets, question)
             concept_rationale = _drop_already_surfaced(concept_rationale, symbol_bodies, quotes)
             if concept_rationale:
                 payload["code_rationale"] = concept_rationale
@@ -2654,7 +2726,7 @@ async def get_answer(
     if not dominant:
         payload.setdefault("best_guesses", _build_best_guesses(hits))
         if "code_rationale" not in payload:
-            _cr = _gather_code_rationale(ctx, hits, fallback_targets, question)
+            _cr = await _gather_code_rationale(ctx, hits, fallback_targets, question)
             _cr = _drop_already_surfaced(_cr, symbol_bodies, quotes)
             if _cr:
                 payload["code_rationale"] = _cr
