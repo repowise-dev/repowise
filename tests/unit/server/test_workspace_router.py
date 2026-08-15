@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -508,6 +508,32 @@ class TestGetWorkspaceGraph:
         backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
         assert backend["health_score"] == 62.0
         assert backend["health_score_source"] == "derived"
+
+    @pytest.mark.asyncio
+    async def test_weights_a_zero_nloc_file_as_one_line(self, tmp_path: Path) -> None:
+        """A zero-nloc row still counts once, rather than dropping out of the average.
+
+        The score is a weighted mean over nloc, so a naive weight would let an
+        empty file contribute nothing. Both scores here would otherwise average
+        to 80.0; the clamped weight is what makes it 60.0.
+        """
+        ws_config = _make_ws_config()
+        _create_workspace_repo_db(
+            tmp_path,
+            "backend",
+            health_rows=[(4.0, 0), (8.0, 1)],
+        )
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(tmp_path),
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/graph")
+
+        assert resp.status_code == 200
+        backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
+        assert backend["health_score"] == 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -1034,3 +1060,98 @@ class TestGetConformance:
         data = resp.json()
         assert data["violation_count"] == 0
         assert data["cycle_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests — per-repo query budget
+# ---------------------------------------------------------------------------
+
+
+class TestRepoQueryBudget:
+    """Pin the per-repo sqlite cost of the workspace listing.
+
+    Workspace repos each live in their own wiki.db, so unlike the dashboard's
+    /api/repos/summary there is no shared table to GROUP BY and the total query
+    count is necessarily O(repos). What must stay flat is the cost *per* repo:
+    this fails if someone adds a query to the loop or reintroduces a second
+    sweep over the same databases.
+    """
+
+    QUERIES_PER_REPO = 7
+    CONNECTIONS_PER_REPO = 2
+
+    def _config_for(self, aliases: list[str]):
+        ws_config = MagicMock()
+        repos = []
+        for i, alias in enumerate(aliases):
+            r = MagicMock()
+            r.alias = alias
+            r.path = f"./{alias}"
+            r.is_primary = i == 0
+            r.indexed_at = None
+            r.last_commit_at_index = None
+            repos.append(r)
+        ws_config.repos = repos
+        ws_config.default_repo = aliases[0]
+        return ws_config
+
+    async def _measure(self, tmp_path: Path, count: int) -> tuple[int, int]:
+        """Return (statements, connections) for one GET /api/workspace."""
+        root = tmp_path / f"ws{count}"
+        aliases = [f"repo{i}" for i in range(count)]
+        for alias in aliases:
+            _create_workspace_repo_db(root, alias, health_rows=[(7.0, 100)])
+
+        statements = 0
+        connections = 0
+        real_connect = sqlite3.connect
+
+        def counting_connect(*args, **kwargs):
+            nonlocal connections
+            connections += 1
+            conn = real_connect(*args, **kwargs)
+
+            def trace(_stmt):
+                nonlocal statements
+                statements += 1
+
+            conn.set_trace_callback(trace)
+            return conn
+
+        app = _make_workspace_app(
+            ws_config=self._config_for(aliases),
+            workspace_root=str(root),
+        )
+        transport = ASGITransport(app=app)
+        with patch.object(sqlite3, "connect", counting_connect):
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/api/workspace")
+        assert resp.status_code == 200
+        assert len(resp.json()["repos"]) == count
+        return statements, connections
+
+    @pytest.mark.asyncio
+    async def test_per_repo_cost_does_not_grow_with_repo_count(
+        self, tmp_path: Path
+    ) -> None:
+        two_stmts, two_conns = await self._measure(tmp_path, 2)
+        six_stmts, six_conns = await self._measure(tmp_path, 6)
+
+        assert two_stmts / 2 == six_stmts / 6, (
+            f"per-repo statements moved from {two_stmts / 2} (2 repos) to "
+            f"{six_stmts / 6} (6 repos) — the loop is doing more work per repo"
+        )
+        assert two_conns / 2 == six_conns / 6, (
+            f"per-repo connections moved from {two_conns / 2} to {six_conns / 6}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_repo_cost_is_pinned(self, tmp_path: Path) -> None:
+        """Pinned so "flat" has a value, and so a second sweep cannot slip back in.
+
+        Six stats queries plus one weighted health average, over one connection
+        for the stats block and one for the health read.
+        """
+        statements, connections = await self._measure(tmp_path, 3)
+        assert statements == self.QUERIES_PER_REPO * 3
+        assert connections == self.CONNECTIONS_PER_REPO * 3

@@ -1,222 +1,324 @@
-"use client";
-
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { ShieldCheck, ShieldAlert, RefreshCw, Waypoints, ListChecks, Gauge } from "lucide-react";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { ShieldCheck } from "lucide-react";
+import type {
+  ConformanceReport,
+  ArchitectureMetrics,
+} from "@repowise-dev/api-client/types";
+import { PageShell } from "@repowise-dev/ui/shared";
+import { PageLede, LedeLink } from "@repowise-dev/ui/shared/page-lede";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { OverviewSection, SectionLink } from "@repowise-dev/ui/overview";
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
 import { buildDsm, DsmMatrixView } from "@repowise-dev/ui/workspace/dsm";
-import { AiPromptButton, AiPromptModal, buildConformanceAiPrompt } from "@repowise-dev/ui/health";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
-  useWorkspaceSystemGraph,
-  useWorkspaceConformance,
-  useWorkspaceArchitecture,
-} from "@/lib/hooks/use-workspace";
+  getWorkspaceSystemGraph,
+  getWorkspaceConformance,
+  getWorkspaceArchitecture,
+} from "@/lib/api/workspace";
+import { ConformanceAiPrompt } from "./conformance-ai-prompt";
 
-export default function ConformancePage() {
-  const router = useRouter();
-  const [promptOpen, setPromptOpen] = useState(false);
-  const { data: graph, isLoading: graphLoading } = useWorkspaceSystemGraph();
-  const { data: report, isLoading: reportLoading } = useWorkspaceConformance();
-  const { data: metrics } = useWorkspaceArchitecture();
+export const metadata: Metadata = { title: "Conformance" };
 
-  const isLoading = graphLoading || reportLoading;
-  const matrix = useMemo(() => buildDsm(graph, report), [graph, report]);
+export const revalidate = 30;
 
-  const violations = report?.violations ?? [];
+/**
+ * The matrix counts a co-change relationship as a filled cell and the ribbon's
+ * structural-link figure does not, so the two numbers differ by design and sit
+ * a few hundred pixels apart. Reconciled in the copy rather than left for the
+ * reader to work out, and stated here rather than changing the shared matrix's
+ * own caption, which is accurate for what it counts.
+ */
+const DSM_DESCRIPTION =
+  "Each filled cell means the row service depends on the column service, tinted by transport. Red cells break a declared rule; amber cells sit on a cycle. The matrix counts co-change relationships too, so its total runs above the structural-link figure above.";
+
+/**
+ * Whether the conformance analyser has ever produced this report.
+ *
+ * The artifact is written with `generated_at: ""` and every count at zero
+ * before anything runs, which is indistinguishable from a clean pass unless
+ * this is checked — and a clean pass is what the page used to show. Three
+ * states have to stay separate: never ran, ran with no rules to check, and ran
+ * against real rules.
+ *
+ * Reads only fields already on the wire. Phase 4 of the workspace overhaul
+ * replaces the empty string with a proper null and adds the same distinction
+ * to the CLI and the artifact; this is the frontend half, and it should follow
+ * that contract when it lands rather than keeping the empty-string check
+ * forever.
+ */
+function reportState(
+  report: ConformanceReport | null,
+): "unavailable" | "never_ran" | "no_rules" | "checked" {
+  if (!report) return "unavailable";
+  if (!report.generated_at) return "never_ran";
+  if ((report.rules_evaluated ?? 0) === 0) return "no_rules";
+  return "checked";
+}
+
+export default async function ConformancePage() {
+  const [sg, cf, arch] = await Promise.allSettled([
+    getWorkspaceSystemGraph(),
+    getWorkspaceConformance(),
+    getWorkspaceArchitecture(),
+  ]);
+
+  const graph = sg.status === "fulfilled" ? sg.value : null;
+  const report = cf.status === "fulfilled" ? cf.value : null;
+  const metrics = arch.status === "fulfilled" ? arch.value : null;
+
+  const state = reportState(report);
+  const violations = state === "checked" ? (report?.violations ?? []) : [];
+  // Cycle *membership* comes from the report, but the count is recomputed from
+  // the graph on every request, so it stays true even when nothing has run.
   const cycles = report?.cycles ?? [];
+  const cycleCount = metrics?.cycle_count ?? cycles.length;
+
+  const matrix = buildDsm(graph, report);
+
+  const ribbon: RibbonStat[] = [
+    {
+      label: "Services",
+      value: metrics ? formatNumber(metrics.node_count) : "—",
+      sub: "repositories and their sub-packages",
+    },
+    {
+      label: "Structural links",
+      value: metrics ? formatNumber(metrics.structural_edge_count) : "—",
+      sub: "contracts and imports, not co-changes",
+    },
+    {
+      label: "Propagation cost",
+      value: metrics ? `${metrics.propagation_cost_pct.toFixed(1)}%` : "—",
+      sub: "of the system a change can reach",
+    },
+    {
+      label: "Core size",
+      value: metrics ? formatNumber(metrics.core_size) : "—",
+      sub: metrics
+        ? `${Math.round(metrics.core_ratio * 100)}% of all services`
+        : "mutually dependent centre",
+    },
+    {
+      label: "Cycles",
+      value: metrics ? formatNumber(cycleCount) : "—",
+      sub: "circular service dependencies",
+    },
+  ];
 
   return (
-    <div className="p-5 sm:p-8 space-y-6 max-w-[1400px]">
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <ShieldCheck className="h-6 w-6 text-[var(--color-accent-primary)]" />
-          <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
-            Architecture Conformance
-          </h1>
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Declared dependency rules checked against the live system graph, plus any
-          circular service dependencies. Declare rules under{" "}
-          <code className="text-[var(--color-text-primary)]">conformance:</code> in
-          your <code className="text-[var(--color-text-primary)]">.repowise-workspace.yaml</code>;
-          run <code className="text-[var(--color-text-primary)]">repowise workspace check</code> to
-          gate CI.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard
-          label="Architecture score"
-          value={metrics ? `${metrics.score.toFixed(1)} / 10` : "—"}
-          description={
-            metrics
-              ? `${metrics.architecture_type} · ${metrics.propagation_cost_pct.toFixed(1)}% propagation cost`
-              : "Coupling + core roll-up"
-          }
-          icon={<Gauge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
-        />
-        <MetricCard
-          label="Rules evaluated"
-          value={isLoading ? "—" : (report?.rules_evaluated ?? 0)}
-          icon={<ListChecks className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
-        />
-        <MetricCard
-          label="Violations"
-          value={isLoading ? "—" : violations.length}
-          description="Dependencies that break a declared rule"
-          icon={<ShieldAlert className="h-4 w-4 text-[var(--color-risk-high)]" />}
-        />
-        <MetricCard
-          label="Dependency cycles"
-          value={isLoading ? "—" : cycles.length}
-          description="Circular service dependencies"
-          icon={<RefreshCw className="h-4 w-4 text-[var(--color-warning)]" />}
-        />
-      </div>
-
-      {/* DSM */}
-      <Card>
-        <CardHeader className="pb-2 flex-row items-center justify-between">
-          <CardTitle className="text-sm font-medium">
-            Dependency-structure matrix
-          </CardTitle>
-          <button
-            type="button"
-            onClick={() => router.push("/workspace/system-map")}
-            className="inline-flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-          >
-            <Waypoints className="h-3.5 w-3.5" />
-            Open System Map
-          </button>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <p className="text-xs text-[var(--color-text-tertiary)] mb-3">
-            Each filled cell means the row service depends on the column service,
-            tinted by transport. Red cells break a rule; amber cells sit on a cycle.
-          </p>
-          {isLoading ? (
-            <Skeleton className="h-72 w-full" />
-          ) : (
-            <DsmMatrixView matrix={matrix} {...(metrics ? { metrics } : {})} />
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Governance findings */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2 flex-row items-center justify-between gap-2">
-            <CardTitle className="text-sm font-medium inline-flex items-center gap-2">
-              <ShieldAlert className="h-4 w-4 text-[var(--color-risk-high)]" />
-              Rule violations ({violations.length})
-            </CardTitle>
-            {violations.length > 0 && (
-              <AiPromptButton
-                label="Fix violations with AI"
-                onClick={() => setPromptOpen(true)}
-              />
-            )}
-          </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            {isLoading ? (
-              <Skeleton className="h-20 w-full" />
-            ) : violations.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-tertiary)]">
-                {report && report.rules_evaluated > 0
-                  ? "No dependencies violate the declared rules."
-                  : "No rules declared yet. Add a conformance block to start enforcing allowed dependencies."}
-              </p>
-            ) : (
-              violations.map((v) => (
-                <div
-                  key={`${v.edge_id}:${v.rule_source}:${v.rule_target}`}
-                  className="rounded-md border border-[var(--color-border-subtle)] p-3 text-sm"
-                >
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-[var(--color-text-primary)]">
-                      {v.source_name || v.source}
-                    </span>
-                    <span className="text-[var(--color-text-tertiary)]">→</span>
-                    <span className="font-semibold text-[var(--color-text-primary)]">
-                      {v.target_name || v.target}
-                    </span>
-                    <span className="text-xs text-[var(--color-text-tertiary)]">
-                      ({v.edge_kind})
-                    </span>
-                  </div>
-                  <div className="text-[var(--color-text-secondary)] mt-1">
-                    breaks{" "}
-                    <code className="text-[var(--color-warning)]">
-                      {v.rule_source} !-&gt; {v.rule_target}
-                    </code>
-                  </div>
-                  {v.rule_description && (
-                    <div className="text-xs text-[var(--color-text-tertiary)] mt-1">
-                      {v.rule_description}
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium inline-flex items-center gap-2">
-              <RefreshCw className="h-4 w-4 text-[var(--color-warning)]" />
-              Dependency cycles ({cycles.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 space-y-3">
-            {isLoading ? (
-              <Skeleton className="h-20 w-full" />
-            ) : cycles.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-tertiary)]">
-                No circular service dependencies detected.
-              </p>
-            ) : (
-              cycles.map((c) => (
-                <div
-                  key={c.nodes.join("->")}
-                  className="rounded-md border border-[var(--color-border-subtle)] p-3 text-sm"
-                >
-                  <div className="text-xs uppercase tracking-wide text-[var(--color-text-tertiary)] mb-1">
-                    {c.length} services
-                  </div>
-                  <div className="text-[var(--color-text-primary)] break-words">
-                    {c.nodes.join(" → ")} → {c.nodes[0]}
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <AiPromptModal
-        open={promptOpen}
-        onOpenChange={setPromptOpen}
-        getPrompt={(flavor) =>
-          buildConformanceAiPrompt({
-            violations: violations.map((v) => ({
-              source: v.source,
-              target: v.target,
-              source_name: v.source_name,
-              target_name: v.target_name,
-              edge_kind: v.edge_kind,
-              rule_source: v.rule_source,
-              rule_target: v.rule_target,
-              rule_description: v.rule_description,
-            })),
-            flavor,
-          })
+    <PageShell
+      title="Conformance"
+      icon={<ShieldCheck className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      description="How the workspace is shaped, and whether it obeys the dependency rules you declared."
+    >
+      <PageLede
+        label="Architecture score"
+        value={metrics ? metrics.score.toFixed(1) : "—"}
+        unit="out of 10"
+        {...(metrics?.architecture_type
+          ? { band: { label: metrics.architecture_type } }
+          : {})}
+        layout="beside"
+        action={
+          <LedeLink href="/workspace/system-map" LinkComponent={Link}>
+            See the system map
+          </LedeLink>
         }
-        title="AI conformance fix"
-        description="A ready-to-paste prompt that has your AI agent resolve these architecture rule violations by removing the disallowed dependencies."
+      >
+        {metrics ? (
+          <p>
+            A change here can reach {metrics.propagation_cost_pct.toFixed(1)}% of the system
+            through {formatNumber(metrics.structural_edge_count)} structural links between{" "}
+            {formatNumber(metrics.node_count)} services. The score weighs that reach against
+            the size of the mutually dependent core and any cycles; it is computed from the
+            system graph on every request, so it does not depend on the check below having run.
+          </p>
+        ) : (
+          <p>
+            No system graph has been built yet, so there is nothing to measure. Run a workspace
+            sync to build one.
+          </p>
+        )}
+        {ruleSentence(state, report)}
+      </PageLede>
+
+      <StatRibbon stats={ribbon} />
+
+      <OverviewSection
+        title="Dependency-structure matrix"
+        description={DSM_DESCRIPTION}
+        action={
+          <SectionLink href="/workspace/system-map" LinkComponent={Link}>
+            System map
+          </SectionLink>
+        }
+      >
+        <DsmMatrixView matrix={matrix} {...(metrics ? { metrics } : {})} />
+      </OverviewSection>
+
+      <OverviewSection
+        title={
+          state === "checked" ? `Rule violations (${violations.length})` : "Rule violations"
+        }
+        description="Dependencies that exist in the graph but are forbidden by a rule you declared."
+        {...(violations.length > 0
+          ? { action: <ConformanceAiPrompt violations={violations} /> }
+          : {})}
+      >
+        {violations.length === 0 ? (
+          <ViolationsEmptyState state={state} />
+        ) : (
+          <ul className="m-0 list-none divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)] p-0">
+            {violations.map((v) => (
+              <li
+                key={`${v.edge_id}:${v.rule_source}:${v.rule_target}`}
+                className="py-3.5"
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="font-medium text-[var(--color-text-primary)]">
+                    {v.source_name || v.source}
+                  </span>
+                  <span aria-hidden className="text-[var(--color-text-tertiary)]">
+                    →
+                  </span>
+                  <span className="font-medium text-[var(--color-text-primary)]">
+                    {v.target_name || v.target}
+                  </span>
+                  <span className="font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                    {v.edge_kind}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+                  Breaks{" "}
+                  <span className="font-mono text-[var(--color-warning)]">
+                    {v.rule_source} !&gt; {v.rule_target}
+                  </span>
+                  {v.rule_description ? ` — ${v.rule_description}` : ""}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </OverviewSection>
+
+      <OverviewSection
+        title={`Dependency cycles (${cycleCount})`}
+        description="Groups of services that depend on each other in a loop, so none of them can be changed or deployed independently."
+      >
+        {cycles.length === 0 ? (
+          <EmptyState
+            className="p-6"
+            title={
+              cycleCount > 0
+                ? `${cycleCount} ${cycleCount === 1 ? "cycle" : "cycles"} detected, but not listed`
+                : "No circular dependencies"
+            }
+            description={
+              cycleCount > 0
+                ? "The count is recomputed from the system graph, but the services in each cycle are recorded by the conformance check. Run it to see which services are involved."
+                : "Every dependency in the graph runs one way. Nothing has to be changed in lockstep."
+            }
+          />
+        ) : (
+          <ul className="m-0 list-none divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)] p-0">
+            {cycles.map((c) => (
+              <li key={c.nodes.join("->")} className="py-3.5">
+                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                  {c.length} services
+                </p>
+                <p className="mt-1 text-sm text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
+                  {c.nodes.join(" → ")} → {c.nodes[0]}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </OverviewSection>
+    </PageShell>
+  );
+}
+
+/** The sentence in the lede that says whether the check has anything to say. */
+function ruleSentence(
+  state: ReturnType<typeof reportState>,
+  report: ConformanceReport | null,
+) {
+  if (state === "checked") {
+    const n = report?.rules_evaluated ?? 0;
+    const v = report?.violations?.length ?? 0;
+    return (
+      <p>
+        {formatNumber(n)} declared {n === 1 ? "rule was" : "rules were"} checked against that
+        graph, and {v === 0 ? "nothing breaks them" : `${formatNumber(v)} ${v === 1 ? "dependency breaks" : "dependencies break"} them`}.
+      </p>
+    );
+  }
+  if (state === "no_rules") {
+    return (
+      <p>
+        The check has run, but no dependency rules are declared, so it had nothing to enforce.
+        Add a <code className="font-mono text-[var(--color-text-primary)]">conformance:</code>{" "}
+        block to{" "}
+        <code className="font-mono text-[var(--color-text-primary)]">
+          .repowise-workspace.yaml
+        </code>{" "}
+        to describe which services may depend on which.
+      </p>
+    );
+  }
+  return (
+    <p>
+      The conformance check has not run on this workspace yet, so nothing below is a verdict —
+      an empty violations list here means unmeasured, not clean. Run{" "}
+      <code className="font-mono text-[var(--color-text-primary)]">
+        repowise workspace check
+      </code>{" "}
+      to evaluate it.
+    </p>
+  );
+}
+
+/**
+ * Three empty states, because they mean three different things.
+ *
+ * Collapsing them into one "no violations" message is the failure this page
+ * shipped with: the artifact's zeros are written before anything runs.
+ */
+function ViolationsEmptyState({ state }: { state: ReturnType<typeof reportState> }) {
+  if (state === "checked") {
+    return (
+      <EmptyState
+        className="p-6"
+        title="No rules are broken"
+        description="Every dependency in the graph is allowed by the rules you declared."
       />
-    </div>
+    );
+  }
+  if (state === "no_rules") {
+    return (
+      <EmptyState
+        className="p-6"
+        title="No rules declared"
+        description="Nothing has been forbidden yet, so nothing can be violated. Declare which services may depend on which under `conformance:` in .repowise-workspace.yaml, then run `repowise workspace check` to gate CI on it."
+      />
+    );
+  }
+  if (state === "never_ran") {
+    return (
+      <EmptyState
+        className="p-6"
+        title="Not checked yet"
+        description="The conformance analyser has not run on this workspace, so no rules have been evaluated. This is not a clean bill of health — run `repowise workspace check` to produce one."
+      />
+    );
+  }
+  return (
+    <EmptyState
+      className="p-6"
+      title="Conformance report unavailable"
+      description="The report could not be read. Run a workspace sync to rebuild it."
+    />
   );
 }

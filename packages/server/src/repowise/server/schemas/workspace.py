@@ -18,6 +18,10 @@ class WorkspaceRepoEntry(BaseModel):
     page_count: int = 0
     doc_coverage_pct: float = 0.0
     hotspot_count: int = 0
+    # Canonical 0-100 health score, or None when the repo carries no health
+    # metrics. Nullable rather than 0.0 so the UI can tell "not measured"
+    # apart from "measured as zero".
+    health_score: float | None = None
     # Lifecycle status — surfaced so the web UI can render "needs index"
     # or "missing directory" affordances instead of silently dropping the
     # repo from the sidebar.

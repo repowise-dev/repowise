@@ -84,8 +84,8 @@ def _compute_health_score(file_count: int, doc_coverage_pct: float, hotspot_coun
     return max(0, min(100, round(coverage_component + hotspot_component)))
 
 
-def _resolve_graph_health_score(db_path: Path, stats: dict) -> tuple[float, str]:
-    canonical = read_repo_health_score(db_path)
+def _resolve_graph_health_score(stats: dict) -> tuple[float, str]:
+    canonical = stats.get("health_score")
     if canonical is not None:
         return canonical, "canonical"
     return (
@@ -104,8 +104,11 @@ def _query_repo_stats(db_path: Path) -> dict:
     """Query basic stats from a repo's wiki.db using raw sqlite3.
 
     Returns a dict with repo_id, file_count, symbol_count, page_count,
-    doc_coverage_pct, hotspot_count, status, docs_enabled, and
+    doc_coverage_pct, hotspot_count, health_score, status, docs_enabled, and
     docs_skip_reason.  All values default to sensible neutrals on error.
+
+    ``health_score`` is None when the repo carries no health metrics; callers
+    decide whether to fall back to a derived score or to render nothing.
     """
     result: dict = {
         "repo_id": None,
@@ -114,6 +117,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         "page_count": 0,
         "doc_coverage_pct": 0.0,
         "hotspot_count": 0,
+        "health_score": None,
         "status": "needs_index",
         "docs_enabled": False,
         "docs_skip_reason": None,
@@ -173,6 +177,10 @@ def _query_repo_stats(db_path: Path) -> dict:
         conn.close()
     except Exception:
         _log.debug("Failed to query stats from %s", db_path, exc_info=True)
+
+    # Read once here rather than per-endpoint: both the workspace listing and
+    # the graph need the canonical score, and this used to be a second sweep.
+    result["health_score"] = read_repo_health_score(db_path)
     return result
 
 
@@ -406,7 +414,7 @@ async def get_workspace_graph(
             db_path = repo_path / ".repowise" / "wiki.db"
             stats = _query_repo_stats(db_path)
             top_language = _query_top_language(db_path)
-            health_score, health_score_source = _resolve_graph_health_score(db_path, stats)
+            health_score, health_score_source = _resolve_graph_health_score(stats)
         else:
             health_score = 0.0
             health_score_source = "derived"

@@ -3,6 +3,7 @@
 import { Badge } from "../ui/badge";
 import { EmptyState } from "../shared/empty-state";
 import { VirtualizedTable } from "../shared/virtualized-table";
+import { formatDate, formatDateTime } from "../lib/format";
 import type { WorkspaceCoChangeEntry } from "@repowise-dev/types/workspace";
 
 interface CoChangeTableProps {
@@ -91,8 +92,11 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
             {`${cc.frequency}x`}
           </td>
           <td className={`px-3 py-2 text-left text-xs text-[var(--color-text-tertiary)] ${HIDE_BELOW_LG}`}>
-            <span title={cc.last_date ? new Date(cc.last_date).toLocaleString() : undefined}>
-              {cc.last_date ? new Date(cc.last_date).toLocaleDateString() : "—"}
+            {/* formatDate, not toLocaleDateString(): the bare call resolves
+                the ambient locale, so Node and the browser can render the same
+                date differently and hydration fails. */}
+            <span title={cc.last_date ? formatDateTime(cc.last_date) : undefined}>
+              {cc.last_date ? formatDate(cc.last_date) : "—"}
             </span>
           </td>
         </>

@@ -1,251 +1,211 @@
-"use client";
-
-import { useState } from "react";
-import { Link2, Filter } from "lucide-react";
-import { useWorkspaceContracts } from "@/lib/hooks/use-workspace";
-import { useWorkspace } from "@/lib/hooks/use-workspace";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { Link2 } from "lucide-react";
+import type { ExtractionDiagnostics } from "@repowise-dev/api-client/types";
+import { PageShell, EmptyState } from "@repowise-dev/ui/shared";
+import { PageLede } from "@repowise-dev/ui/shared/page-lede";
+import { OverviewSection } from "@repowise-dev/ui/overview";
+import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
 import { ContractLinksTable } from "@repowise-dev/ui/workspace/contract-links-table";
-import { ContractTypeBadge, RoleBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
-  EmptyState,
-  ResponsiveTable,
-  TableSkeleton,
-  type ResponsiveColumn,
-} from "@repowise-dev/ui/shared";
-import type { WorkspaceContractEntry } from "@/lib/api/types";
+  getWorkspace,
+  getWorkspaceContracts,
+  getWorkspaceDiagnostics,
+} from "@/lib/api/workspace";
+import { ContractFilters } from "./contract-filters";
+import { ContractsTable } from "./contracts-table";
 
-const TYPE_OPTIONS = [
-  { value: "", label: "All Types" },
-  { value: "http", label: "HTTP" },
-  { value: "grpc", label: "gRPC" },
-  { value: "socket", label: "Socket" },
-  { value: "topic", label: "Topic" },
-  { value: "data", label: "Table" },
-];
+export const metadata: Metadata = { title: "Contracts" };
 
-const ROLE_OPTIONS = [
-  { value: "", label: "All Roles" },
-  { value: "provider", label: "Providers" },
-  { value: "consumer", label: "Consumers" },
-];
+export const revalidate = 30;
 
-type ContractRow = WorkspaceContractEntry & { _key: string };
+/** Rows the table draws. The server caps at 1,000; this is the page's own
+ *  window and it is always reported against the filtered total below. */
+const ROW_WINDOW = 200;
 
-const CONTRACT_COLUMNS: ResponsiveColumn<ContractRow>[] = [
-  {
-    key: "contract_id",
-    header: "Contract ID",
-    render: (c) => (
-      <span className="text-xs font-mono text-[var(--color-text-secondary)] break-all">
-        {c.contract_id}
-      </span>
-    ),
-  },
-  {
-    key: "contract_type",
-    header: "Type",
-    render: (c) => <ContractTypeBadge type={c.contract_type} />,
-  },
-  {
-    key: "role",
-    header: "Role",
-    render: (c) => <RoleBadge role={c.role} />,
-  },
-  {
-    key: "repo",
-    header: "Repo",
-    render: (c) => (
-      <span className="text-xs font-medium text-[var(--color-text-primary)]">{c.repo}</span>
-    ),
-  },
-  {
-    key: "file_path",
-    header: "File",
-    priority: 2,
-    render: (c) => (
-      <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate block max-w-[200px]">
-        {c.file_path}
-      </span>
-    ),
-  },
-  {
-    key: "confidence",
-    header: "Confidence",
-    align: "right",
-    render: (c) => (
-      <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">
-        {Math.round(c.confidence * 100)}%
-      </span>
-    ),
-  },
-];
+type Props = {
+  searchParams: Promise<{ type?: string; repo?: string; role?: string }>;
+};
 
-export default function ContractsPage() {
-  const { workspace } = useWorkspace();
-  const [contractType, setContractType] = useState("");
-  const [repo, setRepo] = useState("");
-  const [role, setRole] = useState("");
+/**
+ * Contracts detected across the workspace, and which of them matched.
+ *
+ * The four `MetricCard`s this replaces could not be restyled into a ribbon,
+ * because three of them were counting the wrong things. "Total Contracts" and
+ * "Unmatched" were both derived from the contract rows, which arrive filtered
+ * *and* paginated — so "Unmatched" was computed over one page of 200 and
+ * reported as a workspace figure, and it moved whenever a filter changed. "By
+ * Type" was arithmetically identical to "Total Contracts", since the sum of a
+ * breakdown is the thing it breaks down.
+ *
+ * The figures come from `/api/workspace/diagnostics` now, which is the
+ * endpoint that already knows the denominators: how many providers and
+ * consumers extraction found, how many linked, and why the rest did not. Those
+ * are workspace-wide and deliberately do not move when the table is filtered.
+ */
+export default async function ContractsPage({ searchParams }: Props) {
+  const { type, repo, role } = await searchParams;
 
-  const { data, isLoading } = useWorkspaceContracts({
-    contract_type: contractType || undefined,
-    repo: repo || undefined,
-    role: role || undefined,
-  });
+  const [ct, diag, ws] = await Promise.allSettled([
+    getWorkspaceContracts({
+      contract_type: type || undefined,
+      repo: repo || undefined,
+      role: role || undefined,
+      limit: ROW_WINDOW,
+    }),
+    getWorkspaceDiagnostics(),
+    getWorkspace(),
+  ]);
 
-  const repos = workspace?.repos ?? [];
+  const data = ct.status === "fulfilled" ? ct.value : null;
+  const diagnostics = diag.status === "fulfilled" ? diag.value : null;
+  const repos = ws.status === "fulfilled" ? ws.value.repos.map((r) => r.alias) : [];
 
-  // Count unmatched contracts (providers with no link, consumers with no link)
-  const linkedContractIds = new Set(
-    (data?.links ?? []).map((l) => l.contract_id),
-  );
-  const unmatchedCount = (data?.contracts ?? []).filter(
-    (c) => !linkedContractIds.has(c.contract_id),
-  ).length;
+  const rows = data?.contracts ?? [];
+  const links = data?.links ?? [];
+  const filtered = Boolean(type || repo || role);
 
-  const selectClass =
-    "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-primary)]";
+  const ribbon: RibbonStat[] = [
+    {
+      label: "Providers",
+      value: diagnostics ? formatNumber(diagnostics.total_providers) : "—",
+      sub: "routes, topics and tables published",
+    },
+    {
+      label: "Consumers",
+      value: diagnostics ? formatNumber(diagnostics.total_consumers) : "—",
+      sub: "call sites resolved to a contract",
+    },
+    {
+      label: "Matched links",
+      value: diagnostics ? formatNumber(diagnostics.total_links) : "—",
+      sub: "provider joined to consumer",
+    },
+    {
+      label: "Unmatched consumers",
+      value: diagnostics ? formatNumber(diagnostics.unmatched_consumers.length) : "—",
+      sub: unmatchedReasonSub(diagnostics),
+    },
+    {
+      label: "Unused providers",
+      value: diagnostics ? formatNumber(diagnostics.orphan_providers.length) : "—",
+      sub: "nothing in the workspace calls them",
+    },
+  ];
 
   return (
-    <div className="p-5 sm:p-8 space-y-6 max-w-[1200px]">
-      {/* Header */}
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <Link2 className="h-6 w-6 text-[var(--color-accent-primary)]" />
-          <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
-            Contracts
-          </h1>
-        </div>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          HTTP routes, gRPC services, socket endpoints, and message topics detected across repositories.
-        </p>
-      </div>
+    <PageShell
+      title="Contracts"
+      icon={<Link2 className="h-5 w-5 text-[var(--color-text-tertiary)]" />}
+      description="Routes, topics and tables one repository publishes and another consumes."
+    >
+      <PageLede
+        label="Matched links"
+        value={diagnostics ? formatNumber(diagnostics.total_links) : "—"}
+        unit="provider to consumer"
+        layout="beside"
+      >
+        {diagnostics ? (
+          <>
+            <p>
+              Extraction found {formatNumber(diagnostics.total_providers)} providers and{" "}
+              {formatNumber(diagnostics.total_consumers)} consumers across the workspace, and
+              joined {formatNumber(diagnostics.total_links)} of them into cross-repo links. A
+              link means a call site was resolved to the code that serves it, not that the two
+              were declared against a shared schema.
+            </p>
+            <p>
+              {formatNumber(diagnostics.orphan_providers.length)} providers have no caller in
+              this workspace. Read that against the consumer count rather than on its own: an
+              endpoint looks unused both when nothing calls it and when the call was written in
+              a form this analysis could not follow, and those two are not separated yet.
+            </p>
+          </>
+        ) : (
+          <p>
+            Extraction diagnostics are not available, so the totals below cannot be shown.
+            Run a workspace sync to rebuild them.
+          </p>
+        )}
+      </PageLede>
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard
-          label="Total Contracts"
-          value={data?.total_contracts ?? "—"}
-          icon={<Link2 className="h-4 w-4" />}
-        />
-        <MetricCard
-          label="Matched Links"
-          value={data?.total_links ?? "—"}
-          icon={<Link2 className="h-4 w-4 text-[var(--color-success)]" />}
-        />
-        <MetricCard
-          label="Unmatched"
-          value={isLoading ? "—" : unmatchedCount}
-          description="No matching provider or consumer"
-          icon={<Link2 className="h-4 w-4 text-[var(--color-warning)]" />}
-        />
-        <MetricCard
-          label="By Type"
-          value={
-            data?.by_type
-              ? Object.values(data.by_type).reduce((a, b) => a + b, 0)
-              : "—"
-          }
+      <StatRibbon stats={ribbon} />
+
+      {links.length > 0 && (
+        <OverviewSection
+          title="Matched links"
           description={
-            data?.by_type
-              ? Object.entries(data.by_type)
-                  .map(([k, v]) => `${v} ${k}`)
-                  .join(", ")
-              : undefined
+            filtered
+              ? "Links matching the current filter, provider on the left and consumer on the right."
+              : "Every provider joined to the consumer that calls it, with the confidence of the match."
           }
-          icon={<Filter className="h-4 w-4 text-[var(--color-accent-secondary)]" />}
-        />
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <Filter className="h-4 w-4 text-[var(--color-text-tertiary)]" />
-          <span className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
-            Filters
-          </span>
-        </div>
-        <select
-          value={contractType}
-          onChange={(e) => setContractType(e.target.value)}
-          className={selectClass}
         >
-          {TYPE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          className={selectClass}
-        >
-          <option value="">All Repos</option>
-          {repos.map((r) => (
-            <option key={r.alias} value={r.alias}>
-              {r.alias}
-            </option>
-          ))}
-        </select>
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-          className={selectClass}
-        >
-          {ROLE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </div>
+          <ContractLinksTable links={links} />
+        </OverviewSection>
+      )}
 
-      {/* Contract Links */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">
-            Matched Contract Links ({data?.total_links ?? 0})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {isLoading ? (
-            <TableSkeleton rows={5} className="py-4" />
-          ) : (
-            <ContractLinksTable links={data?.links ?? []} />
-          )}
-        </CardContent>
-      </Card>
+      <OverviewSection
+        title="All detected contracts"
+        description={tableDescription(rows.length, data?.total_contracts ?? 0, filtered)}
+        action={<ContractFilters repos={repos} />}
+      >
+        {rows.length === 0 ? (
+          <EmptyState
+            className="p-6"
+            title={filtered ? "No contracts match this filter" : "No contracts detected"}
+            description={
+              filtered
+                ? "Clear a filter to widen the search."
+                : "Contracts are detected during a workspace sync, by reading the routes each repository serves and the calls the others make."
+            }
+          />
+        ) : (
+          <ContractsTable contracts={rows} />
+        )}
+      </OverviewSection>
 
-      {/* All Contracts */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">
-            All Detected Contracts ({data?.total_contracts ?? 0})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {isLoading ? (
-            <TableSkeleton rows={5} className="py-4" />
-          ) : (data?.contracts ?? []).length === 0 ? (
-            <EmptyState
-              className="p-6"
-              title="No contracts detected"
-              description="API contracts are detected during workspace indexing when providers and consumers share schemas."
-            />
-          ) : (
-            <ResponsiveTable
-              columns={CONTRACT_COLUMNS}
-              rows={(data?.contracts ?? []).map((c, i) => ({ ...c, _key: `${c.contract_id}|${i}` }))}
-              rowKey={(c) => c._key}
-              caption="All detected contracts"
-              stacked="md"
-              bare
-            />
-          )}
-        </CardContent>
-      </Card>
-    </div>
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        Contracts are matched on path. Two routes that share a path are one contract here, so a
+        repository can appear against a contract it declares for its own use.{" "}
+        <Link
+          href="/workspace/system-map"
+          className="text-[var(--color-accent-primary)] hover:underline"
+        >
+          See how they connect
+        </Link>
+        .
+      </p>
+    </PageShell>
   );
 }
+
+/**
+ * Say the bound. The endpoint pages the rows but reports the unpaged total, so
+ * without this the heading claims a number the table does not draw.
+ */
+function tableDescription(shown: number, total: number, filtered: boolean): string {
+  const scope = filtered ? "matching the current filter" : "detected across the workspace";
+  if (total === 0) return `Every contract ${scope}.`;
+  if (shown >= total) {
+    return `All ${formatNumber(total)} ${total === 1 ? "contract" : "contracts"} ${scope}. One contract can be declared in several places, so a name may repeat.`;
+  }
+  return `Showing ${formatNumber(shown)} of ${formatNumber(total)} contracts ${scope}. One contract can be declared in several places, so a name may repeat.`;
+}
+
+/** Name why consumers went unmatched, since the count alone invites the wrong read. */
+function unmatchedReasonSub(diagnostics: ExtractionDiagnostics | null): string {
+  if (!diagnostics) return "";
+  const reasons = Object.entries(diagnostics.unmatched_by_reason ?? {})
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (reasons.length === 0) return "every consumer matched a provider";
+  return reasons.map(([reason, n]) => `${n} ${REASON_LABEL[reason] ?? reason}`).join(", ");
+}
+
+const REASON_LABEL: Record<string, string> = {
+  no_provider: "no provider found",
+  internal_only: "internal to one repo",
+  external_host: "external host",
+  unlinked: "unlinked",
+};

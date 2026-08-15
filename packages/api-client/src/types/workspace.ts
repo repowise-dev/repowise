@@ -15,6 +15,10 @@ export interface WorkspaceRepoEntry {
   page_count: number;
   doc_coverage_pct: number;
   hotspot_count: number;
+  // Canonical 0-100 health score. Optional so a frontend ahead of its server
+  // degrades rather than rendering NaN; null means "not measured", which is
+  // not the same as a measured zero.
+  health_score?: number | null;
   // Phase B server augmentation
   status?: "indexed" | "needs_index" | "missing_dir" | null;
   docs_enabled?: boolean | null;
