@@ -37,7 +37,8 @@ _log = logging.getLogger("repowise.workspace.cycles")
 
 #: Cap on the number of elementary cycles reported. Governance only needs the
 #: representative loops, not every elementary cycle of a dense tangle; the true
-#: count is reported separately and truncation is logged (never silent).
+#: count is returned alongside the capped list so no caller can mistake the one
+#: for the other.
 MAX_CYCLES = 50
 
 
@@ -111,23 +112,25 @@ def _cycle_edges(nodes: list[str], adjacency: dict[tuple[str, str], str]) -> lis
     return edge_ids
 
 
-def detect_cycles(graph: SystemGraph) -> list[DependencyCycle]:
-    """Return the elementary structural dependency cycles in *graph*.
+def detect_cycles(graph: SystemGraph) -> tuple[list[DependencyCycle], int]:
+    """Return the structural dependency cycles in *graph*, and how many exist.
 
     Cycles are ordered shortest-first (the tightest loops are the most
-    actionable), then lexicographically for stability. Capped at
-    :data:`MAX_CYCLES`; truncation is logged. Returns ``[]`` when the structural
-    subgraph is acyclic or NetworkX is unavailable.
+    actionable), then lexicographically for stability. The returned list is
+    capped at :data:`MAX_CYCLES`; the second element is the true count before
+    that cap, so a caller reporting "N cycles" cannot accidentally report the
+    cap instead. Returns ``([], 0)`` when the structural subgraph is acyclic or
+    NetworkX is unavailable.
     """
     adjacency = _structural_adjacency(graph.edges)
     if not adjacency:
-        return []
+        return [], 0
 
     try:
         import networkx as nx
     except Exception:  # pragma: no cover - networkx is a hard dependency
         _log.warning("networkx unavailable; skipping cycle detection", exc_info=True)
-        return []
+        return [], 0
 
     digraph = nx.DiGraph()
     digraph.add_nodes_from(n.id for n in graph.nodes)
@@ -141,14 +144,15 @@ def detect_cycles(graph: SystemGraph) -> list[DependencyCycle]:
                 cycles.append(DependencyCycle(nodes=list(raw), edge_ids=edge_ids))
     except Exception:  # pragma: no cover - defensive
         _log.warning("cycle enumeration failed", exc_info=True)
-        return []
+        return [], 0
 
     cycles.sort(key=lambda c: (c.length, c.nodes))
-    if len(cycles) > MAX_CYCLES:
+    total = len(cycles)
+    if total > MAX_CYCLES:
         _log.info(
             "Cycle detection found %d cycles; reporting the %d shortest.",
-            len(cycles),
+            total,
             MAX_CYCLES,
         )
         cycles = cycles[:MAX_CYCLES]
-    return cycles
+    return cycles, total

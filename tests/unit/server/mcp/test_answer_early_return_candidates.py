@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 from repowise.server.mcp_server.tool_answer import answer as answer_mod
 from repowise.server.mcp_server.tool_answer.answer import _with_candidates
@@ -157,3 +158,63 @@ def test_a_page_that_names_no_file_never_becomes_a_candidate_here_either():
         ],
     )
     assert out["candidates"] == [{"path": "pkg/list.go"}]
+
+
+# --- the rating on the shortlist (D13) -------------------------------------
+#
+# `candidates` is a ranked list; `retrieval_quality` says whether the ranking is
+# worth trusting. Answer-by-union carried the list and no rating — measured 2 of
+# 26 on the paired keyless arm (`Field` / `EmailField`), and it fires for keyed
+# callers too. It is set on that path only, deliberately: see the
+# qualified-miss test below.
+
+
+def _union_payload(tmp_path, quality: str):
+    from repowise.server.mcp_server.tool_answer.answer import _union_answer_payload
+
+    src = "class Field:\n    pass\n"
+    (tmp_path / "a.py").write_text(src, encoding="utf-8")
+    (tmp_path / "b.py").write_text(src, encoding="utf-8")
+    homonyms = {
+        "union": {
+            "Field": [
+                {"name": "Field", "file_path": "a.py", "start_line": 1, "end_line": 2},
+                {"name": "Field", "file_path": "b.py", "start_line": 1, "end_line": 2},
+            ]
+        },
+        "qualified_miss": [],
+    }
+    ctx = SimpleNamespace(path=str(tmp_path), session_factory=None)
+    return _union_answer_payload("Field", {"Field"}, homonyms, ctx, None, 0.0, quality)
+
+
+def test_the_union_payload_rates_the_shortlist_beside_it(tmp_path):
+    """It answers from exact bodies, but still offers `candidates` for the
+    wider question — and that offer is what the rating is about."""
+    payload = _union_payload(tmp_path, "high")
+
+    assert payload["grounding"] == "exact_symbol"
+    assert payload["retrieval_quality"] == "high"
+
+
+def test_the_union_rating_is_the_real_one_not_a_flattering_constant(tmp_path):
+    """A weak retrieval beside a confident union answer must still say weak."""
+    assert _union_payload(tmp_path, "weak")["retrieval_quality"] == "weak"
+
+
+def test_the_qualified_miss_guard_stays_unrated(tmp_path):
+    """Deliberate, and the reason is the guard's own purpose.
+
+    That payload exists to say the ranked material is NOT the answer (a
+    same-named symbol under the wrong parent). `_retrieval_quality` reads only
+    the top-two score ratio, so a confident retrieval of the WRONG symbol grades
+    "high" — which would tell the agent not to run the search_codebase call the
+    payload's own note is asking for. No honest value exists here, so no field.
+    """
+    from repowise.server.mcp_server.tool_answer.answer import _no_answer_payload
+
+    payload = _with_candidates(
+        _no_answer_payload("No indexed definition matches...", repository=None, t0=0.0),
+        [{"target_path": "a.py", "score": 6.0}],
+    )
+    assert "retrieval_quality" not in payload

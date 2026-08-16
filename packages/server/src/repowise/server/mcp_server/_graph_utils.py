@@ -68,6 +68,7 @@ async def bfs_trace(
     entry_id: str,
     max_depth: int,
     node_cache: dict[str, GraphNode] | None = None,
+    hop_origins: dict[tuple[str, str], str] | None = None,
 ) -> list[str]:
     """Trace the primary execution path from *entry_id* along ``calls`` edges.
 
@@ -78,6 +79,11 @@ async def bfs_trace(
     DB-cheap proxy for the core scorer's fan-out ordering). Test/demo/fixture
     nodes and low-confidence (< 0.5) edges are skipped; a visited set keeps it
     cycle-safe.
+
+    *hop_origins*, when given, is filled with ``{(src, dst): resolution_origin}``
+    for each hop taken. Keyed by pair rather than position because callers
+    filter the returned trace afterwards, and a positional list would then
+    describe the wrong hops.
     """
     if node_cache is None:
         node_cache = {}
@@ -98,6 +104,7 @@ async def bfs_trace(
 
         best_id: str | None = None
         best_conf = -1.0
+        best_origin: str | None = None
         for e in edges:
             tid = e.target_node_id
             conf = e.confidence if e.confidence is not None else 0.0
@@ -110,10 +117,13 @@ async def bfs_trace(
             if conf > best_conf:
                 best_conf = conf
                 best_id = tid
+                best_origin = e.resolution_origin
 
         if best_id is None:
             break
 
+        if hop_origins is not None and best_origin:
+            hop_origins[(current, best_id)] = best_origin
         visited.add(best_id)
         trace.append(best_id)
         current = best_id

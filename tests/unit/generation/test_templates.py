@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import jinja2
@@ -430,6 +431,55 @@ def test_spotlight_keeps_the_importers_section_when_it_has_importers(
     assert "not confirmed call sites" in result
     # The count and its verb have to agree; one importer is the common case.
     assert "1 file imports the module" in result
+
+
+@pytest.fixture(scope="module")
+def widely_imported_spotlight_ctx() -> SymbolSpotlightContext:
+    """A fixture-shaped symbol: imported across a whole test suite.
+
+    939 importers is what ``tests/conftest.py`` actually measured on this
+    repository, which is the case that produced a 46k-char page.
+    """
+    return SymbolSpotlightContext(
+        symbol_name="fixtures_dir",
+        qualified_name="tests.conftest.fixtures_dir",
+        kind="function",
+        signature="def fixtures_dir() -> Path:",
+        docstring="Path to the fixtures directory.",
+        file_path="tests/conftest.py",
+        decorators=[],
+        is_async=False,
+        complexity_estimate=1,
+        callers=[f"tests/unit/test_{index}.py" for index in range(939)],
+    )
+
+
+def test_spotlight_caps_the_importer_list(jinja_env, widely_imported_spotlight_ctx):
+    """An unbounded list pushed the page past what the embedder accepts.
+
+    ``EMBED_TEXT_MAX_CHARS`` is 30,000 and the tail past it is dropped from the
+    vector, so the page stayed searchable only by its first few hundred
+    importers. The bound is the one ``file_page.j2`` already applies to the
+    same data.
+    """
+    result = render(jinja_env, "symbol_spotlight.j2", widely_imported_spotlight_ctx)
+
+    listed = re.findall(r"^- `tests/unit/test_\d+\.py`$", result, re.M)
+    assert len(listed) == 25
+    assert "and 914 more." in result
+    assert len(result) < 30_000
+
+
+def test_spotlight_reports_the_true_importer_count_above_the_capped_list(
+    jinja_env, widely_imported_spotlight_ctx
+):
+    """Truncating the list must not truncate the fact.
+
+    The summary sentence is the only place the real number survives, so it
+    counts every importer even though 25 are shown.
+    """
+    result = render(jinja_env, "symbol_spotlight.j2", widely_imported_spotlight_ctx)
+    assert "939 files import the module" in result
 
 
 def test_spotlight_still_describes_a_symbol_that_has_no_docstring(

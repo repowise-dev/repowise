@@ -133,7 +133,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 
 1. **Everything**, index + model-written docs. After picking a provider you can answer **"Customize?"** to tune any setting before the run.
 2. **Index only**, the same layers plus a wiki rendered from structure; no LLM, no key, no cost. Answer **"Customize indexing?"** to set exclude patterns, commit limit, skip-tests/infra, submodules, and fast mode.
-3. **Advanced**, full control. First choose **"Generate model-written wiki docs?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, decision harvesting, tiering, only when model-written docs are on).
+3. **Advanced**, full control. First choose **"Generate model-written wiki docs?"**; the prompts then split into an **Indexing** section (always) and a **Generation** section (provider, concurrency, embedder, wiki style, onboarding, tiering, only when model-written docs are on).
 
 **Page volume.** File pages are rendered from structure and cost no model tokens, so what bounds them buys wiki size, embedding calls and less retrieval noise, never spend. Two numbers govern it, both derived from the size distribution of real indexed repos. Above **2,000** documentable files (p95), an interactive advanced-mode run offers the top 2,000 by importance instead of one page per file, quoted in pages and megabytes; nothing is capped automatically at that size. Above **4,500** file pages (about 40 MB of file layer, near p99), every run holds the bucket to 4,500 and says so in its output, because that is where the tail is the difference between a wiki that publishes and one that does not. `--max-file-pages N` sets a cap directly and `--max-file-pages 0` refuses one; either way the answer is saved as `max_file_pages` in `config.yaml`, which `update --full` and `generate` honour. A hosted or scripted caller sets the same field with no terminal involved.
 
@@ -161,7 +161,6 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--max-file-pages` | Most file pages to emit, highest importance first. Omit to let the size policy decide (see Page volume above), `0` for one page per eligible file however many that is, or a positive number for a hard cap. Saved to `config.yaml`. |
 | `--coverage-report` | Test-coverage report to ingest (LCOV / Cobertura / Clover). Repeatable. Auto-discovered when omitted. This is test coverage for code-health, not a documentation-breadth knob: every code file is documented either way. |
 | `--onboarding` / `--no-onboarding` | Generate the curated Onboarding collection (up to 8 overview pages). Default: on; slots without enough signal are skipped. |
-| `--harvest-decisions` / `--no-harvest-decisions` | Harvest architectural decisions during page generation (verified against source before storage). Default: on. |
 | `--wiki-style` | Documentation voice/density: `comprehensive` (default), `caveman` (token-condensed, AI-first), `reference` (API-manual), `tutorial` (beginner-friendly). Interactive full runs prompt when omitted. Saved to config so `update` keeps the style. See [WIKI.md](../layers/WIKI.md#styles). |
 | `--language` | Output language for generated wiki pages: `en` (default), `ar`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `ru`, `tr`, `zh`. Code, file paths, and symbol names stay untranslated. Saved to config so `update` keeps the language. Also asked in advanced interactive mode. To switch an existing wiki's language, set the flag and re-run `init --force`. |
 | `--resume` | Continue a previous run instead of redoing it: completed phases (indexing, analysis) are skipped, the earlier run's git tier is kept, and generation writes only the pages this repo does not have yet. Use it after an interrupted run, and after one that finished with failed pages (a provider outage, rate limiting) — pages already written are skipped with no model call, so nothing is paid for twice. Matching is per page, not per model, so switching provider still keeps what the old one wrote. |
@@ -172,7 +171,8 @@ All three reach the indexing knobs; the LLM-only knobs appear only when model-wr
 | `--agents` / `--no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
 | `--codex` / `--no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
 | `--distill-hook` / `--no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict applies to every selected repo. See [DISTILL.md](../agent/DISTILL.md). |
-| `--editor-setup` / `--no-editor-setup` | Register repowise in your machine-wide editor config: the Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP server entry, plus the Claude Code PostToolUse/SessionStart hooks. Default: on. `--no-editor-setup` indexes the repo without touching anything outside it, which is what you want for a scratch checkout, a throwaway venv, or a CI run: each config holds a single `repowise` MCP key, so a second `init` repoints it at the newest repo instead of adding a second entry. It also skips the `--distill-hook` offer, which installs a user-level hook, though `--no-distill-hook` still records its opt-out in this repo's config. Project-local files are unaffected. `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch for CI and sandboxes, and it wins: with it set, an explicit `--editor-setup` does not turn registration back on. |
+| `--editor-setup` / `--no-editor-setup` | Wire repowise into your editors, both halves at once. Machine-wide: the Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP server entry, plus the Claude Code PostToolUse/SessionStart hooks. Project-local: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`. Default: on. `--no-editor-setup` indexes the repo writing nothing into it and nothing outside it — only `.repowise/` is touched — which is what you want for a scratch checkout, a throwaway venv, a git worktree, or a CI run: each config holds a single `repowise` MCP key, so a second `init` repoints it at the newest repo instead of adding a second entry. `repowise mcp .` still prints the config to connect a client by hand. It also skips the `--distill-hook` offer, which installs a user-level hook; `--no-distill-hook`, `--no-claude-md` and `--no-agents-md` still record their opt-outs in this repo's config, because those flags mean "never", not "not this run". `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch for CI and sandboxes, and it wins: with it set, an explicit `--editor-setup` does not turn setup back on. |
+| `--save-key` / `--no-save-key` | Save the provider API key this run authenticated with into `.repowise/.env` (git-ignored, owner-only). Default: on, because a scripted `init` that succeeds must leave a repo whose MCP server can actually answer, and a key supplied through the environment would otherwise vanish with the shell that set it. The file is what `repowise mcp`, `serve` and `update` read back; without it `get_answer` degrades to `no-llm-provider` and returns retrieval-only output. Use `--no-save-key` when the key is injected per-process (CI secrets, a shared machine) and must not reach disk; `REPOWISE_NO_SAVE_KEY=1` is the same switch for CI and sandboxes. Answering No to the interactive key prompt also wins over the default. Note this writes one line to the repo's `.gitignore`, so pair it with `--no-save-key` when you need `--no-editor-setup`'s "nothing written into the repo" guarantee. |
 | `--seed-from` | Seed the index from an explicit base checkout instead of the auto-detected one. Rarely needed: inside a linked git worktree the base is detected and seeded automatically. See [WORKTREES.md](../scale/WORKTREES.md). |
 | `--no-seed` | Disable worktree auto-seeding and run a full init even inside a linked worktree. |
 | `--yes` / `-y` | Skip confirmation prompts |
@@ -198,6 +198,7 @@ repowise init -x vendor/ -x "*.gen.go"               # exclude patterns
 repowise init --include-submodules                    # include submodules
 repowise init --no-codex --no-agents                  # skip Codex project files
 repowise init --no-editor-setup --yes                 # index only, leave global MCP config alone
+repowise init --provider openai --yes --no-save-key    # CI: index, but never write the key to disk
 repowise init .                                       # workspace mode
 repowise init . --no-prose -x "node_modules/"        # workspace, no LLM
 repowise init . --no-workspace                        # force single-repo, even in a workspace root
@@ -730,8 +731,9 @@ repowise dead-code --repo backend        # workspace, single repo
 Just-in-time change-risk scoring for a commit or diff range. Scores the defect
 risk of a change from the same calibrated signals the code-health layer uses -
 no LLM calls, and it works without `repowise init` (pure git + learned
-constants). `REVSPEC` defaults to `HEAD`; pass a `base..head` range to score a
-whole branch / PR as one change.
+constants). With no `REVSPEC` it scores your uncommitted work, falling back to
+`HEAD` when the tree is clean; pass `HEAD` to always mean the last commit, or a
+`base..head` range to score a whole branch / PR as one change.
 
 The headline is **repo-relative**: the change's percentile and review priority
 (`Below typical` / `Typical` / `Elevated`) within the repo's own recent commits,
@@ -754,7 +756,8 @@ to the model's baseline commit, not this repo.
 | `--full` | With `--target`: emit the complete tool payload as JSON (implies `--format json`) |
 
 ```bash
-repowise risk                 # score HEAD
+repowise risk                 # score uncommitted work, else HEAD
+repowise risk HEAD            # score the last commit
 repowise risk main..HEAD      # score a branch / PR range as one change
 repowise risk --ext .ts,.tsx  # restrict to specific suffixes
 repowise risk main..HEAD -x 'tests/' -x '*.spec.ts'  # omit tests from scoring

@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from repowise.core.exclusion import build_exclude_spec, is_excluded
+from repowise.server.mcp_server._meta import answer_hint as _answer_hint
+from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_answer.config import (
     _DATA_SHAPE_ACCESS_WINDOW,
     _DATA_SHAPE_DOC_WINDOW,
@@ -540,3 +543,95 @@ def mine_data_shape(repo_root: Path | None, question_ids: set[str]) -> dict | No
             }
 
     return None
+
+
+def _data_shape_prose(grounded: dict, citations: list[str]) -> tuple[str, str]:
+    """The ``answer`` and ``note`` for a mined data shape, by how it was grounded.
+
+    A documented shape is authoritative and says so (cite it, no verification
+    Read). A usage-mined shape is the keys consumers actually pull off the value,
+    which may be a subset of what is stored, so it asks to be verified.
+    """
+    ident = grounded["identifier"]
+    fields = grounded["fields"]
+    sources = grounded["sources"]
+    also_accessed = grounded.get("also_accessed") or []
+    field_list = ", ".join(f"`{f}`" for f in fields)
+
+    if grounded["grounding"] != "docstring":
+        first = sources[0]
+        return (
+            f"Each entry in `{ident}` is accessed with {len(fields)} key(s): "
+            f"{field_list}. These are the keys consumers actually pull off the "
+            f"parsed value (e.g. {first['file']}:{first['line']}); this is mined "
+            "from usage, not a declared schema, so verify if you need the full set.",
+            "Grounded in the key accesses mined from consumer source (no "
+            "documented shape was found). Medium confidence: these are the keys "
+            "the code reads, which may be a subset of the stored fields.",
+        )
+
+    doc_src = next((s for s in sources if s["kind"] == "docstring"), None)
+    where = f"{doc_src['file']}:{doc_src['line']}" if doc_src else citations[0]
+    if not also_accessed:
+        return (
+            f"Each entry in `{ident}` has {len(fields)} field(s): {field_list}. "
+            f"This is the documented shape at {where}; cite it directly, no "
+            "verification Read needed.",
+            "Grounded in the documented field shape mined from source (the "
+            "quoted keys in the docstring/comment at the cited line). "
+            "data_shape.sources lists every field's origin line.",
+        )
+
+    # The doc lists the declared shape, but consumers read alias key(s) it omits
+    # (a legacy fallback). Surface them: telling the agent "no Read needed" while
+    # hiding a key it must handle would be a confidently-incomplete answer.
+    alias_list = ", ".join(f"`{a['field']}`" for a in also_accessed)
+    first_alias = also_accessed[0]
+    return (
+        f"Each entry in `{ident}` has {len(fields)} documented field(s): "
+        f"{field_list} (documented shape at {where}). Consumers also read "
+        f"{alias_list} as a fallback (e.g. {first_alias['file']}:"
+        f"{first_alias['line']}) - an alias the docstring omits, so handle "
+        f"{alias_list} too if you touch this.",
+        "Grounded in the documented field shape, plus alias key(s) "
+        "consumers read beside a documented field that the docstring "
+        "omits (see data_shape.also_accessed). The documented fields are "
+        "authoritative; the aliases are real keys the code defends against.",
+    )
+
+
+def build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
+    """Shape a grounded data-shape result into a get_answer response.
+
+    ``grounded`` is :func:`mine_data_shape`'s return. Cite the exact source
+    lines the fields were lifted from; a docstring shape is authoritative
+    (confidence high, no verification Read), a usage-mined shape is medium.
+    """
+    ident = grounded["identifier"]
+    fields = grounded["fields"]
+    sources = grounded["sources"]
+    also_accessed = grounded.get("also_accessed") or []
+    citations = sorted({s["file"] for s in sources})
+    answer, note = _data_shape_prose(grounded, citations)
+    payload: dict = {
+        "answer": answer,
+        "citations": citations,
+        "confidence": grounded["confidence"],
+        "grounding": "data_shape",
+        "data_shape": {
+            "identifier": ident,
+            "fields": fields,
+            "sources": sources,
+            **({"also_accessed": also_accessed} if also_accessed else {}),
+        },
+        "fallback_targets": citations,
+        "retrieval": [],
+        "note": note,
+        "_meta": _build_meta(
+            timing_ms=(time.perf_counter() - t0) * 1000,
+            hint=_answer_hint(grounded["confidence"], len(citations)),
+            repository=repository,
+            targets=citations,
+        ),
+    }
+    return payload

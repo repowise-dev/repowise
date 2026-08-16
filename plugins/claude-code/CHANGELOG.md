@@ -2,6 +2,27 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.43.0
+
+### Changed
+- `/repowise:risk` documents what the command now leads with: the bug-fix
+  history of the files a change touches, with the 0-10 score reported beside it
+  as a measure of diff size and spread rather than a verdict on danger. Also
+  records that omitting the revspec scores uncommitted work when the tree is
+  dirty, and adds `--baseline` and `-t/--target` (#1583, #1593).
+- `/repowise:init` describes `--no-editor-setup` as what it now does: it skips
+  the four project-local files (`.mcp.json`, `.claude/CLAUDE.md`,
+  `.vscode/mcp.json`, `.vscode/extensions.json`) as well as the machine-wide
+  registration, so only `.repowise/` is touched. Adds `--save-key` /
+  `--no-save-key` (#1572, #1595).
+- `/repowise:decision` documents the flag-driven form of `decision add`, which
+  records without prompting once `--title` and `--decision` are both present and
+  is the form to use with no terminal (#1566).
+- `/repowise:why` documents that `--target` with no question now answers about
+  those files instead of falling through to the health dashboard, and that a
+  question the store cannot answer returns a redirect rather than the closest
+  records (#1558, #1566).
+
 ## 0.42.0
 
 ### Changed

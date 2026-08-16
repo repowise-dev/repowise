@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,119 @@ def test_decision_help_lists_subcommands() -> None:
     assert result.exit_code == 0, result.output
     for name in ("add", "list", "show", "confirm", "dismiss", "deprecate", "health"):
         assert name in result.output
+
+
+def test_decision_add_records_without_prompting(indexed_repo: Path) -> None:
+    """With --title and --decision, nothing is asked and the id comes back.
+
+    ``add`` was eight blocking prompts and no flags, so with no stdin it died
+    on the first one — the whole command was unreachable to anything scripted.
+    """
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision", "add",
+            "--title", "Escape LIKE patterns",
+            "--decision", "Escape % and _ before interpolating",
+            "--rationale", "an unescaped pattern scans the table",
+            "--alternative", "match in Python",
+            "--consequence", "one more helper on the query path",
+            "--affects", "src/db/models.py",
+            "--tag", "database",
+            "--format", "json",
+            str(indexed_repo),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["decision"]["title"] == "Escape LIKE patterns"
+    assert len(payload["decision"]["id"]) > 8, "the full id, not the table's prefix"
+
+    shown = CliRunner().invoke(
+        cli, ["decision", "show", payload["decision"]["id"], str(indexed_repo), "--format", "json"]
+    )
+    assert shown.exit_code == 0, shown.output
+    record = json.loads(shown.output)["decision"]
+    assert record["rationale"] == "an unescaped pattern scans the table"
+    assert record["alternatives"] == ["match in Python"]
+    assert record["consequences"] == ["one more helper on the query path"]
+    assert record["affected_files"] == ["src/db/models.py"]
+    assert record["tags"] == ["database"]
+
+
+def test_a_flag_driven_decision_lands_proposed(indexed_repo: Path) -> None:
+    """A caller that inferred a decision has not reviewed it, and the store says so.
+
+    The prompts still record ``active``: a person answering eight questions is
+    the reviewed case. Both paths writing one status is what makes the
+    difference invisible.
+    """
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision", "add",
+            "--title", "Prefer ruff check",
+            "--decision", "Run ruff check, never ruff format",
+            "--format", "json",
+            str(indexed_repo),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["decision"]["status"] == "proposed"
+
+
+def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
+    """The interactive path is unchanged, including the status it writes."""
+    answers = "Interactive title\ncontext\nthe decision\nwhy\n\n\n\n\n"
+    result = CliRunner().invoke(
+        cli, ["decision", "add", str(indexed_repo)], input=answers
+    )
+
+    assert result.exit_code == 0, result.output
+    listed = CliRunner().invoke(
+        cli, ["decision", "list", str(indexed_repo), "--format", "json"]
+    )
+    records = json.loads(listed.output)["decisions"]
+    assert [d["status"] for d in records if d["title"] == "Interactive title"] == ["active"]
+
+
+def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> None:
+    """--title alone must not fall through to the prompts.
+
+    A caller with no stdin would hang there, or abort on a message naming
+    neither flag. The exit code carries it too: printing the reason and
+    returning 0 is what a script reads as success.
+    """
+    result = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--title", "Half a decision", str(indexed_repo), "--format", "json"],
+        input="",
+    )
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.output)["error"].startswith("--title and --decision")
+
+
+def test_decision_add_help_lists_a_flag_per_field() -> None:
+    result = CliRunner().invoke(cli, ["decision", "add", "--help"])
+
+    assert result.exit_code == 0, result.output
+    for flag in (
+        "--title",
+        "--context",
+        "--decision",
+        "--rationale",
+        "--alternative",
+        "--consequence",
+        "--affects",
+        "--tag",
+        "--format",
+    ):
+        assert flag in result.output
 
 
 def test_decision_list_help_lists_filters() -> None:

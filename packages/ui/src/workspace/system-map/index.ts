@@ -28,7 +28,23 @@ export {
   type RoleStyle,
 } from "./architecture";
 export { useSystemMapLayout, type SystemMapLayout, type UseSystemMapLayoutArgs } from "./use-system-map-layout";
-export { applyView, computeSystemMapPositions, SYSTEM_MAP_NODE_SIZE, type SystemMapView } from "./layout";
+export {
+  applyView,
+  applyCollapse,
+  computeSystemMapPositions,
+  layoutSignature,
+  SYSTEM_MAP_NODE_SIZE,
+  SYSTEM_MAP_MAX_LAYOUT_NODES,
+  type SystemMapView,
+  type SystemMapPositions,
+} from "./layout";
+export {
+  SystemMapRailPanel,
+  RailChip,
+  RailEyebrow,
+  RailField,
+  type SystemMapRailPanelProps,
+} from "./system-map-rail";
 export { collapseToRepos } from "./collapse";
 export {
   SYSTEM_EDGE_KINDS,

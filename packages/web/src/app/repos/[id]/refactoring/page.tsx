@@ -65,6 +65,10 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   }, [allPlans, type]);
 
   const prefix = `/repos/${repoId}`;
+  // `PlanRows` offers a second `line` argument and this deliberately ignores
+  // it: the file page renders no line anchors, so appending `#L<n>` would be a
+  // fragment that resolves to nothing and leaves the reader at the top of the
+  // page wondering what they missed. Honour it here when the page grows them.
   const fileHref = useCallback((path: string) => fileEntityPath(prefix, path), [prefix]);
 
   // The open plan comes from the URL, so a reload or a shared link lands on the

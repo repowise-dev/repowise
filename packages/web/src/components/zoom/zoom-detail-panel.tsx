@@ -28,6 +28,7 @@ import {
   summarizeRelations,
 } from "@repowise-dev/ui/zoom";
 import { bandForScore } from "@repowise-dev/types/health";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { healthBandTextColor } from "@repowise-dev/ui/health";
 
 interface ZoomDetailPanelProps {
@@ -41,11 +42,9 @@ interface ZoomDetailPanelProps {
   onZoom: (id: string) => void;
 }
 
-/** Route to a file's own page. Segments are encoded but the slashes are kept so
- *  the `/files/[...path]` catch-all receives the real path. */
+/** Route to a file's own page. */
 function fileHref(repoId: string, path: string): string {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  return `/repos/${repoId}/files/${encoded}`;
+  return fileEntityPath(`/repos/${repoId}`, path);
 }
 
 const KIND_LABEL: Record<ZoomNode["kind"], string> = {

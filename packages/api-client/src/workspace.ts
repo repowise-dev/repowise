@@ -10,6 +10,7 @@ import type {
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
   WorkspaceArchitectureResponse,
+  ExtractionDiagnostics,
 } from "./types";
 
 export async function getWorkspace(
@@ -48,6 +49,24 @@ export async function getWorkspaceCoChanges(opts?: {
 
 export async function getWorkspaceGraph(): Promise<WorkspaceGraphResponse> {
   return apiGet<WorkspaceGraphResponse>("/api/workspace/graph");
+}
+
+/**
+ * Why the cross-repo link count is what it is: providers and consumers found,
+ * consumers that matched nothing and why, and providers nobody calls.
+ *
+ * These are the denominators the Contracts page needs. Without them the only
+ * available totals are the filtered, paginated contract rows, which cannot say
+ * how much of the workspace they represent.
+ */
+export async function getWorkspaceDiagnostics(
+  fetchOptions?: RequestInit,
+): Promise<ExtractionDiagnostics> {
+  return apiGet<ExtractionDiagnostics>(
+    "/api/workspace/diagnostics",
+    undefined,
+    fetchOptions,
+  );
 }
 
 /**

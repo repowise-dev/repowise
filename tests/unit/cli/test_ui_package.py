@@ -35,10 +35,10 @@ def test_facade_reexports_public_surface() -> None:
         "print_scan_summary",
         "print_index_only_intro",
         "quick_repo_scan",
-        "build_analysis_summary_panel",
+        "print_analysis_summary",
         "build_completion_panel",
         "build_contextual_next_steps",
-        "build_mcp_status_lines",
+        "build_status_notes",
         "format_bytes",
         "format_elapsed",
         "LARGE_REPO_FILE_THRESHOLD",
@@ -118,7 +118,6 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "embedder": "mock",
         "test_run": False,
         "onboarding": True,
-        "harvest_decisions": True,
         "wiki_style": DEFAULT_STYLE,
         "language": "en",
     }
@@ -148,7 +147,7 @@ def test_advanced_config_index_only_omits_generation_keys(
         "embedder": "mock",
     }
     # The knobs that only shape a model's writing must not appear.
-    for key in ("concurrency", "reasoning", "onboarding", "harvest_decisions", "wiki_style"):
+    for key in ("concurrency", "reasoning", "onboarding", "wiki_style"):
         assert key not in result
 
 

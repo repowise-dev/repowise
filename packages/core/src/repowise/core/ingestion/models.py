@@ -186,6 +186,12 @@ class Symbol:
     # ``__declspec(dllexport)`` / ``__attribute__((visibility("default")))``).
     # Used by dead-code analysis to whitelist exported entry points.
     is_exported_symbol: bool = False
+    # True when this record is a bodiless declaration — a C/C++ forward
+    # declaration in a header. The definition carrying the same name lives in
+    # a .cpp and is the symbol a call should attach to; the call resolver
+    # redirects onto it, and the dead-code pass never reports a declaration,
+    # since a declaration is not independently deletable.
+    is_declaration: bool = False
 
 
 @dataclass
@@ -295,12 +301,53 @@ EdgeType = Literal[
     # from ``imports`` so analyses can weight it lower and so the
     # persistence layer can surface provenance for these edges.
     "type_use",
+    # A function named without being called: a dispatch-table entry, a
+    # callback field, an argument to a registration macro (currently C/C++;
+    # see the ``@reference.name`` captures). Symbol → symbol, and deliberately
+    # not ``calls`` — nothing here proves the function is ever invoked, only
+    # that something holds a handle to it, which is enough to make deleting it
+    # unsafe.
+    "references",
 ]
 
 # Runtime mirror of the Literal, for the places that must test membership
 # rather than annotate. Derived, never hand-written — a second hand-written
 # copy is the exact failure this phase exists to remove.
 EDGE_TYPE_VALUES: frozenset[str] = frozenset(get_args(EdgeType))
+
+# Which resolution strategy produced a `calls` / `references` edge. Same
+# closed-vocabulary discipline as `EdgeType`, held shut by the same test.
+#
+# An edge is not a fact. `global_unique` binds a name to the only symbol
+# carrying it anywhere in the repo, which is a guess; `same_file` is a
+# certainty. Both used to reach a consumer as an unlabelled arrow, so an agent
+# reading a flow could not tell which it was looking at.
+#
+# Every origin has exactly one confidence (see `CallResolver`), so the origin
+# distribution and the confidence histogram are two views of the same data —
+# which is what makes the stamping checkable against the existing numbers.
+# NULL on an edge means the row predates this vocabulary, not "unknown origin".
+ResolutionOrigin = Literal[
+    "same_file",  # 0.95 — defined in the calling file
+    "self_scope",  # 0.95 — self/this, method on the caller's own class
+    "receiver_same_file",  # 0.93 — receiver names a class in this file
+    "same_package",  # 0.90 — Go/JVM sibling file, no import needed
+    "import_scoped",  # 0.90 — the name was imported from the defining file
+    "receiver_same_package",  # 0.90 — receiver is a same-package class (JVM)
+    "package_alias",  # 0.88 — Go pkg.Func, resolved across the whole package
+    "module_alias",  # 0.88 — receiver is an imported module
+    "crate_root",  # 0.88 — Rust crate-scoped reference
+    "receiver_import",  # 0.88 — receiver class found in an imported file
+    "import_merged",  # 0.85 — in *some* imported file; which one is unattributed
+    "same_target",  # 0.85 — C/C++ sibling TU of the same build target
+    # 0.75 — the (class, method) pair exists somewhere in the repo. The member
+    # analogue of `global_unique`, and no more than that: the strategy is
+    # named for Rust trait impls but is gated on no language.
+    "receiver_global",
+    "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+]
+
+RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))
 
 # What a dynamic-hint extractor reports, *before* `add_dynamic_edges` prefixes
 # it. Deliberately a separate vocabulary from `EdgeType`: `url_route` is a
@@ -384,6 +431,10 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         "implements",
         "method_implements",
         "reads",
+        # Naming a function is using it. A handler sitting in a dispatch table
+        # is never called anywhere a parser can see, and treating that as "no
+        # use" reported entire registration layers as safe to delete (#1602).
+        "references",
     }
 )
 
@@ -455,6 +506,12 @@ class ParsedFile:
     # Python only; lets the dead-code unused-export pass rescue symbols whose
     # only use is intra-module. See ``python_local_refs``.
     local_refs: frozenset[str] = field(default_factory=frozenset)
+    # C/C++ sites that name a function without calling it: a dispatch table
+    # entry, a callback field, an argument to a registration macro. Reuses
+    # ``CallSite`` because resolving one is the identical problem — a name, the
+    # symbol enclosing it, and a line — and it lets these ride the same
+    # resolution tiers. They become ``references`` edges, not ``calls``.
+    references: list[CallSite] = field(default_factory=list)
 
 
 def compute_content_hash(source: bytes) -> str:

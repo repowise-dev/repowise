@@ -25,6 +25,7 @@
     "./owners": "./src/owners.ts",
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
+    "./repos": "./src/repos.ts",
     "./files": "./src/files.ts",
     "./external-systems": "./src/external-systems.ts",
     "./health": "./src/health.ts",

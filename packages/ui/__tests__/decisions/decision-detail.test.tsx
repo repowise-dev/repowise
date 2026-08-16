@@ -105,6 +105,22 @@ describe("DecisionDetail", () => {
     expect(toastSuccess).toHaveBeenCalled();
   });
 
+  it("dismisses a proposal as a tombstone, not as a deprecation", async () => {
+    // The button sent `deprecated`, which the engine keeps re-deriving on every
+    // index — so a dismissed proposal came back. `dismissed` is the status that
+    // is skipped on re-extraction and hidden from listings.
+    const adapter = makeAdapter();
+    renderView(<DecisionDetail decision={makeDecision()} adapter={adapter} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() =>
+      expect(adapter.patchDecision).toHaveBeenCalledWith({ status: "dismissed" }),
+    );
+  });
+
   it("renders the evolution timeline when the lineage chain is non-trivial", async () => {
     const adapter = makeAdapter({
       getLineage: vi.fn(

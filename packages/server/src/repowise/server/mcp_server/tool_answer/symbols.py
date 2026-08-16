@@ -10,12 +10,13 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.server.mcp_server._query_terms import content_terms, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
     _DEFINES_MAX_FILES,
@@ -29,11 +30,98 @@ from repowise.server.mcp_server.tool_answer.config import (
     _MAX_RICH_SIG_LINES,
     _MAX_SYMBOLS_PER_HIT,
     _MAX_SYMBOLS_TOP_HIT,
+    _RELEVANCE_DOC_CHARS,
+    _RELEVANCE_DOC_WEIGHT,
+    _RELEVANCE_NAME_WEIGHT,
+    _RELEVANCE_SIG_WEIGHT,
+    _RELEVANT_EXCERPT_MAX_SYMBOLS,
     _STOPWORDS,
     _SYNTH_FULL_BODY_MAX_SYMBOLS,
     _SYNTH_FULL_SOURCE_LINES,
 )
 from repowise.server.mcp_server.tool_search import _prose_dominates
+
+# Suffixes stripped so a question's word reaches the identifier that answers it
+# ("routing" -> the `route` symbol). Longest first; never stems below 4 chars.
+_STEM_SUFFIXES = ("tion", "ing", "ion", "es", "ed", "er", "s")
+
+
+def _stem(token: str) -> str:
+    for suffix in _STEM_SUFFIXES:
+        if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+            return token[: -len(suffix)]
+    return token
+
+
+def _text_stems(text: str) -> set[str]:
+    """Stemmed content tokens of *text*, hump- and separator-split."""
+    return {
+        _stem(tok.lower())
+        for tok in re.split(r"[^A-Za-z0-9]+", split_humps(text))
+        if len(tok) >= 3 and tok.lower() not in _STOPWORDS
+    }
+
+
+def _stem_hit(term: str, tokens: set[str]) -> bool:
+    """Whether *term* names one of *tokens*, allowing a shared 4-char root."""
+    if term in tokens:
+        return True
+    return any(
+        min(len(term), len(tok)) >= 4 and (term.startswith(tok) or tok.startswith(term))
+        for tok in tokens
+    )
+
+
+def _question_names_symbol(row, qids_lower: set[str]) -> bool:
+    """Whether an identifier from the question names this symbol.
+
+    Substring-matching the whole qualified name marked every symbol in a package
+    whose path shares a word with the question, which flattened the promotion to
+    a no-op. Matching is against the symbol's own name, its full qualified name,
+    or its parent: asking about a class should still reach its methods.
+    """
+    if not qids_lower:
+        return False
+    name_lower = (row.name or "").lower()
+    parent_lower = (row.parent_name or "").lower()
+    return (
+        name_lower in qids_lower
+        or (row.qualified_name or "").lower() in qids_lower
+        or (bool(parent_lower) and parent_lower in qids_lower)
+        or any(
+            q in name_lower
+            for q in qids_lower
+            if len(q) >= 5  # avoid spurious substring matches on short tokens
+        )
+    )
+
+
+def _symbol_relevance(entry: dict, terms: set[str]) -> int:
+    """How strongly a symbol's own text answers the question's content terms.
+
+    Reads only what hydration already loaded, so it adds no I/O to the call.
+    """
+    if not terms:
+        return 0
+    name_tokens = _text_stems(entry.get("name") or "")
+    sig_tokens = _text_stems(entry.get("signature") or "")
+    # Docstrings are the bulk of the text to tokenize and the weakest signal, so
+    # they are only read once a term has missed the name and the signature.
+    doc_tokens: set[str] | None = None
+    score = 0
+    for term in terms:
+        if _stem_hit(term, name_tokens):
+            score += _RELEVANCE_NAME_WEIGHT
+        elif _stem_hit(term, sig_tokens):
+            score += _RELEVANCE_SIG_WEIGHT
+        else:
+            if doc_tokens is None:
+                doc_tokens = _text_stems(
+                    (entry.get("docstring") or "")[:_RELEVANCE_DOC_CHARS]
+                )
+            if _stem_hit(term, doc_tokens):
+                score += _RELEVANCE_DOC_WEIGHT
+    return score
 
 
 def _extract_question_identifiers(question: str) -> set[str]:
@@ -473,6 +561,12 @@ def attach_truncation_contract(
     end at all, which is never a cut: it is tested explicitly rather than left
     to ``indexed_end > end_served``, which would only agree with it while
     ``end_served`` stays non-negative.
+
+    ``indexed_end`` is trusted to lie within the live file, which is
+    ``check_symbol_bounds``'s job rather than this one's: it now clamps to
+    ``len(lines)`` on every return, so a stored end that overshoots cannot reach
+    here and flag a body served WHOLE as truncated (D8). Clamping again here
+    would be a second owner and a second disk read.
     """
     if indexed_end and indexed_end > end_served:
         entry["truncated"] = True
@@ -768,6 +862,7 @@ async def _hydrate_symbols_for_hits(
     hits: list[dict],
     ctx: Any = None,
     question_ids: set[str] | None = None,
+    question: str = "",
 ) -> None:
     """Mutate `hits` in place: attach `symbols` list to top-N file_page hits.
 
@@ -782,10 +877,16 @@ async def _hydrate_symbols_for_hits(
     Top hit gets ``_MAX_SYMBOLS_TOP_HIT`` slots; secondaries get the smaller
     ``_MAX_SYMBOLS_PER_HIT``. Symbols not matching a question id carry the
     short 120-char docstring; matched symbols carry 400 chars + source body.
+
+    ``question`` decides which symbols fill those slots when the file holds more
+    than fit, and earns the leading few a source body: a question phrased in
+    prose names no identifier, so nothing matches and nothing would carry code.
     """
     question_ids = question_ids or set()
     # Case-folded copy for matching.
     qids_lower = {q.lower() for q in question_ids}
+    # Once per call: the question's terms, stemmed to match identifier roots.
+    term_stems = {_stem(t) for t in content_terms(question)}
 
     # Identify the top file_page hits in retrieval-rank order. `hits` is
     # already sorted by descending score upstream.
@@ -839,21 +940,7 @@ async def _hydrate_symbols_for_hits(
             rich_sig = _read_signature_from_source(
                 repo_root, row.file_path, start_line, text=text
             )
-        # Does the symbol name match any identifier from the question?
-        name_lower = (row.name or "").lower()
-        qname_lower = (row.qualified_name or "").lower()
-        matched = bool(
-            qids_lower
-            and (
-                name_lower in qids_lower
-                or qname_lower in qids_lower
-                or any(
-                    q in name_lower or q in qname_lower
-                    for q in qids_lower
-                    if len(q) >= 5  # avoid spurious substring matches on short tokens
-                )
-            )
-        )
+        matched = _question_names_symbol(row, qids_lower)
         entry: dict[str, Any] = {
             "name": row.name,
             "kind": row.kind,
@@ -862,7 +949,11 @@ async def _hydrate_symbols_for_hits(
             "start_line": start_line,
             "end_line": end_line,
             "_matched": matched,
+            "_verified": verified,
         }
+        # Scored once here, not in the sort key, so a dense file pays for it per
+        # symbol rather than per comparison.
+        entry["_relevance"] = _symbol_relevance(entry, term_stems)
         if matched and verified:
             src = _read_symbol_source(
                 repo_root, row.file_path, start_line, end_line, text=text
@@ -871,15 +962,16 @@ async def _hydrate_symbols_for_hits(
                 entry["source_excerpt"] = src
         by_file.setdefault(row.file_path, []).append(entry)
 
-    # Sort: matched symbols first (document order within the match group),
-    # then unmatched in start_line order. Cap per file — top hit gets more
-    # slots than secondary hits.
+    # Sort: matched symbols first, then by relevance to the question, then in
+    # start_line order. Cap per file — top hit gets more slots than secondary
+    # hits. This decides WHICH symbols are kept; the kept slice is put back into
+    # reading order below, so consumers still see document order.
     for i, h in enumerate(hits):
         path = h.get("target_path")
         if path not in by_file:
             continue
         syms = by_file[path]
-        syms.sort(key=lambda s: (not s["_matched"], s["start_line"]))
+        syms.sort(key=lambda s: (not s["_matched"], -s["_relevance"], s["start_line"]))
         cap = _MAX_SYMBOLS_TOP_HIT if i == 0 else _MAX_SYMBOLS_PER_HIT
         # Force-include the exact symbol the question named (via anchoring) so a
         # class-name flood — where every sibling method "matches" through the
@@ -897,6 +989,26 @@ async def _hydrate_symbols_for_hits(
             if len(kept) >= cap:
                 break
             kept.append(s)
+        # A prose question names no identifier, so nothing is `_matched` and the
+        # slate would carry signatures only. Give the leading few symbols the
+        # question scored against a body, so the excerpts hold the code the
+        # question is about. `kept` is still in priority order here.
+        bodied = 0
+        for s in kept:
+            if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
+                break
+            if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
+                continue
+            src = _read_symbol_source(
+                repo_root,
+                path,
+                s["start_line"],
+                s.get("end_line") or 0,
+                text=text_cache.get(path),
+            )
+            if src:
+                s["source_excerpt"] = src
+                bodied += 1
         # Upgrade the top question-relevant symbols to the inline-body depth
         # BEFORE the reading-order sort, while `kept` is still in priority order
         # (anchors, then matched, then unmatched). The default 40-line excerpt
@@ -1181,8 +1293,12 @@ def _skip_regex(raw: str, i: int) -> int:
 
 def _walk_string_state(
     lines: tuple[str, ...], *, backticks: bool
-) -> tuple[set[int], bool]:
-    """(lines starting inside a string/comment, template literal left open at EOF).
+) -> tuple[set[int], set[int], bool]:
+    """(lines starting inside a string, inside a block comment, literal left open).
+
+    The two sets are kept apart because callers need to tell them apart and this
+    is a hot path: a string body proves the enclosing expression is still open,
+    a comment between two declarations proves nothing.
 
     ``stack`` models template-literal nesting: a ``None`` frame is the string
     part of a backtick literal, an ``int`` frame is the unclosed-brace depth
@@ -1208,13 +1324,22 @@ def _walk_string_state(
     precision, measured as 1,926 fabrications against 60 on the 16 corpus files
     where a flat walk and this one disagree.
     """
-    masked: set[int] = set()
+    strings: set[int] = set()
+    comments: set[int] = set()
     delim: str | None = None
     in_block = False
+    # Line the currently-open ``delim`` run or ``/* */`` block started on. The
+    # two are mutually exclusive (a frame is only ever opened at code level), so
+    # one variable serves both.
+    open_line = 0
     stack: list[int | None] = []
     for n, raw in enumerate(lines, 1):
-        if delim is not None or in_block or (stack and stack[-1] is None):
-            masked.add(n)
+        # The three states are mutually exclusive: a frame is only ever pushed
+        # at code level, so an if/elif chain is faithful to the walk below.
+        if delim is not None or (stack and stack[-1] is None):
+            strings.add(n)
+        elif in_block:
+            comments.add(n)
         elif not stack and not _QUOTEISH_RE.search(raw):
             # Nothing on this line can open a string or comment, so the
             # character walk below cannot change state. Most lines are this
@@ -1270,25 +1395,25 @@ def _walk_string_state(
                 continue
             if delim is not None:
                 if raw.startswith(delim, i):
-                    delim, i = None, i + len(delim)
+                    delim, open_line, i = None, 0, i + len(delim)
                 else:
                     i += 1
                 continue
             if in_block:
                 if raw.startswith("*/", i):
-                    in_block, i = False, i + 2
+                    in_block, open_line, i = False, 0, i + 2
                 else:
                     i += 1
                 continue
             if raw.startswith('"""', i) or raw.startswith("'''", i):
-                delim, i = raw[i : i + 3], i + 3
+                delim, open_line, i = raw[i : i + 3], n, i + 3
                 continue
             if backticks and raw[i] == "`":
                 stack.append(None)
                 i += 1
                 continue
             if raw.startswith("/*", i):
-                in_block, i = True, i + 2
+                in_block, open_line, i = True, n, i + 2
                 continue
             if raw[i] == "#" or raw.startswith("//", i):
                 break
@@ -1304,7 +1429,20 @@ def _walk_string_state(
             if not raw[i].isspace():
                 prev = raw[i]
             i += 1
-    return masked, bool(stack)
+    # A run still open at EOF is a walk that lost track, not a file with an
+    # unterminated construct, and masking to EOF hides every definition below
+    # it. The template-literal stack has had this containment since the backtick
+    # work; ``delim`` and ``/* */`` never did, and both fire on the same shape --
+    # a delimiter belonging to another language, sitting inside a string this
+    # walk cannot see. Measured on Rust: ``${0%/*}`` in a raw string masked 103
+    # lines and cost 6 real ``fn``; ``description = """#`` masked 3,002 and cost
+    # 10. Discarding the trailing run under-masks instead, which costs a
+    # spurious name in a list rather than an absent real one.
+    if delim is not None:
+        strings = {n for n in strings if n < open_line}
+    elif in_block:
+        comments = {n for n in comments if n < open_line}
+    return strings, comments, bool(stack)
 
 
 def _has_backtick_strings(file_path: str) -> bool:
@@ -1313,10 +1451,20 @@ def _has_backtick_strings(file_path: str) -> bool:
     return dot != -1 and file_path[dot:].lower() in _BACKTICK_STRING_SUFFIXES
 
 
+class _Masked(NamedTuple):
+    """1-based line numbers, split by what is hiding them.
+
+    ``all`` is precomputed rather than unioned per call: every caller wants it,
+    and this is a cached whole-file walk.
+    """
+
+    strings: frozenset[int]
+    comments: frozenset[int]
+    all: frozenset[int]
+
+
 @lru_cache(maxsize=8)
-def _string_masked_lines(
-    lines: tuple[str, ...], backticks: bool = True
-) -> frozenset[int]:
+def _string_masked_lines(lines: tuple[str, ...], backticks: bool = True) -> _Masked:
     """1-based line numbers that START inside a multi-line string or comment.
 
     Repowise's own docstrings are full of indented ``def``/``class`` examples,
@@ -1347,7 +1495,9 @@ def _string_masked_lines(
     synthetic 1.2 MB file with one stray backtick on line 1. Bounded at two
     walks, and the cache means it is paid once per file.
     """
-    masked, template_left_open = _walk_string_state(lines, backticks=backticks)
+    strings, comments, template_left_open = _walk_string_state(
+        lines, backticks=backticks
+    )
     if template_left_open:
         # The lexer-lite lost track: a template literal opened and never closed,
         # so every line below it is masked to EOF and every definition there is
@@ -1355,8 +1505,10 @@ def _string_masked_lines(
         # missing symbols -- so it must not be the one we ship. Fall back to the
         # pre-backtick walk for this file, which under-masks instead: the cost is
         # a spurious name in a list, not an absent real one.
-        masked, _ = _walk_string_state(lines, backticks=False)
-    return frozenset(masked)
+        strings, comments, _ = _walk_string_state(lines, backticks=False)
+    return _Masked(
+        frozenset(strings), frozenset(comments), frozenset(strings | comments)
+    )
 
 
 def _indent_width(raw: str) -> int:
@@ -1409,7 +1561,8 @@ def withheld_definitions(
     lines = text.splitlines()
     if lo < 1 or lo > len(lines):
         return []
-    masked = _string_masked_lines(tuple(lines), _has_backtick_strings(path))
+    mask = _string_masked_lines(tuple(lines), _has_backtick_strings(path))
+    masked = mask.all
 
     def _entry(line_no: int, m: re.Match[str], *, cut: bool = False) -> dict:
         name = m.group("name")
@@ -1460,7 +1613,16 @@ def withheld_definitions(
         and n not in masked
         and lines[n - 1].strip()[0] not in ")]}{"
     ]
-    if _usable:
+    if lo in mask.strings:
+        # The cut is INSIDE a multi-line string, so the expression holding that
+        # string -- and everything enclosing it -- is still open at ``lo``.
+        # Without this the anchor reads from the first line BELOW the string,
+        # usually a top-level declaration at column 0, and the walk dies at once
+        # (D9: 8 real definitions lost across cli/cli and mui). A block COMMENT
+        # cannot stand in for this: one sitting between two methods would report
+        # the preceding method as continuing when it has already ended.
+        anchor = _UNBOUNDED_INDENT
+    elif _usable:
         anchor = _indent_width(lines[_usable[0] - 1])
     elif any(lines[n - 1].strip() for n in range(lo, _end + 1)):
         # Every withheld line is a string body or a bracket tail, so whatever

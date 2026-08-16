@@ -554,7 +554,8 @@ repowise risk [REVSPEC] [OPTIONS]
 ### Examples
 
 ```bash
-repowise risk                 # score HEAD
+repowise risk                 # score uncommitted work, else HEAD
+repowise risk HEAD            # score the last commit
 repowise risk main..HEAD      # score a branch / PR range
 repowise risk --ext .ts,.tsx
 ```

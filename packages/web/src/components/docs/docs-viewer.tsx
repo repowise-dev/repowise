@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils/cn";
 import { getGitMetadata } from "@/lib/api/git";
 import { summarizeFixHistory } from "@repowise-dev/ui/lib/fix-history";
 import { DocsReader } from "@repowise-dev/ui/docs/docs-reader";
+import { docsPagePath, fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { isModelWrittenType } from "@repowise-dev/ui/lib/page-types";
 import { PageGenerateButton } from "./page-generate-button";
 import { Badge } from "@repowise-dev/ui/ui/badge";
@@ -252,6 +253,8 @@ interface DocsViewerProps {
   sidebarOpen: boolean;
   /** Called once an inline page upgrade completes so the host refreshes. */
   onGenerated?: () => void;
+  /** A `?page=` id whose fetch settled with nothing. See `DocsReader`. */
+  missingPageId?: string | undefined;
 }
 
 /**
@@ -269,10 +272,15 @@ export function DocsViewer({
   persona,
   sidebarOpen,
   onGenerated,
+  missingPageId,
 }: DocsViewerProps) {
   const buildPageHref = useCallback(
-    (pageId: string) =>
-      `/repos/${repoId}/docs?page=${encodeURIComponent(pageId)}`,
+    (pageId: string) => docsPagePath(`/repos/${repoId}`, pageId),
+    [repoId],
+  );
+
+  const buildFileHref = useCallback(
+    (filePath: string) => fileEntityPath(`/repos/${repoId}`, filePath),
     [repoId],
   );
 
@@ -305,6 +313,8 @@ export function DocsViewer({
       persona={persona}
       sidebarOpen={sidebarOpen}
       buildPageHref={buildPageHref}
+      buildFileHref={buildFileHref}
+      missingPageId={missingPageId}
       LinkComponent={Link}
       upgradeSlot={
         page && isModelWrittenType(page.page_type) ? (

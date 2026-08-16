@@ -206,6 +206,10 @@ async def _resolve_call_graph(
             "confidence": e.confidence,
             "edge_type": e.edge_type,
         }
+        # Which resolution strategy produced the edge. Absent on an index built
+        # before origins were stamped, so it is added only when present.
+        if e.resolution_origin:
+            entry["via"] = e.resolution_origin
         if is_caller:
             callers.append(entry)
         else:

@@ -1,8 +1,16 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { FileDecisionsTab } from "../../src/files/file-decisions-tab.js";
 import { FilePage } from "../../src/files/file-page.js";
+import { FilePageHeader } from "../../src/files/file-page-header.js";
+import { buildFilePanels } from "../../src/files/file-page-panels.js";
+import { fileTabsFor, type FilePageTab } from "../../src/files/file-page-tabs.js";
 import type { FileDetailResponse, GoverningDecisionRef } from "@repowise-dev/types/files";
+
+// jsdom has no scrollIntoView; `ViewTabs` keeps the active tab in view on mount.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 function makeDecision(id: string, title: string, status: string): GoverningDecisionRef {
   return { id, title, status };
@@ -57,50 +65,68 @@ describe("FileDecisionsTab", () => {
   });
 });
 
-describe("FilePage - Governing Decisions Header & Tab", () => {
-  it("renders header summary and Decisions tab when decisions exist", () => {
-    const decisions = [
+/** The page as the route composes it: panels rendered ahead of the shell, the
+ *  shell client-only. Written out here rather than hidden behind a helper so a
+ *  regression that puts a tab body back inside the client bundle shows up as a
+ *  test that no longer compiles. */
+function renderPage(
+  data: FileDetailResponse,
+  extra: { initialTab?: FilePageTab; onTabChange?: (t: FilePageTab) => void } = {},
+) {
+  const tabs = fileTabsFor(data);
+  const panels = buildFilePanels({
+    data,
+    linkPrefix: "/repos/r1",
+    fileHref: (p) => `/repos/r1/files/${p}`,
+    symbolHref: (s) => `/repos/r1/symbols/${s}`,
+  });
+  return render(
+    <FilePage
+      header={<FilePageHeader data={data} linkPrefix="/repos/r1" />}
+      tabs={tabs}
+      panels={panels}
+      {...extra}
+    />,
+  );
+}
+
+describe("FilePage — the tab row", () => {
+  it("badges the Decisions tab with its count when decisions exist", () => {
+    const data = makeMockFileData([
       makeDecision("d1", "Keep branch names generic", "active"),
       makeDecision("d2", "Use TypeScript strictly", "active"),
-    ];
-    const data = makeMockFileData(decisions);
+    ]);
 
-    render(<FilePage data={data} repoId="r1" />);
+    renderPage(data);
 
-    expect(screen.getByText("Governed by")).toBeTruthy();
-    expect(screen.getByText("2 decisions")).toBeTruthy();
     expect(screen.getByRole("tab", { name: /decisions 2/i })).toBeTruthy();
   });
 
-  it("hides header summary line and Decisions tab when governing_decisions is empty", () => {
-    const data = makeMockFileData([]);
+  it("drops the Decisions tab entirely when governing_decisions is empty", () => {
+    renderPage(makeMockFileData([]));
 
-    render(<FilePage data={data} repoId="r1" />);
-
-    expect(screen.queryByText("Governed by")).toBeNull();
     expect(screen.queryByRole("tab", { name: /decisions/i })).toBeNull();
   });
 
-  it("switches to Decisions tab when clicking header summary line", () => {
-    const decisions = [makeDecision("d1", "Single decision title", "active")];
-    const data = makeMockFileData(decisions);
+  it("shows the decisions panel and reports the change when the tab is clicked", () => {
+    const data = makeMockFileData([makeDecision("d1", "Single decision title", "active")]);
     const onTabChange = vi.fn();
 
-    render(<FilePage data={data} repoId="r1" onTabChange={onTabChange} />);
-
-    const headerButton = screen.getByRole("button", { name: /governed by 1 decision/i });
-    fireEvent.click(headerButton);
+    renderPage(data, { onTabChange });
+    fireEvent.click(screen.getByRole("tab", { name: /decisions 1/i }));
 
     expect(onTabChange).toHaveBeenCalledWith("decisions");
-    expect(screen.getByRole("tab", { name: /decisions 1/i }).getAttribute("aria-selected")).toBe("true");
+    expect(
+      screen.getByRole("tab", { name: /decisions 1/i }).getAttribute("aria-selected"),
+    ).toBe("true");
     expect(screen.getByText("Single decision title")).toBeTruthy();
   });
 
   it("falls back to overview if initialTab is decisions but governing_decisions is empty", () => {
-    const data = makeMockFileData([]);
+    renderPage(makeMockFileData([]), { initialTab: "decisions" });
 
-    render(<FilePage data={data} repoId="r1" initialTab="decisions" />);
-
-    expect(screen.getByRole("tab", { name: /overview/i }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: /overview/i }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
   });
 });

@@ -675,6 +675,22 @@ async def update_health_finding_status(
 # Declining-Health baseline plenty of headroom.
 HEALTH_SNAPSHOT_RETENTION: int = 50
 
+#: How many snapshots a *single file's* trend line reads. Every snapshot row
+#: carries two whole-repo ``{path: float}`` maps, so a route that wants one
+#: path's score series pays the entire retention window in TEXT to extract a
+#: handful of floats. Twenty points is more than the decline heuristics need
+#: (``DECLINE_LOOKBACK`` is 5) and more than the sparkline can usefully draw.
+#:
+#: One knock-on: ``FileTrend.snapshot_count`` is documented as the size of the
+#: whole repo window, and on the two routes that pass this it becomes the size
+#: of *this* window instead. Nothing reads that field off a per-file trend
+#: today — the dashboard and the trend view read it off the repo-level routes,
+#: which are unlimited and unchanged. Projecting one path's series in SQL would
+#: keep the count true and drop the bytes further, but no query in this module
+#: extracts from a JSON column and doing that portably across SQLite and
+#: PostgreSQL is its own change.
+FILE_TREND_SNAPSHOT_WINDOW: int = 20
+
 
 async def save_health_snapshot(
     session: AsyncSession,
@@ -739,17 +755,30 @@ async def list_health_snapshots(
 ) -> list[HealthSnapshot]:
     """Return snapshots **oldest-first** (the shape ``trends.diff_snapshots``
     expects). Pass ``limit`` to cap the most recent N (still returned
-    oldest-first for stable iteration)."""
+    oldest-first for stable iteration).
+
+    ``limit`` is pushed into SQL rather than applied to the fetched list. Every
+    row carries ``per_file_scores_json`` and ``per_file_deductions_json``, both
+    whole-repo ``{path: float}`` maps, and the table keeps
+    ``HEALTH_SNAPSHOT_RETENTION`` (50) of them — so trimming in Python read the
+    entire history off disk to throw most of it away. Taking the newest N
+    descending and reversing gives the same list for a fraction of the bytes.
+    """
+    if limit is not None:
+        newest_first = await session.execute(
+            select(HealthSnapshot)
+            .where(HealthSnapshot.repository_id == repository_id)
+            .order_by(HealthSnapshot.taken_at.desc(), HealthSnapshot.id.desc())
+            .limit(limit)
+        )
+        return list(reversed(newest_first.scalars().all()))
     q = (
         select(HealthSnapshot)
         .where(HealthSnapshot.repository_id == repository_id)
         .order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
     )
     result = await session.execute(q)
-    rows = list(result.scalars().all())
-    if limit is not None and len(rows) > limit:
-        rows = rows[-limit:]
-    return rows
+    return list(result.scalars().all())
 
 
 class HealthSnapshotScalars(NamedTuple):

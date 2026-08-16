@@ -190,6 +190,13 @@ def save_repo_env_key(
     elif not found:
         existing_lines.append(f"{env_var}={value}")
 
+    # Ignore rule first, secret second. If the .gitignore write fails (a
+    # read-only checkout, a root-owned file) this raises before the key is on
+    # disk, rather than after. The failure then costs the user a saved key
+    # instead of leaving a committable one behind.
+    if ensure_gitignored and value is not None:
+        _ensure_env_gitignored(repo_path)
+
     env_dir.mkdir(parents=True, exist_ok=True)
     env_file.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
     # The file holds API keys; keep it owner-only where the OS honours it
@@ -200,9 +207,6 @@ def save_repo_env_key(
         os.chmod(env_file, 0o600)
     except OSError:
         pass
-
-    if ensure_gitignored:
-        _ensure_env_gitignored(repo_path)
 
 
 def _ensure_env_gitignored(repo_path: Path | str) -> None:

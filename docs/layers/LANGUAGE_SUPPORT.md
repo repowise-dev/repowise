@@ -26,7 +26,7 @@ produce meaningful output.
 | Tier | Languages | What works |
 |------|-----------|------------|
 | [**Full**](#full-tier) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
-| [**Good**](#good-tier) | C · Swift · PHP · Dart · Object Pascal | Everything above except code-health markers (C, Swift, PHP, Object Pascal; Dart *does* get health markers). Dedicated workspace resolvers and framework edges per language, except Object Pascal, which resolves imports via the generic stem-map fallback (see [Known gaps](#object-pascal-known-gaps)) |
+| [**Good**](#good-tier) | C · Swift · PHP · Dart · Object Pascal | Everything above except code-health markers (C, Swift, PHP; Dart and Object Pascal *do* get health markers). Dedicated workspace resolvers and framework edges per language, except Object Pascal, which resolves imports via the generic stem-map fallback (see [Known gaps](#object-pascal-known-gaps)) |
 | [**SQL / dbt**](#sql--dbt) | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
 | **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
@@ -44,7 +44,7 @@ produce meaningful output.
 | Call graph edges | ✅ | ✅ | - | - | - |
 | Heritage (extends/implements) | ✅ | ✅ | - | - | - |
 | Named bindings | ✅ | ✅ | - | - | - |
-| Code-health markers | ✅² | Dart only | - | - | - |
+| Code-health markers | ✅² | Dart, Object Pascal | - | - | - |
 | Dead code detection | ✅ | ✅ | ✅ | ✅ | - |
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
@@ -170,7 +170,7 @@ mixins). Dedicated workspace resolvers per language.
 | **Swift** | `.swift` | `import` with SPM `Package.swift` target → directory mapping; intra-module type references; `@main` entry points |
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs; `package:` via every `pubspec.yaml`; Flutter route tables and `runApp()` edges; **code-health markers** |
-| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses UnitA, UnitB;` resolved via the generic unit-name → file-stem fallback (no dedicated resolver); `.dpr`/`.dpk`/`.lpr` project files as entry points |
+| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses UnitA, UnitB;` resolved via the generic unit-name → file-stem fallback (no dedicated resolver); `.dpr`/`.dpk`/`.lpr` project files as entry points; **code-health markers** |
 
 ### Object Pascal known gaps
 
@@ -191,8 +191,20 @@ are less battle-tested than C/Swift/PHP/Dart's:
   Lightweight tier, rather than a project-file-aware resolver — accurate for
   the near-universal "unit name equals file stem" convention, wrong when it
   doesn't hold.
-- **No code-health markers yet** (complexity, duplication, dataflow dialects
-  aren't registered for Pascal).
+- **No class-level metrics (LCOM4 / god-class).** Pascal splits a class into
+  an interface-only declaration (method signatures, no bodies) and a fully
+  separate implementation section where each qualified method (`TFoo.Bar`) is
+  its own top-level node — there is no single AST node that groups a type's
+  method *bodies* the way class-level analysis expects. Same posture as Go
+  (external-receiver methods): left unmapped rather than emitting classes
+  with `method_count == 0`. Function-level complexity/nesting and duplication
+  are unaffected — see [code-health coverage](#code-health-coverage).
+- **No assertion-smell or performance-risk markers yet** (no assert-call or
+  call-node kinds registered).
+- **No Extract Method (dataflow) support yet** — the CFG builder has real
+  branch/loop/try node kinds, but no `DefUseDialect` is registered, so
+  def/use and reaching-definitions stay silent (the same "later" state as
+  C# / Kotlin / Scala / Ruby).
 - **One known grammar gap left unhandled deliberately:** an anonymous
   `array[...] of record ... end` element type has no tree-sitter-pascal rule
   and degrades to a wrong `parent_name` for whatever the same class declares
@@ -314,6 +326,7 @@ is "Full" vs "Good".
 | Scala | ✅ | ✅ | ✅⁴ | later | ✅⁵ |
 | Ruby | ✅ | ✅⁶ | ✅⁷ | later | ✅⁸ |
 | Shell | ✅⁹ | n/a | n/a | n/a | n/a |
+| Object Pascal | ✅ | n/a¹⁴ | later | later | n/a |
 
 ¹ Go methods attach to a type via an external receiver rather than nesting in a
 class body, so class-level metrics aren't computable; Go gets the function- and
@@ -413,6 +426,18 @@ body/else resolution in the CFG core.
 `&&` / `||` command lists count toward CCN (`cmd || exit 1` is +1), which is
 honest: shell branching is chained command lists. There are no classes,
 assertions, dataflow, or perf dialect for shell.
+
+¹⁴ **Pascal has no single node grouping a type's method bodies.** A class
+declaration (`declType` → `declClass`) holds only method *signatures*
+(`declProc`, no body); the implementation of each qualified method
+(`TFoo.Bar`) is a separate top-level node keyed by name, not nested inside
+the class. Class-level analysis expects methods physically nested in the
+class node, so mapping it here would silently emit a `ClassComplexity` with
+`method_count == 0` for every class — same posture as Go's external-receiver
+methods (footnote 1): left unmapped rather than emit a misleading zero.
+Function-level complexity/nesting/cognitive and the CFG (branch/loop/try/with,
+raise) are unaffected; no `DefUseDialect` is registered yet, so Extract Method
+stays at "no signal" like C# / Kotlin / Scala / Ruby.
 
 The **performance** signal (`io_in_loop`, `string_concat_in_loop`,
 `resource_construction_in_loop`, language-specific markers like Go

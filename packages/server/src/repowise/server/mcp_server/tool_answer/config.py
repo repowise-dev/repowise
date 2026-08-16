@@ -8,6 +8,8 @@ with a coverage re-ranker, not of any particular codebase.
 
 from __future__ import annotations
 
+import os
+
 from repowise.server.mcp_server._query_terms import STOPWORDS
 
 # How many top retrieval hits to enrich with WikiSymbol context. Enriching
@@ -29,6 +31,26 @@ _MAX_SYMBOLS_PER_HIT = 4
 # specific-method questions get hedged answers even on dominant retrievals.
 _MATCHED_SYMBOL_DOC_CHARS = 400
 _MATCHED_SYMBOL_SOURCE_LINES = 40
+
+# Which symbols survive the per-file cap. A `start_line` tiebreak served a
+# document-order prefix, so on a file larger than its symbol budget the symbol
+# the question was about could not be reached at all. Scoring the already-loaded
+# name / signature / docstring against the question's content terms changes which
+# symbols fill the same budget, not how many: no extra I/O, no prompt growth.
+# A name hit outranks a signature hit outranks a mention in the docstring. With
+# no signal every score is 0 and the sort falls back to `start_line` as before.
+_RELEVANCE_NAME_WEIGHT = 3
+_RELEVANCE_SIG_WEIGHT = 2
+_RELEVANCE_DOC_WEIGHT = 1
+# Score the docstring's opening prose only, so a long one can't out-score a
+# precise name on word count alone.
+_RELEVANCE_DOC_CHARS = 400
+# A source excerpt used to require a question IDENTIFIER match, so a question
+# phrased in prose reached the right symbols and then showed only their
+# signatures — the "excerpts don't include the actual code" answer. The leading
+# few symbols the question scored against get a body too. Bounded hard: this is
+# the one part of the change that adds prompt text.
+_RELEVANT_EXCERPT_MAX_SYMBOLS = 2
 
 # How many question-named symbol bodies get_answer inlines in `symbol_bodies`.
 # The hydrator already reads these bodies live for synthesis; surfacing them
@@ -140,15 +162,26 @@ _KIND_PRIORITY = {"class": 0, "interface": 0, "function": 1, "method": 2}
 # cache-write cost on follow-up turns.
 _MAX_SYMBOL_DOC_CHARS = 120
 
-# Confidence gate for synthesis. When the top retrieval hit is NOT clearly
-# dominant relative to the second-best hit, skip LLM synthesis and return
-# ranked snippets only. This forces the agent to ground in source rather than
-# trust a possibly-wrong frame. Generic, repo-agnostic, no question parsing.
-# Failure modes addressed:
-#   (a) wrong-target retrieval where top-1 and top-2 are both plausible;
-#   (b) synthesis hallucination on tangential top hits.
+# The lower tier of the dominance test: how far the top hit must outscore the
+# runner-up, as a multiple, when neither score is strong enough for the absolute
+# gap below. Generic, repo-agnostic, no question parsing. The failure modes it
+# addresses are (a) wrong-target retrieval where top-1 and top-2 are both
+# plausible and (b) synthesis hallucination on tangential top hits.
+#
+# It no longer decides WHETHER to synthesise — under the always-synthesize
+# default that gate is gone, and dominance feeds the confidence grade, the
+# retrieval rating and the ambiguity caveat instead.
 _DOMINANCE_RATIO = 1.2
 _COVERAGE_THRESHOLD = 0.66
+
+# The second tier of the dominance test. Where both scores are excellent a close
+# ratio is expected — 6.0 vs 5.4 is a clear win that reads as 1.11x — so above
+# the score floor below, dominance is measured as an absolute gap instead. Held
+# here beside the ratio because ``is_dominant`` is the sole reader of all three;
+# they were inline in the answer module while a second, ratio-only copy of the
+# test lived in the grade, and the two disagreed in exactly this window.
+_DOMINANCE_ABS_SCORE_FLOOR = 3.0
+_DOMINANCE_ABS_GAP = 0.5
 
 # Agreement-aware dominance. The dominance ratio above is computed on
 # RRF-fused scores, and RRF *compresses*: a page both retrievers rank #1
@@ -402,7 +435,25 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # degraded returns, so a degraded payload has never been written to it. The
 # synthesised shape is untouched. A bump here would invalidate every keyed
 # install's cache, and re-synthesis is real provider spend, for nothing.
-_ANSWER_SCHEMA_VERSION = 15
+# v16: the same scanner again, in three places, and unlike the degraded rework
+# above every one of them changes the SYNTHESISED payload, which is the shape
+# that gets cached. (1) A run left open at end of file no longer masks to EOF,
+# so definitions below a phantom `"""` or `/*` are listed again — 26 real Rust
+# definitions across two corpus files, one of which had 3,002 lines masked.
+# (2) A cut inside a multi-line string keeps the symbol enclosing it, which
+# changes which entry is the HEADLINE `body_continues`, and therefore the note
+# and the get_symbol pointer. (3) An unverified symbol bound is clamped to the
+# live file, so a body served whole is no longer flagged `truncated` — and
+# v13/v14 cap confidence on that flag, so a cached row can carry a `medium`
+# this version would not produce. Cached pre-v16 rows carry all three, so they
+# must bypass.
+# v17: `confidence` itself moves. Dominance now has one owner, so a retrieval
+# with a strong absolute gap but a compressed ratio grades high where a cached
+# v16 row holds medium; and answer-grounding no longer earns high over a weak
+# retrieval, so the reverse case is cached too. The note is rewritten from the
+# reason the grade was reached rather than from the bare fact that it is high,
+# so v16 rows carry a note this version would not produce.
+_ANSWER_SCHEMA_VERSION = 17
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
@@ -489,3 +540,110 @@ material if no signature, docstring, or source body in the excerpts is
 relevant. Do not assert that what you were shown is the complete set
 of sites; qualify causal claims when a symbol's body was truncated.
 """
+
+
+# --- Feature flags -----------------------------------------------------------
+# Every REPOWISE_ANSWER_* switch, read at call time so a test or an eval arm can
+# flip one between calls. Each is independently reversible on purpose: they were
+# added one at a time and an A/B must be able to switch one without the others.
+
+# Always-synthesize. Default ON: synthesis runs for every retrieval and the
+# post-synthesis grading cascade demotes confidence instead of the tool
+# abstaining, so coverage matches a research assistant that answers every
+# question. Falsey restores the legacy abstain-on-ambiguous behaviour.
+_ALWAYS_SYNTHESIZE_ENV = "REPOWISE_ANSWER_ALWAYS_SYNTHESIZE"
+# Retriever-agreement confidence lift (the measured FTS + vector pair).
+_AGREEMENT_CONFIDENCE_ENV = "REPOWISE_ANSWER_AGREEMENT_CONFIDENCE"
+# The keyless-only half of that signal (FTS + symbol in place of FTS + vector,
+# which a keyless index can never produce). Its own flag on purpose: it
+# substitutes a leg the fusion already prices at a third weight, so it must be
+# reversible WITHOUT also switching off the measured half.
+_SYMBOL_AGREEMENT_ENV = "REPOWISE_ANSWER_SYMBOL_AGREEMENT"
+# Keep the exact_symbol union fast path from hijacking a "how does X work"
+# mechanism question, whose real answer often lives in a different file than the
+# named symbol's body.
+_UNION_MECHANISM_DEFER_ENV = "REPOWISE_ANSWER_UNION_MECHANISM_DEFER"
+# Require the answer's central named mechanism symbol to be grounded in served
+# source before a mechanism/how answer may be stamped high.
+_CLAIM_SUPPORT_GATE_ENV = "REPOWISE_ANSWER_CLAIM_SUPPORT_GATE"
+# Let a response earn "high" on a non-dominant retrieval — the served body of
+# the symbol the question named — rather than only a clear dominance margin.
+_EARN_HIGH_GROUNDING_ENV = "REPOWISE_ANSWER_EARN_HIGH_GROUNDING"
+# The other half of that lift, and OFF by default: earning high from the prose
+# being consistent with the material it was shown.
+#
+# It is only ever reachable over a weak retrieval. Earning high requires the top
+# score to clear the confidence floor, and a retrieval that clears the floor and
+# dominates is already high without earning anything — so the lift fires exactly
+# when ``retrieval_quality`` reads "weak", which is the pipeline reporting that
+# it may have surfaced the wrong material. Frame-term grounding cannot answer
+# that: it checks that the answer named nothing retrieval did not show it, which
+# is evidence against fabrication and says nothing about whether the material
+# was the right material. The served-body lift above CAN answer it — that body
+# is exact-name resolution rather than ranking, and the source is in the payload
+# — which is why the two are split rather than capped together.
+#
+# On for the previous behaviour, where grounded prose over a tied top pair
+# returned high with "do not re-read the source unless a specific detail is
+# missing".
+_EARN_HIGH_ON_WEAK_RETRIEVAL_ENV = "REPOWISE_ANSWER_EARN_HIGH_ON_WEAK_RETRIEVAL"
+
+# Test/eval hook: skip the answer cache entirely (both read and write). The
+# cache keys on (repo, question) only — not on feature-flag state — so an A/B
+# eval that flips the flags above between arms would otherwise read the first
+# arm's cached answers. Off by default.
+_DISABLE_CACHE_ENV = "REPOWISE_ANSWER_DISABLE_CACHE"
+
+# Opt-in: strip re-read evidence from high-confidence answers. A high answer's
+# contract is "cite this, do not re-read the source", so the bodies, quotes,
+# flow_path and candidate evidence are payload the consumer was told it does not
+# need. Off by default; only safe once high-confidence answers are reliable
+# enough that the prose + citation suffices, else the agent calls get_symbol and
+# adds a round-trip.
+_LEAN_HIGH_ENV = "REPOWISE_ANSWER_LEAN_HIGH"
+
+# Re-read evidence stripped from a lean high answer. NOT stripped: answer,
+# citations, confidence, retrieval_quality, fallback_targets, note, _meta.
+_LEAN_HIGH_DROP_KEYS = ("symbol_bodies", "quotes", "flow_path", "best_guesses", "code_rationale")
+
+
+def _flag_on(env_name: str) -> bool:
+    """A REPOWISE_* feature flag: on by default, off for {0,false,no,off}."""
+    return os.environ.get(env_name, "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _opt_in(env_name: str) -> bool:
+    """A REPOWISE_* feature flag: off by default, on for {1,true,yes,on}."""
+    return os.environ.get(env_name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _always_synthesize() -> bool:
+    """Whether to always synthesize (default) or keep the legacy abstain gate."""
+    return _flag_on(_ALWAYS_SYNTHESIZE_ENV)
+
+
+def _agreement_confidence_enabled() -> bool:
+    """Whether retriever-agreement lifts confidence (default) or pure ratio rules.
+
+    Falsey restores the exact prior RRF-compressed ratio/gap behaviour, for A/B
+    measurement and instant reversibility.
+    """
+    return _flag_on(_AGREEMENT_CONFIDENCE_ENV)
+
+
+def _symbol_agreement_enabled() -> bool:
+    """Whether a keyless index may read agreement from FTS + the symbol leg.
+
+    Independently reversible from :func:`_agreement_confidence_enabled`, which
+    governs the measured FTS + vector pair. Off restores the state where a
+    keyless index simply cannot earn the agreement lift.
+    """
+    return _flag_on(_SYMBOL_AGREEMENT_ENV)
+
+
+def _cache_disabled() -> bool:
+    return _opt_in(_DISABLE_CACHE_ENV)
+
+
+def _lean_high() -> bool:
+    return _opt_in(_LEAN_HIGH_ENV)

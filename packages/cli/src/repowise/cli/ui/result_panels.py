@@ -1,35 +1,36 @@
-"""Analysis-summary, completion, and next-step panels."""
+"""Analysis readout, completion panel, and the notes that sit beside it.
+
+One panel per run, and it is the last thing printed. Everything else on these
+screens is a readout — the analysis interstitial, the MCP note, the list of
+files init wrote into the working tree — and readouts get a section heading and
+vertical rhythm rather than a border, because a border means "a discrete object
+you act on" and none of them is.
+
+The completion panel carries **two** commands. It used to carry up to seven,
+assembled from every signal the run produced: the dashboard, the mode's upgrade
+path, a manual MCP row, two hook installs, dead code, the top hotspot, and the
+decision count. Each was individually justified and the pile was not — a list
+of seven next steps does not tell you what to do next, it tells you the program
+knows seven things. So the panel names the dashboard and the one move that most
+needs making, and the states that are not commands moved out to the dim notes
+below it, where they were always supposed to live.
+"""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from rich.console import Group
+from rich.console import Console, Group
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
-from repowise.cli.ui.brand import BRAND
+from repowise.cli.ui.brand import BRAND, DIM, VALUE, key_value_table, print_section
 from repowise.cli.ui.mascot import EYES_HAPPY, mini
 
 
-def build_metrics_table(metrics: list[tuple[str, str]], *, label_width: int = 20) -> Table:
-    """Two-column ``label / value`` table, the shape every summary panel uses.
-
-    Rich owns the gutter, which is what the analysis panel's hand-padded row
-    labels could not do: ``Decisions`` is one character longer than the 9-column
-    gutter ``Graph`` / ``Git`` / ``Dead`` were padded to, so its value started a
-    column right of the others.
-    """
-    table = Table(box=None, padding=(0, 2), show_header=False)
-    table.add_column("Metric", style="dim", min_width=label_width)
-    table.add_column("Value", style="bold")
-    for label, value in metrics:
-        table.add_row(label, value)
-    return table
-
-
-def build_analysis_summary_panel(
+def print_analysis_summary(
+    console: Console,
     *,
     file_count: int,
     symbol_count: int,
@@ -43,61 +44,43 @@ def build_analysis_summary_panel(
     hotspot_count: int = 0,
     community_count: int = 0,
     lang_summary: str = "",
-) -> Panel:
-    """Compact analysis-complete interstitial shown before generation."""
-    header = Text.from_markup(
-        f"  [bold]{file_count:,}[/bold] files · "
-        f"[bold]{symbol_count:,}[/bold] symbols"
+) -> None:
+    """Print the analysis-complete readout shown before generation."""
+    # The headline is printed rather than passed as the blurb: ``print_section``
+    # dims its blurb, and a bold count inside a dim wrapper renders bold *and*
+    # dim, which is quieter than the plain bold it replaced.
+    print_section(console, "Analysis complete")
+    headline = (
+        f"[bold]{file_count:,}[/bold] files · [bold]{symbol_count:,}[/bold] symbols"
         + (f" · [bold]{community_count}[/bold] communities" if community_count else "")
     )
-    parts: list[Any] = [header]
+    console.print(f"  {headline}")
     if lang_summary:
-        parts.append(Text(f"  {lang_summary}", style="dim"))
-    parts.append(Text(""))
+        console.print(f"  [dim]{lang_summary}[/dim]")
+    console.print()
 
-    metrics: list[tuple[str, str]] = [
-        ("Graph", f"[bold]{graph_nodes:,}[/bold] nodes · [bold]{graph_edges:,}[/bold] edges")
+    rows: list[tuple[str, str]] = [
+        ("Graph", f"{graph_nodes:,} nodes · {graph_edges:,} edges"),
     ]
     if git_files:
-        metrics.append(
+        rows.append(
             (
                 "Git",
-                f"[bold]{git_files:,}[/bold] files indexed"
-                + (f" · [bold]{hotspot_count}[/bold] hotspots" if hotspot_count else ""),
+                f"{git_files:,} files indexed"
+                + (f" · {hotspot_count} hotspots" if hotspot_count else ""),
             )
         )
     if dead_unreachable or dead_unused:
-        # "Dead" was an adjective with the noun dropped for column width; the
-        # table has no fixed width to protect.
-        metrics.append(
+        rows.append(
             (
                 "Dead code",
-                f"[bold]{dead_unreachable}[/bold] unreachable · "
-                f"[bold]{dead_unused}[/bold] unused exports"
+                f"{dead_unreachable} unreachable · {dead_unused} unused exports"
                 + (f" · ~{dead_lines:,} lines" if dead_lines else ""),
             )
         )
     if decision_count:
-        metrics.append(("Decisions", f"[bold]{decision_count}[/bold] extracted"))
-    parts.append(build_metrics_table(metrics, label_width=11))
-
-    return Panel(
-        Group(*parts),
-        title="[bold]Analysis Complete[/bold]",
-        border_style=BRAND,
-        padding=(1, 1),
-    )
-
-
-def _render_what_next_lines(next_steps: list[tuple[str, str]]) -> list[str]:
-    """Format the ``What's next:`` rows for the completion panel.
-
-    Pads short commands to a 28-column gutter for alignment, but always
-    inserts at least one space between command and description so a long
-    command like ``repowise init --provider gemini`` (>28 chars) doesn't
-    run straight into its description text.
-    """
-    return [f"  {cmd:<28} {desc}" for cmd, desc in next_steps]
+        rows.append(("Decisions", f"{decision_count} extracted"))
+    console.print(key_value_table(rows, label_width=11))
 
 
 def build_completion_panel(
@@ -106,20 +89,29 @@ def build_completion_panel(
     *,
     next_steps: list[tuple[str, str]] | None = None,
 ) -> Panel:
-    """Build a bordered summary panel, titled with the happy owl.
+    """Build the run's one bordered panel, titled with the happy owl.
 
-    *metrics* is a list of ``(label, value)`` pairs.
-    *next_steps* is an optional list of ``(command, description)`` pairs.
-    The mascot prefix lives here (not at call sites) so every completion
-    panel gets it consistently.
+    *metrics* is a list of ``(label, value)`` pairs. *next_steps* is at most two
+    ``(command, description)`` pairs — see :func:`build_contextual_next_steps`.
+    Both columns are laid out by Rich rather than padded by hand, so a command
+    longer than the gutter pushes the gutter instead of running into its own
+    description.
     """
-    parts: list[Any] = [build_metrics_table(metrics)]
+    parts: list[Any] = [key_value_table(metrics)]
 
     if next_steps:
         parts.append(Text(""))
         parts.append(Text("  What's next:", style="bold"))
-        for line in _render_what_next_lines(next_steps):
-            parts.append(Text(line, style="dim"))
+        # Emphasis inverted against the metrics rows above: here the left column
+        # is the command you type and the right is a gloss on it.
+        parts.append(
+            key_value_table(
+                list(next_steps),
+                label_width=24,
+                label_style=VALUE,
+                value_style=DIM,
+            )
+        )
 
     return Panel(
         Group(*parts),
@@ -140,99 +132,142 @@ def build_contextual_next_steps(
     top_hotspot: str = "",
     setup: Any = None,
 ) -> list[tuple[str, str]]:
-    """Build next-step suggestions from what the run actually did.
+    """The dashboard, then the single move that most needs making.
 
     ``repowise serve`` is the headline in every mode: the dashboard is the one
-    place the graph, hotspots, dead code, decisions and wiki are all browsable.
-    The second row is the mode's natural next move (upgrade for fast/index-only,
-    search for a written wiki).
+    place the graph, hotspots, dead code, decisions and wiki are all browsable,
+    and it is useful before any upgrade.
 
-    *setup* is an optional :class:`~repowise.cli.editor_setup.EditorSetupOutcome`.
-    When present, the panel reacts to it: a headless run gets a manual MCP row,
-    and a **non-interactive** run whose hooks are missing gets install rows
-    (an interactive run was already offered them live, so re-listing would nag).
-    The Claude Code "already connected, restart it" status is a note rendered
-    beside the panel, not a command row — see :func:`build_mcp_status_lines`.
+    The second row is the first of these that applies, in this order, which is
+    "what is stopping this index from being used at all" before "what is
+    stopping it from being finished" before "what did it find":
+
+    1. nothing wired an MCP client, so no agent can reach any of this yet;
+    2. the index is deliberately partial (fast, or index-only), so completing it
+       beats exploring it;
+    3. otherwise the largest concrete finding, and only a generic search row
+       when the run genuinely found nothing to point at.
+
+    The MCP row goes **first**, not after the mode rows. A headless index-only
+    run is the single most likely way to reach this function — it is what
+    ``--no-editor-setup --index-only`` does, which is the flag pair CI uses —
+    and with the mode check first, that run was told to go write prose while
+    nothing on the screen said how to connect a client to the index it had just
+    built. :func:`build_status_notes` stays silent for a disabled run by design,
+    so this row is the only place that information exists.
+
+    Everything that is a *state* rather than a command — a client that needs a
+    restart, a hook that is not installed — is rendered by
+    :func:`build_status_notes` below the panel instead.
     """
-    steps: list[tuple[str, str]] = []
+    steps: list[tuple[str, str]] = [
+        ("repowise serve", "open the dashboard at http://localhost:3000"),
+    ]
 
-    # Headline: the dashboard, always. Graph, hotspots and dead code are there
-    # even in fast/index-only mode, so it is useful before any upgrade.
-    steps.append(("repowise serve", "open the dashboard at http://localhost:3000"))
-
-    if fast_mode:
+    if setup is not None and getattr(setup, "editor_setup_disabled", False):
+        # Headless / CI / --no-editor-setup: nothing was wired, so the tools are
+        # unreachable until someone connects a client by hand.
+        steps.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
+    elif fast_mode:
         # Fast index: graph + essential git, no docs. Point at the full result.
         steps.append(("repowise init", "upgrade to full git history + a generated wiki"))
     elif index_only:
         # `generate` is the scoped, cost-gated upgrade path — a coverage, a
         # directory or one page at a time, each behind an estimate — not the
         # all-or-nothing `update --full` this used to suggest.
-        steps.append(("repowise generate", "upgrade the wiki to model-written prose (needs a key)"))
-    else:
-        steps.append(('repowise search "<query>"', "search the generated wiki"))
-
-    # MCP: only a manual row when nothing was auto-wired (headless/CI). When a
-    # client was registered, the "restart to load the tools" status goes in the
-    # note beside the panel instead of as a command.
-    if setup is not None and getattr(setup, "editor_setup_disabled", False):
-        steps.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
-
-    # Hooks the interactive offers would have covered live. Surface them here
-    # only for a non-interactive run (where the offers were skipped silently)
-    # and only when the hook is actually missing. A headless / skip-setup run
-    # opted out of all editor wiring, so it is never nagged to install hooks.
-    if (
-        setup is not None
-        and not getattr(setup, "interactive", False)
-        and not getattr(setup, "editor_setup_disabled", False)
-    ):
-        if not getattr(setup, "autosync_hook_installed", False):
-            steps.append(("repowise hook install", "auto-sync the index on every commit"))
-        if not getattr(setup, "rewrite_hook_installed", False):
-            steps.append(
-                ("repowise hook rewrite install", "compress noisy command output via distill")
-            )
-
-    if dead_unreachable + dead_unused > 0:
+        steps.append(("repowise generate", "write the subsystem pages with a model (needs a key)"))
+    elif dead_unreachable + dead_unused > 0:
         steps.append(
             ("repowise dead-code", f"explore {dead_unreachable + dead_unused} dead code findings")
         )
-
-    if hotspot_count > 0 and top_hotspot:
-        steps.append((f"repowise risk {top_hotspot}", "assess risk for top hotspot"))
-
-    if decision_count > 0:
+    elif hotspot_count > 0 and top_hotspot:
+        steps.append((f"repowise risk {top_hotspot}", "assess risk for the top hotspot"))
+    elif decision_count > 0:
         steps.append(("repowise decision list", f"browse {decision_count} architectural decisions"))
+    else:
+        steps.append(('repowise search "<query>"', "search the generated wiki"))
 
     return steps
 
 
-def build_mcp_status_lines(setup: Any) -> list[str]:
-    """Rich-markup status lines about MCP wiring, shown beside the panel.
+def build_status_notes(setup: Any) -> list[str]:
+    """Rich-markup notes about MCP and hook wiring, shown beside the panel.
 
     Separate from the command rows because "already connected, restart it" is a
-    state, not something to run. Returns an empty list for a headless run (the
-    manual ``repowise mcp .`` command row carries that case instead).
+    state, not something to run — and because a note can say a thing is missing
+    without implying the user must act on it now.
+
+    A run that opted out of editor wiring entirely gets nothing: it asked for
+    that, and the ``repowise mcp .`` command row already carries the one case
+    where it matters.
     """
     if setup is None or getattr(setup, "editor_setup_disabled", False):
         return []
 
-    lines: list[str] = []
+    notes: list[str] = []
     if getattr(setup, "claude_code_connected", False):
         if getattr(setup, "first_index", True):
-            lines.append(
+            notes.append(
                 "  [dim]Claude Code is connected to this repo. Restart it (or run "
                 "[bold]/mcp[/bold]) to load the repowise tools.[/dim]"
             )
         else:
-            lines.append(
+            notes.append(
                 "  [dim]Claude Code stays connected; restart it only if the tools "
                 "aren't showing.[/dim]"
             )
     # Cursor and Codex are not auto-wired (init writes the Claude/VS Code configs
     # and repo `.mcp.json`, not `.cursor/mcp.json`), so always point the way.
-    lines.append(
+    notes.append(
         "  [dim]Cursor or Codex: run [bold]repowise mcp .[/bold] "
         "(config in [bold].repowise/mcp.json[/bold]).[/dim]"
     )
-    return lines
+
+    # Hooks the interactive offers would have covered live. Surfaced only for a
+    # non-interactive run, where those offers were skipped in silence. These
+    # used to be command rows in the panel, which gave a thing nobody asked for
+    # the same weight as the dashboard.
+    if not getattr(setup, "interactive", False):
+        missing = []
+        if not getattr(setup, "autosync_hook_installed", False):
+            missing.append("[bold]repowise hook install[/bold] keeps the index synced on commit")
+        if not getattr(setup, "rewrite_hook_installed", False):
+            missing.append(
+                "[bold]repowise hook rewrite install[/bold] compresses noisy command output"
+            )
+        notes.extend(f"  [dim]{line}.[/dim]" for line in missing)
+
+    return notes
+
+
+def print_files_written(console: Console, repo_path: Path, paths: list[Path]) -> None:
+    """List what init wrote into the working tree, below the panel and dim.
+
+    Init writes editor and MCP config outside ``.repowise/`` — ``.mcp.json``,
+    ``.claude/CLAUDE.md``, the two ``.vscode`` files — and until this existed it
+    named none of them at the end of a run. The only trace was a green tick per
+    file, printed minutes earlier and scrolled away, so the first time most
+    people saw the list was in ``git status``.
+
+    Deliberately the quietest thing on the screen: it is a receipt, not a
+    result, and the reader who does not care should be able to skip it in one
+    glance. It is also the reason the note names ``--no-editor-setup`` — that
+    flag now genuinely writes none of this, so the sentence has somewhere to
+    send anyone who does not want the files.
+    """
+    if not paths:
+        return
+
+    relative: list[str] = []
+    for path in paths:
+        try:
+            relative.append(path.relative_to(repo_path).as_posix())
+        except ValueError:
+            relative.append(str(path))
+
+    console.print()
+    console.print("  [dim]Written to your repo (not gitignored): " + ", ".join(relative) + "[/dim]")
+    console.print(
+        "  [dim]These wire your editor to the index. "
+        "[bold]repowise init --no-editor-setup[/bold] skips them.[/dim]"
+    )

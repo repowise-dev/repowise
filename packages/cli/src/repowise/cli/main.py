@@ -96,3 +96,11 @@ for _name, _target in _OSS_COMMANDS:
     register_lazy_command(_name, f"{_COMMANDS_PKG}.{_target}")
 
 cli_registry.apply(cli)
+
+
+# ``python -m repowise.cli.main`` is the documented fallback when the console
+# script is shadowed, so it has to actually run. Without this it imports the
+# module, defines ``cli``, calls nothing, and exits 0 with no output — a silent
+# no-op at exactly the moment someone is already debugging their install.
+if __name__ == "__main__":
+    cli()

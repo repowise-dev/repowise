@@ -149,7 +149,7 @@ def test_semantic_search_reads_through_the_repo_resolver(
 
     seen: list[str] = []
 
-    def _record(name: str):
+    def _record(name: str, _repo_path=None):
         seen.append(name)
         return MockEmbedder()
 
@@ -254,7 +254,7 @@ async def test_reindex_persists_its_resolved_embedder(
     # _reindex imports build_embedder from this module inside the function, so
     # the module attribute is the one that takes effect.
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -303,7 +303,7 @@ async def test_reindex_does_not_pin_an_embedder_that_wrote_nothing(
         "sqlalchemy.ext.asyncio.async_sessionmaker", lambda *a, **k: lambda: _Session()
     )
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
     )
 
     await reindex_cmd._reindex(tmp_path, "openai", batch_size=8)
@@ -421,7 +421,7 @@ def test_mock_width_with_a_real_pin_proposes_a_re_embed(
     monkeypatch.delenv("REPOWISE_EMBEDDER", raising=False)
     _patch_stored_dim(monkeypatch, 8)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)
@@ -451,7 +451,7 @@ def test_two_real_widths_are_never_compared(
             return [[0.0] * 1024 for _ in texts]
 
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _MisreportingEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _MisreportingEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (None, None)
@@ -516,7 +516,7 @@ def test_a_real_pin_still_reads_the_stored_table(
 
     monkeypatch.setattr("repowise.cli.providers.vector_store.existing_vector_dim", _spy)
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n: _WideEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _WideEmbedder()
     )
 
     assert _vector_dims(tmp_path) == (8, 1536)

@@ -183,10 +183,13 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Member call: obj.Method(args)
+; Member call: obj.Method(args) — and self-dispatch: this.Method(args).
+; ``this`` is an ANONYMOUS node in tree-sitter-c-sharp, so it is matched as the
+; literal token "this"; `(this)` does not compile. See typescript.scm for why
+; this is an alternation rather than a second pattern.
 (invocation_expression
   function: (member_access_expression
-    expression: (identifier) @call.receiver
+    expression: [(identifier) "this"] @call.receiver
     name: (identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

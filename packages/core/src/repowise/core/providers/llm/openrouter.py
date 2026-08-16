@@ -7,7 +7,7 @@ No additional pip install required — uses the ``openai`` package.
 
 Popular models:
     - google/gemini-3.5-flash-lite  — fast + cheap (default)
-    - openai/gpt-5.4-nano           — OpenAI budget tier
+    - openai/gpt-5.6-luna           — OpenAI budget tier
     - anthropic/claude-haiku-4-5    — Anthropic budget tier
 """
 

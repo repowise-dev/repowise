@@ -84,8 +84,8 @@ def _compute_health_score(file_count: int, doc_coverage_pct: float, hotspot_coun
     return max(0, min(100, round(coverage_component + hotspot_component)))
 
 
-def _resolve_graph_health_score(db_path: Path, stats: dict) -> tuple[float, str]:
-    canonical = read_repo_health_score(db_path)
+def _resolve_graph_health_score(stats: dict) -> tuple[float, str]:
+    canonical = stats.get("health_score")
     if canonical is not None:
         return canonical, "canonical"
     return (
@@ -104,8 +104,11 @@ def _query_repo_stats(db_path: Path) -> dict:
     """Query basic stats from a repo's wiki.db using raw sqlite3.
 
     Returns a dict with repo_id, file_count, symbol_count, page_count,
-    doc_coverage_pct, hotspot_count, status, docs_enabled, and
+    doc_coverage_pct, hotspot_count, health_score, status, docs_enabled, and
     docs_skip_reason.  All values default to sensible neutrals on error.
+
+    ``health_score`` is None when the repo carries no health metrics; callers
+    decide whether to fall back to a derived score or to render nothing.
     """
     result: dict = {
         "repo_id": None,
@@ -114,6 +117,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         "page_count": 0,
         "doc_coverage_pct": 0.0,
         "hotspot_count": 0,
+        "health_score": None,
         "status": "needs_index",
         "docs_enabled": False,
         "docs_skip_reason": None,
@@ -173,6 +177,10 @@ def _query_repo_stats(db_path: Path) -> dict:
         conn.close()
     except Exception:
         _log.debug("Failed to query stats from %s", db_path, exc_info=True)
+
+    # Read once here rather than per-endpoint: both the workspace listing and
+    # the graph need the canonical score, and this used to be a second sweep.
+    result["health_score"] = read_repo_health_score(db_path)
     return result
 
 
@@ -342,9 +350,10 @@ async def get_co_changes(
     _require_workspace(ws_config)
 
     if enricher is None:
-        return WorkspaceCoChangesResponse(co_changes=[], total=0)
+        return WorkspaceCoChangesResponse(co_changes=[], total=0, total_mined=0)
 
     co_changes = list(getattr(enricher, "_co_changes", []))
+    total_mined = getattr(enricher, "_total_co_changes", len(co_changes))
 
     if repo:
         co_changes = [
@@ -375,6 +384,7 @@ async def get_co_changes(
             for cc in co_changes
         ],
         total=total,
+        total_mined=total_mined,
     )
 
 
@@ -406,7 +416,7 @@ async def get_workspace_graph(
             db_path = repo_path / ".repowise" / "wiki.db"
             stats = _query_repo_stats(db_path)
             top_language = _query_top_language(db_path)
-            health_score, health_score_source = _resolve_graph_health_score(db_path, stats)
+            health_score, health_score_source = _resolve_graph_health_score(stats)
         else:
             health_score = 0.0
             health_score_source = "derived"
@@ -616,7 +626,7 @@ async def get_breaking_changes(
         )
         return WorkspaceBreakingChangesResponse(
             version=report.get("version", 1),
-            generated_at=report.get("generated_at", ""),
+            generated_at=report.get("generated_at") or None,
             changes=changes,
             total=len(changes),
             breaking_count=sum(1 for c in changes if c.get("severity") == "breaking"),
@@ -656,7 +666,15 @@ async def get_conformance(
         return WorkspaceConformanceResponse()
 
     if not repo:
-        return WorkspaceConformanceResponse(**report)
+        # An artifact written before cycle totals were recorded has no
+        # total_cycles key; falling back to the listed count is better than
+        # letting the model default report zero cycles alongside a non-zero list.
+        return WorkspaceConformanceResponse(
+            **{
+                **report,
+                "total_cycles": report.get("total_cycles", len(report.get("cycles", []))),
+            }
+        )
 
     # Narrow to findings that involve the repo, recomputing rollups so the
     # response stays self-consistent.
@@ -669,12 +687,15 @@ async def get_conformance(
     )
     return WorkspaceConformanceResponse(
         version=report.get("version", 1),
-        generated_at=report.get("generated_at", ""),
+        generated_at=report.get("generated_at") or None,
         rules_evaluated=report.get("rules_evaluated", 0),
         violations=violations,
         cycles=cycles,
         violation_count=len(violations),
         cycle_count=len(cycles),
+        # The unscoped total, not the scoped count: how many cycles the
+        # workspace has does not change because the view was narrowed.
+        total_cycles=report.get("total_cycles", len(report.get("cycles", []))),
         violating_repos=violating_repos,
     )
 

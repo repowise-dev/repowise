@@ -11,12 +11,15 @@ import json as _json
 import logging
 import sqlite3
 import subprocess
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
 
 # Per-repo update lock — the shared single-flight guard (one implementation
 # for the CLI update command and this workspace updater, which used to carry
@@ -35,6 +38,7 @@ from repowise.core.update_lock import (
 
 from ..docs_mode import docs_mode_state_fields
 from ..ingestion.change_detector import has_working_tree_changes
+from ..pipeline.phase_timing import PhaseTimingRecorder
 from .config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -425,9 +429,16 @@ async def _incremental_repo_update(
     # covers the changed files only, so every other file would be scored
     # against an empty dict — which reads as "no commits in 90 days" and puts
     # the whole repo on the 0.7 / safe-to-delete rung of the confidence ladder.
-    from ..pipeline.incremental import load_stored_git_meta
+    from ..pipeline.incremental import (
+        load_stored_function_mod_p80,
+        load_stored_git_meta,
+    )
 
     stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
+    # Repo-wide p80 from the persisted blame rollup, so the partial health
+    # pass scores the Function Hotspot gate against the full repo instead of
+    # this run's changed-files subset (issue #1484).
+    stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
 
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
@@ -437,6 +448,7 @@ async def _incremental_repo_update(
         file_diffs,
         source_map=source_map,
         stored_git_meta=stored_git_meta,
+        repo_function_mod_p80=stored_function_mod_p80,
         log=_log.info,
     )
 
@@ -881,8 +893,25 @@ async def update_workspace(
 
 
 # ---------------------------------------------------------------------------
-# Cross-repo hooks (Phase 3/4 placeholder)
+# Cross-repo hooks
 # ---------------------------------------------------------------------------
+
+
+def _log_phase(timings: PhaseTimingRecorder, phase: str, **counts: int) -> None:
+    """Emit one structured line for a finished cross-repo phase.
+
+    Duration *and* the counts the phase produced. A timer alone cannot tell a
+    genuine speed-up from a phase that got faster by doing less work, which is
+    the specific regression workspace mode has already had once — so the counts
+    are not optional decoration.
+    """
+    detail = ", ".join(f"{k}={v}" for k, v in counts.items())
+    _log.info(
+        "workspace phase %s: %.2fs%s",
+        phase,
+        timings.timings.get(phase, 0.0),
+        f" ({detail})" if detail else "",
+    )
 
 
 async def run_cross_repo_hooks(
@@ -904,45 +933,184 @@ async def run_cross_repo_hooks(
     from .conformance import run_conformance_check
     from .contracts import ContractStore, load_contract_store, run_contract_extraction
     from .cross_repo import CrossRepoOverlay, run_cross_repo_analysis
-    from .system_graph import SystemGraph, run_system_graph_build
+    from .system_graph import (
+        SystemGraph,
+        _detect_boundaries_by_repo,
+        run_system_graph_build,
+    )
 
-    overlay = CrossRepoOverlay()
+    timings = PhaseTimingRecorder()
+
+    # Service boundaries, detected once for the whole workspace. Contract
+    # extraction and the system-graph build both need them and each used to walk
+    # every repo for its own copy.
+    boundaries_by_repo: dict[str, list[ServiceBoundary]] = {}
+    timings.on_phase_start("boundaries", None)
     try:
-        overlay = await run_cross_repo_analysis(ws_config, workspace_root, changed_repos)
+        boundaries_by_repo = await asyncio.to_thread(
+            _detect_boundaries_by_repo, ws_config, workspace_root
+        )
     except Exception:
-        _log.warning("Cross-repo analysis failed", exc_info=True)
+        _log.warning("Service boundary detection failed", exc_info=True)
+    timings.on_phase_done("boundaries")
+    _log_phase(
+        timings,
+        "boundaries",
+        repos=len(boundaries_by_repo),
+        boundaries=sum(len(b) for b in boundaries_by_repo.values()),
+    )
 
     # Snapshot the contracts as they stand on disk BEFORE extraction overwrites
-    # them — this is the cheapest honest "previous" state for the breaking-change
-    # diff (no contract history needed; the last index is the baseline).
+    # them. Two jobs, one read: the baseline for the breaking-change diff, and
+    # the source of any rows extraction carries forward instead of recomputing.
+    # Loaded here rather than inside extraction so the ordering against the
+    # write is explicit and the 360 KB parse happens once.
     previous_store = load_contract_store(workspace_root) or ContractStore()
 
-    # Contract extraction (overwrites contracts.json).
+    # Phases 1 and 2 are independent: they read disjoint inputs (git history and
+    # manifests vs source files and the parse cache), write different artifacts
+    # (cross_repo_edges.json vs contracts.json), and share no mutable state —
+    # boundaries_by_repo is computed above and passed in read-only. Both push
+    # their blocking work through asyncio.to_thread, so gather genuinely
+    # overlaps them rather than interleaving two synchronous bodies.
+    # Each coroutine times itself, so running them together does not cost the
+    # ability to say which one dominates — the question this instrumentation
+    # exists to answer, and one a single duration for the pair would destroy.
+    async def _timed(phase: str, coro: Awaitable[Any]) -> Any:
+        timings.on_phase_start(phase, None)
+        try:
+            return await coro
+        finally:
+            timings.on_phase_done(phase)
+
+    overlay_result, store_result = await asyncio.gather(
+        _timed("cross_repo_analysis", run_cross_repo_analysis(ws_config, workspace_root, changed_repos)),
+        _timed(
+            "contract_extraction",
+            run_contract_extraction(
+                ws_config,
+                workspace_root,
+                changed_repos,
+                boundaries_by_repo or None,
+                previous_store,
+            ),
+        ),
+        return_exceptions=True,
+    )
+
+    # Cancellation and interpreter-level exits are not phase failures — the old
+    # `except Exception` let them propagate by construction, and gather's
+    # return_exceptions=True does not. Re-raise them before anything downstream
+    # treats a cancelled run as a completed one.
+    for result in (overlay_result, store_result):
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            raise result
+
+    overlay = CrossRepoOverlay()
+    if isinstance(overlay_result, Exception):
+        _log.warning("Cross-repo analysis failed", exc_info=overlay_result)
+    else:
+        overlay = overlay_result
+
     store = ContractStore()
-    try:
-        store = await run_contract_extraction(ws_config, workspace_root, changed_repos)
-    except Exception:
-        _log.warning("Contract extraction failed", exc_info=True)
+    extraction_ok = not isinstance(store_result, Exception)
+    if isinstance(store_result, Exception):
+        _log.warning("Contract extraction failed", exc_info=store_result)
+    else:
+        store = store_result
+
+    _log_phase(
+        timings,
+        "cross_repo_analysis",
+        co_changes=len(overlay.co_changes),
+        package_deps=len(overlay.package_deps),
+    )
+    _log_phase(
+        timings,
+        "contract_extraction",
+        contracts=len(store.contracts),
+        links=len(store.contract_links),
+        # Repos actually walked this run — the number that separates a real
+        # speed-up from a phase that got faster by doing less than it claims.
+        # Derived from the stamp rather than summing extraction_stats, which
+        # also carries the counters of the repos this run skipped.
+        repos_extracted=sum(
+            1 for p in store.repo_provenance.values() if p.get("extracted_at") == store.generated_at
+        ),
+        repos_reused=sum(
+            1 for p in store.repo_provenance.values() if p.get("extracted_at") != store.generated_at
+        ),
+    )
 
     # System graph — the normalized service-granular structure every workspace
     # view reads. Built last so it folds in the contracts and overlay above.
     system_graph: SystemGraph | None = None
+    timings.on_phase_start("system_graph", None)
     try:
-        system_graph = await run_system_graph_build(ws_config, workspace_root, store, overlay)
+        system_graph = await run_system_graph_build(
+            ws_config, workspace_root, store, overlay, boundaries_by_repo or None
+        )
     except Exception:
         _log.warning("System graph build failed", exc_info=True)
+    timings.on_phase_done("system_graph")
+    _log_phase(
+        timings,
+        "system_graph",
+        nodes=len(system_graph.nodes) if system_graph else 0,
+        edges=len(system_graph.edges) if system_graph else 0,
+    )
 
     # Breaking-change guard — diff the previous (on-disk) contracts against the
     # freshly extracted set and persist the impacted-consumer report.
-    try:
-        run_breaking_change_detection(workspace_root, previous_store, store)
-    except Exception:
-        _log.warning("Breaking-change detection failed", exc_info=True)
+    #
+    # Gated on the SHAPE of the result, not on whether an exception escaped.
+    # Diffing a populated baseline against an empty set reports every contract
+    # in the workspace as removed, and extraction has more than one way to hand
+    # back nothing: it raises, or it returns an empty store early because fewer
+    # than two repos are currently indexed (a repo unmounted, renamed, or having
+    # just lost its .repowise/). Both would publish themselves as the largest
+    # breaking change the workspace has ever seen. An empty result is only
+    # trustworthy when the baseline is empty too.
+    if extraction_ok and (store.contracts or not previous_store.contracts):
+        report = None
+        timings.on_phase_start("breaking_change", None)
+        try:
+            report = run_breaking_change_detection(workspace_root, previous_store, store)
+        except Exception:
+            _log.warning("Breaking-change detection failed", exc_info=True)
+        timings.on_phase_done("breaking_change")
+        _log_phase(
+            timings,
+            "breaking_change",
+            breaking=len(report.changes) if report else 0,
+        )
+    else:
+        _log.warning(
+            "Skipping breaking-change detection: extraction produced no contracts "
+            "(ok=%s) while the previous artifact holds %d — diffing these would "
+            "report the whole workspace as removed",
+            extraction_ok,
+            len(previous_store.contracts),
+        )
 
     # Conformance + cycles — check declared dependency rules and detect circular
     # service dependencies over the freshly-built system graph.
     if system_graph is not None:
+        conformance = None
+        timings.on_phase_start("conformance", None)
         try:
-            run_conformance_check(ws_config, workspace_root, system_graph)
+            conformance = run_conformance_check(ws_config, workspace_root, system_graph)
         except Exception:
             _log.warning("Conformance check failed", exc_info=True)
+        timings.on_phase_done("conformance")
+        _log_phase(
+            timings,
+            "conformance",
+            rules=conformance.rules_evaluated if conformance else 0,
+            violations=len(conformance.violations) if conformance else 0,
+            # The true total, not the capped list — a workspace with 500 cycles
+            # must not report the same number as one with 50.
+            cycles=conformance.total_cycles if conformance else 0,
+        )
+
+    _log.info("Cross-repo phase timings (seconds): %s", timings.timings)

@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Waypoints, Boxes, ArrowLeftRight, Share2, Zap, AlertTriangle, ShieldAlert, Gauge } from "lucide-react";
 import {
   SystemMap,
@@ -13,6 +13,7 @@ import {
   buildConformanceOverlay,
   buildArchitectureOverlay,
   type RepoHealth,
+  type SystemMapSelection,
 } from "@repowise-dev/ui/workspace/system-map";
 import type { NodeArchitectureRole } from "@/lib/api/types";
 import { MetricCard } from "@repowise-dev/ui/shared/metric-card";
@@ -28,8 +29,32 @@ import {
 
 export default function SystemMapPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: graph, isLoading, error } = useWorkspaceSystemGraph();
   const { data: repoGraph } = useWorkspaceGraph();
+
+  // Selection lives in the URL so a service or seam you found can be linked to.
+  const selection = useMemo<SystemMapSelection>(() => {
+    const node = searchParams.get("node");
+    if (node) return { type: "node", id: node };
+    const edge = searchParams.get("edge");
+    if (edge) return { type: "edge", id: edge };
+    return null;
+  }, [searchParams]);
+
+  const onSelectionChange = useCallback(
+    (next: SystemMapSelection) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("node");
+      params.delete("edge");
+      if (next) params.set(next.type, next.id);
+      const query = params.toString();
+      // `replace`, not `push`: clicking around a diagram should not build a
+      // back-button history of every node you glanced at.
+      router.replace(query ? `?${query}` : "/workspace/system-map", { scroll: false });
+    },
+    [router, searchParams],
+  );
 
   // Blast-radius target. Driven by a page-level picker (and re-targetable from
   // the impacted panel) so the map component stays unchanged — the ripple rides
@@ -85,6 +110,17 @@ export default function SystemMapPage() {
     if (showArchitecture && architecture) return buildArchitectureOverlay(graph, architecture);
     return undefined;
   }, [graph, blast, showBreaking, breaking, showConformance, conformance, showArchitecture, architecture]);
+
+  // Contract ids are `<type>::<method>::<path>`, and the Contracts page filters
+  // by type, not by id. Carry the type across so the drill-down lands on the
+  // right family instead of on an unfiltered list.
+  const openContract = useCallback(
+    (contractId: string) => {
+      const type = contractId.split("::")[0];
+      router.push(type ? `/workspace/contracts?type=${encodeURIComponent(type)}` : "/workspace/contracts");
+    },
+    [router],
+  );
 
   const diag = graph?.diagnostics;
   const serviceCount = graph?.nodes.length ?? 0;
@@ -248,44 +284,50 @@ export default function SystemMapPage() {
         )}
       </div>
 
-      <div className="relative rounded-lg overflow-hidden border border-[var(--color-border-default)] h-[calc(100vh-360px)] min-h-[560px]">
+      <div className="rounded-lg overflow-hidden border border-[var(--color-border-default)] h-[calc(100vh-360px)] min-h-[560px]">
         {isLoading ? (
           <div className="p-4 h-full">
             <Skeleton className="h-full w-full" />
           </div>
         ) : (
-          <>
-            <SystemMap
-              graph={graph}
-              error={error ?? null}
-              healthByRepo={healthByRepo}
-              {...(overlay ? { overlay } : {})}
-              roleByNodeId={roleByNodeId}
-              onOpenContract={() => router.push("/workspace/contracts")}
-            />
-            <SystemMapBlastPanel
-              result={blast}
-              loading={blastLoading}
-              onSelectTarget={setBlastTarget}
-              onClear={() => setBlastTarget(null)}
-            />
-            {showBreaking && (
-              <SystemMapBreakingPanel
-                report={breaking}
-                loading={breakingLoading}
-                onSelectNode={setBlastTarget}
-                onClear={() => setShowBreaking(false)}
-              />
-            )}
-            {showConformance && (
-              <SystemMapConformancePanel
-                report={conformance}
-                loading={conformanceLoading}
-                onSelectNode={setBlastTarget}
-                onClear={() => setShowConformance(false)}
-              />
-            )}
-          </>
+          <SystemMap
+            graph={graph}
+            error={error ?? null}
+            healthByRepo={healthByRepo}
+            {...(overlay ? { overlay } : {})}
+            roleByNodeId={roleByNodeId}
+            selection={selection}
+            onSelectionChange={onSelectionChange}
+            onOpenContract={openContract}
+            rail={
+              blast || showBreaking || showConformance ? (
+                <>
+                  <SystemMapBlastPanel
+                    result={blast}
+                    loading={blastLoading}
+                    onSelectTarget={setBlastTarget}
+                    onClear={() => setBlastTarget(null)}
+                  />
+                  {showBreaking && (
+                    <SystemMapBreakingPanel
+                      report={breaking}
+                      loading={breakingLoading}
+                      onSelectNode={setBlastTarget}
+                      onClear={() => setShowBreaking(false)}
+                    />
+                  )}
+                  {showConformance && (
+                    <SystemMapConformancePanel
+                      report={conformance}
+                      loading={conformanceLoading}
+                      onSelectNode={setBlastTarget}
+                      onClear={() => setShowConformance(false)}
+                    />
+                  )}
+                </>
+              ) : null
+            }
+          />
         )}
       </div>
     </div>

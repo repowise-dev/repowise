@@ -162,3 +162,66 @@ def test_conformance_directive_empty_outside_workspace():
         assert _conformance_directive("frontend") == ([], [])
     finally:
         _state._registry = prev
+
+
+@pytest.mark.asyncio
+async def test_unstamped_report_is_an_error_not_an_all_clear(tmp_path: Path):
+    """A report nothing wrote a result into has zero violations, and saying so
+    would tell an agent the architecture is clean when nothing checked it."""
+    report = build_conformance_report(_graph(), [], generated_at="t").to_dict()
+    report["generated_at"] = ""
+    report["violations"] = []
+    report["cycles"] = []
+    (tmp_path / "conformance.json").write_text(json.dumps(report), encoding="utf-8")
+
+    prev_registry = _state._registry
+    prev_enricher = _state._cross_repo_enricher
+    _state._registry = object()
+    _state._cross_repo_enricher = CrossRepoEnricher(
+        tmp_path / "cross_repo_edges.json",
+        conformance_path=tmp_path / "conformance.json",
+    )
+    try:
+        result = await get_conformance()
+    finally:
+        _state._registry = prev_registry
+        _state._cross_repo_enricher = prev_enricher
+
+    assert "error" in result
+    assert "has not run" in result["error"]
+    assert "violation_count" not in result
+
+
+@pytest.mark.asyncio
+async def test_reports_the_true_cycle_total_and_when_it_checked(workspace_state):
+    result = await get_conformance()
+    assert result["total_cycles"] == result["cycle_count"]
+    assert result["checked_at"] == "t"
+
+
+def test_conformance_directive_ignores_an_unstamped_report(tmp_path: Path):
+    """get_risk's PR directive must not report "no violations" from a report
+    nothing ever wrote a result into — it would read as an architecture pass."""
+    from repowise.server.mcp_server.tool_risk import _conformance_directive
+
+    report = build_conformance_report(
+        _graph(), [ConformanceRule(source="frontend", target="db")], generated_at="t"
+    ).to_dict()
+    report["generated_at"] = ""
+    (tmp_path / "conformance.json").write_text(json.dumps(report), encoding="utf-8")
+    enricher = CrossRepoEnricher(
+        tmp_path / "cross_repo_edges.json",
+        conformance_path=tmp_path / "conformance.json",
+    )
+    assert enricher.get_conformance() is not None, "the report is loaded..."
+    assert not enricher.has_conformance, "...but it did not run, so it is not evidence"
+
+    prev_registry = _state._registry
+    prev_enricher = _state._cross_repo_enricher
+    _state._registry = object()
+    _state._cross_repo_enricher = enricher
+    try:
+        assert _conformance_directive("frontend") == ([], [])
+    finally:
+        _state._registry = prev_registry
+        _state._cross_repo_enricher = prev_enricher

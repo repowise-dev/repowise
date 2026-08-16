@@ -26,7 +26,7 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")))
+        embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
         return build_vector_store(repo_path, embedder)
     except Exception:
         return None
@@ -158,6 +158,20 @@ def _load_stored_git_meta(repo_path: Any) -> dict[str, dict]:
     return run_async(load_stored_git_meta(repo_path, log=console.print))
 
 
+def _load_stored_function_mod_p80(repo_path: Any) -> int | None:
+    """Repo-wide p80 of per-function modification counts from the blame rollup.
+
+    Delegates to :mod:`repowise.core.pipeline.incremental`. The incremental
+    health pass uses this so the Function Hotspot gate is scored against the
+    full repo, not the changed-files subset (issue #1484). Best-effort:
+    ``None`` when the rollup has not been persisted (or the store is
+    unreadable).
+    """
+    from repowise.core.pipeline.incremental import load_stored_function_mod_p80
+
+    return run_async(load_stored_function_mod_p80(repo_path, log=console.print))
+
+
 def _run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -166,6 +180,7 @@ def _run_partial_analysis(
     file_diffs: list,
     source_map: dict[str, bytes] | None = None,
     stored_git_meta: dict[str, dict] | None = None,
+    repo_function_mod_p80: int | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -185,5 +200,6 @@ def _run_partial_analysis(
         file_diffs,
         source_map=source_map,
         stored_git_meta=stored_git_meta,
+        repo_function_mod_p80=repo_function_mod_p80,
         log=console.print,
     )

@@ -54,6 +54,18 @@ err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
 
+# Suppresses mirroring the provider key into `.repowise/.env`. The env
+# spelling of `init --no-save-key`, mirroring REPOWISE_SKIP_EDITOR_SETUP: CI
+# and shared machines configure the process, not the command line. It is also
+# how the interactive key prompt records a "no": that answer is taken at the
+# start of the run and has to survive until config is written at the end.
+NO_SAVE_KEY_ENV = "REPOWISE_NO_SAVE_KEY"
+
+
+def _clean_flag(value: str | None) -> bool:
+    """Whether an env var is set to something meaning "on"."""
+    return (value or "").strip().lower() not in ("", "0", "false", "no")
+
 
 # ---------------------------------------------------------------------------
 # Logging / structlog helpers
@@ -634,6 +646,66 @@ def resolve_max_file_pages(
     return value if value > 0 else None
 
 
+def _persist_provider_key(repo_path: Path, provider: str) -> None:
+    """Mirror ``provider``'s credential from the environment into ``.repowise/.env``.
+
+    Key persistence used to hang off the interactive key *prompt*, so it only
+    ran when the user typed a key. Supplying the key through the environment is
+    precisely the no-prompt case, which meant a scripted
+    ``init --provider openai --yes`` indexed fine and wrote ``provider:`` to
+    config.yaml but left no credential behind: ``repowise mcp`` against that
+    repo then answered ``degraded: "no-llm-provider"``. Scripted init is the
+    primary path for agents and CI, so a run that succeeds has to leave a repo
+    whose MCP server can actually answer.
+
+    The rule, stated out loud: a key that successfully indexed this repo is the
+    key this repo needs, so it is saved, with a notice naming the file and
+    ``--no-save-key`` to opt out. Nothing is written for a provider that needs
+    no credential.
+
+    Routed through :func:`save_repo_env_key` rather than writing the file here:
+    the ``.gitignore`` entry and the owner-only mode come with it, and a
+    hand-rolled write would leave a committable secret.
+
+    Best-effort by design. It runs at the tail of a completed init, after the
+    index has been paid for, and it is the first thing on that path to write
+    outside ``.repowise/``, so a read-only checkout or an unwritable
+    ``.gitignore`` must cost the user a warning, not the run.
+    """
+    from repowise.core.providers.llm.registry import PROVIDER_API_KEY_ENVS
+    from repowise.core.repo_config import save_repo_env_key
+
+    if _clean_flag(os.environ.get(NO_SAVE_KEY_ENV)):
+        return
+
+    # Keys only. ``provider_required_envs`` would also hand back ollama's
+    # OLLAMA_BASE_URL, and pinning an endpoint into the repo is a different
+    # decision from saving a credential: a later run on another network
+    # would silently reuse the stale URL.
+    #
+    # Some providers accept either of two vars (gemini: GEMINI_API_KEY /
+    # GOOGLE_API_KEY). Persist the one actually carrying the value, not both,
+    # so the var written is the var `provider_kwargs` will read back.
+    for env_var in PROVIDER_API_KEY_ENVS.get(provider, ()):
+        value = (os.environ.get(env_var) or "").strip()
+        if not value:
+            continue
+        try:
+            save_repo_env_key(repo_path, env_var, value)
+        except (OSError, ValueError) as exc:
+            err_console.print(
+                f"[yellow]Warning:[/yellow] could not save {env_var} to "
+                f".repowise/.env ({exc}). The index is complete, but "
+                f"`repowise mcp` will need {env_var} in its environment."
+            )
+            return
+        console.print(
+            f"[dim]Saved {env_var} to .repowise/.env (gitignored). "
+            f"--no-save-key or {NO_SAVE_KEY_ENV}=1 to skip.[/dim]"
+        )
+        return
+
+
 def save_config(
     repo_path: Path,
     provider: str,
@@ -644,6 +716,7 @@ def save_config(
     exclude_patterns: list[str] | None = None,
     commit_limit: int | None = None,
     reasoning: str | None = None,
+    save_key: bool = True,
 ) -> None:
     """Write provider/model/embedder (and optionally exclude_patterns) to ``.repowise/config.yaml``.
 
@@ -653,6 +726,12 @@ def save_config(
     embedder used at init time — without it the server silently falls back to a
     provider default (e.g. ``text-embedding-3-small``), which mismatches the
     indexed vectors and breaks chat/search retrieval (issue #426).
+
+    ``save_key`` also mirrors the provider's credential into ``.repowise/.env``.
+    It belongs here because this function *is* the "this run committed to this
+    provider for this repo" moment, shared by all three flows that reach it
+    (single-repo init, workspace init, ``workspace add``). All three otherwise
+    leave an indexed repo their MCP server cannot authenticate against.
     """
     ensure_repowise_dir(repo_path)
     config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
@@ -686,6 +765,9 @@ def save_config(
         if reasoning is not None:
             lines.append(f"reasoning: {resolve_reasoning(reasoning)}")
         config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    if save_key:
+        _persist_provider_key(repo_path, provider)
 
 
 def save_config_partial(

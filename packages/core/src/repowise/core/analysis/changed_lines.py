@@ -139,16 +139,25 @@ def changed_lines(
     revspec: str | None = None,
     *,
     staged: bool = False,
+    working_tree: bool = False,
 ) -> tuple[dict[str, set[int]], str]:
     """Return ``({file: changed_lines}, label)`` for a change.
 
     *revspec* mirrors ``repowise risk``: ``base..head`` is a range, a bare ref
     is a single commit. With no *revspec* (or *staged*), the staged diff
-    (``git diff --cached``) is used - the "what will I commit" case. *label*
+    (``git diff --cached``) is used - the "what will I commit" case.
+    *working_tree* widens that to everything ``HEAD`` does not have, staged or
+    not, matching what change risk counts for an uncommitted change. *label*
     is a human string naming what was diffed. Raises ``ValueError`` on an
     unknown revision so the caller can fail loudly rather than silently
     reporting "no changes".
     """
+    if working_tree:
+        # Untracked files are absent by design: they are new, so neither caller
+        # (prior fixes, per-test coverage) has a row to find for them anyway.
+        diff = _git(["diff", "--unified=0", "HEAD"], repo_path)
+        return _parse_unified_diff(diff), "working tree"
+
     if staged or not revspec:
         diff = _git(["diff", "--cached", "--unified=0"], repo_path)
         return _parse_unified_diff(diff), "staged changes"
@@ -163,5 +172,7 @@ def changed_lines(
 
     _verify_ref(repo_path, revspec)
     # --format= drops the commit message so only the diff body is parsed.
-    diff = _git(["show", "--unified=0", "--format=", revspec], repo_path)
+    # -m --first-parent matches what change risk counts on a merge; without it
+    # git's combined diff emits nothing at all and a merged PR reads as empty.
+    diff = _git(["show", "--unified=0", "--format=", "-m", "--first-parent", revspec], repo_path)
     return _parse_unified_diff(diff), revspec

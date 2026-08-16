@@ -17,11 +17,41 @@ from typing import Any
 
 import structlog
 
-from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.pipeline.progress import ProgressCallback, emit_warning
 
 from ._common import _phase_done
 
 logger = structlog.get_logger(__name__)
+
+
+def _report_missing_grammars(stats: Any, progress: ProgressCallback | None) -> None:
+    """Name the languages present in this repo that have no installed grammar.
+
+    Scoped to what the traversal actually found, so a machine missing a grammar
+    for a language the repo does not contain says nothing. Best-effort: a
+    reporting failure must not stop an index.
+    """
+    if progress is None or stats is None:
+        return
+    lang_counts = getattr(stats, "lang_counts", None)
+    if not lang_counts:
+        return
+    try:
+        from repowise.core.ingestion.parser import missing_grammar_languages
+
+        missing = missing_grammar_languages(lang_counts)
+    except Exception:
+        logger.debug("grammar_preflight_failed", exc_info=True)
+        return
+    if not missing:
+        return
+    detail = ", ".join(f"{lang} ({lang_counts[lang]:,} files)" for lang in missing)
+    emit_warning(
+        progress,
+        f"No parser installed for: {detail}. "
+        "These files are indexed but contribute no symbols; "
+        "reinstall repowise to pick up the missing grammars.",
+    )
 
 
 async def _timed_step(
@@ -431,6 +461,14 @@ async def _run_ingestion(
     _emit_traversal_summary(progress, traverser.stats, len(file_infos))
 
     # ---- Parse phase: CPU-bound, run in ProcessPoolExecutor ----------------
+    # Say once, here, what each spawned worker would otherwise discover
+    # independently and log at a level no default run renders: this
+    # environment cannot parse some of the languages this repo contains.
+    # Those files still index (paths, git history, regex-tier imports) but
+    # carry no symbols, which is not something to find out from an empty
+    # symbol list weeks later.
+    _report_missing_grammars(getattr(traverser, "stats", None), progress)
+
     if progress:
         progress.on_phase_start("parse", len(file_infos))
 
@@ -480,6 +518,15 @@ async def _run_ingestion(
             logger.warning(
                 "process_pool_parse_failed_falling_back",
                 error=str(pool_exc),
+            )
+            # Worth saying out loud rather than only logging: the run still
+            # produces a correct index, but every file is now parsed in one
+            # process instead of up to eight, so a large repo takes several
+            # times longer for a reason nothing on screen explained.
+            emit_warning(
+                progress,
+                f"Parallel parsing unavailable ({pool_exc}); "
+                "falling back to a single process, which is much slower.",
             )
             # Fallback: in-process sequential parse
             parse_results = []
@@ -593,6 +640,11 @@ async def _run_ingestion(
         logger.info("dynamic_hints_added", count=len(dynamic_edges))
     except Exception as hints_exc:
         logger.warning("dynamic_hints_failed", error=str(hints_exc))
+        emit_warning(
+            progress,
+            f"Dynamic edge hints skipped ({hints_exc}); "
+            "framework-wired call edges will be missing from the graph.",
+        )
     _phase_done(progress, "dynamic_hints")
 
     # ---- Graph metrics: prime caches with live progress ---------------------

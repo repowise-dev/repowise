@@ -31,6 +31,7 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
 from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .models import (
     EXTENSION_TO_LANGUAGE,
     SPECIAL_FILENAMES,
@@ -360,7 +361,7 @@ class FileTraverser:
         self.repo_root = repo_root.resolve()
         self.max_file_size_bytes = max_file_size_kb * 1024
         self._extra_ignore_filename = extra_ignore_filename
-        self._gitignore = _load_gitignore_spec(self.repo_root)
+        self._gitignore = load_gitignore_spec(self.repo_root)
         self._extra_ignore = _load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
         self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
@@ -662,7 +663,20 @@ class FileTraverser:
 
         # Generated file detection: only meaningful for code files.  Skipping
         # for data/markup files avoids a 512-byte read per file with no benefit.
-        if language not in _SKIP_GENERATED_CHECK and _is_generated(abs_path):
+        #
+        # An include fragment is exempt even when generated. This skip exists to
+        # keep machine-written *modules* out of the index, and a .inl is not a
+        # module: it is text pasted into a hand-written translation unit, so
+        # dropping it deletes edges from code nobody generated. A generated
+        # binding table is often the only reason the macros it invokes have call
+        # sites at all, and skipping it reported those macros as unused (#1600).
+        # Parsing generated modules without documenting them is a wider question
+        # than this exemption, and is left alone.
+        if (
+            language not in _SKIP_GENERATED_CHECK
+            and abs_path.suffix.lower() not in INCLUDE_FRAGMENT_EXTENSIONS
+            and _is_generated(abs_path)
+        ):
             with self._count_lock:
                 self.stats.skipped_generated += 1
             log.debug("Skipping generated file", path=rel_str)
@@ -1182,13 +1196,18 @@ def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
     return pathspec.PathSpec(patterns)
 
 
-def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
+def load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
     """Root ignore spec: ``.gitignore`` merged with ``.git/info/exclude``.
 
     ``info/exclude`` is git's local-only ignore file — paths excluded there
     (scratch dirs, private checkouts) are invisible to ``git status`` and
     must be equally invisible to the index, or local-only files leak into
     the graph, blast-radius lists, and generated docs.
+
+    Public because :mod:`repowise.core.fs_walk` deliberately does not read
+    ignore files — every repo-wide scan that must respect them (the index
+    traversal here, ADR discovery in the decision extractor) pairs a pruned
+    walk with this spec.
     """
     lines: list[str] = []
     for ignore_file in (

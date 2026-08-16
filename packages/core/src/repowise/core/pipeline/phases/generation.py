@@ -12,12 +12,19 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cost_estimator.estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.generation.models import count_stub_fallbacks
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
 
 logger = structlog.get_logger(__name__)
+
+# Page types rendered from a Jinja template with no provider call. Reused from
+# the cost estimator rather than restated: that set is already the answer to
+# "does this page cost tokens", and a second copy here would be the thing that
+# drifts the first time a page type changes tier.
+_FREE_PAGE_TYPES = STRUCTURAL_PAGE_TYPES
 
 
 async def run_generation(
@@ -100,16 +107,38 @@ async def run_generation(
     # phase so the terminal UI shows them as a distinct, named step rather
     # than blending into the long file_page run.
     _pages_done = 0
+    _llm_pages_done = 0
 
     def on_page_done(page_type: str) -> None:
-        nonlocal _pages_done
+        nonlocal _pages_done, _llm_pages_done
         _pages_done += 1
-        if progress:
-            phase = "onboarding" if page_type == "onboarding" else "generation"
-            progress.on_item_done(phase)
-            # Push live cost update if the callback supports it
-            if cost_tracker is not None and hasattr(progress, "set_cost"):
-                progress.set_cost(cost_tracker.session_cost)
+        if not progress:
+            return
+        # Onboarding keeps its own named step as well as advancing its tier's
+        # bar, so it stays visible as a distinct step in the terminal.
+        if page_type == "onboarding":
+            progress.on_item_done("onboarding")
+
+        # Each page advances the bar for its own tier. One bar counting 4,229
+        # items where ~4,134 are free template renders and ~95 are paid model
+        # calls reads as frozen: the cheap levels run first, so it sprints to
+        # 97% and then crawls for another quarter of an hour. Split, the free
+        # bar finishes and hides while the paid one counts the stretch that is
+        # actually still running.
+        #
+        # Routed by page *type*, not by whether a call was made, so a resume or
+        # update run that reuses a cached page still counts it against the paid
+        # tier. That matches how ``_announce_total`` derives the denominators,
+        # which is what keeps the bar reaching 100%.
+        if page_type in _FREE_PAGE_TYPES:
+            progress.on_item_done("generation")
+        else:
+            _llm_pages_done += 1
+            progress.on_item_done("generation.llm")
+
+        # Push live cost update if the callback supports it
+        if cost_tracker is not None and hasattr(progress, "set_cost"):
+            progress.set_cost(cost_tracker.session_cost)
 
     if progress:
         progress.on_phase_start("generation", None)
@@ -192,6 +221,7 @@ async def run_generation(
         # Surface the FAQ-weighted budget tilt when session demand shaped it
         # (silent on fresh repos with no history — nothing to weight yet).
     _phase_done(progress, "onboarding")
+    _phase_done(progress, "generation.llm")
     _phase_done(progress, "generation")
 
     return generated_pages

@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { getPageTypeIcon } from "../lib/page-types";
+import { filePageId } from "../shared/entity/routes";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 export interface SourceReference {
@@ -64,7 +65,7 @@ export function extractSources(
         for (const [target, info] of Object.entries(targets)) {
           const docs = info.docs as Record<string, unknown> | undefined;
           if (!docs) continue;
-          const pageId = (docs.page_id as string) ?? `file_page:${target}`;
+          const pageId = (docs.page_id as string) ?? filePageId(target);
           if (seen.has(pageId)) continue;
           seen.add(pageId);
           sources.push({
@@ -101,10 +102,12 @@ export function extractSources(
       const decisions = (result.decisions as Array<Record<string, unknown>>)
         ?? (result.matching_decisions as Array<Record<string, unknown>>)
         ?? [];
-      for (const d of decisions) {
+      const stale = (result.stale_decisions as Array<Record<string, unknown>>) ?? [];
+      const rows = [...decisions, ...stale];
+      for (const d of rows) {
         const affectedFiles = (d.affected_files as string[]) ?? [];
         for (const filePath of affectedFiles.slice(0, 3)) {
-          const pageId = `file_page:${filePath}`;
+          const pageId = filePageId(filePath);
           if (seen.has(pageId)) continue;
           seen.add(pageId);
           sources.push({

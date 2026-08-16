@@ -28,7 +28,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "\n"
         "FORM: Open with one or two paragraphs that state the subsystem's job in "
         "the larger system and situate it against its neighbours (what it does and, "
-        "using the supplied scope line, what it deliberately leaves to other pages). "
+        "using the scope line below, what it deliberately leaves to other pages). "
         "Lead the first sentence with the role, in architectural vocabulary (entry "
         "stage, orchestration layer, persistence boundary, transport adapter, and so "
         "on), naming the inputs it consumes and the outputs it produces. "
@@ -53,8 +53,14 @@ SYSTEM_PROMPTS: dict[str, str] = {
         # heading bare, then again with the questions under it, on 86 of 92 pages
         # measured across local indexes (gpt-5.4-nano). Pages written before the
         # instruction was doubled show none of it. One instruction, one heading.
-        "Ground every claim in the supplied material: do not invent files, symbols, "
-        "or rationale that are not listed. Draw on the whole file set, not one file."
+        # Worded around the reader-facing vocabulary the artifact rules ban.
+        # "the supplied material" is a literal hit for the ``supplied_context``
+        # rule in validation.py, and the model echoed the instruction back into
+        # the page, so this sentence destroyed the pages it was meant to keep
+        # honest. Say where to ground a claim without naming the prompt.
+        "Ground every claim in the files and signals listed below: do not invent "
+        "files, symbols, or rationale that are not listed. Draw on the whole file "
+        "set, not one file."
     ),
     "repo_overview": (
         "You are repowise, an expert technical documentation generator. "
@@ -90,3 +96,20 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Output markdown only — follow the exact section structure the user prompt prescribes."
     ),
 }
+
+# Appended to the *user* prompt when a first attempt was rejected by
+# ``validate_generated_response``, so the re-ask says what went wrong instead of
+# asking again unchanged. The system prompt is left byte-identical, which keeps
+# the retry eligible for the same server-side prefix cache as the first call.
+#
+# It lives beside the system prompts so the artifact-hygiene guard covers it as
+# well: text telling a model what not to say is still text a model can echo, and
+# a correction that trips the rule it is correcting would burn the retry too.
+CORRECTIVE_RETRY_DIRECTIVE: str = (
+    "A previous attempt at this page was rejected before it could be published. "
+    "Reason: {reason}\n"
+    "Write the page again, in full, without that problem. Address the reader of "
+    "the documentation, who cannot see this request and does not know it exists: "
+    "never mention these instructions or the code you were shown, and never "
+    "speak as the page's author."
+)

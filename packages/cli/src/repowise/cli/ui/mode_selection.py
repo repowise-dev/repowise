@@ -10,10 +10,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
-from rich.table import Table
 from rich.text import Text
 
-from repowise.cli.ui.brand import BRAND, BRAND_STYLE, DIM
+from repowise.cli.ui.brand import (
+    BRAND,
+    BRAND_STYLE,
+    DIM,
+    VALUE,
+    key_value_table,
+    print_section,
+)
 from repowise.cli.ui.repo_scanner import (
     RepoScanInfo,
     estimated_documentable_files,
@@ -167,7 +173,7 @@ def prompt_wiki_style(console: Console) -> str:
     console.print("\n[bold]Documentation style[/bold]")
     for idx, spec in enumerate(styles, 1):
         marker = " [dim](default)[/dim]" if spec.name == DEFAULT_STYLE else ""
-        console.print(f"  {idx}. [cyan]{spec.name}[/cyan]{marker} — {spec.description}")
+        console.print(f"  {idx}. [{VALUE}]{spec.name}[/]{marker} — {spec.description}")
     default_idx = next((i for i, s in enumerate(styles, 1) if s.name == DEFAULT_STYLE), 1)
     choice = click.prompt(
         "  Choose a style",
@@ -200,22 +206,9 @@ def prompt_language(console: Console) -> str:
     )
 
 
-def _section(console: Console, title: str, blurb: str) -> None:
-    """Open an advanced-config section: blank line, brand heading, dim blurb.
-
-    Every section in this screen opens the same way, so the shape lives here
-    rather than in seven near-identical call sites. Titles are sentence case and
-    the blurb is required, which is what keeps a section from shipping as a bare
-    heading followed by a prompt the user has no context for.
-    """
-    console.print()
-    console.print(f"  [{BRAND}]{title}[/]")
-    console.print(f"  [dim]{blurb}[/dim]")
-
-
 def _prompt_scope(console: Console, scan: RepoScanInfo | None, result: dict[str, Any]) -> None:
     """Scope section: which file classes to include."""
-    _section(console, "Scope", "Choose what to include in the analysis")
+    print_section(console, "Scope", "Choose what to include in the analysis")
     console.print()
 
     test_hint = f" ({scan.test_file_count:,} found)" if scan and scan.test_file_count else ""
@@ -276,7 +269,7 @@ def prompt_file_page_volume(
         return None
 
     would_be_capped_anyway = estimate > FILE_PAGE_AUTO_CEILING
-    _section(
+    print_section(
         console,
         "Page volume",
         f"About [bold]{estimate:,}[/bold] files here would each get a file page "
@@ -329,7 +322,7 @@ def _prompt_run_mode(
     # by default on large repos; off otherwise. Only offered for single-repo
     # init (allow_fast); the workspace path leaves this untouched.
     if allow_fast:
-        _section(
+        print_section(
             console,
             "Run mode",
             "standard = full depth · fast = quick graph + essential git, no LLM docs",
@@ -347,7 +340,7 @@ def _prompt_exclude(
     console: Console, scan: RepoScanInfo | None, result: dict[str, Any]
 ) -> list[str]:
     """Exclude-patterns section. Returns the parsed pattern list."""
-    _section(
+    print_section(
         console,
         "Exclude patterns",
         "Keep whole directories or globs out of the index entirely",
@@ -387,7 +380,7 @@ def _prompt_git(console: Console, scan: RepoScanInfo | None, result: dict[str, A
     commit_hint = ""
     if scan and scan.total_commits:
         commit_hint = f" (repo has ~{scan.total_commits:,} total commits)"
-    _section(console, "Git analysis", f"Controls how deeply git history is analyzed{commit_hint}")
+    print_section(console, "Git analysis", f"Controls how deeply git history is analyzed{commit_hint}")
     console.print()
 
     # Smart default based on repo size
@@ -424,13 +417,13 @@ def _prompt_generation(
     language: str | None = None,
 ) -> None:
     """Generation section: concurrency, reasoning, embedder, test run, tiering,
-    onboarding, decision harvesting, wiki style, and output language.
+    onboarding, wiki style, and output language.
 
     *wiki_style* carries an explicit ``--wiki-style`` value; when set the style
     prompt is skipped so the flag wins. *language* works the same way for the
     ``--language`` flag.
     """
-    _section(console, "Generation", "LLM page generation settings")
+    print_section(console, "Generation", "LLM page generation settings")
     console.print()
 
     # Smart concurrency default
@@ -476,13 +469,6 @@ def _prompt_generation(
         default=True,
     )
 
-    # Decision harvesting rides along with file-page generation; the token cost
-    # lands only on files that actually carry a decision.
-    result["harvest_decisions"] = click.confirm(
-        "  Harvest architectural decisions during generation?",
-        default=True,
-    )
-
     # Documentation voice/density. An explicit --wiki-style wins; otherwise prompt
     # here so the choice lands inside the section, before the summary panel.
     result["wiki_style"] = wiki_style if wiki_style is not None else prompt_wiki_style(console)
@@ -491,66 +477,68 @@ def _prompt_generation(
     result["language"] = language if language is not None else prompt_language(console)
 
 
-def _build_summary_table(
+def _summary_rows(
     result: dict[str, Any],
     patterns: list[str],
     *,
     allow_fast: bool,
     generate_docs: bool = True,
-) -> Table:
-    """Build the configuration-summary table from the gathered answers.
+) -> list[tuple[str, str]]:
+    """The configuration-summary rows gathered from the answers.
+
+    Returns rows rather than a table so the one shared ``key_value_table``
+    renders them, which is what keeps this screen's gutter identical to the
+    completion panel's instead of merely similar.
 
     Generation rows are shown only when *generate_docs* is True, so an
     index-only advanced run doesn't list knobs that never apply.
     """
-    summary = Table(box=None, padding=(0, 2), show_header=False)
-    summary.add_column("Option", style="dim")
-    summary.add_column("Value", style="bold")
+    summary: list[tuple[str, str]] = []
+
+    def add(label: str, value: str) -> None:
+        summary.append((label, value))
 
     # ── Indexing (always) ──────────────────────────────────────────────────
-    summary.add_row("Generate docs", "yes" if generate_docs else "no (index only)")
-    summary.add_row("Skip tests", "yes" if result["skip_tests"] else "no")
-    summary.add_row("Skip infra", "yes" if result["skip_infra"] else "no")
+    add("Generate docs", "yes" if generate_docs else "no (index only)")
+    add("Skip tests", "yes" if result["skip_tests"] else "no")
+    add("Skip infra", "yes" if result["skip_infra"] else "no")
     if result["include_submodules"]:
-        summary.add_row("Include submodules", "yes")
-    summary.add_row("Commit limit", str(result["commit_limit"]))
-    summary.add_row("Follow renames", "yes" if result["follow_renames"] else "no")
+        add("Include submodules", "yes")
+    add("Commit limit", str(result["commit_limit"]))
+    add("Follow renames", "yes" if result["follow_renames"] else "no")
     if allow_fast:
-        summary.add_row("Run mode", result["run_mode"])
+        add("Run mode", result["run_mode"])
     if patterns:
         if len(patterns) <= 5:
-            summary.add_row("Exclude", ", ".join(patterns))
+            add("Exclude", ", ".join(patterns))
         else:
             # Bullet-list when many patterns — comma-joined wraps unreadably.
-            summary.add_row("Exclude", "\n".join(f"• {p}" for p in patterns))
+            add("Exclude", "\n".join(f"• {p}" for p in patterns))
 
     cap = result.get("max_file_pages")
     if cap:
-        summary.add_row("File pages", f"top {cap:,} by importance")
+        add("File pages", f"top {cap:,} by importance")
     elif cap == 0:
-        summary.add_row("File pages", "one per eligible file (uncapped)")
+        add("File pages", "one per eligible file (uncapped)")
 
     if not generate_docs and result.get("embedder"):
-        summary.add_row("Embedder", result["embedder"])
+        add("Embedder", result["embedder"])
 
     # ── Generation (docs only) ─────────────────────────────────────────────
     if generate_docs:
-        summary.add_row("Concurrency", str(result["concurrency"]))
+        add("Concurrency", str(result["concurrency"]))
         if result.get("reasoning"):
-            summary.add_row("Reasoning", result["reasoning"])
-        summary.add_row("Embedder", result["embedder"])
+            add("Reasoning", result["reasoning"])
+        add("Embedder", result["embedder"])
         if result.get("wiki_style"):
-            summary.add_row("Wiki style", result["wiki_style"])
+            add("Wiki style", result["wiki_style"])
         if result.get("language") and result["language"] != "en":
-            summary.add_row(
+            add(
                 "Language",
                 f"{result['language']} ({SUPPORTED_LANGUAGES.get(result['language'], '?')})",
             )
-        summary.add_row("Onboarding", "yes" if result.get("onboarding", True) else "no")
-        summary.add_row(
-            "Harvest decisions", "yes" if result.get("harvest_decisions", True) else "no"
-        )
-        summary.add_row("Test run", "yes" if result["test_run"] else "no")
+        add("Onboarding", "yes" if result.get("onboarding", True) else "no")
+        add("Test run", "yes" if result["test_run"] else "no")
     return summary
 
 
@@ -571,7 +559,7 @@ def interactive_advanced_config(
 
     The indexing section (scope, run mode, exclude, git) is always prompted.
     The generation section (concurrency, reasoning, embedder, onboarding,
-    decision harvesting, tiering, wiki style, test run) is prompted only when
+    tiering, wiki style, test run) is prompted only when
     *generate_docs* is True, so an index-only advanced run skips knobs that have
     no effect. ``generate_docs`` is echoed back in the result.
 
@@ -579,7 +567,7 @@ def interactive_advanced_config(
     ``commit_limit``, ``follow_renames``, ``skip_tests``, ``skip_infra``,
     ``exclude``, ``include_submodules``, ``run_mode``, ``max_file_pages``,
     ``generate_docs`` (always), plus ``concurrency``, ``reasoning``, ``embedder``,
-    ``test_run``, ``onboarding``, ``harvest_decisions``, ``wiki_style``,
+    ``test_run``, ``onboarding``, ``wiki_style``,
     ``language`` (docs only).
 
     Editor integration prompts are intentionally not asked here so that full and
@@ -623,16 +611,14 @@ def interactive_advanced_config(
     result["generate_docs"] = generate_docs
 
     # ── Summary ───────────────────────────────────────────────────────────
+    # A receipt, not a question: no border. The two panels left on this flow are
+    # the two screens that actually ask something.
+    print_section(console, "Configuration summary")
     console.print()
-    summary = _build_summary_table(
-        result, patterns, allow_fast=allow_fast, generate_docs=generate_docs
-    )
     console.print(
-        Panel(
-            summary,
-            title="[bold]Configuration Summary[/bold]",
-            border_style=BRAND,
-            padding=(0, 1),
+        key_value_table(
+            _summary_rows(result, patterns, allow_fast=allow_fast, generate_docs=generate_docs),
+            label_width=18,
         )
     )
     console.print()
@@ -648,7 +634,7 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
     picked up automatically from an API key in the environment, and this mode
     promises no spend. Choosing one here counts as asking for it.
     """
-    _section(
+    print_section(
         console,
         "Search",
         "Full-text search always works. Semantic search needs an embedder;\n"
@@ -676,9 +662,15 @@ def _resolve_embedder_from_env() -> str:
 
 
 def print_index_only_intro(console: Console, has_provider: bool = False) -> None:
-    """Show what index-only mode will do before starting."""
+    """Show what index-only mode will do before starting.
+
+    A forecast, so no border — nothing here is a thing to act on, and it used to
+    carry the same box as the question two screens earlier.
+    """
+    print_section(console, "Index only", "No LLM calls. No API key. No cost.")
+    console.print()
     # Bullets, not checkmarks: every green ✓ elsewhere in a run means "already
-    # done", and this panel is a forecast.
+    # done", and this is a forecast.
     lines = [
         "  [dim]•[/dim] Parse all source files (AST)",
         "  [dim]•[/dim] Build dependency graph (PageRank, communities)",
@@ -694,19 +686,11 @@ def print_index_only_intro(console: Console, has_provider: bool = False) -> None
         lines.append(
             "  [dim]•[/dim] [dim]Decision extraction enhanced (provider key detected)[/dim]"
         )
-    lines.append("")
-    lines.append("  [dim]No LLM calls. No API key. No cost.[/dim]")
-    lines.append(
+    for line in lines:
+        console.print(line)
+    console.print()
+    console.print(
         "  [dim]The subsystem pages read as stubs. Add a key and run "
         "[bold]repowise generate[/bold] to write them as prose.[/dim]"
-    )
-
-    console.print(
-        Panel(
-            "\n".join(lines),
-            title="[bold]Index only: what this will do[/bold]",
-            border_style=BRAND,
-            padding=(1, 1),
-        )
     )
     console.print()

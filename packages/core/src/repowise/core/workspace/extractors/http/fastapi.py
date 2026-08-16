@@ -23,8 +23,12 @@ if TYPE_CHECKING:
 # router prefix can be resolved; only known routers (those bound to APIRouter /
 # FastAPI in-file, plus the conventional ``app`` / ``router`` names) are kept, so
 # an unrelated ``@cache.get(...)`` decorator is not mistaken for a route.
+# The path is ``*`` not ``+``: ``@router.post("")`` on a prefixed router is the
+# idiomatic way to serve the collection root, and requiring one character made
+# those routes invisible entirely. The empty path contributes nothing on its own,
+# so ``build_provider_contract`` still drops it when no prefix stitches on.
 _FASTAPI_RE = re.compile(
-    rf"""@(\w+)\.({METHODS})\s*\(\s*['"]([^'"]+)['"]""",
+    rf"""@(\w+)\.({METHODS})\s*\(\s*['"]([^'"]*)['"]""",
     re.IGNORECASE,
 )
 

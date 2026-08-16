@@ -14,11 +14,21 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
+    SCORE_MEASURES,
+    SCORE_UNIT,
+    FixHistoryUnavailableError,
     RiskNormalizer,
-    baseline_scores,
+    baseline_samples,
     change_features_from_stored,
+    change_fix_density,
     extract_range_features,
+    fix_density_percentile,
+    fix_pressure,
+    hot_files,
+    range_anchor,
+    review_priority_classification,
     score_change,
+    scores_excluding,
 )
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
@@ -38,6 +48,8 @@ from repowise.server.schemas import (
     CommitEvolutionResponse,
     CommitResponse,
     CommitStatsResponse,
+    FixHistoryFileResponse,
+    FixHistoryResponse,
     GitMetadataResponse,
     GitSummaryResponse,
     HotspotResponse,
@@ -686,7 +698,10 @@ def get_risk_range(
     percentile: float | None = None
     priority: str | None = None
     if baseline:
-        scores = baseline_scores(local_path, head, baseline, (), excluded_ref="")
+        # Same anchor rule as the CLI/MCP scorer, so both surfaces rank a range
+        # against the history it forked from rather than against its own commits.
+        samples = baseline_samples(local_path, range_anchor(local_path, base, head), baseline, ())
+        scores = scores_excluding(samples, "")
         if len(scores) >= _MIN_BASELINE:
             normalizer = RiskNormalizer.from_scores(scores)
             # Rank with experience unknown, matching the baseline (diff-shape
@@ -695,14 +710,34 @@ def get_risk_range(
             percentile = normalizer.percentile(rank_score)
             priority = normalizer.priority(rank_score)
 
+    # Read at the fork point, matching the CLI/MCP scorer: the record predates
+    # the change rather than counting fixes the range itself brought in.
+    try:
+        pressure = fix_pressure(local_path, range_anchor(local_path, base, head))
+        fix_available = True
+    except FixHistoryUnavailableError:
+        pressure, fix_available = {}, False
+    density = change_fix_density(pressure, features.file_churn)
+
     return RiskRangeResponse(
         base=base,
         head=head,
+        fix_history=FixHistoryResponse(
+            available=fix_available,
+            density=round(density, 3),
+            percentile=fix_density_percentile(pressure, density),
+            files=[
+                FixHistoryFileResponse(path=path, churn=churn, fix_pressure=p)
+                for path, churn, p in hot_files(pressure, features.file_churn)
+            ],
+        ),
         score=risk.score,
-        probability=risk.probability,
-        level=risk.level,
+        score_measures=SCORE_MEASURES,
+        score_unit=SCORE_UNIT,
         risk_percentile=percentile,
         review_priority=priority,
+        classification=review_priority_classification(priority),
+        fallback_band=risk.level if priority is None else None,
         is_fix=features.is_fix,
         features=ChangeFeaturesResponse(
             la=features.la,

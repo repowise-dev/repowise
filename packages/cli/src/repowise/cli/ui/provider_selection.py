@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 
-from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, WARN
+from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, VALUE, WARN
 from repowise.cli.ui.env_persistence import _save_key_to_dotenv
 from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -26,7 +26,7 @@ from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 _PROVIDER_DEFAULTS: dict[str, str] = {
     "gemini": "gemini-3.5-flash-lite",
-    "openai": "gpt-5.4-nano",
+    "openai": "gpt-5.6-luna",
     "anthropic": "claude-haiku-4-5",
     "deepseek": "deepseek-v4-flash",
     "kimi": "kimi-for-coding",
@@ -322,7 +322,7 @@ def _interactive_provider_name(
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()
-        console.print(f"  [bold]{chosen}[/bold] requires [cyan]{env_var}[/cyan].")
+        console.print(f"  [bold]{chosen}[/bold] requires [{VALUE}]{env_var}[/].")
         if signup_url:
             console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
         console.print()
@@ -642,6 +642,11 @@ def interactive_provider_select(
 # family name is a flagship one, so `gpt-5.4-nano` is not mistaken for `gpt-5`.
 _BUDGET_MODEL_TOKENS = (
     "nano",
+    # OpenAI's 5.6 budget tier carries no cheap-tier word in its name, and
+    # `gpt-5` matches it as flagship. Without this, accepting the default
+    # printed a note advising the user to switch to a cheaper model than the
+    # one they were already on.
+    "luna",
     "mini",
     "lite",
     "haiku",
@@ -717,6 +722,15 @@ def _prompt_api_key(
         if save:
             _save_key_to_dotenv(repo_path, env_var, key)
             console.print(f"  [{OK}]✓ Saved to .repowise/.env[/]")
+        else:
+            # A declined key must stay declined. The run puts the key in the
+            # environment (above) so indexing can use it, and init now mirrors
+            # the environment's key into .repowise/.env when it writes config,
+            # which would quietly overrule this exact answer. Record the "no"
+            # where that later step will see it.
+            from repowise.cli.helpers import NO_SAVE_KEY_ENV
+
+            os.environ[NO_SAVE_KEY_ENV] = "1"
     console.print()
 
     return key

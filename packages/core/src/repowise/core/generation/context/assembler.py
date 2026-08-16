@@ -11,6 +11,7 @@ import structlog
 
 from repowise.core.analysis.dead_code.file_reachability import (
     ReachabilityRescues,
+    build_package_file_map,
     file_dependency_neighbors,
     is_file_reachable,
 )
@@ -58,6 +59,11 @@ _MAX_TOP_FILES = 20
 # rather than dropped silently, so a truncated table cannot read as a complete
 # public surface.
 _MAX_CONCEPT_ROWS = 40
+
+# The module page's "Class hierarchy" section: how many classes it shows, and
+# how many any one file may contribute so a single dense file cannot fill it.
+_MAX_KEY_CLASSES = 10
+_MAX_CLASSES_PER_FILE = 5
 
 # Identifier word splits: a snake_case underscore, or the boundary before a
 # capital that starts a new word. The second pattern keeps acronym runs whole —
@@ -213,9 +219,10 @@ def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues
     the two cannot drift. This function only resolves a flow to a file path.
 
     An unresolvable entry point stays. That is the one rescue local to this
-    caller, and it runs in the forgiving direction for the reason the caller's
-    own comment gives: a missed drop leaves one wrong flow on the page, while
-    an over-eager drop silently empties the section.
+    caller, and it is the only forgiving-by-default limb left now that the
+    caller supplies the package map: a missed drop leaves one wrong flow on the
+    page, while an over-eager drop empties the section. Same asymmetry
+    ``ReachabilityRescues`` records for ``package_files``.
     """
     node = graph.nodes.get(flow.entry_point_id, {})
     path = node.get("file_path") or file_path_of(flow.entry_point_id) or ""
@@ -539,12 +546,22 @@ class ContextAssembler:
                 {"name": name, "file_count": count} for name, count in owner_counts.most_common(3)
             ]
 
-        # Key classes: collect classes with heritage info from file contexts
+        # Key classes: the classes with heritage info, most central file first.
+        # ``module_page.j2`` renders this under a "Class hierarchy" heading, so
+        # the ten it keeps are the ten a reader is told matter. Taking them in
+        # ``file_contexts`` order meant the first two files with classes filled
+        # the list and every later file contributed nothing, whatever was in
+        # it. The rank is the file's PageRank — the same key ``key_files`` uses
+        # a few lines up, so one module page cannot call two files its most
+        # important — with the path breaking ties, since leaf files share a
+        # PageRank in bulk. Each file's own entries arrive already ranked by
+        # ``extract_heritage``; the per-file cap stays so one dense file cannot
+        # take every slot.
         key_classes: list[dict] = []
-        for fc in file_contexts:
-            for h in fc.heritage[:5]:  # cap per file
+        for fc in sorted(file_contexts, key=lambda fc: (-fc.pagerank_score, fc.file_path)):
+            for h in fc.heritage[:_MAX_CLASSES_PER_FILE]:
                 key_classes.append(h)
-        key_classes = key_classes[:10]  # cap total
+        key_classes = key_classes[:_MAX_KEY_CLASSES]
 
         # Where the page's files actually live: the directories that hold one
         # directly, not every ancestor of every file, so the list reads as the
@@ -775,20 +792,31 @@ class ContextAssembler:
                         key=lambda f: (-f.entry_point_score, f.entry_point_id),
                     )
                     flow_graph = graph_builder.graph()
-                    # No package map, deliberately: an unchecked Go / JVM /
-                    # C-C++ file answers "reachable", so this section keeps
-                    # being more forgiving than the dead-code pass for exactly
-                    # those languages. Measured on test-repos/, supplying
-                    # ``build_package_file_map(flow_graph)`` here would flip
-                    # 0-43% of their files to unreachable (43% on
-                    # nlohmann-json, 29% on openclaw, 27% on Crow), and an
-                    # over-eager drop empties the section. Ceiling, not
-                    # oversight: closing it is one argument, and wants its own
-                    # measurement of what the overview actually loses.
+                    # The package map is supplied, so a Go / JVM / C-C++ file
+                    # is answered for rather than assumed reachable. It used to
+                    # be withheld because the file-level cost looked large, but
+                    # the file-level cost is the wrong quantity: a flow's entry
+                    # point is a function in a file something imports, so the
+                    # flipped files are mostly not flow entries. Measured over
+                    # the indexed repositories by tracing flows for real, the
+                    # map costs **1 flow of 1,416 kept**, on one repository,
+                    # changes no rendered top five and empties no section.
+                    #
+                    # Residual risk this does not remove, and no test can: on a
+                    # repository where every traced flow starts in a package
+                    # with no live sibling, this empties the section rather
+                    # than showing wrong flows. The corpus holds no such
+                    # repository, but "measured on 42" is not "cannot happen",
+                    # which is what the log below is for.
+                    #
+                    # Built once, and only when there is something to filter:
+                    # three passes over the node ids of a graph that can reach
+                    # 175k nodes.
+                    flow_rescues = ReachabilityRescues(
+                        package_files=build_package_file_map(flow_graph) if ranked else None
+                    )
                     kept = [
-                        f
-                        for f in ranked
-                        if _flow_entry_is_reachable(f, flow_graph, ReachabilityRescues())
+                        f for f in ranked if _flow_entry_is_reachable(f, flow_graph, flow_rescues)
                     ]
                     if len(kept) != len(ranked):
                         # The section disappears when this empties it, and a

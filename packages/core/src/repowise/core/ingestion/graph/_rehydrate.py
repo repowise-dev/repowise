@@ -110,6 +110,9 @@ class RehydrateMixin:
             hint_source = edge.get("hint_source")
             if hint_source:
                 edge_attrs["hint_source"] = hint_source
+            resolution_origin = edge.get("resolution_origin")
+            if resolution_origin:
+                edge_attrs["resolution_origin"] = resolution_origin
             graph.add_edge(source, target, **edge_attrs)
             edge_count += 1
 

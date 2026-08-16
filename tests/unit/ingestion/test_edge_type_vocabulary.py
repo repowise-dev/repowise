@@ -329,6 +329,83 @@ def test_an_edge_type_alias_points_at_the_shared_vocabulary() -> None:
     )
 
 
+def _resolved_call_origins() -> dict[str, set[float]]:
+    """Map origin literal -> confidences it is constructed with, from the AST.
+
+    Reads the ``ResolvedCall(caller, callee, <confidence>, line, <origin>)``
+    construction sites rather than the ``add_edge`` call, because the edge
+    passes a variable and the literal only ever exists at the resolver.
+    """
+    found: dict[str, set[float]] = {}
+    for path in _python_files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name != "ResolvedCall":
+                continue
+            origin = next(
+                (kw.value for kw in node.keywords if kw.arg == "origin"),
+                node.args[4] if len(node.args) > 4 else None,
+            )
+            if origin is None or not _is_str_constant(origin):
+                continue
+            confidence = node.args[2] if len(node.args) > 2 else None
+            confs = found.setdefault(origin.value, set())  # type: ignore[attr-defined]
+            if isinstance(confidence, ast.Constant) and isinstance(
+                confidence.value, int | float
+            ):
+                confs.add(float(confidence.value))
+    return found
+
+
+def test_nothing_stamps_an_undeclared_resolution_origin() -> None:
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    emitted = set(_resolved_call_origins())
+    assert emitted, "found no ResolvedCall construction sites — the AST scan has rotted"
+    assert not (emitted - RESOLUTION_ORIGIN_VALUES), (
+        "resolution origin(s) stamped but not declared: "
+        f"{sorted(emitted - RESOLUTION_ORIGIN_VALUES)}\n"
+        "Add them to ResolutionOrigin in repowise.core.ingestion.models. An"
+        " undeclared origin reaches consumers as an unrecognised string."
+    )
+
+
+def test_every_declared_resolution_origin_has_a_producer() -> None:
+    """The other direction — the failure `EdgeType` shipped for years.
+
+    A declared origin nothing stamps is a word consumers can filter on and
+    never match, which is indistinguishable from a filter that works.
+    """
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    orphans = RESOLUTION_ORIGIN_VALUES - set(_resolved_call_origins())
+    assert not orphans, (
+        f"resolution origin(s) declared with no producer: {sorted(orphans)}"
+    )
+
+
+def test_each_resolution_origin_carries_one_confidence() -> None:
+    """One origin, one confidence — what makes the stamping auditable.
+
+    The origin distribution and the confidence histogram are then two views of
+    the same data, so an origin that starts disagreeing with the number it is
+    supposed to explain fails here instead of quietly reshaping both.
+    """
+    split = {o: sorted(c) for o, c in _resolved_call_origins().items() if len(c) > 1}
+    assert not split, (
+        "resolution origin(s) constructed at more than one confidence:\n"
+        + "\n".join(f"  {o}: {c}" for o, c in sorted(split.items()))
+        + "\n\nSplit the origin, or give the strategies one confidence."
+    )
+
+
 @pytest.mark.parametrize("phantom", ["has_property", "method_overrides", "dynamic"])
 def test_the_removed_phantoms_stay_removed(phantom: str) -> None:
     """Each measured at 0 rows across 42 local indexes with no producer in the tree.

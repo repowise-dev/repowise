@@ -8,6 +8,7 @@
  */
 
 import type { SystemEdgeKind } from "@repowise-dev/types";
+import { Separator } from "../../ui/separator";
 import { EDGE_KIND_ORDER, SYSTEM_EDGE_KINDS } from "./edge-kinds";
 
 export interface SystemMapFiltersProps {
@@ -28,8 +29,15 @@ export function SystemMapFilters({
 }: SystemMapFiltersProps) {
   const kinds = EDGE_KIND_ORDER.filter((k) => availableKinds.has(k));
 
+  const pill = (active: boolean) =>
+    `inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-[3px] text-[11px] font-medium ${
+      active
+        ? "border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
+        : "border-[var(--color-border-subtle)] bg-transparent text-[var(--color-text-tertiary)] opacity-60"
+    }`;
+
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+    <div className="flex flex-wrap items-center gap-2">
       {kinds.map((kind) => {
         const s = SYSTEM_EDGE_KINDS[kind];
         const Icon = s.icon;
@@ -41,42 +49,20 @@ export function SystemMapFilters({
             onClick={() => onToggleKind(kind)}
             aria-pressed={active}
             title={`Toggle ${s.label} edges`}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "3px 9px",
-              borderRadius: 999,
-              fontSize: 11,
-              fontWeight: 500,
-              cursor: "pointer",
-              color: active ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
-              background: active ? "var(--color-bg-elevated)" : "transparent",
-              border: `1px solid ${active ? "var(--color-border-default)" : "var(--color-border-subtle)"}`,
-              opacity: active ? 1 : 0.6,
-            }}
+            className={pill(active)}
           >
             <Icon size={11} style={{ color: s.color }} aria-hidden />
             {s.label}
           </button>
         );
       })}
-      <div style={{ width: 1, height: 18, background: "var(--color-border-default)" }} />
+      <Separator orientation="vertical" className="h-[18px]" />
       <button
         type="button"
         onClick={onToggleCollapsed}
         aria-pressed={collapsed}
         title="Group services into one node per repository"
-        style={{
-          padding: "3px 9px",
-          borderRadius: 999,
-          fontSize: 11,
-          fontWeight: 500,
-          cursor: "pointer",
-          color: collapsed ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
-          background: collapsed ? "var(--color-bg-elevated)" : "transparent",
-          border: `1px solid ${collapsed ? "var(--color-border-default)" : "var(--color-border-subtle)"}`,
-        }}
+        className={`${pill(collapsed)} opacity-100`}
       >
         {collapsed ? "Repo view" : "Service view"}
       </button>

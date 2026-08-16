@@ -8,6 +8,8 @@ from typing import Any
 
 import click
 
+from repowise.cli.ui.brand import OK, WARN
+
 
 def offer_distill_rewrite_hook(
     console_obj: Any,
@@ -108,9 +110,9 @@ def offer_distill_rewrite_hook(
     if flag:
         path = adapter.install_rewrite_hook()
         if path:
-            console_obj.print(f"  [green]✓[/green] Rewrite hook installed ({path})")
+            console_obj.print(f"  [{OK}]✓[/] Rewrite hook installed ({path})")
         else:
-            console_obj.print("  [yellow]Rewrite hook install failed.[/yellow]")
+            console_obj.print(f"  [{WARN}]Rewrite hook install failed.[/]")
     else:
         console_obj.print(
             "  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
@@ -156,7 +158,7 @@ def _record_distill_verdict(
                 save_hook_surface_enabled(repo_path, surface, enabled=enabled)
         except Exception as exc:  # init must not crash on a config write
             console_obj.print(
-                f"  [yellow]Could not record hook verdict for {repo_path.name}: {exc}[/yellow]"
+                f"  [{WARN}]Could not record hook verdict for {repo_path.name}: {exc}[/]"
             )
 
 
@@ -219,7 +221,7 @@ def _offer_hook_install_prompts(
         rp, label = candidates[0]
         if click.confirm(f"  Install post-commit hook for {label}?", default=True):
             result = install(rp)
-            console_obj.print(f"  [green]✓[/green] {label}: {result}")
+            console_obj.print(f"  [{OK}]✓[/] {label}: {result}")
         else:
             console_obj.print("  [dim]Skipped. Run 'repowise hook install' later to set up.[/dim]")
     else:
@@ -248,7 +250,7 @@ def _offer_hook_install_prompts(
             if 0 <= idx < len(candidates):
                 rp, label = candidates[idx]
                 result = install(rp)
-                console_obj.print(f"  [green]✓[/green] {label}: {result}")
+                console_obj.print(f"  [{OK}]✓[/] {label}: {result}")
                 installed += 1
 
         if installed == 0:

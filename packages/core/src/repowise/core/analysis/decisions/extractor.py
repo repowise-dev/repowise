@@ -48,6 +48,8 @@ import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
 from repowise.core.analysis.decisions.scope import resolve_module_nodes
+from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+from repowise.core.ingestion.traverser import load_gitignore_spec
 
 from .prompts import (
     _SYSTEM_PROMPT,
@@ -153,11 +155,52 @@ class ExtractedDecision:
     source_text: str = ""
 
 
+class DecisionSourceError(RuntimeError):
+    """Every batch of a decision source failed.
+
+    Raised so :meth:`DecisionExtractor.extract_all` records the source as
+    failed rather than empty. A source that loses *some* batches still
+    returns what it has and only logs, because partial supply beats none.
+    """
+
+
+def _collect_batches(
+    source: str,
+    results: list[Any],
+) -> list[ExtractedDecision]:
+    """Flatten ``asyncio.gather(..., return_exceptions=True)`` output.
+
+    Exceptions are logged per batch. If nothing survived and there was work
+    to do, the source failed outright and says so instead of returning a
+    zero that reads like an empty repository.
+    """
+    decisions: list[ExtractedDecision] = []
+    errors: list[str] = []
+    for result in results:
+        if isinstance(result, list):
+            decisions.extend(result)
+        else:
+            errors.append(f"{type(result).__name__}: {result}")
+            logger.warning(
+                "decision_extractor.batch_failed",
+                source=source,
+                error=str(result),
+            )
+    if errors and len(errors) == len(results):
+        raise DecisionSourceError(f"all {len(errors)} batch(es) failed — {errors[0]}")
+    return decisions
+
+
 @dataclass
 class DecisionExtractionReport:
     total_found: int
     decisions: list[ExtractedDecision]
     by_source: dict[str, int]
+    # Sources that raised, {source name: error text}. A source that fails
+    # returns an empty list, so without this a total outage and an honestly
+    # empty repo are the same number on screen. Callers render it; nothing
+    # else can tell the two apart.
+    failures: dict[str, str] = field(default_factory=dict)
 
 
 # Every index-time capture source, in progress order. The CLI derives its
@@ -191,30 +234,26 @@ def enabled_source_names(repo_config: dict[str, Any] | None) -> tuple[str, ...]:
 # Comment marker detection
 # ---------------------------------------------------------------------------
 
+# The keyword is deliberately case-SENSITIVE. These are annotation
+# conventions, written in caps like TODO:/FIXME:/HACK:, and matching them
+# case-insensitively turns ordinary prose into architectural decisions. Two
+# real examples from this repo, both of which reached the store as `active`
+# records: a wrapped sentence whose continuation line began "# decision:
+# namespace, batched like the pages", and a test's "# Rejected: nothing to
+# extract." Across 3,860 tracked files those were the ONLY two matches — a
+# 100% false-positive rate — because no genuine marker was written in lower
+# case. A missed marker costs one record; a false positive publishes a
+# sentence fragment as a decision governing every file it touches.
 MARKER_RE = re.compile(
     r"^\s*(?:#|//|--|/\*|\*)\s*"
     r"(?P<keyword>WHY|DECISION|TRADEOFF|ADR|RATIONALE|REJECTED)"
     r"\s*:\s*(?P<text>.+)",
-    re.IGNORECASE,
 )
 
-_SKIP_DIRS = frozenset(
-    {
-        ".git",
-        "node_modules",
-        "__pycache__",
-        ".repowise",
-        ".venv",
-        "venv",
-        ".tox",
-        ".mypy_cache",
-        ".pytest_cache",
-        "dist",
-        "build",
-        ".next",
-        ".nuxt",
-    }
-)
+# fs_walk's never-source set plus the two derived-output names the decision
+# walks have always skipped: a bundled ``dist``/``build`` copy of a source file
+# would double every marker it contains.
+_SKIP_DIRS = PRUNED_DIRS | {"dist", "build"}
 
 # Regex to detect fenced code blocks in markdown files (``` or ~~~).
 _CODE_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -289,17 +328,20 @@ DECISION_SIGNAL_KEYWORDS = [
 # ADR / PR / comment source configuration
 # ---------------------------------------------------------------------------
 
-# Directories conventionally holding Architecture Decision Records, plus a
-# filename glob for ADRs that live loose. Globbed relative to the repo root.
-_ADR_DIR_GLOBS = (
-    "adr/*.md",
-    "adrs/*.md",
-    "docs/adr/*.md",
-    "docs/adrs/*.md",
-    "docs/decisions/*.md",
-    "decisions/*.md",
-    "architecture/*.md",
-    "doc/adr/*.md",
+# Conventional ADR homes, as repo-root-relative posix directories. Every ``.md``
+# directly inside one is a candidate regardless of filename; matching is on the
+# whole relative dir, so a stray ``vendor/x/adr/`` does not qualify.
+_ADR_DIRS = frozenset(
+    {
+        "adr",
+        "adrs",
+        "docs/adr",
+        "docs/adrs",
+        "docs/decisions",
+        "decisions",
+        "architecture",
+        "doc/adr",
+    }
 )
 _MAX_ADR_FILES = 60
 
@@ -354,6 +396,10 @@ _COMMENT_RATIONALE_CUES = (
     "intentionally",
 )
 _MAX_COMMENT_NODES = 30
+
+# Inline markers sent to the model per call. Caps prompt length only; a file
+# with more markers is sent in several calls rather than truncated.
+_MARKERS_PER_CALL = 5
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -531,24 +577,36 @@ class DecisionExtractor:
     async def _structure_markers_via_llm(
         self, file_path: str, markers: list[dict]
     ) -> list[ExtractedDecision]:
-        """Use LLM to structure inline markers into decision records."""
-        markers_block = ""
-        for m in markers[:5]:  # Batch up to 5 per call
-            markers_block += (
-                f"\n--- Marker ({m['keyword']}) at line {m['line']} ---\n"
-                f"Text: {m['text']}\n"
-                f"Surrounding code:\n{m['context'][:1500]}\n"
+        """Use LLM to structure inline markers into decision records.
+
+        Markers are sent five per call. The batch size caps prompt length;
+        it is not a cap on how many markers a file may have. ``markers[:5]``
+        alone dropped every marker past the fifth: the caller invokes this
+        once per file, and the raw-marker fallback below only runs on an
+        exception, so those markers were never structured and never fell
+        back — they left no record and no log line.
+        """
+        decisions: list[ExtractedDecision] = []
+        for start in range(0, len(markers), _MARKERS_PER_CALL):
+            batch = markers[start : start + _MARKERS_PER_CALL]
+            markers_block = ""
+            for m in batch:
+                markers_block += (
+                    f"\n--- Marker ({m['keyword']}) at line {m['line']} ---\n"
+                    f"Text: {m['text']}\n"
+                    f"Surrounding code:\n{m['context'][:1500]}\n"
+                )
+
+            prompt = INLINE_MARKER_PROMPT.format(
+                file_path=file_path,
+                markers_block=markers_block,
             )
 
-        prompt = INLINE_MARKER_PROMPT.format(
-            file_path=file_path,
-            markers_block=markers_block,
-        )
-
-        response = await self._provider.generate(
-            _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
-        )
-        return self._parse_decisions_json(response.content)
+            response = await self._provider.generate(
+                _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
+            )
+            decisions.extend(self._parse_decisions_json(response.content))
+        return decisions
 
     # ------------------------------------------------------------------
     # Source 2: Git archaeology
@@ -660,14 +718,7 @@ class DecisionExtractor:
             *[_process_batch(b) for b in batches],
             return_exceptions=True,
         )
-        for result in results:
-            if isinstance(result, list):
-                decisions.extend(result)
-            else:
-                logger.warning(
-                    "decision_extractor.git_batch_failed",
-                    error=str(result),
-                )
+        decisions.extend(_collect_batches("git_archaeology", list(results)))
 
         return decisions
 
@@ -729,49 +780,53 @@ class DecisionExtractor:
     def _find_adr_files(self) -> list[Path]:
         """Collect candidate ADR files from the conventional dirs + name match.
 
-        Performance: the conventional-dir globs are shallow (one directory
-        each). The loose ``*adr*.md`` scan uses a pruned ``os.walk`` rather than
-        a recursive ``**`` glob so it never descends into ``node_modules`` /
-        ``.git`` / ``.venv`` on a large repo, and bails as soon as the cap is
-        hit.
+        One :func:`walk_repo` pass answers both halves: files directly under a
+        conventional ADR directory (root-anchored, as the old shallow globs
+        were) rank ahead of loose ``*adr*.md`` name matches, and the cap is
+        applied to the two buckets in that order.
+
+        Ignored paths are excluded. :mod:`repowise.core.fs_walk` prunes junk
+        dirs and nested repos but deliberately reads no ignore files, so
+        gitignore/``info/exclude`` handling is this function's job: without it
+        a scratch dir that ``git status`` cannot see contributes ``active``
+        decision records citing files no clone of the repo contains.
         """
-        import os
+        ignore = load_gitignore_spec(self._repo_path)
+        conventional: list[Path] = []
+        loose: list[Path] = []
+        for dirpath, dirnames, filenames in walk_repo(self._repo_path, prune_dirs=_SKIP_DIRS):
+            rel_dir = dirpath.relative_to(self._repo_path).as_posix()
+            rel_dir = "" if rel_dir == "." else rel_dir
+            # Prune ignored and packaging-metadata subtrees in place. Ignored
+            # DIRECTORIES match with a trailing slash, as git matches them.
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if not d.endswith((".egg-info", ".dist-info"))
+                and not ignore.match_file(f"{rel_dir}/{d}/" if rel_dir else f"{d}/")
+            ]
 
-        seen: set[Path] = set()
-        files: list[Path] = []
-        for pattern in _ADR_DIR_GLOBS:
-            for p in self._repo_path.glob(pattern):
-                if p.is_file() and p not in seen:
-                    seen.add(p)
-                    files.append(p)
+            in_adr_dir = rel_dir in _ADR_DIRS
+            for fname in filenames:
+                low = fname.lower()
+                if not low.endswith(".md"):
+                    continue
+                if in_adr_dir:
+                    bucket = conventional
+                elif "adr" in low and low != "readme.md" and "template" not in low:
+                    bucket = loose
+                else:
+                    continue
+                if ignore.match_file(f"{rel_dir}/{fname}" if rel_dir else fname):
+                    continue
+                bucket.append(dirpath / fname)
 
-        if len(files) < _MAX_ADR_FILES:
-            for dirpath, dirnames, filenames in os.walk(self._repo_path):
-                # Prune skip-listed + nested-git subtrees in place.
-                dirnames[:] = [
-                    d
-                    for d in dirnames
-                    if d not in _SKIP_DIRS
-                    and not d.endswith((".egg-info", ".dist-info"))
-                    and not (Path(dirpath) / d / ".git").exists()
-                ]
-                for fname in filenames:
-                    low = fname.lower()
-                    if not low.endswith(".md") or "adr" not in low:
-                        continue
-                    if low == "readme.md" or "template" in low:
-                        continue
-                    p = Path(dirpath) / fname
-                    if p in seen:
-                        continue
-                    seen.add(p)
-                    files.append(p)
-                    if len(files) >= _MAX_ADR_FILES:
-                        break
-                if len(files) >= _MAX_ADR_FILES:
-                    break
+            if len(conventional) + len(loose) >= _MAX_ADR_FILES:
+                break
 
-        return files[:_MAX_ADR_FILES]
+        # No dedup pass: walk_repo yields each directory once, and each file
+        # lands in exactly one bucket.
+        return [*conventional, *loose][:_MAX_ADR_FILES]
 
     def _parse_adr(self, content: str, rel_path: str) -> ExtractedDecision | None:
         """Deterministically parse a structured ADR. Returns None if unstructured.
@@ -884,12 +939,14 @@ class DecisionExtractor:
                 )
                 source_by_sha[c["sha"]] = f"{c['subject']}\n{c['body']}"
             prompt = PR_BODY_MINING_PROMPT.format(bodies_block=bodies_block)
-            try:
-                response = await self._provider.generate(
-                    _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
-                )
-            except Exception:
-                return []
+            # Let this propagate to the gather below. Swallowed here, a total
+            # provider outage returned five empty lists, so ``_collect_batches``
+            # saw no errors and the run reported "Nothing found in: pull
+            # requests" — the exact zero-that-means-failure this change exists
+            # to remove.
+            response = await self._provider.generate(
+                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+            )
             extracted = self._parse_decisions_json(response.content)
             for d in extracted:
                 sha = d.evidence_commits[0] if d.evidence_commits else ""
@@ -908,16 +965,10 @@ class DecisionExtractor:
                 d.affected_modules = self._infer_modules(d.affected_files)
             return extracted
 
-        decisions: list[ExtractedDecision] = []
         results = await asyncio.gather(
             *[_process_batch(b) for b in batches], return_exceptions=True
         )
-        for result in results:
-            if isinstance(result, list):
-                decisions.extend(result)
-            else:
-                logger.warning("decision_extractor.pr_batch_failed", error=str(result))
-        return decisions
+        return _collect_batches("pr", list(results))
 
     # ------------------------------------------------------------------
     # Source 5: Comment archaeology (centrality-bounded)
@@ -954,12 +1005,13 @@ class DecisionExtractor:
             for fp, prose in batch:
                 comments_block += f"\n--- {fp} ---\n{prose[:1500]}\n"
             prompt = COMMENT_ARCHAEOLOGY_PROMPT.format(comments_block=comments_block)
-            try:
-                response = await self._provider.generate(
-                    _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
-                )
-            except Exception:
-                return []
+            # Was a bare ``except Exception: return []`` here with no log at
+            # all — the quietest of the three swallows, and the one that made
+            # "comment: 0" unfalsifiable. Let it propagate to the gather
+            # below, which counts it.
+            response = await self._provider.generate(
+                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+            )
             extracted = self._parse_decisions_json(response.content)
             # Best-effort attribution to the originating file by token overlap.
             for d in extracted:
@@ -982,9 +1034,7 @@ class DecisionExtractor:
         results = await asyncio.gather(
             *[_process_batch(b) for b in batches], return_exceptions=True
         )
-        for result in results:
-            if isinstance(result, list):
-                decisions.extend(result)
+        decisions.extend(_collect_batches("comment", list(results)))
         return decisions
 
     # Above this node count, skip the iterative PageRank solve and use degree
@@ -1216,6 +1266,8 @@ class DecisionExtractor:
         ungrounded LLM fields are dropped and evidence-less decisions rejected.
         """
 
+        failures: dict[str, str] = {}
+
         async def _safe_source(name: str, coro_fn: Any) -> list[ExtractedDecision]:
             try:
                 logger.info("decision_extractor.starting", source=name)
@@ -1223,6 +1275,10 @@ class DecisionExtractor:
                 logger.info("decision_extractor.finished", source=name, count=len(result))
                 return result
             except Exception as exc:
+                # Recorded as well as logged: the CLI pins core to ERROR, so
+                # a source that dies here used to reach the user as a plain
+                # zero indistinguishable from "this repo has no ADRs".
+                failures[name] = f"{type(exc).__name__}: {exc}"
                 logger.warning("decision_extractor.source_failed", source=name, error=str(exc))
                 return []
             finally:
@@ -1269,6 +1325,7 @@ class DecisionExtractor:
             total_found=len(decisions),
             decisions=decisions,
             by_source=by_source,
+            failures=failures,
         )
 
     # ------------------------------------------------------------------
@@ -1371,31 +1428,20 @@ class DecisionExtractor:
     def _iter_source_files(self):
         """Yield source files under repo_path, skipping irrelevant dirs.
 
-        Uses os.walk so we can prune entire subtrees (nested git repos,
-        node_modules, etc.) without descending into them. When the repo is a git
-        checkout, the walk is further restricted to git-tracked files so
-        untracked / excluded working directories never contribute decisions;
-        gitless indexes fall back to the full walk.
+        Walks via :func:`walk_repo`, which prunes junk subtrees and nested git
+        repos (separate codebases that must not contribute decisions to the
+        parent) without descending into them. When the repo is a git checkout,
+        the walk is further restricted to git-tracked files so untracked /
+        excluded working directories never contribute decisions; gitless
+        indexes fall back to the full walk.
         """
-        import os
-
         tracked = self._tracked_files()
 
-        for dirpath, dirnames, filenames in os.walk(self._repo_path):
-            # Prune skip-listed directories in-place so os.walk won't descend
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in _SKIP_DIRS
-                # Skip setuptools build metadata: PKG-INFO embeds the README
-                # verbatim, so example marker lines in docs become spurious
-                # decisions. Same risk for *.dist-info from wheels.
-                and not d.endswith(".egg-info")
-                and not d.endswith(".dist-info")
-                # Skip nested git repositories — they are separate codebases
-                # and should not contribute decisions to the parent repo.
-                and not (Path(dirpath) / d / ".git").exists()
-            ]
+        for dirpath, dirnames, filenames in walk_repo(self._repo_path, prune_dirs=_SKIP_DIRS):
+            # Skip setuptools build metadata: PKG-INFO embeds the README
+            # verbatim, so example marker lines in docs become spurious
+            # decisions. Same risk for *.dist-info from wheels.
+            dirnames[:] = [d for d in dirnames if not d.endswith((".egg-info", ".dist-info"))]
 
             for fname in filenames:
                 fpath = Path(dirpath) / fname

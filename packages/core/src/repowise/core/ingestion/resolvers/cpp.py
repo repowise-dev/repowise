@@ -31,10 +31,21 @@ from __future__ import annotations
 import posixpath
 from pathlib import Path
 
+from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .context import ResolverContext
 
 _SOURCE_TU_EXTS: tuple[str, ...] = (".c", ".cc", ".cpp", ".cxx", ".c++", ".cppm", ".ixx", ".mxx")
-_HEADER_EXTS: tuple[str, ...] = (".h", ".hpp", ".hxx", ".hh", ".h++", ".inc")
+# Include fragments sit with the headers: ``#include "math_impl.inl"`` resolves
+# by the same rules, and a fragment is never a translation unit of its own.
+_HEADER_EXTS: tuple[str, ...] = (
+    ".h",
+    ".hpp",
+    ".hxx",
+    ".hh",
+    ".h++",
+    ".inc",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+)
 
 
 def _is_system_include(module_path: str, system_form: bool) -> bool:

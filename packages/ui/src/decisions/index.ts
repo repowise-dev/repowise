@@ -6,6 +6,7 @@ export * from "./decision-evidence-drawer";
 export * from "./decision-lineage";
 export * from "./decision-detail-adapter";
 export * from "./decision-detail";
+export * from "./decision-create-form";
 export * from "./decision-governance";
 export * from "./decision-staleness";
 export * from "./checkout-facts";

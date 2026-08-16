@@ -15,6 +15,7 @@ import { summarizeFixHistory } from "../lib/fix-history";
 import { cn } from "../lib/cn";
 import { useVirtualRows } from "../shared/virtualized-table";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
+import { docsPagePath, filePageId } from "../shared/entity/routes";
 import type { Hotspot } from "@repowise-dev/types/git";
 
 /**
@@ -473,7 +474,13 @@ export function HotspotTable({
                           <RowActions
                             actions={[
                               { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(h.file_path)}` },
-                              { icon: BookOpen, label: "Docs", href: `${prefix}/docs?file=${encodeURIComponent(h.file_path)}` },
+                              // `?file=` is read by nothing in the docs
+                              // surface, so this used to open the repo
+                              // overview while looking like it had worked.
+                              // `?page=` is the reader's parameter and takes a
+                              // wiki page id; a file with no page gets told so
+                              // by name.
+                              { icon: BookOpen, label: "Docs", href: docsPagePath(prefix, filePageId(h.file_path)) },
                               { icon: Radius, label: "Blast Radius", href: `${prefix}/code-health?tab=impact&file=${encodeURIComponent(h.file_path)}` },
                             ]}
                           />

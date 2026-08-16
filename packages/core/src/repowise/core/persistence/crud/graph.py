@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -93,6 +93,10 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
         # (_resolvers.py:504-505). A pair can carry several resolved calls of
         # differing confidence; a last-write upsert could stamp a real call
         # below _FLOW_CALLS_CONF_FLOOR (0.5) and drop it from flow-path answers.
+        # The origin explains the confidence, so it moves only when the
+        # confidence does.
+        if confidence > (existing.confidence or 0.0):
+            existing.resolution_origin = edge_data.get("resolution_origin")
         existing.confidence = max(existing.confidence or 0.0, confidence)
 
 
@@ -162,7 +166,8 @@ async def batch_upsert_graph_edges(
     """Upsert graph edges for a repository.
 
     Each element of *edges* should have ``source_node_id``, ``target_node_id``,
-    ``edge_type``, and optionally ``imported_names_json`` and ``confidence``.
+    ``edge_type``, and optionally ``imported_names_json``, ``confidence``,
+    ``hint_source`` and ``resolution_origin``.
 
     The unique constraint is (repository_id, source, target, edge_type),
     allowing multiple edge types between the same pair of nodes.
@@ -188,6 +193,7 @@ async def batch_upsert_graph_edges(
             edge_type=e.get("edge_type", "imports"),
             confidence=e.get("confidence", 1.0),
             hint_source=e.get("hint_source"),
+            resolution_origin=e.get("resolution_origin"),
         ),
     )
 
@@ -281,6 +287,7 @@ async def reconcile_edges_for_files(
                 edge_type=e.get("edge_type", "imports"),
                 confidence=e.get("confidence", 1.0),
                 hint_source=e.get("hint_source"),
+                resolution_origin=e.get("resolution_origin"),
             )
         )
     await session.flush()
@@ -514,6 +521,7 @@ async def get_all_graph_edges(
                 "confidence": row.confidence,
                 "imported_names": imported_names,
                 "hint_source": row.hint_source,
+                "resolution_origin": row.resolution_origin,
             }
         )
     return edges
@@ -559,7 +567,36 @@ async def get_graph_edges_for_node(
     edge_types:
         Optional filter, e.g. ``["calls"]`` or ``["extends", "implements"]``.
     limit:
-        Max edges per direction.
+        Max edges per direction. **The cut is ranked**: rows come back most
+        confident first, ties broken on the other endpoint's id. Without an
+        ``ORDER BY`` the survivors were whichever rows the table handed over,
+        so a node with more adjacent edges than *limit* could return its
+        containment rows and none of its real calls — the failure
+        ``routers/files.py`` documents at its own call site rather than fixing
+        here. What the consumers do afterwards is the argument for ranking at
+        this end: ``mcp_server/_graph_utils`` and ``tool_symbol`` drop anything
+        below 0.5, so an unranked cut can hand them 50 rows and leave them
+        nothing; and ``routers/symbols`` and ``routers/graph/intelligence``
+        **sort by confidence after** the cut, which presented a
+        confident-looking order over an arbitrary subset — ranking was already
+        the contract there, applied one step too late.
+
+        On SQLite the unranked form was not arbitrary in practice: the rows
+        arrive in index order, which is stable but is promised by no query
+        planner and by no other backend. Deterministic, and still the wrong
+        rows.
+
+        **It costs something, on one direction only.** ``graph_edges`` is
+        indexed on ``(repository_id, source_node_id, target_node_id,
+        edge_type)``, so the *callees* branch seeks and then sorts a narrow
+        match set, while the *callers* branch filters on ``target_node_id``,
+        which that index cannot serve — it scanned before and now also builds a
+        temp b-tree, losing the early exit the bare ``LIMIT`` gave it. Measured
+        on django's 120k-edge index: the hottest node (1,525 inbound edges)
+        goes 10.9 ms to 38.2 ms; a low-degree node is unchanged at ~37 ms
+        because it was already scanning. The fix is an index on
+        ``(repository_id, target_node_id)``, which ``GraphEdge`` now declares
+        as ``ix_graph_edges_repo_target``.
     """
     results: list[GraphEdge] = []
 
@@ -570,7 +607,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -581,7 +620,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -703,6 +744,42 @@ async def get_all_file_metrics(
         )
     )
     return list(result.scalars().all())
+
+
+async def get_pagerank_percentile(
+    session: AsyncSession,
+    repository_id: str,
+    pagerank: float,
+) -> int:
+    """Percentile rank (0-100) of *pagerank* among the repo's file nodes.
+
+    Counted in SQL. The callers that want one file's rank used to load every
+    file node through :func:`get_all_file_metrics` and scan the list in Python,
+    which is the whole repo graph materialized as ORM objects to produce a
+    single integer.
+
+    The arithmetic deliberately matches ``mcp_server._graph_utils.percentile_rank``
+    — ``round(100 * below / n)`` over every ``node_type == "file"`` row — so
+    swapping a caller over does not move the number it prints. Note this is not
+    the same figure the Files *index* shows under ``pagerank_pct``: that one
+    drops external and framework nodes first and divides by ``n - 1``.
+    Reconciling the two is a behaviour change and not this function's job.
+    """
+    row = (
+        await session.execute(
+            select(
+                func.count().label("total"),
+                func.sum(case((GraphNode.pagerank < pagerank, 1), else_=0)).label("below"),
+            ).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "file",
+            )
+        )
+    ).one()
+    total = row.total or 0
+    if not total:
+        return 0
+    return round(100.0 * (row.below or 0) / total)
 
 
 async def get_cross_community_edges(

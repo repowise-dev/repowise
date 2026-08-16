@@ -141,6 +141,11 @@ export interface RepoDiagnostics {
   consumers_by_type: Record<string, number>;
   provider_count: number;
   consumer_count: number;
+  /** Contracts by the tier that produced them: `index` or `regex`. */
+  providers_by_layer: Record<string, number>;
+  consumers_by_layer: Record<string, number>;
+  /** Calls that reached a confirmed HTTP wrapper but resolved to no path. */
+  http_consumers_unresolved: number;
 }
 
 export interface UnmatchedConsumer {
@@ -167,6 +172,17 @@ export interface ExtractionDiagnostics {
   unmatched_consumers: UnmatchedConsumer[];
   unmatched_by_reason: Record<string, number>;
   orphan_providers: OrphanProvider[];
+  /** Workspace-wide rollup of the per-repo `index` / `regex` split. */
+  providers_by_layer: Record<string, number>;
+  consumers_by_layer: Record<string, number>;
+  /** HTTP client calls located but not resolvable to an endpoint. */
+  http_consumers_unresolved: number;
+  /**
+   * Share of located HTTP client calls that became a contract, or `null` when
+   * none were located — 0/0 is not 100%. Covers only calls a dialect
+   * recognised, so it is not total recall.
+   */
+  http_consumer_coverage: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +296,11 @@ export interface BreakingChange {
 
 export interface BreakingChangeReport {
   version: number;
-  generated_at: string;
+  /**
+   * When detection ran, or `null` if it never has. An empty `changes` list
+   * means "nothing broke" only when this is set.
+   */
+  generated_at: string | null;
   changes: BreakingChange[];
   total: number;
   breaking_count: number;
@@ -343,13 +363,20 @@ export interface DependencyCycle {
 
 export interface ConformanceReport {
   version: number;
-  generated_at: string;
+  /**
+   * When the check ran, or `null` if it never has. Zero violations means
+   * "clean" only when this is set — otherwise nothing looked.
+   */
+  generated_at: string | null;
   /** How many rules were declared and evaluated. */
   rules_evaluated: number;
   violations: ConformanceViolation[];
   cycles: DependencyCycle[];
   violation_count: number;
+  /** How many cycles `cycles` lists, after the reporting cap. */
   cycle_count: number;
+  /** How many cycles exist. Above `cycle_count` when the list was cut. */
+  total_cycles: number;
   /** Distinct repos participating in a violation. */
   violating_repos: string[];
 }

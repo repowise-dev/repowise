@@ -10,6 +10,7 @@ from ``cross_repo_edges.json`` so Phase 3 and Phase 4 fail independently.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -17,14 +18,18 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from repowise.core.fsutils import atomic_write_text
 from repowise.core.workspace.config import (
     WORKSPACE_DATA_DIR,
     WorkspaceConfig,
     ensure_workspace_data_dir,
 )
 from repowise.core.workspace.contract_schema import ContractSchema
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
 
 _log = logging.getLogger("repowise.workspace.contracts")
 
@@ -137,6 +142,17 @@ class ContractStore:
     generated_at: str = ""
     contracts: list[Contract] = field(default_factory=list)
     contract_links: list[ContractLink] = field(default_factory=list)
+    #: Per-repo-alias counters the extractors filled in as they ran — what was
+    #: located but could not be turned into a contract. Without these the
+    #: contract count has no denominator, and 26 consumers looks like 26
+    #: consumers rather than 26 out of 130.
+    extraction_stats: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: Per-repo-alias provenance: ``{"head": <sha>, "extracted_at": <iso>}``.
+    #: What makes an incremental run auditable — ``generated_at`` says when the
+    #: artifact was written, this says which commit each repo's rows describe.
+    #: A repo absent from here has never been extracted by a provenance-aware
+    #: run and must be re-extracted rather than trusted.
+    repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +160,8 @@ class ContractStore:
             "generated_at": self.generated_at,
             "contracts": [c.to_dict() for c in self.contracts],
             "contract_links": [lk.to_dict() for lk in self.contract_links],
+            "extraction_stats": self.extraction_stats,
+            "repo_provenance": self.repo_provenance,
         }
 
     @classmethod
@@ -153,7 +171,21 @@ class ContractStore:
             generated_at=data.get("generated_at", ""),
             contracts=[Contract.from_dict(c) for c in data.get("contracts", [])],
             contract_links=[ContractLink.from_dict(lk) for lk in data.get("contract_links", [])],
+            extraction_stats=data.get("extraction_stats", {}),
+            # Absent on any artifact written before incremental extraction
+            # existed. Defaulting to empty means "no repo can prove its
+            # freshness", so the next run re-extracts everything — the safe
+            # direction for a one-off cost.
+            repo_provenance=data.get("repo_provenance", {}),
         )
+
+    def rows_for_repo(self, alias: str) -> list[Contract]:
+        """Every contract this store holds for *alias*.
+
+        The unit of incremental reuse. Contracts carry their repo inline rather
+        than being grouped by it, so selecting one repo's rows is a filter.
+        """
+        return [c for c in self.contracts if c.repo == alias]
 
 
 # ---------------------------------------------------------------------------
@@ -443,12 +475,22 @@ def annotate_consumer_targets(
     Mutates the contracts in place so both :func:`match_contracts` and the
     diagnostics builder read one resolution. ``service_bases`` maps a base token
     or host (case-insensitive) to a repo alias.
+
+    The two keys this owns are cleared before being recomputed, so the result is
+    a function of *contracts* and *service_bases* alone and not of whatever a
+    previous run stamped. That matters now that incremental extraction carries
+    contracts forward: a consumer resolved to ``gamma`` keeps that ``meta`` when
+    it is reused, and if ``gamma`` has since left the workspace the resolution
+    no longer fires — so without the clear, the stale target survives and the
+    contract claims to call a repo that is not in the workspace any more.
     """
     repo_aliases = {c.repo for c in contracts}
     sb = {k.lower(): v for k, v in (service_bases or {}).items()}
     for c in contracts:
         if c.role != "consumer" or c.contract_type != "http":
             continue
+        c.meta.pop("target_repo", None)
+        c.meta.pop("external", None)
         target, external = _resolve_consumer_target(c, repo_aliases, sb)
         if external:
             c.meta["external"] = True
@@ -642,9 +684,10 @@ def save_contract_store(store: ContractStore, workspace_root: Path) -> Path:
     """Write contract store to ``.repowise-workspace/contracts.json``."""
     data_dir = ensure_workspace_data_dir(workspace_root)
     out_path = data_dir / CONTRACTS_FILENAME
-    out_path.write_text(
-        json.dumps(store.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(
+        out_path, json.dumps(store.to_dict(), indent=2, ensure_ascii=False)
     )
     return out_path
 
@@ -674,17 +717,67 @@ async def run_contract_extraction(
     ws_config: WorkspaceConfig,
     workspace_root: Path,
     changed_repos: list[str],
+    boundaries_by_repo: dict[str, list[ServiceBoundary]] | None = None,
+    previous_store: ContractStore | None = None,
 ) -> ContractStore:
     """Full contract extraction pipeline.
 
     Called from :func:`run_cross_repo_hooks` during ``repowise update --workspace``.
 
-    1. For each repo: scan files with each extractor (via ``to_thread``)
-    2. Detect service boundaries per repo
-    3. Assign service to each contract
-    4. Run matching engine
+    1. Decide which repos need re-extraction; carry the rest forward verbatim
+    2. For each re-extracted repo: walk once, then run every extractor over it
+    3. Assign service to each contract from the repo's boundaries
+    4. Run matching engine over the merged set
     5. Merge manual links from ``WorkspaceConfig``
     6. Save ``contracts.json``
+
+    *boundaries_by_repo* is the workspace-wide boundary map computed once by
+    :func:`run_cross_repo_hooks` and shared with the system-graph build, which
+    needs the same answer. When None (a direct call, or a test), boundaries are
+    detected here instead.
+
+    *previous_store* is the artifact as it stands on disk, the source of any
+    carried-forward rows. When None nothing is reused and every repo is
+    extracted — the behaviour before incremental extraction existed, and what a
+    caller gets by default.
+
+    Incremental reuse, and why it is shaped this way
+    ------------------------------------------------
+    The unit of reuse is the **repo alias**, and a repo's contracts, its
+    ``extraction_stats`` row and its ``repo_provenance`` row move together or
+    not at all. That atomicity is what keeps the coverage figure honest: the
+    numerator (HTTP consumers, counted from ``contracts``) and the denominator's
+    other half (``http_consumer_unresolved``, counted from ``extraction_stats``)
+    always describe the same extraction of the same commit. The workspace-wide
+    ratio is a sum over repos, each term internally consistent — an aggregate
+    over repos that may sit at different commits, which is what a workspace
+    artifact honestly is. ``repo_provenance`` records which commit each term
+    came from so that is auditable rather than implied.
+
+    Reuse is **validated, never trusted**. A repo is carried forward only when
+    all four hold: its alias is absent from *changed_repos*; the provenance we
+    persisted names the same HEAD it is at now; that provenance was written
+    under the same contract config; and its working tree is clean.
+    ``changed_repos`` is computed upstream and can be wrong (a crashed run, a
+    branch switch, a hook that fired on a partial set), so it is treated as a
+    hint and each of the other three is checked here against live state. HEAD
+    alone would not be enough: extraction reads the working tree, so uncommitted
+    edits change the answer without moving the commit the stamp names. Every way
+    of disagreeing resolves toward re-extraction, so the failure mode is a
+    slower run rather than a stale artifact.
+
+    Deletion is by construction. The merged set is assembled by iterating the
+    *current* ``repo_paths``, never the persisted store, so a repo dropped from
+    the workspace config or one that lost its ``.repowise/`` index contributes
+    nothing to contracts, stats or provenance. There is no prune step to forget,
+    and a removed repo cannot leave a phantom provider behind.
+
+    Links are always recomputed over the whole merged set, never merged.
+    :func:`annotate_consumer_targets` derives its set of internal repos from the
+    full contract list, and :func:`match_contracts` decides ``exact`` vs
+    ``candidate`` by counting providers workspace-wide — a subset pass would
+    mislabel both. Matching is dict-indexed and costs milliseconds against
+    seconds of extraction, so scoping it would buy nothing and risk everything.
     """
     from .extractors import (
         DataExtractor,
@@ -695,7 +788,13 @@ async def run_contract_extraction(
         assign_service,
         detect_service_boundaries,
     )
-    from .extractors.base import make_exclude_predicate
+    from .extractors.base import iter_source_files, make_exclude_predicate
+    from .extractors.from_index import (
+        ALL_INDEX_SUFFIXES,
+        EXTRACTION_LAYER_KEY,
+        LAYER_REGEX,
+        load_repo_index,
+    )
 
     contract_config = ws_config.contracts
     exclude = make_exclude_predicate(tuple(contract_config.exclude_globs))
@@ -712,12 +811,74 @@ async def run_contract_extraction(
     if len(repo_paths) < 2:
         return ContractStore()
 
-    # Per-repo extraction
-    async def _extract_one_repo(alias: str, repo_path: Path) -> list[Contract]:
+    # Which repos can be carried forward, and which must be re-extracted.
+    # Probing a repo's state costs a `git rev-parse` and a dirty check; the
+    # alternative is trusting changed_repos, which is exactly the trust a stale
+    # artifact would exploit. Skipped entirely when there is nothing to reuse.
+    from .update import get_head_commit
+
+    prior = previous_store or ContractStore()
+    changed = set(changed_repos)
+    reusable: set[str] = set()
+    heads: dict[str, str | None] = {}
+    # Fingerprints the settings that decide what extraction even looks for. A
+    # repo extracted under `detect_data: false`, or before a `service_bases`
+    # entry existed, holds rows that answer a question no longer being asked —
+    # and its HEAD is unchanged, so nothing else here would notice.
+    config_fp = hashlib.sha256(
+        json.dumps(contract_config.to_dict(), sort_keys=True).encode()
+    ).hexdigest()[:16]
+
+    if previous_store is not None:
+        from ..ingestion.change_detector import has_working_tree_changes
+
+        aliases = list(repo_paths)
+        probes = await asyncio.gather(
+            *[
+                asyncio.gather(
+                    asyncio.to_thread(get_head_commit, repo_paths[a]),
+                    asyncio.to_thread(has_working_tree_changes, repo_paths[a]),
+                )
+                for a in aliases
+            ]
+        )
+        for alias, (head, dirty) in zip(aliases, probes, strict=True):
+            heads[alias] = head
+            stamped = prior.repo_provenance.get(alias, {})
+            # Four independent ways to fail, all resolving toward re-extraction:
+            # upstream said it changed; HEAD is unreadable (not a git checkout,
+            # or git failed) so nothing can be proven; HEAD moved; or the config
+            # that shaped the persisted rows is not the config in force now.
+            # The dirty check is the one HEAD cannot cover: extraction reads the
+            # working tree, so uncommitted edits change the answer without
+            # moving the commit that the stamp names.
+            if (
+                alias not in changed
+                and head is not None
+                and head == stamped.get("head")
+                and stamped.get("config_fp") == config_fp
+                and not dirty
+            ):
+                reusable.add(alias)
+    to_extract = {alias: path for alias, path in repo_paths.items() if alias not in reusable}
+    # Only the repos being extracted need a stamp, and only they were probed
+    # above when there was no previous store to compare against.
+    for alias in to_extract:
+        if alias not in heads:
+            heads[alias] = await asyncio.to_thread(get_head_commit, repo_paths[alias])
+
+    # Per-repo extraction. Returns the contracts plus the counters the
+    # extractors filled in, which are the denominator half of any coverage
+    # figure and so must survive past this function.
+    async def _extract_one_repo(
+        alias: str, repo_path: Path
+    ) -> tuple[list[Contract], dict[str, int]]:
         contracts: list[Contract] = []
 
-        # Service boundary detection
-        boundaries = await asyncio.to_thread(detect_service_boundaries, repo_path)
+        if boundaries_by_repo is not None:
+            boundaries = boundaries_by_repo.get(alias, [])
+        else:
+            boundaries = await asyncio.to_thread(detect_service_boundaries, repo_path)
 
         # Run enabled extractors
         extractors = []
@@ -731,21 +892,100 @@ async def run_contract_extraction(
             extractors.append(TopicExtractor())
         if contract_config.detect_data:
             extractors.append(DataExtractor())
+        if not extractors:
+            return contracts, {}
+
+        # One walk per repo, shared by every extractor. Each used to walk and
+        # re-read the tree itself, so a file claimed by N extractors was read N
+        # times; the union of their extensions is walked once here instead.
+        wanted: frozenset[str] = frozenset()
+        for extractor in extractors:
+            wanted |= extractor.source_extensions()
+        # The walk records each file's content hash as it reads it, which is
+        # what lets the index path tell a matching parse from a stale one
+        # without a second read.
+        content_hashes: dict[str, str] = {}
+        files = await asyncio.to_thread(
+            lambda: list(iter_source_files(repo_path, wanted, exclude, content_hashes))
+        )
+
+        # Symbols ingestion already parsed for this repo, when its parse cache
+        # is usable. None means the regex dialects are the only path, which is
+        # also the answer for languages with no AST tier. Only the HTTP
+        # extractor consults it, so nothing is loaded when it is disabled.
+        index = None
+        if contract_config.detect_http:
+            index = await asyncio.to_thread(load_repo_index, repo_path, ALL_INDEX_SUFFIXES)
+
+        # Counters the HTTP extractor fills in as it goes. The unresolved-path
+        # count is the honest half of any recall figure: it says how many real
+        # client calls were located but could not be resolved to an endpoint.
+        stats: dict[str, int] = {}
+        # Recorded per repo so a walk regression is visible in the artifact and
+        # assertable in a test, not just in a wall-clock number that varies by
+        # machine. One walk per repo is the invariant this counts.
+        stats["files_walked"] = len(files)
+        stats["walks"] = 1
 
         for extractor in extractors:
-            found = await asyncio.to_thread(extractor.extract, repo_path, alias, exclude)
+            kwargs = (
+                {"index": index, "content_hashes": content_hashes, "stats": stats}
+                if isinstance(extractor, HttpExtractor)
+                else {}
+            )
+            found = await asyncio.to_thread(
+                lambda e=extractor, kw=kwargs: e.extract(
+                    repo_path, alias, exclude, files, **kw
+                )
+            )
             for c in found:
                 c.service = assign_service(c.file_path, boundaries)
+                c.meta.setdefault(EXTRACTION_LAYER_KEY, LAYER_REGEX)
             contracts.extend(found)
 
-        return contracts
+        unresolved = stats.get("http_consumer_unresolved", 0)
+        if unresolved:
+            _log.info(
+                "%s: %d HTTP client call(s) reach a confirmed wrapper but their "
+                "path could not be resolved statically; counted, not extracted",
+                alias,
+                unresolved,
+            )
+        return contracts, stats
 
     results = await asyncio.gather(
-        *[_extract_one_repo(alias, path) for alias, path in repo_paths.items()]
+        *[_extract_one_repo(alias, path) for alias, path in to_extract.items()]
     )
+    fresh = dict(zip(to_extract, results, strict=True))
+
+    # Assemble the merged set by walking the CURRENT repo set. A repo that left
+    # the workspace, or lost its index, is simply never visited here — that is
+    # the deletion, and it cannot be forgotten because there is no separate
+    # prune step to forget.
     all_contracts: list[Contract] = []
-    for repo_contracts in results:
+    extraction_stats: dict[str, dict[str, int]] = {}
+    provenance: dict[str, dict[str, str]] = {}
+    now_iso = datetime.now(UTC).isoformat()
+    for alias in repo_paths:
+        if alias in fresh:
+            repo_contracts, repo_stats = fresh[alias]
+            head = heads[alias]
+            provenance[alias] = {
+                "head": head or "",
+                "extracted_at": now_iso,
+                "config_fp": config_fp,
+            }
+        else:
+            # Carried forward as one unit: rows, counters and the stamp saying
+            # which commit they describe. Splitting these is what would let the
+            # coverage ratio mix a numerator and a denominator from different
+            # commits, so they are only ever read together.
+            repo_contracts = prior.rows_for_repo(alias)
+            repo_stats = prior.extraction_stats.get(alias, {})
+            provenance[alias] = dict(prior.repo_provenance.get(alias, {}))
         all_contracts.extend(repo_contracts)
+        if repo_stats:
+            extraction_stats[alias] = repo_stats
 
     # Resolve each consumer's target service / third-party host, then match.
     annotate_consumer_targets(all_contracts, contract_config.service_bases)
@@ -757,16 +997,27 @@ async def run_contract_extraction(
 
     store = ContractStore(
         version=1,
-        generated_at=datetime.now(UTC).isoformat(),
+        generated_at=now_iso,
         contracts=all_contracts,
         contract_links=links,
+        extraction_stats=extraction_stats,
+        repo_provenance=provenance,
     )
 
     out_path = save_contract_store(store, workspace_root)
+    # files_walked is summed over the repos extracted THIS RUN, not over
+    # extraction_stats — that dict also holds the counters carried forward for
+    # skipped repos, so summing it would report the artifact's lifetime total
+    # under a name that reads as work just done, and an incremental run would
+    # look exactly like a full rescan.
     _log.info(
-        "Contract extraction complete: %d contracts, %d links → %s",
+        "Contract extraction complete: %d contracts, %d links, "
+        "%d repo(s) extracted, %d reused, %d file(s) walked this run → %s",
         len(all_contracts),
         len(links),
+        len(to_extract),
+        len(reusable),
+        sum(stats.get("files_walked", 0) for _, stats in fresh.values()),
         out_path,
     )
 

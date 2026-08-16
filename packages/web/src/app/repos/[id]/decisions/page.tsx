@@ -8,6 +8,7 @@ import { getDecisionCounts, listDecisions } from "@/lib/api/decisions";
 import { listEpisodes } from "@/lib/api/episodes";
 import { ApiClientError } from "@/lib/api/client";
 import { DecisionsTableWrapper } from "@/components/decisions/decisions-table-wrapper";
+import { AddDecisionButton } from "@/components/decisions/add-decision-button";
 
 export const revalidate = 30;
 export const metadata: Metadata = { title: "Decisions" };
@@ -143,8 +144,9 @@ export default async function DecisionsPage({ params }: Props) {
             <p>
               Decisions land here as the indexer mines them from pull requests,
               commit messages, code comments and your own sessions, and as you
-              record them with <code>repowise decision add</code>. Each one
-              keeps the quote it was drawn from and the files it governs.
+              record them yourself — below, or with{" "}
+              <code>repowise decision add</code>. Each one keeps the quote it
+              was drawn from and the files it governs.
             </p>
             {proposed > 0 && (
               <p>
@@ -178,6 +180,13 @@ export default async function DecisionsPage({ params }: Props) {
           </>
         )}
       </PageLede>
+
+      {/* Visible in both states on purpose: the table section below is not
+          rendered at all on an empty repo, which is exactly when somebody
+          needs to record the first one. */}
+      <div className="flex justify-end">
+        <AddDecisionButton repoId={repoId} />
+      </div>
 
       {facts && (
         <OverviewSection

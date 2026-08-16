@@ -5,7 +5,7 @@ Also works as a base for any OpenAI-compatible API endpoint via the
 `base_url` parameter.
 
 Recommended models (as of 2026):
-    - gpt-5.4-nano   — fastest, cheapest ($0.20/$1.25 per MTok) [default]
+    - gpt-5.6-luna   — fastest, cheapest ($0.20/$1.20 per MTok) [default]
     - gpt-5.4-mini   — balanced speed and quality ($0.75/$4.50 per MTok)
     - gpt-5.4        — highest quality ($2.50/$15 per MTok)
 """
@@ -93,6 +93,17 @@ def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
         return ("none", "low", "medium", "high")
     if leaf.startswith("gpt-5-pro"):
         return ("high",)
+    if leaf.startswith("gpt-5.6"):
+        # 5.6 dropped `minimal` and added `xhigh`. Must stay above the generic
+        # `gpt-5` branch, which is a prefix of this one and would otherwise win
+        # and offer `minimal`, which 5.6 rejects, and only on a live call.
+        #
+        # `max` is deliberately absent even though the model docs list it: the
+        # API rejects it with `unsupported_value`, naming exactly the five
+        # below. Verified live on both gpt-5.6-luna and gpt-5.6-sol
+        # (2026-08-15). Family-level rather than per-model on the same
+        # evidence: the two variants answered identically.
+        return ("none", "low", "medium", "high", "xhigh")
     if leaf.startswith("gpt-5"):
         return ("minimal", "low", "medium", "high")
     return ("low", "medium", "high")
@@ -128,7 +139,13 @@ def _openai_reasoning_kwargs(reasoning: ReasoningMode, *, model: str) -> dict[st
         }
     if mode == "off":
         return {}
-    if mode in ("none", "minimal", "low", "medium", "high", "xhigh"):
+    # `max` is listed for completeness over ReasoningMode, not because any
+    # OpenAI model accepts it today. None does, so the validation gate above
+    # rejects it first. It is here so that whenever one does, adding it to that
+    # model's tuple is the only edit needed: the previous shape passed
+    # validation and then dropped the effort silently, which reads as "max
+    # worked" while the request carried no reasoning_effort at all.
+    if mode in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
         return {"reasoning_effort": mode}
     return {}
 
@@ -219,7 +236,7 @@ class OpenAIProvider(BaseProvider):
 
     Args:
         api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        model:     Model identifier. Defaults to gpt-5.4-nano.
+        model:     Model identifier. Defaults to gpt-5.6-luna.
         base_url:  Optional custom base URL for OpenAI-compatible endpoints.
         rate_limiter: Optional RateLimiter instance.
     """
@@ -227,7 +244,7 @@ class OpenAIProvider(BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-5.4-nano",
+        model: str = "gpt-5.6-luna",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,

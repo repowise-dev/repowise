@@ -44,6 +44,7 @@ _PLUMBING: dict[str, str] = {
     "repowise/core/persistence/crud/git.py": "supplies the hotspot path set, not the score",
     "repowise/core/persistence/stores/_sql_analysis.py": "passthrough to the crud writer",
     "repowise/core/persistence/_interfaces/_analysis.py": "the store ABC's parameter name",
+    "repowise/server/schemas/repository.py": "the response field",
     "alembic/versions/0019_code_health.py": "the migration that adds the column",
     # --- writers: hand ``compute_kpis`` output to the snapshot ---------------
     "repowise/core/pipeline/persist.py": "persists the KPI dict from the health report",
@@ -56,6 +57,7 @@ _PLUMBING: dict[str, str] = {
     # --- pure renderers: read a value someone else computed ------------------
     "repowise/cli/commands/health_cmd/command.py": "prints the KPI dict it was handed",
     "repowise/core/generation/editor_files/data.py": "the CodeHealthBlock field",
+    "repowise/server/routers/repos.py": "serves the latest snapshot column on /repos/summary",
 }
 
 

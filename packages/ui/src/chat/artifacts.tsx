@@ -326,14 +326,107 @@ export function GraphPathRenderer({ data }: { data: GraphPathArtifactData }) {
 // Decisions
 // ---------------------------------------------------------------------------
 
+function decisionRows(
+  data: DecisionsArtifactData,
+): Array<{
+  title: string;
+  status?: string;
+  decision?: string;
+  rationale?: string;
+  affected_files?: string[];
+}> {
+  // MCP search/path emit `decisions`; older chat fixtures used `results`.
+  return (data.decisions ?? data.results ?? []) as Array<{
+    title: string;
+    status?: string;
+    decision?: string;
+    rationale?: string;
+    affected_files?: string[];
+  }>;
+}
+
+function DecisionCards({
+  rows,
+}: {
+  rows: Array<{
+    title: string;
+    status?: string;
+    decision?: string;
+    rationale?: string;
+    affected_files?: string[];
+  }>;
+}) {
+  return (
+    <div className="space-y-3">
+      {rows.map((r, i) => (
+        <div
+          key={`${r.title}:${i}`}
+          className="rounded-lg border border-[var(--color-border-default)] p-3 space-y-1.5"
+        >
+          <h3 className="text-xs font-medium text-[var(--color-text-primary)]">
+            {r.title}
+            {r.status && (
+              <span className="ml-1.5 text-[10px] font-normal text-[var(--color-text-tertiary)]">
+                ({r.status})
+              </span>
+            )}
+          </h3>
+          {r.decision && (
+            <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+              {r.decision}
+            </p>
+          )}
+          {r.rationale && (
+            <p className="text-xs text-[var(--color-text-tertiary)] leading-relaxed">
+              {r.rationale}
+            </p>
+          )}
+          {r.affected_files && r.affected_files.length > 0 && (
+            <div className="flex flex-wrap gap-1 pt-1">
+              {r.affected_files.slice(0, 6).map((f) => (
+                <FilePathChip key={f} path={f} />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
   if (data.mode === "health") {
+    const counts = data.counts ?? {};
+    const active =
+      counts.active ??
+      counts.total ??
+      data.total_decisions ??
+      0;
+    const stale = data.stale_decisions ?? [];
+    const proposed = data.proposed_awaiting_review ?? [];
+    const hotspots = data.ungoverned_hotspots ?? [];
+    const legacyRecent = data.decisions ?? [];
+
     return (
       <div className="space-y-4">
-        <StatRow
-          label="Decisions"
-          value={(data.total_decisions ?? 0).toLocaleString()}
-        />
+        {data.summary && (
+          <p className="text-xs text-[var(--color-text-secondary)]">{data.summary}</p>
+        )}
+        <div className="grid grid-cols-2 gap-2">
+          <StatRow label="Active" value={Number(active).toLocaleString()} />
+          <StatRow
+            label="Stale"
+            value={Number(counts.stale ?? stale.length).toLocaleString()}
+          />
+          <StatRow
+            label="Proposed"
+            value={Number(counts.proposed ?? proposed.length).toLocaleString()}
+          />
+          <StatRow
+            label="Ungoverned"
+            value={hotspots.length.toLocaleString()}
+          />
+        </div>
         {data.by_source && Object.keys(data.by_source).length > 0 && (
           <div>
             <SectionTitle icon={Layers}>By source</SectionTitle>
@@ -348,11 +441,40 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
             </div>
           </div>
         )}
-        {data.decisions && data.decisions.length > 0 && (
+        {stale.length > 0 && (
+          <div>
+            <SectionTitle icon={AlertTriangle}>Stale decisions</SectionTitle>
+            <ul className="space-y-1">
+              {stale.slice(0, 8).map((d, i) => (
+                <li key={i} className="text-xs text-[var(--color-text-secondary)]">
+                  <span className="truncate">{d.title}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {proposed.length > 0 && (
+          <div>
+            <SectionTitle icon={Sparkles}>Proposed</SectionTitle>
+            <ul className="space-y-1">
+              {proposed.slice(0, 8).map((d, i) => (
+                <li key={i} className="text-xs text-[var(--color-text-secondary)]">
+                  <span className="truncate">{d.title}</span>
+                  {d.source && (
+                    <span className="ml-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+                      ({d.source})
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {legacyRecent.length > 0 && stale.length === 0 && proposed.length === 0 && (
           <div>
             <SectionTitle icon={Sparkles}>Recent</SectionTitle>
             <ul className="space-y-1">
-              {data.decisions.map((d, i) => (
+              {legacyRecent.map((d, i) => (
                 <li key={i} className="text-xs text-[var(--color-text-secondary)]">
                   <span className="truncate">{d.title}</span>
                   {d.status && (
@@ -369,49 +491,42 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
     );
   }
 
-  // search mode
-  if (!data.results || data.results.length === 0) {
+  const rows = decisionRows(data);
+  const heading =
+    data.mode === "path"
+      ? data.path ?? data.query
+      : data.query;
+
+  if (rows.length === 0) {
     return (
       <p className="text-xs text-[var(--color-text-tertiary)]">
-        No matching decisions for {data.query ? `"${data.query}"` : "this query"}.
+        No matching decisions
+        {heading ? ` for "${heading}"` : " for this query"}.
       </p>
     );
   }
+
   return (
     <div className="space-y-3">
-      {data.query && (
+      {heading && (
         <p className="text-xs text-[var(--color-text-tertiary)]">
-          Matches for{" "}
+          {data.mode === "path" ? "Governing" : "Matches for"}{" "}
           <span className="font-mono text-[var(--color-text-secondary)]">
-            "{data.query}"
+            "{heading}"
           </span>
         </p>
       )}
-      {data.results.map((r, i) => (
-        <div
-          key={`${r.title}:${i}`}
-          className="rounded-lg border border-[var(--color-border-default)] p-3 space-y-1.5"
-        >
-          <h3 className="text-xs font-medium text-[var(--color-text-primary)]">
-            {r.title}
-          </h3>
-          <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-            {r.decision}
-          </p>
-          {r.rationale && (
-            <p className="text-xs text-[var(--color-text-tertiary)] leading-relaxed">
-              {r.rationale}
-            </p>
-          )}
-          {r.affected_files && r.affected_files.length > 0 && (
-            <div className="flex flex-wrap gap-1 pt-1">
-              {r.affected_files.slice(0, 6).map((f) => (
-                <FilePathChip key={f} path={f} />
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
+      {data.alignment?.summary && (
+        <p className="text-xs text-[var(--color-text-secondary)]">
+          {data.alignment.summary}
+        </p>
+      )}
+      <DecisionCards rows={rows} />
+      {data.origin_story?.primary_author && (
+        <p className="text-[10px] text-[var(--color-text-tertiary)]">
+          Primary author: {String(data.origin_story.primary_author)}
+        </p>
+      )}
     </div>
   );
 }

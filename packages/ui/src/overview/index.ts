@@ -19,6 +19,9 @@ export type { RepoIdentityHeaderProps, RepoIdentityMeta } from "./repo-identity-
 export { RepoAvatar, githubOwnerFromRemote } from "./repo-avatar";
 export type { RepoAvatarProps } from "./repo-avatar";
 
+export { RepoRows } from "./repo-rows";
+export type { RepoRow, RepoRowsProps } from "./repo-rows";
+
 export { HealthLede, healthBand } from "./health-lede";
 export type { HealthLedeProps } from "./health-lede";
 

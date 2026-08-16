@@ -374,6 +374,7 @@ async def _payload(reason="synthesis-failed", note="DEGRADED: boom"):
     return await _degraded_payload(
         reason=reason,
         note=note,
+        question="how does mod work",
         hits=HITS,
         fallback_targets=["pkg/mod.py"],
         repository=None,
@@ -400,6 +401,8 @@ async def test_both_failure_modes_return_the_same_payload_shape(reason):
         "fallback_targets",
         "retrieval",
         "candidates",
+        "best_guesses",
+        "next_action_hint",
         "note",
         "_meta",
     }
@@ -439,6 +442,7 @@ async def test_degraded_answer_does_not_promise_hits_it_does_not_have():
     payload = await _degraded_payload(
         reason="no-llm-provider",
         note="DEGRADED",
+        question="how does mod work",
         hits=[],
         fallback_targets=[],
         repository=None,

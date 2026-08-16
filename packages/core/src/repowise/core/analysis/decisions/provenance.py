@@ -36,8 +36,7 @@ __all__ = [
 # same decision, the headline fields come from the highest-rank evidence and
 # the lower-rank source is retained as a corroborating evidence row (never
 # discarded). ``test_name`` and ``inferred`` are placeholders for later phases
-# (LLM-docs harvest lands ``llm_inferred`` in Phase 2) but the full ladder is
-# defined now so ranks are stable across phases.
+# but the full ladder is defined now so ranks are stable across phases.
 #
 # A person outranks a document. ``session`` sits above ``adr`` because a
 # transcript carries the user's own words about a choice they were making at the
@@ -65,7 +64,12 @@ SOURCE_RANK: dict[str, int] = {
     "code_comment": 2,  # legacy rows from the removed comment harvest (#751)
     "test_name": 2,  # placeholder — behaviour asserted by a test name
     "inferred": 1,  # placeholder — purely inferred, no verbatim source
-    "llm_inferred": 1,  # Phase 2 LLM-docs harvest
+    # Legacy rows from the generation-time harvest, which is gone: it only ever
+    # ran on file pages, and those are rendered structurally now. Deliberately
+    # NOT in RETIRED_SOURCES yet — adding it drains surviving ``proposed`` rows
+    # and the retired set is hand-mirrored in packages/ui, so that retirement is
+    # its own cross-package change rather than a side effect of this one.
+    "llm_inferred": 1,
 }
 
 MAX_SOURCE_RANK: int = max(SOURCE_RANK.values())

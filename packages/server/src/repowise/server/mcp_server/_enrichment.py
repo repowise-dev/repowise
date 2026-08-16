@@ -26,6 +26,7 @@ class CrossRepoEnricher:
         conformance_path: Path | None = None,
     ) -> None:
         self._co_changes: list[dict] = []
+        self._total_co_changes: int = 0
         self._package_deps: list[dict] = []
         self._repo_summaries: dict[str, dict] = {}
 
@@ -94,6 +95,9 @@ class CrossRepoEnricher:
             return
 
         self._co_changes = data.get("co_changes", [])
+        # How many pairs the miner found before its own caps trimmed the list
+        # above. Equal to len(self._co_changes) when nothing was dropped.
+        self._total_co_changes = data.get("total_co_changes", len(self._co_changes))
         self._package_deps = data.get("package_deps", [])
         self._repo_summaries = data.get("repo_summaries", {})
 
@@ -250,6 +254,7 @@ class CrossRepoEnricher:
         """
         # Reset all state
         self._co_changes = []
+        self._total_co_changes = 0
         self._package_deps = []
         self._repo_summaries = {}
         self._co_change_index = defaultdict(list)
@@ -303,8 +308,13 @@ class CrossRepoEnricher:
 
     @property
     def has_breaking_changes(self) -> bool:
-        """True if a breaking-change report has been loaded."""
-        return self._breaking_changes is not None
+        """True if a breaking-change report has been loaded *and* it ran.
+
+        A report with no ``generated_at`` was never written a result, so its
+        empty change list is silence rather than an all-clear. Callers that
+        report findings must not present it as one.
+        """
+        return bool(self._breaking_changes) and bool(self._breaking_changes.get("generated_at"))
 
     def get_breaking_changes(self) -> dict | None:
         """Return the raw breaking-change report (changes + rollups)."""
@@ -316,8 +326,12 @@ class CrossRepoEnricher:
 
     @property
     def has_conformance(self) -> bool:
-        """True if a conformance report has been loaded."""
-        return self._conformance is not None
+        """True if a conformance report has been loaded *and* it ran.
+
+        See :attr:`has_breaking_changes`: an unstamped report's zero findings
+        mean nothing looked, not that nothing was found.
+        """
+        return bool(self._conformance) and bool(self._conformance.get("generated_at"))
 
     def get_conformance(self) -> dict | None:
         """Return the raw conformance report (violations + cycles + rollups)."""

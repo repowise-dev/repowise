@@ -29,6 +29,7 @@ from .dead_code import (
     update_dead_code_status,
 )
 from .health import (
+    FILE_TREND_SNAPSHOT_WINDOW,
     HEALTH_SNAPSHOT_RETENTION,
     HealthSnapshotHeadline,
     HealthSnapshotScalars,
@@ -60,6 +61,7 @@ from .refactoring import (
 )
 
 __all__ = [
+    "FILE_TREND_SNAPSHOT_WINDOW",
     "HEALTH_SNAPSHOT_RETENTION",
     "HealthSnapshotHeadline",
     "HealthSnapshotScalars",

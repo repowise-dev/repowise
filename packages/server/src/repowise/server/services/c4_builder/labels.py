@@ -43,6 +43,10 @@ _EDGE_VERB: dict[str, str] = {
     "reads": "uses",
     # A type reference without an import: named, but not imported.
     "type_use": "references",
+    # A function named without being called: a dispatch-table entry, a callback
+    # field, an argument to a registration macro. Same verb as ``type_use`` for
+    # the same reason — something holds a handle to it, nothing invokes it.
+    "references": "references",
     # Containment. Only reachable when the view includes symbol nodes.
     "defines": "contains",
     "has_method": "contains",

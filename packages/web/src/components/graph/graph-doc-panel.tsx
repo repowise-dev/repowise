@@ -1,7 +1,7 @@
 "use client";
 
 import { GraphDocPanel as GraphDocPanelShell } from "@repowise-dev/ui/graph/graph-doc-panel";
-import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { fileEntityPath, filePageId } from "@repowise-dev/ui/shared/entity";
 import { usePage } from "@/lib/hooks/use-page";
 import type { DocPage } from "@repowise-dev/types/docs";
 
@@ -12,7 +12,7 @@ interface GraphDocPanelWrapperProps {
 }
 
 export function GraphDocPanel({ repoId, nodeId, onClose }: GraphDocPanelWrapperProps) {
-  const pageId = `file_page:${nodeId}`;
+  const pageId = filePageId(nodeId);
   const { page, isLoading, error } = usePage(pageId, repoId);
 
   return (

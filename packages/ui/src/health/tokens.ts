@@ -66,16 +66,25 @@ export function scoreBand(score: number): ScoreBand {
 }
 
 /* Color classes for the 3 canonical health bands (Alert/Warning/Healthy).
- * Literal strings so Tailwind's static scanner keeps them. */
+ * Literal strings so Tailwind's static scanner keeps them.
+ *
+ * These MUST use the same tokens as `HEALTH_BAND_INK` below. They did not:
+ * the Warning band read `--color-caution` here and `--color-warning` there,
+ * so a 6.9 was one amber as a label and a different amber as a fill —
+ * the treemap tile and the file page's score, or the zoom map's dot and its
+ * detail panel, describing one file in one viewport. Two marks on one object
+ * may not disagree about a colour they both derive from `bandForScore`.
+ * `--color-caution` stays where it belongs: the four-step severity/presentation
+ * ramp below, which is not a band. */
 const HEALTH_BAND_TEXT: Record<HealthBand, string> = {
   alert: "text-[var(--color-error)]",
-  warning: "text-[var(--color-caution)]",
+  warning: "text-[var(--color-warning)]",
   healthy: "text-[var(--color-success)]",
 };
 
 const HEALTH_BAND_BADGE_SOFT: Record<HealthBand, string> = {
   alert: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
-  warning: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
+  warning: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
   healthy: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
 };
 

@@ -9,6 +9,7 @@ off the hot path.
 from __future__ import annotations
 
 import time
+from itertools import pairwise
 from typing import Any
 
 from repowise.core.persistence.crud import (
@@ -110,8 +111,9 @@ async def get_execution_flows(
         flows: list[dict[str, Any]] = []
 
         for ep_node, ep_score in entry_nodes:
+            hop_origins: dict[tuple[str, str], str] = {}
             trace = await bfs_trace(
-                session, repo_id, ep_node.node_id, max_depth, node_cache
+                session, repo_id, ep_node.node_id, max_depth, node_cache, hop_origins
             )
             # Drop excluded files reached downstream so they don't leak via the
             # trace (entry-point filtering above doesn't cover BFS descendants).
@@ -122,7 +124,7 @@ async def get_execution_flows(
                 session, repo_id, trace, node_cache
             )
 
-            flows.append({
+            flow: dict[str, Any] = {
                 "entry_point": ep_node.node_id,
                 "entry_point_name": ep_node.name or ep_node.node_id.split("::")[-1],
                 "entry_point_score": round(ep_score, 3),
@@ -130,7 +132,14 @@ async def get_execution_flows(
                 "depth": len(trace) - 1,
                 "crosses_community": crosses,
                 "communities_visited": communities_visited,
-            })
+            }
+            # Which strategy produced each hop, aligned to `trace` pairwise.
+            # Omitted when no hop has one, so an older index shows no field
+            # rather than a list of nulls.
+            via = [hop_origins.get(pair) for pair in pairwise(trace)]
+            if any(via):
+                flow["trace_via"] = via
+            flows.append(flow)
 
     # Sort by score descending
     flows.sort(key=lambda f: -f["entry_point_score"])

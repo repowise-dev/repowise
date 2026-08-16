@@ -55,6 +55,15 @@ function stripLeadingTitleHeading(content: string, title: string): string {
   return lines.join("\n");
 }
 
+/** The readable half of a page id, for telling someone what they asked for.
+ *  Ids are `"{page_type}:{target_path}"`, and the path is the part that names
+ *  anything; a bare `file_page:` prefix on screen is machinery, not an answer. */
+function describePageId(pageId: string): string {
+  const colon = pageId.indexOf(":");
+  const path = colon === -1 ? pageId : pageId.slice(colon + 1);
+  return path.trim() || pageId;
+}
+
 /** Router-aware anchor — host injects Next.js Link / in-app interception. */
 export type ReaderLinkComponent = React.ElementType<{
   href: string;
@@ -77,6 +86,24 @@ interface DocsReaderProps {
   sidebarOpen: boolean;
   /** ``?page=`` href builder — host owns the route shape. */
   buildPageHref: (pageId: string) => string;
+  /**
+   * Href for the source file's own page, given a repo-relative path.
+   *
+   * The reader is the one surface that knows a page documents a specific file —
+   * `page.target_path` on a `file_page` is exactly the path the file route
+   * takes — and until this it was the only surface with no link to it at all.
+   * Optional so a host without a file route (the VS Code webview) simply
+   * renders no door rather than a broken one.
+   */
+  buildFileHref?: ((filePath: string) => string) | undefined;
+  /**
+   * The page id that was asked for and could not be fetched.
+   *
+   * Set it only once the fetch has settled — while it is in flight the host
+   * should be passing `isLoading` instead, or the reader flashes "no page for
+   * this one" over a request that is about to succeed.
+   */
+  missingPageId?: string | undefined;
   /** Router-aware link for in-content + breadcrumb anchors. */
   LinkComponent: ReaderLinkComponent;
   /**
@@ -104,6 +131,8 @@ export function DocsReader({
   persona,
   sidebarOpen,
   buildPageHref,
+  buildFileHref,
+  missingPageId,
   LinkComponent,
   intelligenceSlot,
   versionHistorySlot,
@@ -127,6 +156,14 @@ export function DocsReader({
   if (isLoading) return <ReaderSkeleton />;
 
   if (!page) {
+    // Two different states wearing one screen until now. A reader who opened
+    // the surface with nothing selected needs "pick something". A reader who
+    // asked for a specific page and did not get it needs to be told that, or
+    // the generic prompt reads as the link having done nothing — and links
+    // into a specific page arrive from all over the app (row actions, the
+    // command palette, bookmarks), each of which can name a page the index
+    // never wrote or has since dropped.
+    const requested = missingPageId ? describePageId(missingPageId) : null;
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
         <div className="rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] p-4">
@@ -134,10 +171,22 @@ export function DocsReader({
         </div>
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            Select a page
+            {requested ? "No page for this one yet" : "Select a page"}
           </h3>
           <p className="text-xs text-[var(--color-text-secondary)] max-w-sm">
-            Choose a file or module from the tree to view its AI-generated documentation.
+            {requested ? (
+              <>
+                Repowise has not written a page for{" "}
+                <span className="font-mono text-[var(--color-text-primary)] break-all">
+                  {requested}
+                </span>
+                . Page selection is budgeted, so a repository is documented at
+                the files that carry its shape. Pick another from the tree, or
+                re-run the index with a wider page budget.
+              </>
+            ) : (
+              "Choose a file or module from the tree to read what Repowise wrote about it."
+            )}
           </p>
         </div>
       </div>
@@ -154,6 +203,7 @@ export function DocsReader({
       goToPageId={goToPageId}
       persona={persona}
       buildPageHref={buildPageHref}
+      buildFileHref={buildFileHref}
       LinkComponent={LinkComponent}
       intelligenceSlot={intelligenceSlot}
       versionHistorySlot={versionHistorySlot}
@@ -209,6 +259,7 @@ function DocsReaderBody({
   goToPageId,
   persona,
   buildPageHref,
+  buildFileHref,
   LinkComponent,
   intelligenceSlot,
   versionHistorySlot,
@@ -222,6 +273,7 @@ function DocsReaderBody({
   goToPageId: (pageId: string) => void;
   persona: ReaderPersona;
   buildPageHref: (pageId: string) => string;
+  buildFileHref?: ((filePath: string) => string) | undefined;
   LinkComponent: ReaderLinkComponent;
   intelligenceSlot?: React.ReactNode;
   versionHistorySlot?: React.ReactNode;
@@ -305,6 +357,14 @@ function DocsReaderBody({
   // layer_id, whose value is the stable "layer:<slug>" the layer page is keyed
   // by. Reconstructing an id from the name never matched once the enrichment
   // pass had renamed a layer.
+  // The source file this page documents, when there is one. `target_path` on a
+  // `file_page` is the repo-relative path the file route takes — the same pair
+  // the file endpoint matches on — so no id parsing is involved.
+  const sourceFileHref =
+    page.page_type === "file_page" && page.target_path && buildFileHref
+      ? buildFileHref(page.target_path)
+      : undefined;
+
   const layerName =
     typeof page.metadata?.layer_name === "string" ? page.metadata.layer_name : "";
   const layerId =
@@ -449,6 +509,37 @@ function DocsReaderBody({
                     {layerName}
                   </span>
                 ))}
+
+              {/* The door out to the code this page is about. The docs surface
+                  rendered no link to a file page anywhere, on any of its
+                  screens, so a reader who finished a file's documentation and
+                  wanted its health, history or dependents had to go back to
+                  the tree and start again from Files.
+
+                  It sits at the end of the provenance row rather than in the
+                  rail, because the rail is `2xl`-only and this is the one link
+                  on the page that has to survive a laptop.
+
+                  Two things it does not inherit from that row. It sets its own
+                  `text-xs`, because the row runs at 11px for metadata and this
+                  is the page's only action — an action smaller than every body
+                  size on the surface is not one. And it does not take
+                  `ml-auto`: this row wraps (a long model name beside a module
+                  pill and a layer pill does it at laptop width), and a flex
+                  item only right-aligns while it still shares a line, so
+                  `ml-auto` bought a tidy right edge on wide windows and a link
+                  stranded alone against the far margin on the widths that
+                  actually wrap. Inline, after the pills, it reads the same at
+                  every width. */}
+              {sourceFileHref && (
+                <LinkComponent
+                  href={sourceFileHref}
+                  className="shrink-0 text-xs font-medium text-[var(--color-accent-primary)] hover:underline"
+                  title={`Health, history and dependents for ${page.target_path}`}
+                >
+                  Open file page <span aria-hidden>&rarr;</span>
+                </LinkComponent>
+              )}
             </div>
 
             {/* What this page was written from. The rail carried this as

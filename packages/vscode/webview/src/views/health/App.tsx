@@ -1,35 +1,43 @@
 /**
- * Health dashboard: a KPI header over the three health signals, the circle-pack
- * code map as the hero, and the churn-versus-complexity quadrant on a tab. Every
- * file click opens the file in an editor column via the host.
+ * Health dashboard: the shared code-health lede, the circle-pack map as the
+ * page spine with its lens switcher and key around it, and the trend section
+ * under it. Every file click opens the file in an editor column via the host.
+ *
+ * The composition mirrors `/repos/[id]/code-health` rather than reimplementing
+ * it. That page dropped its KPI grid for `CodeHealthLede` and folded the
+ * churn-versus-complexity quadrant into a *lens* on the map; this panel was the
+ * last consumer of both retired components in the monorepo, which is how it was
+ * going to diverge permanently. It composes the same pieces rather than
+ * mounting `TriageView` wholesale, because the drill-downs that view carries
+ * (findings tables, coverage, a file drawer, href-based navigation) are
+ * surfaces this panel does not have and an editor cannot address by URL.
  */
 
 import { useMemo, useState } from "react";
 import { ExternalLink } from "lucide-react";
-import { HealthKpiCards } from "@repowise-dev/ui/health/kpi-cards";
-import { CodeHealthMap, type CodeHealthOverlay } from "@repowise-dev/ui/health/code-health-map";
-import { ChurnComplexityQuadrant } from "@repowise-dev/ui/health/churn-complexity-quadrant";
-import type { HealthDimension, HealthFileMetric } from "@repowise-dev/types/health";
+import {
+  CodeHealthMap,
+  MapLegend,
+  MapLensSwitcher,
+  type CodeHealthOverlay,
+} from "@repowise-dev/ui/health/code-health-map";
+import { CodeHealthLede } from "@repowise-dev/ui/health/code-health-lede";
+import { TrendView } from "@repowise-dev/ui/health/trend-view";
+import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
+import { OverviewSection } from "@repowise-dev/ui/overview";
+import type { HealthFileMetric } from "@repowise-dev/types/health";
 import type { ViewProps } from "../../runtime/mount";
-import { useDashboardData, type DashboardData } from "./useDashboardData";
-import { DashboardError, DashboardSkeleton, SectionHeading } from "./chrome";
+import { useChurnLens, useDashboardData, type DashboardData } from "./useDashboardData";
+import { DashboardError, DashboardSkeleton } from "./chrome";
 
-type HeroTab = "map" | "quadrant";
+/**
+ * Lenses offered. The three co-equal health signals ride on the map payload
+ * itself; churn arrives on its own request and is joined in below, which is why
+ * it is listed here rather than left to the map component's default.
+ */
+const LENSES: CodeHealthOverlay[] = ["health", "maintainability", "performance", "churn"];
 
-/** 0-10 health score to its band color; matches the sidebar Home hero. */
-function scoreColor(score: number | null): string {
-  if (score == null) return "var(--color-text-tertiary)";
-  if (score >= 7.5) return "var(--color-success)";
-  if (score >= 5) return "var(--color-warning)";
-  return "var(--color-error)";
-}
-
-/** The KPI pillar tiles map onto the code map's lenses (defect is "health"). */
-const PILLAR_TO_OVERLAY: Record<HealthDimension, CodeHealthOverlay> = {
-  defect: "health",
-  maintainability: "maintainability",
-  performance: "performance",
-};
+const MAP_HEIGHT = 640;
 
 export function App({ host, repo, params, refreshToken }: ViewProps<"health">) {
   const { data, error, loading } = useDashboardData(host, refreshToken);
@@ -55,49 +63,36 @@ function Dashboard({
   data: DashboardData;
   selectPath: string | null;
 }) {
-  const { overview, files, trend, churn } = data;
+  const { overview, files, trend } = data;
+  const [overlay, setOverlay] = useState<CodeHealthOverlay>("health");
 
-  // When the dashboard is opened from the status-bar score, lead with a card
+  // Churn is a second request and only the churn lens colors from it, so it is
+  // fetched on selection rather than on mount.
+  const {
+    files: mapFiles,
+    loading: churnLoading,
+    failed: churnFailed,
+  } = useChurnLens(host, files, overlay === "churn");
+
+  // When the dashboard is opened from the status-bar score, lead with a row
   // for that file so the two surfaces read as one. The map file set is large
-  // (nloc desc), so the active file is almost always present; if not, the card
+  // (nloc desc), so the active file is almost always present; if not, the row
   // still offers a way to open it.
   const focused = useMemo(() => {
     if (!selectPath) return null;
     const entry = files.files.find((f) => f.file_path === selectPath) ?? null;
     return { path: selectPath, entry };
   }, [selectPath, files.files]);
-  const [overlay, setOverlay] = useState<CodeHealthOverlay>("health");
-  const [tab, setTab] = useState<HeroTab>("map");
-
-  // KPI sparklines want oldest-first series; the trend history is newest-first.
-  const kpiTrend = useMemo(() => {
-    const history = trend.history ?? [];
-    const asc = history.slice().reverse();
-    const out: {
-      averageHistory?: number[];
-      hotspotHistory?: number[];
-      worstHistory?: number[];
-      averageDelta?: number;
-      hotspotDelta?: number;
-    } = {
-      averageHistory: asc.map((p) => p.average_health),
-      hotspotHistory: asc.map((p) => p.hotspot_health),
-      worstHistory: asc.map((p) => p.worst_performer_score ?? 0),
-    };
-    if (trend.summary?.average_delta != null) out.averageDelta = trend.summary.average_delta;
-    if (trend.summary?.hotspot_delta != null) out.hotspotDelta = trend.summary.hotspot_delta;
-    return out;
-  }, [trend]);
 
   const headCommit = repo.headCommit ? repo.headCommit.slice(0, 7) : null;
 
   return (
-    <div className="mx-auto max-w-[1400px] space-y-8 px-6 py-6">
-      <header className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight text-[var(--color-text-primary)]">
+    <div className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-6 sm:gap-8">
+      <header className="flex flex-col gap-1">
+        <h1 className="text-[22px] font-semibold tracking-tight text-[var(--color-text-primary)]">
           Code health
         </h1>
-        <p className="text-sm text-[var(--color-text-secondary)]">
+        <p className="text-[15px] text-[var(--color-text-secondary)]">
           {repo.name}
           {headCommit ? (
             <span className="ml-2 font-mono text-xs text-[var(--color-text-tertiary)]">
@@ -115,53 +110,60 @@ function Dashboard({
         />
       ) : null}
 
-      <section aria-label="Health signals">
-        <HealthKpiCards
-          summary={overview.summary}
-          distribution={overview.distribution ?? null}
-          {...kpiTrend}
-          onSelectPillar={(pillar) => {
-            setOverlay(PILLAR_TO_OVERLAY[pillar]);
-            setTab("map");
-          }}
-        />
-      </section>
+      <CodeHealthLede
+        summary={overview.summary}
+        accuracy={overview.defect_accuracy ?? null}
+        distribution={overview.distribution ?? null}
+      />
 
-      <section aria-label="Health explorer" className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <SectionHeading
-            title={tab === "map" ? "Code health map" : "Churn versus complexity"}
-            subtitle={
-              tab === "map"
-                ? `${files.total.toLocaleString()} files · click a galaxy to zoom, a file to open`
-                : `${churn.total.toLocaleString()} changed files · the top-right corner is the refactor zone`
-            }
-          />
-          <TabSwitch tab={tab} onChange={setTab} />
-        </div>
-
-        {tab === "map" ? (
+      <OverviewSection
+        title="Code health map"
+        description="Every file as a node, clustered into module galaxies and sized by lines of code. The lens recolors the same field rather than redrawing it. Click a galaxy to zoom, a file to open it."
+        action={
+          <MapLensSwitcher overlay={overlay} onOverlayChange={setOverlay} lenses={LENSES} />
+        }
+      >
+        <div className="flex flex-col gap-2.5">
           <CodeHealthMap
-            files={files.files}
+            files={mapFiles.files}
             overlay={overlay}
-            onOverlayChange={setOverlay}
             onSelectFile={(path) => host.openFile(path)}
-            minHeight={640}
+            minHeight={MAP_HEIGHT}
+            chrome="none"
           />
-        ) : (
-          <ChurnComplexityQuadrant
-            points={churn.points}
-            height={520}
-            onSelect={(point) => host.openFile(point.file_path)}
-          />
-        )}
-      </section>
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+            {/* A key describing bands the field cannot be showing is worse
+                than no key: every node is the "no data" swatch when the churn
+                request failed, so say that instead. */}
+            {churnFailed ? (
+              <span className="text-[11px] text-[var(--color-text-tertiary)]">
+                Could not load churn for this lens. The other lenses are
+                unaffected.
+              </span>
+            ) : (
+              <MapLegend overlay={overlay} loading={churnLoading} />
+            )}
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] tabular-nums text-[var(--color-text-tertiary)]">
+              {mapFiles.total.toLocaleString()} files
+            </span>
+          </div>
+        </div>
+      </OverviewSection>
+
+      <OverviewSection
+        title="Trend"
+        description="How the repo's scores have moved across indexed snapshots."
+      >
+        <TrendView data={trend} isLoading={false} error={null} />
+      </OverviewSection>
     </div>
   );
 }
 
 /** The file the dashboard was opened for (from the status-bar score), pinned
- *  above the repo-wide views with its three scores and a jump-to-file action. */
+ *  above the repo-wide views with its three scores and a jump-to-file action.
+ *  A hairline row rather than a card: the file name is the only thing here you
+ *  can act on, and the three scores beside it are statistics. */
 function FocusedFile({
   path,
   entry,
@@ -175,16 +177,16 @@ function FocusedFile({
   return (
     <section
       aria-label="Current file"
-      className="flex items-center justify-between gap-4 rounded-xl border border-[var(--color-accent-muted)] bg-[var(--color-bg-surface)] px-4 py-3"
+      className="flex items-center justify-between gap-4 border-t border-[var(--color-border-default)] pt-4"
     >
       <div className="min-w-0">
-        <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Current file
         </p>
         <button
           type="button"
           onClick={onOpen}
-          className="flex max-w-full items-center gap-1.5 truncate font-mono text-sm text-[var(--color-text-primary)] transition-colors hover:text-[var(--color-accent-primary)]"
+          className="mt-0.5 flex max-w-full items-center gap-1.5 font-mono text-[15px] text-[var(--color-text-primary)] transition-colors hover:text-[var(--color-accent-primary)]"
           title={path}
         >
           <span className="truncate">{name}</span>
@@ -192,13 +194,13 @@ function FocusedFile({
         </button>
       </div>
       {entry ? (
-        <div className="flex shrink-0 items-center gap-4 text-right">
+        <div className="flex shrink-0 items-center gap-5 text-right">
           <FocusedScore label="Defect" value={entry.defect_score ?? entry.score} />
           <FocusedScore label="Maint" value={entry.maintainability_score ?? null} />
           <FocusedScore label="Perf" value={entry.performance_score ?? null} />
         </div>
       ) : (
-        <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">
+        <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">
           Not among the mapped files
         </span>
       )}
@@ -207,39 +209,18 @@ function FocusedFile({
 }
 
 function FocusedScore({ label, value }: { label: string; value: number | null }) {
+  // The shared ramp, so this figure agrees with the map beside it and with the
+  // web app's file table. There is no local threshold here on purpose: the one
+  // this file used to carry called 7.6 healthy while the map coloured it amber.
+  const tone = value == null ? "text-[var(--color-text-tertiary)]" : scoreTextColor(value);
   return (
     <div>
-      <p className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">{label}</p>
-      <p className="font-mono text-sm tabular-nums" style={{ color: scoreColor(value) }}>
+      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        {label}
+      </p>
+      <p className={`font-mono text-[15px] tabular-nums ${tone}`}>
         {value == null ? "-" : value.toFixed(1)}
       </p>
-    </div>
-  );
-}
-
-/** A two-button segmented control switching the hero between map and quadrant. */
-function TabSwitch({ tab, onChange }: { tab: HeroTab; onChange: (tab: HeroTab) => void }) {
-  const tabs: { id: HeroTab; label: string }[] = [
-    { id: "map", label: "Map" },
-    { id: "quadrant", label: "Quadrant" },
-  ];
-  return (
-    <div className="inline-flex shrink-0 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-0.5 text-xs">
-      {tabs.map((t) => (
-        <button
-          key={t.id}
-          type="button"
-          onClick={() => onChange(t.id)}
-          aria-pressed={tab === t.id}
-          className={
-            tab === t.id
-              ? "rounded-md bg-[var(--color-accent-primary)] px-3 py-1 font-medium text-[var(--color-text-inverse)]"
-              : "rounded-md px-3 py-1 text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
-          }
-        >
-          {t.label}
-        </button>
-      ))}
     </div>
   );
 }

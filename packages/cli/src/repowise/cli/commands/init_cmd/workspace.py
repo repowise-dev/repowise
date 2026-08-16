@@ -50,7 +50,10 @@ from repowise.cli.ui import (
     BRAND,
     BRAND_STYLE,
     ERR,
+    OK,
     OWL_SPINNER,
+    VALUE,
+    WARN,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -92,7 +95,6 @@ def _run_workspace_generation(
     test_run: bool,
     reasoning: str = "auto",
     onboarding: bool = True,
-    harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
 ) -> list[Any]:
@@ -110,7 +112,6 @@ def _run_workspace_generation(
         max_concurrency=concurrency,
         reasoning=resolve_reasoning(reasoning),
         enable_onboarding=onboarding,
-        harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         language=language,
         # No question is asked in the workspace flow, so this only picks up a cap
@@ -131,7 +132,7 @@ def _run_workspace_generation(
     # a dozen times, which makes plain text easier to miss, not harder.
     console.print(
         f"    Writing [bold]{concept_page_count(plans):,}[/bold] subsystem pages with "
-        f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
     )
     structural = structural_page_summary(plans)
     if structural:
@@ -145,7 +146,7 @@ def _run_workspace_generation(
         est, yes=yes, message=f"    Continue with {repo_path.name} at this cost?"
     ):
         console.print(
-            "    [yellow]Skipped.[/yellow] "
+            f"    [{WARN}]Skipped.[/] "
             "[dim]Index will be saved without docs; "
             "future `repowise update` runs default to index-only.[/dim]"
         )
@@ -265,7 +266,6 @@ class _WorkspaceCtx:
     yes: bool
     resume: bool
     onboarding: bool
-    harvest_decisions: bool
     wiki_style: str
     language: str
     resolved_reasoning: str
@@ -273,6 +273,13 @@ class _WorkspaceCtx:
     embedder_was_requested: bool
     resolved_commit_limit: int
     run_mode: str = "standard"
+    #: Mirrors the single-repo flag. A workspace writes project files per repo,
+    #: so --no-editor-setup has to reach every one of them, not just the
+    #: primary's client registration.
+    editor_setup: bool = True
+    #: Same reasoning for key persistence: each workspace repo gets its own
+    #: .repowise/, so each needs its own credential to be MCP-answerable.
+    save_key: bool = True
 
 
 @dataclass
@@ -337,7 +344,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             )
         repo_phase_timings: dict[str, float] = callback.timings
         console.print(
-            f"    [green]✓[/green] {result.file_count:,} files, {result.symbol_count:,} symbols"
+            f"    [{OK}]✓[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
         )
     except Exception as exc:
         console.print(f"    [{ERR}]✗ Failed: {exc}[/]\n")
@@ -374,12 +381,12 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         pages_generated = len(generated_pages)
         docs_mode = "deterministic"
         console.print(
-            f"    [green]✓[/green] Rendered {len(generated_pages)} pages from structure "
+            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure "
             "(no model)\n"
         )
 
     if ctx.dry_run:
-        console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
+        console.print(f"    [{WARN}]Dry run — skipping generation for this repo.[/]\n")
         skip_reason = "dry run"
     elif ctx.run_mode == "fast":
         # Fast mode is a graph-and-git index by design; it skips the wiki so a
@@ -402,7 +409,6 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                 test_run=ctx.test_run,
                 reasoning=ctx.resolved_reasoning,
                 onboarding=ctx.onboarding,
-                harvest_decisions=ctx.harvest_decisions,
                 wiki_style=ctx.wiki_style,
                 language=ctx.language,
             )
@@ -416,7 +422,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
 
             pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
             docs_mode = "llm"
-            console.print(f"    [green]✓[/green] Generated {pages_generated} pages\n")
+            console.print(f"    [{OK}]✓[/] Generated {pages_generated} pages\n")
         except CostGateDeclined:
             # Declining only ever meant "not at that price". Fall back to the
             # free template renderer rather than leaving the repo with no wiki
@@ -479,6 +485,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         console,
         repo.path,
         options=ctx.editor_options,
+        no_editor_setup=not ctx.editor_setup,
     )
 
     # Persist provider/model config per-repo when doing full generation
@@ -494,6 +501,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
+            save_key=ctx.save_key,
         )
         # Persist the wiki style per repo so update/restyle honor it. Default
         # omitted to keep config tidy — only an override is recorded.
@@ -536,9 +544,9 @@ def _run_cross_repo_analysis(ws_config: Any, root: Any, selected: list[Any], err
             from repowise.core.workspace.update import run_cross_repo_hooks
 
             run_async(run_cross_repo_hooks(ws_config, root, indexed_aliases))
-            console.print("  [green]✓[/green] Cross-repo analysis complete")
+            console.print(f"  [{OK}]✓[/] Cross-repo analysis complete")
         except Exception as exc:
-            console.print(f"  [yellow]⚠ Cross-repo analysis failed: {exc}[/yellow]")
+            console.print(f"  [{WARN}]⚠ Cross-repo analysis failed: {exc}[/]")
 
 
 def _workspace_init(
@@ -553,6 +561,7 @@ def _workspace_init(
     codex_setup: bool | None,
     distill_hook: bool | None,
     editor_setup: bool,
+    save_key: bool,
     include_submodules: bool,
     # Generation params (passed through from init_command)
     provider_name: str | None = None,
@@ -569,7 +578,6 @@ def _workspace_init(
     resume: bool = False,
     force: bool = False,
     onboarding: bool = True,
-    harvest_decisions: bool = True,
     wiki_style: str = DEFAULT_STYLE,
     language: str | None = None,
     run_mode: str = "standard",
@@ -604,7 +612,7 @@ def _workspace_init(
     )
 
     if not selected:
-        console.print("[yellow]No repositories selected. Aborting.[/yellow]")
+        console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
         return
 
     # Step 2: Select primary repo
@@ -648,7 +656,7 @@ def _workspace_init(
             reasoning = selection.reasoning
             # Pass the resolved style so the advanced generation section doesn't
             # add a per-workspace wiki-style prompt (the workspace flow applies
-            # one style uniformly); onboarding / decision harvesting still apply.
+            # one style uniformly); onboarding still applies.
             adv = interactive_advanced_config(
                 console, prompt_reasoning=False, wiki_style=wiki_style, language=language
             )
@@ -663,7 +671,6 @@ def _workspace_init(
             reasoning = adv.get("reasoning") or reasoning
             embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
             onboarding = adv.get("onboarding", onboarding)
-            harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
             if adv.get("wiki_style"):
                 wiki_style = adv["wiki_style"]
             if adv.get("language"):
@@ -690,15 +697,15 @@ def _workspace_init(
             # the initial resolution happened before the key was available.
             embedder_name_resolved = resolve_embedder(embedder_name)
             console.print(
-                f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
-                f"Model: [cyan]{provider.model_name}[/cyan]"
+                f"  Provider: [{VALUE}]{provider.provider_name}[/] / "
+                f"Model: [{VALUE}]{provider.model_name}[/]"
             )
-            console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]\n")
+            console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]\n")
             if resolved_reasoning != "auto":
-                console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]\n")
+                console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]\n")
         except Exception as exc:
             console.print(
-                f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]"
+                f"  [{WARN}]Provider setup failed ({exc}); falling back to index-only.[/]"
             )
             index_only = True
             provider = None
@@ -718,7 +725,7 @@ def _workspace_init(
         default_repo=primary_alias,
     )
     config_path = ws_config.save(root)
-    console.print(f"  [green]✓[/green] Created {config_path.name}")
+    console.print(f"  [{OK}]✓[/] Created {config_path.name}")
     console.print()
 
     # Step 4: Index each selected repo (always generate_docs=False; generation is separate)
@@ -751,6 +758,8 @@ def _workspace_init(
         provider=provider,
         ws_config=ws_config,
         editor_options=editor_options,
+        editor_setup=editor_setup,
+        save_key=save_key,
         index_only=index_only,
         dry_run=dry_run,
         force=force,
@@ -764,7 +773,6 @@ def _workspace_init(
         yes=yes,
         resume=resume,
         onboarding=onboarding,
-        harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         language=language or "en",
         resolved_reasoning=resolved_reasoning,

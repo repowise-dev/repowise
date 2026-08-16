@@ -41,6 +41,13 @@ export async function postChatMessage(
     conversationId?: string;
     provider?: string;
     model?: string;
+    /**
+     * Aborts the request itself, not just the caller's read loop. Without it,
+     * a cancelled or superseded send leaves the POST running on the server and
+     * the response body abandoned, so the agentic loop keeps going and its
+     * open DB session is only torn down when the socket eventually collapses.
+     */
+    signal?: AbortSignal;
   },
 ): Promise<Response> {
   const url = `${BASE_URL}/api/repos/${repoId}/chat/messages`;
@@ -56,6 +63,7 @@ export async function postChatMessage(
       provider: opts.provider ?? null,
       model: opts.model ?? null,
     }),
+    ...(opts.signal ? { signal: opts.signal } : {}),
   });
 
   if (!res.ok) {

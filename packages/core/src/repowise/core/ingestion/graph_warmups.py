@@ -24,6 +24,8 @@ import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+
 if TYPE_CHECKING:
     from .models import ParsedFile
     from .resolvers import ResolverContext
@@ -33,6 +35,16 @@ if TYPE_CHECKING:
 # cache its result on ``ctx`` (the resolvers already use a per-context
 # attribute cache); the dispatcher does not inspect the return value.
 Warmup = Callable[["ResolverContext"], None]
+
+# Paths the export-macro rescan reads. Include fragments belong here: a
+# template implementation in a .inl carries the same project export macro as
+# the header that declares it, and missing it leaves the symbol marked
+# non-exported, which is what the dead-code pass then acts on.
+_CPP_MACRO_SCAN_EXTS: tuple[str, ...] = (
+    ".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+    ".c", ".cc", ".cpp", ".cxx", ".c++",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+)
 
 
 def _warmup_jvm(ctx: ResolverContext) -> None:
@@ -134,8 +146,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
 
     if macros:
         for path, parsed in parsed_files.items():
-            if not path.endswith((".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
-                                  ".c", ".cc", ".cpp", ".cxx", ".c++")):
+            if not path.endswith(_CPP_MACRO_SCAN_EXTS):
                 continue
             for sym in parsed.symbols:
                 sig = sym.signature or ""

@@ -9,6 +9,7 @@ from repowise.core.persistence.crud import (
     delete_git_function_blame,
     get_git_function_blame,
     get_git_function_blames,
+    get_git_function_mod_counts,
     upsert_git_function_blame_bulk,
 )
 from tests.unit.persistence.helpers import insert_repo
@@ -94,3 +95,26 @@ async def test_delete_git_function_blame(async_session) -> None:
     await delete_git_function_blame(async_session, repo.id)
     await async_session.commit()
     assert await count_git_function_blame(async_session, repo.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_git_function_mod_counts_excludes_zero(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("a.py::foo", mods=1),
+            _row("a.py::bar", mods=4),
+            _row("a.py::baz", mods=4),
+            _row("b.py::qux", mods=5),
+            _row("c.py::nope", mods=0),
+        ],
+    )
+    await async_session.commit()
+
+    counts = await get_git_function_mod_counts(async_session, repo.id)
+    # The persisted rollup only carries functions with mod_count > 0; the
+    # loader that computes the repo-wide p80 from these must not let a zero
+    # row into the distribution (matches the in-memory computation).
+    assert sorted(counts) == [1, 4, 4, 5]

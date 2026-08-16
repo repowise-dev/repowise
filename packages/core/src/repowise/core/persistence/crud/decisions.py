@@ -1172,7 +1172,13 @@ async def get_decision_health_summary(
     session: AsyncSession,
     repository_id: str,
 ) -> dict:
-    """Return decision health: counts by status, stale decisions, ungoverned hotspots."""
+    """Return decision health: counts by status, stale decisions, ungoverned hotspots.
+
+    The three list fields are returned ranked worst-first: stale by staleness,
+    proposed by confidence, ungoverned hotspots by temporal hotspot score. A
+    caller that shows only the first few shows the few that matter.
+    Callers may truncate; they must not re-order.
+    """
     result = await session.execute(
         select(DecisionRecord).where(
             DecisionRecord.repository_id == repository_id,
@@ -1212,15 +1218,44 @@ async def get_decision_health_summary(
         elif d.status == "proposed":
             proposed_decisions.append(d)
 
-    # Find ungoverned hotspots
+    # Find ungoverned hotspots, hottest first. Sorting these by path put the file
+    # most in need of a decision behind whatever sorts alphabetically first,
+    # with the score that answers the question sitting unread one column over.
+    # The key is the one ``routers/overview.py`` already applies to these same
+    # rows in SQL (score descending with NULLs last, then churn) rather than a
+    # second answer to "which hotspot matters most". A NULL score is genuinely
+    # unknown and is not the same as a measured zero.
     hotspot_result = await session.execute(
-        select(GitMetadata.file_path).where(
+        select(
+            GitMetadata.file_path,
+            GitMetadata.temporal_hotspot_score,
+            GitMetadata.churn_percentile,
+        ).where(
             GitMetadata.repository_id == repository_id,
             GitMetadata.is_hotspot == True,  # noqa: E712
         )
     )
-    hotspot_files = {row[0] for row in hotspot_result.all()}
-    ungoverned = sorted(hotspot_files - governed_files)
+    hotspot_rows = {row[0]: (row[1], row[2]) for row in hotspot_result.all()}
+
+    def _hotspot_rank(file_path: str) -> tuple[bool, float, float, str]:
+        score, churn = hotspot_rows[file_path]
+        return (score is None, -(score or 0.0), -(churn or 0.0), file_path)
+
+    ungoverned = sorted(hotspot_rows.keys() - governed_files, key=_hotspot_rank)
+
+    # Rank here rather than at the five call sites, none of which does. The MCP
+    # health dashboard and ``repowise decision health`` cut all three lists; the
+    # overview attention panel cuts the hotspots and renders the other two in the
+    # order it is handed; the decisions route serves them whole in that order;
+    # and ``health/governance.py`` walks them to *write* one finding row per
+    # entry. So the callers that truncate were showing whichever rows the scan
+    # returned first, and the ones that do not were still listing them by it,
+    # while the score answering "which of these first" rides on every record,
+    # unread. The ``or 0.0`` guards match how every other reader of these two
+    # fields spells it rather than trusting a column default to have been
+    # back-filled; the id tiebreak makes the key total, so two runs agree.
+    stale_decisions.sort(key=lambda d: (-(d.staleness_score or 0.0), d.id))
+    proposed_decisions.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
 
     # Phase 3B: surface contradictory active decisions (conflicts_with edges).
     from ..decision_graph import list_conflict_edges

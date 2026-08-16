@@ -8,10 +8,12 @@ import {
 } from "../ui/tooltip";
 
 /**
- * Honest credibility note for the change-risk model. The numbers are the
- * backtested leave-one-repo-out result from `docs/layers/CHANGE_RISK.md` — we show
- * them rather than imply the score is infallible. The model edges churn-only
- * on average and is stronger on some repos; it is a ranking aid, not a verdict.
+ * Honest note on what this score is. It used to lead with the backtested
+ * 0.772-vs-0.766 AUC, which overstated the case: a churn-only baseline scores
+ * 0.766 on those labels and lines-added alone scores higher than the model, so
+ * the margin measures very little. See `docs/layers/CHANGE_RISK.md`. The copy
+ * now says what the score tracks — diff size — rather than implying it ranks
+ * danger.
  */
 
 /** Shared copy so the strip and the compact info button never drift. */
@@ -19,12 +21,13 @@ function CredibilityCopy() {
   return (
     <>
       Change-risk is a calibrated linear model over each commit&apos;s diff shape
-      (size, diffusion, author experience). Backtested leave-one-repo-out it scores{" "}
-      <span className="font-medium text-[var(--color-text-primary)] tabular-nums">
-        0.772 AUC
-      </span>{" "}
-      vs <span className="tabular-nums">0.766</span> for a churn-only baseline — a
-      ranking aid for review order, not a verdict. Priority is{" "}
+      (size, diffusion, author experience). In practice it tracks{" "}
+      <span className="font-medium text-[var(--color-text-primary)]">
+        how large a change is
+      </span>
+      , not where it lands: lines added alone reproduces it closely. Use it to
+      sort by size, and check a file&apos;s bug-fix history for whether the ground
+      is fragile. Priority is{" "}
       <span className="font-medium">relative to this repo&apos;s own distribution</span>.
     </>
   );

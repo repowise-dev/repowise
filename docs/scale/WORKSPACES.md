@@ -225,6 +225,9 @@ Scans source files for HTTP route handlers, gRPC service definitions, and messag
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
 | Data / DB | DDL (`CREATE TABLE`/`VIEW`/`MATERIALIZED VIEW`), ORM dialects (SQLAlchemy, Django, JPA, EF Core, ActiveRecord, Eloquent) | Raw SQL string literals in app code (verb-anchored: `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`MERGE`) |
 | Topics | Kafka, RabbitMQ, NATS producers | Corresponding consumers |
+| Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)` |
+
+Socket detection is C#/Python only and is toggled by `detect_socket` in the `contracts:` block below.
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](#system-graph). The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 
@@ -241,6 +244,7 @@ provides that path and a lower-confidence **candidate** when the target is ambig
 contracts:
   detect_http: true
   detect_grpc: true
+  detect_socket: true
   detect_topics: true
   detect_data: true
   # Map a consumer base token or absolute host to the repo it targets, so a
@@ -264,7 +268,7 @@ excluded from matching and reported under the `external_host` diagnostics reason
 
 ### Package Dependency Scanning
 
-Reads package manifests (`package.json`, `pyproject.toml`, `go.mod`, `pom.xml`, etc.) to detect when one repo depends on another as a package.
+Reads package manifests (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `.csproj`) to detect when one repo depends on another as a package. Maven `pom.xml` is not scanned, so a Maven repo gets no package edges.
 
 ---
 
@@ -305,6 +309,7 @@ The report covers:
   - `external_host`, the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
 - **Orphan providers**, endpoints declared but never consumed by any repo.
 - **Weak links**, matched links below the confidence threshold.
+- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located — it is not total recall, because a call no dialect recognises is not in either number. It is the figure that turns a large orphan-provider count from alarming into explained.
 
 The same data is available over REST at `GET /api/workspace/diagnostics` and is embedded in the system graph artifact's `diagnostics` block.
 
@@ -374,7 +379,7 @@ Detected change kinds (a registry, adding a kind is one new rule, never an `if/e
 | `field_number_changed` | breaking | A proto field's wire number changed |
 | `field_required` | breaking | A field became required, or a new required field was added |
 
-**Non-breaking changes never flag**, an added *optional* field, a widened set, or a brand-new endpoint produces no record. Field-level diffs need a contract *schema*; today gRPC carries one (proto message fields, recovered by the existing proto parser), and HTTP gains field-level checks when an OpenAPI spec is present. Route-level removal is detected for every transport from the contract id alone.
+**Non-breaking changes never flag**, an added *optional* field, a widened set, or a brand-new endpoint produces no record. Field-level diffs need a contract *schema*; today only gRPC carries one (proto message fields, recovered by the existing proto parser), so field-level checks are gRPC-only. HTTP contracts have no schema, and OpenAPI specs are not read. Route-level removal is detected for every transport from the contract id alone, HTTP included.
 
 Impacted consumers are resolved from the matched contract links, the same provider↔consumer evidence the [system graph](#system-graph)'s edges are built from, so impact is endpoint-precise (the consumer file that calls the changed contract) and direct (the first reachability hop, which is exactly what a contract break endangers; transitive ripple stays the job of blast radius).
 

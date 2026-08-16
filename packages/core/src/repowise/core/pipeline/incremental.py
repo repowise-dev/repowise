@@ -371,6 +371,56 @@ async def load_stored_git_meta(
         return None
 
 
+async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = None) -> int | None:
+    """Load the repo-wide p80 of per-function modification counts.
+
+    Computed from the persisted ``git_function_blame`` rollup, which a FULL
+    index writes for every modified function. The incremental health pass
+    reuses this value so the Function Hotspot gate is scored against the
+    full repo rather than the churn-heavy changed-files subset (issue
+    #1484) — a hotspot verdict then no longer flips when a full ``init``
+    is later replaced by an incremental ``update``.
+
+    Returns ``None`` when the store is unreadable, the repository row is
+    missing, or no blame rollup has been persisted (ESSENTIAL tier, or a
+    repo that has never been fully indexed) — callers fall back to the
+    walked-set computation in that case.
+    """
+    log = log or _noop_log
+    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+        return None
+    try:
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.crud import (
+            get_git_function_mod_counts,
+            get_repository_by_path,
+        )
+        from repowise.core.persistence.database import resolve_db_url
+
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return None
+                counts = await get_git_function_mod_counts(session, repo.id)
+        finally:
+            await engine.dispose()
+        if not counts:
+            return None
+        # Same inclusive-lower p80 as the in-memory path — do not reimplement.
+        from repowise.core.analysis.health.engine import _percentile_p80
+
+        return _percentile_p80(counts)
+    except Exception as exc:
+        log(f"[yellow]Stored function-mod percentile unavailable: {exc}[/yellow]")
+        return None
+
+
 def run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -380,6 +430,7 @@ def run_partial_analysis(
     *,
     source_map: dict[str, bytes] | None = None,
     stored_git_meta: dict[str, dict] | None = None,
+    repo_function_mod_p80: int | None = None,
     log: LogFn | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
@@ -399,6 +450,13 @@ def run_partial_analysis(
     ``git_meta_map`` itself: the partial health analysis reads that map's
     entries as a repo-wide aggregate, so widening it there would silently move
     health scores (the same reason the idle-decay rows are kept out of it).
+
+    *repo_function_mod_p80* is the repo-wide 80th percentile of per-function
+    modification counts, loaded from the persisted ``git_function_blame``
+    rollup (see :func:`load_stored_function_mod_p80`). It is passed through to
+    the health analyzer so the Function Hotspot gate is scored against the full
+    repo instead of this run's changed-files subset (issue #1484). ``None``
+    makes the analyzer fall back to deriving it from the walked files.
 
     ``None`` means the store could not be read, which is different from an
     empty mapping and narrows what the resulting report is allowed to
@@ -431,7 +489,9 @@ def run_partial_analysis(
                 else None
             )
             partial_health_report = _health_analyzer.analyze(
-                _analyzer_config, changed_files=_health_changed
+                _analyzer_config,
+                changed_files=_health_changed,
+                repo_function_mod_p80=repo_function_mod_p80,
             )
             log(
                 f"Health analysis (partial): [cyan]{len(_health_changed)} files[/cyan], "

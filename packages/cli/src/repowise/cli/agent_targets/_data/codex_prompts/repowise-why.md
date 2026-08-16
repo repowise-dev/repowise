@@ -24,8 +24,10 @@ command **queries** why something is shaped a certain way.
 - File path (governing decisions + origin story) → `repowise why src/api/auth.py`
 - Target-anchored search → `repowise why "why the retry cap?" --target src/api/client.py`
   (`--target` is repeatable)
-- No args → `repowise why` (decision-health dashboard: stale / proposed /
-  ungoverned hotspots)
+- `--target` with no question → answers about those files: one target behaves
+  like passing the path, several get a card each
+- No args and no target → `repowise why` (decision-health dashboard: stale /
+  proposed / ungoverned hotspots)
 - Machine-readable / raw payload → `--format json` / `--full`
 
 ```
@@ -40,8 +42,13 @@ tool-adapter commands.
 
 ## Notes
 
-- Falls back to git archaeology when a path has no decisions, so it is never
-  empty — call that out so the user knows it is reconstructed, not recorded.
+- A *path* falls back to git archaeology when it has no decisions, so it is
+  never empty — call that out so the user knows it is reconstructed, not
+  recorded.
+- A *question* the store cannot answer comes back with no decisions, one
+  sentence on why, and a pointer to the tool that fits the question's shape.
+  Relay the redirect rather than filling the gap: an empty result there means
+  the decision store has nothing, not that the question is unanswerable.
 - For *managing* ADR records (add / confirm / deprecate), use
   `/prompts:repowise-decision`.
 - Before contradicting an existing decision, surface it to the user first.

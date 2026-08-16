@@ -37,7 +37,14 @@ from repowise.cli.providers import (
     build_vector_store,
     flush_cost_tracker,
 )
-from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER, MaybeCountColumn, RichProgressCallback
+from repowise.cli.ui import (
+    BRAND_STYLE,
+    OK,
+    OWL_SPINNER,
+    WARN,
+    MaybeCountColumn,
+    RichProgressCallback,
+)
 from repowise.core.generation.models import (
     STUB_FALLBACK_ERROR,
     count_stub_fallbacks,
@@ -234,11 +241,11 @@ def _enrich_knowledge_graph(
             result.knowledge_graph_result = _run()
             enriched = result.knowledge_graph_result
             console.print(
-                f"  [green]✓[/green] KG enriched: "
+                f"  [{OK}]✓[/] KG enriched: "
                 f"{len(enriched.layers)} layers, {len(enriched.tour)} tour steps"
             )
         except Exception as exc:
-            console.print(f"  [yellow]KG enrichment skipped: {exc}[/yellow]")
+            console.print(f"  [{WARN}]KG enrichment skipped: {exc}[/]")
 
 
 def run_repo_generation(
@@ -273,7 +280,7 @@ def run_repo_generation(
     if verbose:
         announce_file_page_cap(result.parsed_files, gen_config)
 
-    embedder_impl: Any = build_embedder(embedder_name_resolved)
+    embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
     vector_store: Any = build_vector_store(repo_path, embedder_impl)
     result.vector_store = vector_store
 
@@ -302,7 +309,7 @@ def run_repo_generation(
         TimeElapsedColumn(),
     ]
     if not deterministic:
-        columns.append(TextColumn("[green]${task.fields[cost]:.3f}[/green]"))
+        columns.append(TextColumn("[" + OK + "]${task.fields[cost]:.3f}[/]"))
 
     # Filled by a resumed run with the pages it skipped because they already
     # exist. Persistence needs them: they are absent from ``generated_pages``,
@@ -382,7 +389,7 @@ def run_repo_generation(
     if failed_page_ids:
         type_counts = Counter(pid.split(":")[0] for pid in failed_page_ids)
         console.print(
-            f"  [yellow]⚠[/yellow] Generated [bold]{written_count}[/bold] pages "
+            f"  [{WARN}]⚠[/] Generated [bold]{written_count}[/bold] pages "
             f"([bold yellow]{len(failed_page_ids)} failed[/bold yellow])\n"
         )
         console.print("  [bold yellow]Failed pages by type:[/bold yellow]")
@@ -415,14 +422,14 @@ def run_repo_generation(
         )
         reason_note = "".join(f"  [dim]· {r[:160]}[/dim]\n" for r in reasons[:3])
         console.print(
-            "\n  [yellow]The wiki is incomplete: some pages were not written.[/yellow]\n"
+            f"\n  [{WARN}]The wiki is incomplete: some pages were not written.[/]\n"
             f"{placeholder_note}"
             f"{reason_note}"
             "  [dim]Run [bold]repowise init --resume[/bold] to generate the pages that "
             "failed, without re-spending on the ones that succeeded.[/dim]\n"
         )
     elif verbose:
-        console.print(f"  [green]✓[/green] Generated [bold]{written_count}[/bold] pages")
+        console.print(f"  [{OK}]✓[/] Generated [bold]{written_count}[/bold] pages")
 
     # KG enrichment is layer naming and the guided tour, both pure prompting.
     # A deterministic run has no model to ask, and the skeleton's structural

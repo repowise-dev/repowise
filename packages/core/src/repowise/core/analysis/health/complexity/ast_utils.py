@@ -27,6 +27,25 @@ _DECLARATOR_NAME_KINDS = frozenset(
 )
 
 
+def _pascal_unwrap_name(name: Node) -> Node:
+    """Pascal: unwrap ``genericDot`` (``TFoo.Bar``) / ``genericTpl`` (``Bar<T>``)
+    name wrappers down to the leaf identifier.
+
+    ``declProc``/``declType``'s ``name`` field is one of four shapes (bare
+    identifier, generic, qualified, qualified+generic — see queries.scm's
+    node-shape reference); only the leaf identifier is the human-readable
+    name, so both wrapper kinds are peeled before falling back to the node
+    itself (never ``None``, so a caller can always read ``.text``).
+    """
+    if name.type == "genericDot":
+        rhs = name.child_by_field_name("rhs")
+        return _pascal_unwrap_name(rhs) if rhs is not None else name
+    if name.type == "genericTpl":
+        entity = name.child_by_field_name("entity")
+        return entity if entity is not None else name
+    return name
+
+
 def _find_name(node: Node) -> str:
     """Best-effort: return the text of the first identifier child."""
     # Search a couple of common field names first.
@@ -34,6 +53,16 @@ def _find_name(node: Node) -> str:
         child = node.child_by_field_name(field_name)
         if child is not None and child.text is not None:
             return child.text.decode("utf-8", errors="replace")
+    # Pascal: a ``defProc``'s name lives two hops down, on its ``header``
+    # field's own ``name`` field (``defProc`` itself carries no ``name``) —
+    # unwrap any qualified/generic wrapper before reading the text.
+    if node.type == "defProc":
+        header = node.child_by_field_name("header")
+        name = header.child_by_field_name("name") if header is not None else None
+        if name is not None and name.text is not None:
+            leaf = _pascal_unwrap_name(name)
+            if leaf.text is not None:
+                return leaf.text.decode("utf-8", errors="replace")
     # C / C++: the function name is not a direct child but nested inside a
     # ``declarator`` chain (``function_definition → function_declarator →
     # field_identifier``). Languages with a ``name`` field never reach here.
@@ -76,6 +105,12 @@ def _find_assigned_lambda_name(node: Node) -> str | None:
                 left = next((child for child in parent.children if child is not node), None)
             if left is not None and left.text is not None:
                 return _node_text(left)
+        if parent.type == "assignment":
+            # Pascal ``Proc := procedure ... end`` — the field is ``lhs``,
+            # not ``left``.
+            lhs = parent.child_by_field_name("lhs")
+            if lhs is not None and lhs.text is not None:
+                return _node_text(lhs)
         if parent.type not in {"parenthesized_expression", "as_expression", "satisfies_expression"}:
             return None
         parent = parent.parent
@@ -188,6 +223,16 @@ def _count_parameters(fn_node: Node) -> int:
         sig = _dart_signature_sibling(fn_node)
         if sig is not None:
             params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
+    if params is None and fn_node.type == "lambda":
+        # Pascal anonymous procedure/function: the arg list is its own
+        # ``args`` field directly (parameterless procedures omit it).
+        params = fn_node.child_by_field_name("args")
+    if params is None and fn_node.type == "defProc":
+        # Pascal named procedure/function: the arg list lives on the
+        # ``header`` field's own ``args`` field, not on ``defProc`` itself.
+        header = fn_node.child_by_field_name("header")
+        if header is not None:
+            params = header.child_by_field_name("args")
     if params is None:
         return 0
     count = 0
@@ -208,6 +253,14 @@ def _count_parameters(fn_node: Node) -> int:
             "keyword_separator",
             "positional_separator",
         ):
+            continue
+        if child.type == "declArg":
+            # Pascal groups same-typed parameters under one ``declArg``
+            # (``A, B, C: Boolean``) -- one node, three names -- so counting
+            # the node itself would undercount; count its direct
+            # ``identifier`` children instead (the trailing ``type`` child
+            # is a different node type and never matches).
+            count += sum(1 for gc in child.children if gc.type == "identifier")
             continue
         if child.is_named:
             count += 1

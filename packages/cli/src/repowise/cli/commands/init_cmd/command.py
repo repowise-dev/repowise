@@ -53,7 +53,10 @@ from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_
 from repowise.cli.ui import (
     BRAND,
     BRAND_STYLE,
+    OK,
     OWL_SPINNER,
+    VALUE,
+    WARN,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -254,7 +257,6 @@ def _run_generation_phase(
     language: str,
     resolved_reasoning: str,
     onboarding: bool,
-    harvest_decisions: bool,
     wiki_style: str,
     max_file_pages: int | None,
     yes: bool,
@@ -288,7 +290,6 @@ def _run_generation_phase(
         language=language,
         reasoning=resolved_reasoning,
         enable_onboarding=onboarding,
-        harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
     )
@@ -335,7 +336,7 @@ def _run_generation_phase(
     # Warn when a local provider runs with default concurrency
     if provider.provider_name in ("ollama", "codex_cli", "opencode") and concurrency > 4:
         console.print(
-            f"  [yellow]Warning:[/yellow] {provider.provider_name} is a local provider "
+            f"  [{WARN}]Warning:[/] {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
             f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
         )
@@ -367,7 +368,7 @@ def _run_generation_phase(
     concept_n = concept_page_count(plans)
     console.print(
         f"  Writing [bold]{concept_n:,}[/bold] subsystem pages with "
-        f"[cyan]{provider.model_name}[/cyan]. Estimated [bold]{format_cost(est)}[/bold]."
+        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
     )
     structural = structural_page_summary(plans)
     if structural:
@@ -541,15 +542,30 @@ def _run_generation_phase(
     "editor_setup",
     default=True,
     help=(
-        "Register repowise with your machine-wide editor config: the Claude "
-        "Code / Claude Desktop MCP server entry, the Claude Code hooks, and "
-        "the distill rewrite-hook offer. Default: on. Use --no-editor-setup to "
-        "index a repo without touching anything outside it — there is one "
-        "global 'repowise' MCP key, so a second init would otherwise repoint "
-        "it at this repo. Project-local files are unaffected (see "
-        "--no-claude-md, --no-codex). REPOWISE_SKIP_EDITOR_SETUP=1 does the "
+        "Wire repowise into your editors. Covers both halves: the machine-wide "
+        "config (the Claude Code / Claude Desktop MCP entry, the Claude Code "
+        "hooks, the distill rewrite-hook offer) and the project-local files "
+        "(.mcp.json, .claude/CLAUDE.md, .vscode/mcp.json, "
+        ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
+        "a repo without writing anything into it or outside it; only "
+        ".repowise/ is touched, and 'repowise mcp .' still prints the config "
+        "to connect a client by hand. REPOWISE_SKIP_EDITOR_SETUP=1 does the "
         "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
-        "does not turn registration back on."
+        "does not turn setup back on."
+    ),
+)
+@click.option(
+    "--save-key/--no-save-key",
+    "save_key",
+    default=True,
+    help=(
+        "Save the provider API key this run authenticated with into "
+        ".repowise/.env (gitignored, owner-only). Default: on, because a scripted "
+        "init that succeeds must leave a repo whose MCP server can answer, "
+        "and the key would otherwise be lost with the shell that set it. Use "
+        "--no-save-key when the key is injected per-process (CI secrets, a "
+        "shared machine) and must not be written to disk. "
+        "REPOWISE_NO_SAVE_KEY=1 does the same for CI and sandboxes."
     ),
 )
 @click.option(
@@ -610,17 +626,6 @@ def _run_generation_phase(
         "Repeatable. When omitted, common locations (coverage/lcov.info, "
         "**/cobertura.xml, ...) are auto-discovered. This is test coverage for "
         "code-health, not a documentation-breadth knob."
-    ),
-)
-@click.option(
-    "--harvest-decisions/--no-harvest-decisions",
-    "harvest_decisions",
-    default=True,
-    help=(
-        "Harvest candidate architectural decisions from LLM page generation "
-        "(file pages). Each harvested decision is verified against the file's "
-        "source before storage. The model emits a decision only on a genuine "
-        "hit, so the token cost lands only on files that carry one. Default: on."
     ),
 )
 @click.option(
@@ -712,13 +717,13 @@ def init_command(
     codex_setup: bool | None,
     distill_hook: bool | None,
     editor_setup: bool,
+    save_key: bool,
     include_submodules: bool,
     no_workspace: bool,
     init_all: bool,
     onboarding: bool,
     max_file_pages_opt: int | None,
     coverage_report: tuple[str, ...],
-    harvest_decisions: bool,
     wiki_style: str | None,
     language_opt: str | None,
     no_cost_tracking: bool,
@@ -818,7 +823,7 @@ def init_command(
         )
         if seeded:
             console.print(
-                "[green]Worktree index seeded successfully. Delegating to update...[/green]"
+                f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]"
             )
             from repowise.cli.commands.update_cmd.command import run_update
 
@@ -858,6 +863,7 @@ def init_command(
             codex_setup=codex_setup,
             distill_hook=distill_hook,
             editor_setup=editor_setup,
+            save_key=save_key,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -873,7 +879,6 @@ def init_command(
             resume=resume,
             force=force,
             onboarding=onboarding,
-            harvest_decisions=harvest_decisions,
             # Apply the chosen style uniformly across the workspace's repos
             # (no per-repo interactive prompt in the multi-repo flow).
             wiki_style=resolve_style(wiki_style).name,
@@ -945,7 +950,7 @@ def init_command(
         except EOFError:
             is_interactive = False
             console.print(
-                "\n[yellow]No answer available on stdin[/yellow] "
+                f"\n[{WARN}]No answer available on stdin[/] "
                 "[dim]- continuing with defaults. Pass --yes to skip the "
                 "questions, or --prose / --no-prose to choose directly.[/dim]"
             )
@@ -1013,7 +1018,6 @@ def init_command(
                 reasoning = adv.get("reasoning") or reasoning
                 test_run = adv["test_run"]
                 onboarding = adv.get("onboarding", onboarding)
-                harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
                 if adv.get("wiki_style"):
                     wiki_style = adv["wiki_style"]
                 if adv.get("language"):
@@ -1061,7 +1065,10 @@ def init_command(
     # either generating docs or customizing an index-only run (the latter
     # previously got no say). One checklist, pre-ticked from detection, in
     # place of the three sequential yes/no prompts each integration used to own.
-    if is_interactive and (generate_docs or customize):
+    # Not asked when editor setup is off: every answer would be discarded by
+    # `write_editor_project_files`, and a checklist whose result cannot act is
+    # worse than no checklist.
+    if editor_setup and is_interactive and (generate_docs or customize):
         editor_options = select_agents_interactively(console, repo_path, editor_options)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
@@ -1105,7 +1112,7 @@ def init_command(
     _prior_docs_mode = resolve_docs_mode(_prior_state)
     if index_only and _prior_docs_mode == "llm" and not (force or yes):
         console.print(
-            "\n[yellow]This repo already has a model-written wiki.[/yellow] "
+            f"\n[{WARN}]This repo already has a model-written wiki.[/] "
             "Indexing without a model\nrewrites every page from templates; the "
             "written versions stay in page history."
         )
@@ -1154,7 +1161,7 @@ def init_command(
             console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
             if decision_provider:
                 console.print(
-                    f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
+                    f"Decision extraction provider: [{VALUE}]{decision_provider.provider_name}[/]"
                 )
     else:
         # No prompt here. ``is_interactive`` (line ~800) is already false only
@@ -1180,7 +1187,7 @@ def init_command(
             if not is_interactive:
                 console.print(f"[bold]repowise init[/bold] — {repo_path}")
             console.print(
-                "[yellow]No model configured.[/yellow] Building the wiki from "
+                f"[{WARN}]No model configured.[/] Building the wiki from "
                 "structure instead — no key, no spend.\n"
                 "[dim]Set a key (or pass --provider) and run [bold]repowise "
                 "update --full[/bold] to have a model write it.[/dim]"
@@ -1200,13 +1207,13 @@ def init_command(
             console.print(f"[bold]repowise init[/bold] — {repo_path}")
         if provider is not None:
             console.print(
-                f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
+                f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"
             )
-        console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]")
+        console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]")
         if language != "en":
-            console.print(f"  Language: [cyan]{language}[/cyan]")
+            console.print(f"  Language: [{VALUE}]{language}[/]")
         if resolved_reasoning != "auto":
-            console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]")
+            console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]")
 
         # Validate provider connection. Nothing to verify when there is no
         # provider: this run renders from templates and never calls a model.
@@ -1226,7 +1233,7 @@ def init_command(
                 except ProviderError as exc:
                     telemetry.add_command_outcome(failure_reason="provider_validation_failed")
                     raise click.ClickException(f"Provider validation failed: {exc}") from exc
-            console.print("  [green]✓[/green] Provider connection verified")
+            console.print(f"  [{OK}]✓[/] Provider connection verified")
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
     # Index-only generates too, it just renders templates instead of prompting
@@ -1257,7 +1264,7 @@ def init_command(
     # unanswered question rather than an answer (same call generation.py makes
     # for the generation bar).
     if llm_client is not None:
-        index_columns.append(TextColumn("[green]${task.fields[cost]:.3f}[/green]"))
+        index_columns.append(TextColumn("[" + OK + "]${task.fields[cost]:.3f}[/]"))
 
     with Progress(*index_columns, console=console) as progress_bar:
         rich_callback = RichProgressCallback(progress_bar, console, total_phases=total_phases)
@@ -1324,7 +1331,7 @@ def init_command(
             from repowise.cli.ui.mascot import EYES_SLEEPY, mini
 
             console.print(
-                f"\n{mini(EYES_SLEEPY)} [yellow]Interrupted.[/] Indexed work so far has been "
+                f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
                 "saved — run [bold]repowise init --resume[/] to continue where it stopped."
             )
             return
@@ -1333,6 +1340,9 @@ def init_command(
     # state.json persistence below and for any future "profile" tooling
     # that wants to introspect a run.
     phase_timings: dict[str, float] = callback.timings
+    # Same idea, for the failures rather than the durations: what the run
+    # degraded on, in a place an agent can read after the terminal is gone.
+    run_warnings: list[str] = list(rich_callback.warnings)
 
     # ---- Analysis summary (shown between analysis and generation) ----
     show_analysis_summary(result)
@@ -1383,7 +1393,6 @@ def init_command(
             language=language,
             resolved_reasoning=resolved_reasoning,
             onboarding=onboarding,
-            harvest_decisions=harvest_decisions,
             wiki_style=wiki_style,
             max_file_pages=max_file_pages,
             yes=yes,
@@ -1446,9 +1455,29 @@ def init_command(
         "Saving to database and building search index",
     )
 
-    with console.status("  Persisting to database…", spinner=OWL_SPINNER):
-        run_async(persist_result(result, repo_path))
-    console.print("  [green]✓[/green] Database updated")
+    # A bar rather than the old indeterminate spinner: full-text indexing walks
+    # every generated page one await at a time, so on a few thousand pages this
+    # stage ran for minutes with nothing on screen but a spinner, immediately
+    # after a generation bar that had just claimed to be finished. The columns
+    # are the index run's, minus the cost one — nothing here spends tokens.
+    with Progress(
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as persist_bar:
+        persist_callback = RichProgressCallback(persist_bar, console)
+        # Announced before the work starts and re-announced with a real total
+        # once the page loop knows one, so the stage is never silent.
+        persist_callback.on_phase_start("persist", None)
+        run_async(persist_result(result, repo_path, persist_callback))
+        persist_callback.on_phase_done("persist")
+    # Persistence has its own callback, so its warnings need folding into the
+    # run record explicitly — the state write below is the last chance.
+    run_warnings.extend(persist_callback.warnings)
+    console.print(f"  [{OK}]✓[/] Database updated")
 
     # Persist the onboarding choice so subsequent `repowise update` runs
     # honor it without re-passing the flag. Default True is omitted to keep
@@ -1488,10 +1517,14 @@ def init_command(
     if commit_limit is not None:
         save_config_partial(repo_path, commit_limit=resolved_commit_limit)
 
-    write_editor_project_files(
+    # One flag, one meaning: --no-editor-setup now suppresses the project-local
+    # writes as well as the global registration. The paths come back so the
+    # completion panel can name what landed in the working tree.
+    files_written = write_editor_project_files(
         console,
         repo_path,
         options=editor_options,
+        no_editor_setup=not editor_setup,
     )
     register_editor_clients(console, repo_path, no_editor_setup=not editor_setup)
 
@@ -1537,6 +1570,12 @@ def init_command(
     base_state["include_submodules"] = include_submodules
     if phase_timings:
         base_state["phase_timings"] = phase_timings
+    # Cleared before it is set: ``base_state`` came from the previous run's
+    # state.json, and a fixed re-run must not inherit its predecessor's
+    # degradation report (see save_full_state_and_config for the same rule).
+    base_state.pop("degraded", None)
+    if run_warnings:
+        base_state["degraded"] = run_warnings
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         base_state["knowledge_graph"] = build_kg_state(kg)
@@ -1595,12 +1634,14 @@ def init_command(
             result=result,
             provider=provider,
             phase_timings=phase_timings,
+            degraded=run_warnings,
             embedder_name_resolved=embedder_name_resolved,
             exclude_patterns=exclude_patterns,
             commit_limit=commit_limit,
             resolved_commit_limit=resolved_commit_limit,
             resolved_reasoning=resolved_reasoning,
             include_submodules=include_submodules,
+            save_key=save_key,
         )
 
     _record_init_outcome(
@@ -1645,4 +1686,5 @@ def init_command(
         run_mode=run_mode,
         provider=provider,
         setup=_setup_outcome,
+        files_written=files_written,
     )

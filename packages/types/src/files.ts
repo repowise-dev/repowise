@@ -129,6 +129,14 @@ export interface FileDetailCoverage {
   line_coverage_pct: number;
   branch_coverage_pct: number | null;
   total_coverable_lines: number;
+  /**
+   * How many lines `covered_lines` names. Always sent, including under
+   * `fields=slim` where the array itself is dropped — the coverage headline
+   * only ever wanted the count, and counting it client-side is what forced the
+   * whole integer array across the wire. Optional so older payloads parse.
+   */
+  covered_line_count?: number;
+  /** Empty under `fields=slim`; read `covered_line_count` for the total. */
   covered_lines: number[];
   source_format: string;
   ingested_at: string | null;
@@ -245,7 +253,16 @@ export interface FileDetailResponse {
   coverage: FileDetailCoverage | null;
   graph: FileDetailGraph | null;
   symbols: FileSymbolSlim[];
+  /** Empty under `fields=slim`; read `function_blame_count` for the total. */
   function_blame: FunctionBlameRow[];
+  /**
+   * How many blame rows exist, in both modes. Optional so a frontend ahead of
+   * its backend degrades rather than rendering `NaN` — the same contract
+   * `coverage.covered_line_count` follows, and for the same reason: a caller
+   * deciding whether a block is worth fetching cannot otherwise tell an empty
+   * table from a dropped one.
+   */
+  function_blame_count?: number;
   governing_decisions: GoverningDecisionRef[];
   dead_code: FileDeadCodeFinding[];
 }

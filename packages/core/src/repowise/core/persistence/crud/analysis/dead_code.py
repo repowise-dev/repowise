@@ -8,7 +8,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
+from repowise.core.analysis.dead_code.risk_factors import (
+    RISK_CAP_CONFIDENCE,
+    SAFE_CONFIDENCE_THRESHOLD,
+    effective_safe_to_delete,
+)
 
 from ...models import DeadCodeFinding, _new_uuid
 from .._shared import _BATCH_SIZE, _finding_file_path
@@ -206,9 +210,9 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
     by_kind: dict[str, int] = {}
 
     for f in findings:
-        if f.confidence >= 0.7:
+        if f.confidence >= SAFE_CONFIDENCE_THRESHOLD:
             summary["high"] += 1
-        elif f.confidence >= 0.4:
+        elif f.confidence >= RISK_CAP_CONFIDENCE:
             summary["medium"] += 1
         else:
             summary["low"] += 1

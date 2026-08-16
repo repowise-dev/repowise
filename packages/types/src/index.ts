@@ -25,6 +25,7 @@ export * from "./security.js";
 export * from "./owners.js";
 export * from "./modules.js";
 export * from "./overview.js";
+export * from "./repos.js";
 export * from "./files.js";
 export * from "./external-systems.js";
 export * from "./health.js";

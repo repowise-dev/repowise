@@ -61,10 +61,12 @@
   (value_arguments) @call.arguments
 ) @call.site
 
-; Member call: obj.method(args)
+; Member call: obj.method(args) — and self-dispatch: this.method(args).
+; See typescript.scm for why ``this`` rides an alternation in the receiver slot
+; instead of a second pattern.
 (call_expression
   (navigation_expression
-    (identifier) @call.receiver
+    [(identifier) (this_expression)] @call.receiver
     (identifier) @call.target
   )
   (value_arguments) @call.arguments

@@ -244,6 +244,12 @@ data: {"type": "...", ...}
 
 **Retry:** `retry: 3000` sent at stream start.
 
+**Terminal event:** every stream ends with `done` or `error` on the `data`
+channel. `useChat` switches on `type` and nothing else, so an event sent on a
+different channel, or without a `type`, is dropped: the client then sees a
+stream that simply stopped mid-answer. The client settles its own state when
+the reader ends without a terminal event, but the server still owes it one.
+
 ---
 
 ## 7. Agentic Loop

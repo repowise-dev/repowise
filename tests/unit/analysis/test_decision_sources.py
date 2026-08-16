@@ -98,6 +98,66 @@ async def test_discover_adrs_maps_superseded_status_from_frontmatter(tmp_path):
 
 
 
+class TestAdrDiscoveryHonorsIgnoreFiles:
+    """A path git cannot see must not become a decision record.
+
+    The loose ``*adr*.md`` scan read the whole tree with no ignore handling, so
+    a scratch dir excluded locally shipped ``active`` records whose evidence
+    file no clone of the repo contains. ``fs_walk`` alone does not fix this: it
+    prunes junk dirs and nested repos but reads no ignore files.
+    """
+
+    async def test_gitignored_dir_contributes_no_adr(self, tmp_path):
+        (tmp_path / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+        scratch = tmp_path / "scratch" / "notes"
+        scratch.mkdir(parents=True)
+        (scratch / "adr-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert decisions == []
+
+    async def test_info_exclude_dir_contributes_no_adr(self, tmp_path):
+        """``.git/info/exclude`` is the local-only half, and the half that leaked.
+
+        It is what hides ``local-stash/`` in this project's own checkout, where
+        the miner stored four records citing a bench file nobody else has.
+        """
+        info = tmp_path / ".git" / "info"
+        info.mkdir(parents=True)
+        (info / "exclude").write_text("local-stash/\n", encoding="utf-8")
+        stash = tmp_path / "local-stash" / "bench"
+        stash.mkdir(parents=True)
+        (stash / "adr-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert decisions == []
+
+    async def test_ignored_file_inside_a_conventional_dir_is_skipped(self, tmp_path):
+        """The conventional dirs were globbed, not walked, so they leaked too."""
+        (tmp_path / ".gitignore").write_text("docs/adr/local-*.md\n", encoding="utf-8")
+        adr_dir = tmp_path / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        (adr_dir / "local-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert decisions == []
+
+    async def test_tracked_adr_is_still_discovered(self, tmp_path):
+        """Ablation partner: the ignore layer must not swallow everything."""
+        (tmp_path / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+        adr_dir = tmp_path / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        (adr_dir / "0001-use-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert len(decisions) == 1
+        assert "Use PostgreSQL" in decisions[0].title
+
+
 async def test_extract_all_runs_deterministic_sources_and_gates(tmp_path):
     adr_dir = tmp_path / "docs" / "adr"
     adr_dir.mkdir(parents=True)

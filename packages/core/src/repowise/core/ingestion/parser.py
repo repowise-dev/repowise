@@ -25,6 +25,7 @@ Capture-name conventions (shared across ALL .scm files):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 
@@ -104,6 +105,11 @@ _MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
 # SFC tags are here because ``sfc_source`` projects their <script> blocks into
 # a TS buffer at identical offsets, so every TS/JS code path applies verbatim.
 _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
+
+# Languages whose query defines the ``@reference.*`` captures. Every other
+# language would only scan the whole match list to find nothing, so the check
+# is here rather than inside ``_extract_references``.
+_REFERENCE_LANGUAGES = ("cpp", "c")
 
 
 @cache
@@ -206,6 +212,57 @@ def _build_language_registry() -> dict[str, Language]:
 
 _LANGUAGE_REGISTRY: dict[str, Language] = {}
 
+# Languages already reported as having a config but no installed grammar, so
+# the report is one line per language per process instead of one per file. A
+# repo with a few thousand shell scripts otherwise emitted a few thousand
+# identical lines, all saying the same three facts.
+_MISSING_GRAMMAR_REPORTED: set[str] = set()
+
+
+def missing_grammar_languages(language_tags: Iterable[str]) -> list[str]:
+    """Of *language_tags*, those that parse via tree-sitter but have no grammar.
+
+    Answers the question once, in the parent, before up to eight spawned
+    workers each rediscover it and log their own copy of the answer at a level
+    the CLI discards anyway.
+
+    Deliberately uses ``find_spec`` rather than importing: the whole point is
+    to stay cheap enough to run on every index. Building the real registry here
+    would import every tree-sitter package into the parent process, which is
+    memory the parse pool is about to need for something else.
+
+    A tag with no :data:`LANGUAGE_CONFIGS` entry is not a gap — nothing claims
+    to parse it — so it is skipped rather than reported.
+
+    Ceiling: "importable" is not "loadable". A grammar whose compiled ABI does
+    not match the installed ``tree_sitter`` imports fine and then raises inside
+    ``Language()``, which this cannot see, so that case reports nothing here
+    and stays a per-worker debug line. Reporting it properly means loading the
+    grammars, which is the cost this function exists to avoid.
+    """
+    import importlib.util
+
+    specs = {spec.tag: spec for spec in _LANG_REGISTRY.all_specs()}
+    missing: list[str] = []
+    for tag in language_tags:
+        if tag not in LANGUAGE_CONFIGS:
+            continue
+        spec = specs.get(tag)
+        if spec is None:
+            continue
+        package = spec.grammar_package
+        if not package and spec.shares_grammar_with:
+            shared = specs.get(spec.shares_grammar_with)
+            package = shared.grammar_package if shared else None
+        if not package:
+            continue
+        try:
+            if importlib.util.find_spec(package) is None:
+                missing.append(tag)
+        except (ImportError, ValueError):
+            missing.append(tag)
+    return sorted(missing)
+
 
 def _get_language(tag: str) -> Language | None:
     global _LANGUAGE_REGISTRY
@@ -263,12 +320,12 @@ class ASTParser:
         language = _get_language(grammar_tag)
 
         if config is None or language is None:
-            if config is not None and language is None:
-                log.debug(
-                    "tree-sitter grammar unavailable",
-                    language=lang,
-                    path=file_info.path,
-                )
+            if config is not None and language is None and lang not in _MISSING_GRAMMAR_REPORTED:
+                # Once per language, not once per file: the fact is about the
+                # environment, and it does not become truer on the four
+                # thousandth shell script.
+                _MISSING_GRAMMAR_REPORTED.add(lang)
+                log.debug("tree-sitter grammar unavailable", language=lang)
             # Languages without a grammar may still carry regex-tier import
             # extraction (their specs declare import_support="partial");
             # symbols stay empty — the regex tier claims no symbol knowledge.
@@ -370,6 +427,11 @@ class ASTParser:
         # tsx.scm turns ``<Component />`` into a call for React. Returns [] for
         # every non-SFC language.
         calls.extend(component_call_sites(lang, original_source, symbols))
+        references = (
+            self._extract_references(matches, file_info, src, symbols)
+            if lang in _REFERENCE_LANGUAGES
+            else []
+        )
         heritage = extract_heritage(matches, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
@@ -406,6 +468,7 @@ class ASTParser:
             content_hash=content_hash,
             type_refs=type_refs,
             local_refs=local_refs,
+            references=references,
         )
 
     # ------------------------------------------------------------------
@@ -703,6 +766,7 @@ class ASTParser:
                     language=file_info.language,
                     parent_name=parent_name,
                     is_exported_symbol=is_exported_symbol,
+                    is_declaration=node_type in config.declaration_node_types,
                 )
             )
             node_types.append(node_type)
@@ -1067,6 +1131,94 @@ class ASTParser:
             )
 
         return calls
+
+    def _extract_references(
+        self,
+        matches: list[dict],
+        file_info: FileInfo,
+        src: str,
+        symbols: list[Symbol],
+    ) -> list[CallSite]:
+        """Extract sites that name a function without calling it.
+
+        Three C/C++ shapes carry a function by name and never call it where a
+        parser can see: a dispatch-table entry, a callback field, and an
+        argument to a registration macro. Each leaves the named function with
+        no inbound edge, which read as a ``safe_to_delete`` unused export and
+        took out whole handler and interop layers (#1602).
+
+        Self-gating on the reference captures, so a language whose query
+        defines none produces nothing and pays two dict lookups. Two guards
+        keep these broad syntactic positions from claiming ordinary code:
+
+        * A macro argument requires a SCREAMING_CASE callee and must be that
+          macro's only argument. Uppercase alone is not enough: assertion
+          macros are spelled the same way and take values, so ``EXPECT_EQ(
+          capacity, 100)`` bound a local to whatever free function shared its
+          name. Registering something registers one thing, which separates
+          ``BENCHMARK(BM_Foo)`` from ``TEST(SuiteName, TestName)``.
+        * A table entry must sit outside any function body. A dispatch table is
+          a file-, namespace- or class-scope aggregate; the same braces inside
+          a function are a constructor member-init or a local aggregate, where
+          ``{data, size}`` names parameters. Measured on fmt, admitting those
+          turned ``data``, ``size``, ``begin``, ``end``, ``capacity`` and
+          ``buffer`` into edges, every one of them wrong.
+
+        Whether the name denotes a function at all is settled later, at
+        resolution, where the symbol kind is known.
+        """
+        from .language_data import get_builtin_calls
+
+        builtins = get_builtin_calls(file_info.language)
+
+        symbol_ranges = sorted(
+            [(s.start_line, s.end_line, s.id) for s in symbols],
+            key=lambda t: (t[0], -t[1]),
+        )
+        callable_ids = {s.id for s in symbols if s.kind in ("function", "method")}
+
+        references: list[CallSite] = []
+        seen: set[tuple[int, str]] = set()
+
+        for capture_dict in matches:
+            plain_nodes = capture_dict.get("reference.name", [])
+            table_nodes = capture_dict.get("reference.table", [])
+            if not plain_nodes and not table_nodes:
+                continue
+
+            via_nodes = capture_dict.get("reference.via", [])
+            if via_nodes:
+                via = _node_text(via_nodes[0], src).strip()
+                if not via or not via.isupper():
+                    continue
+                arg_list = plain_nodes[0].parent if plain_nodes else None
+                if arg_list is None or len(arg_list.named_children) != 1:
+                    continue
+
+            candidates = [(node, False) for node in plain_nodes]
+            candidates += [(node, True) for node in table_nodes]
+            for name_node, is_table in candidates:
+                name = _node_text(name_node, src).strip()
+                if not name or name in builtins:
+                    continue
+                line = name_node.start_point[0] + 1
+                enclosing = _find_enclosing_symbol(line, symbol_ranges)
+                if is_table and enclosing in callable_ids:
+                    continue
+                if (line, name) in seen:
+                    continue
+                seen.add((line, name))
+                references.append(
+                    CallSite(
+                        target_name=name,
+                        receiver_name=None,
+                        caller_symbol_id=enclosing,
+                        line=line,
+                        argument_count=None,
+                    )
+                )
+
+        return references
 
     # ------------------------------------------------------------------
     # Export derivation

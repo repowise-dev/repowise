@@ -111,6 +111,6 @@ describe("FileHistoryTab file age", () => {
 describe("FileHistoryTab without git", () => {
   it("falls back to the empty state", () => {
     renderTab(null);
-    expect(screen.getByText("No git history")).toBeTruthy();
+    expect(screen.getByText("No git history for this file")).toBeTruthy();
   });
 });

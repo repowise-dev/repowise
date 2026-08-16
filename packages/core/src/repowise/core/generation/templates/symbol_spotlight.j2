@@ -5,6 +5,12 @@
     the same way; a template that claimed otherwise would over-state what the
     graph actually knows.
 
+    The rendered list stops at 25, the same bound ``file_page.j2`` puts on its
+    "Used by" section over the same data, while the summary line above it keeps
+    the true total. Unbounded, a fixture imported across a whole test suite
+    rendered 939 bullets and a 46k-char page, which is past the 30k the
+    embedder accepts, so the tail was dropped from the vector.
+
     Every section but the Overview is conditional: a heading with nothing
     under it costs a reader a stop and repeats a stock sentence across
     thousands of pages, where it matches every query and distinguishes none.
@@ -40,9 +46,13 @@
 ## {{ labels.where_used }}
 
 {{ labels.importers_summary.format(count=ctx.callers | length, file_word=labels.file_plural if ctx.callers | length != 1 else labels.file_singular, import_verb=labels.import_verb_plural if ctx.callers | length != 1 else labels.import_verb_singular) }}
-{% for c in ctx.callers %}
+{% for c in ctx.callers[:25] %}
 - `{{ c }}`
 {%- endfor %}
+{%- if ctx.callers | length > 25 %}
+
+_{{ labels.and_more.format(count=ctx.callers | length - 25) }}_
+{%- endif %}
 {%- endif %}
 {%- if ctx.source_body %}
 

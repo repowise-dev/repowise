@@ -489,6 +489,7 @@ def _changed_file_edges(
                 "edge_type": data.get("edge_type", "imports"),
                 "confidence": data.get("confidence", 1.0),
                 "hint_source": data.get("hint_source"),
+                "resolution_origin": data.get("resolution_origin"),
             }
         )
     return sorted(reconcile), edges
@@ -533,6 +534,47 @@ async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any
     return row is None
 
 
+async def _stored_edges_parser_fingerprint(session: Any, repo_id: str) -> str | None:
+    """The ``parser_fingerprint()`` recorded when this repo's edges were written.
+
+    ``None`` on a store written before the column existed, which is what makes
+    every already-shipped store take the widen once.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Repository
+
+    return (
+        await session.execute(
+            select(Repository.graph_edges_parser_fingerprint).where(Repository.id == repo_id)
+        )
+    ).scalar_one_or_none()
+
+
+async def stamp_edges_parser_fingerprint(session: Any, repo_id: str, fingerprint: str) -> None:
+    """Record the parser build that just wrote this repo's ``graph_edges``.
+
+    Written only by :func:`persist_incremental_edges`, and only after a widen.
+    Deliberately *not* written by the full :func:`persist_ingestion` path, which
+    upserts edges (:func:`batch_upsert_graph_edges`) and prunes only the nodes
+    of files that vanished: a re-index over an existing store therefore adds the
+    new build's edges without removing the old build's surplus ones. Stamping
+    there would mark such a store parser-current and permanently suppress the
+    delete-then-insert reconcile that is the only thing which clears them. The
+    cost of not stamping is one widen on the first update after an index, which
+    is wasted on a fresh store and exactly the repair on a re-indexed one.
+    """
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Repository
+
+    await session.execute(
+        update(Repository)
+        .where(Repository.id == repo_id)
+        .values(graph_edges_parser_fingerprint=fingerprint)
+    )
+
+
 async def persist_incremental_edges(
     session: Any,
     repo_id: str,
@@ -549,16 +591,34 @@ async def persist_incremental_edges(
     straight from this table, so they decayed on every incremental update. This
     delete-then-inserts the changed files' outgoing edges (dropping edges those
     files no longer have). Scoped to the changed set for cost.
+
+    That scoping is also this function's one structural blind spot: an
+    extraction change (a tree-sitter query edit, an extractor fix) alters the
+    edges of *every* file, but only the git-changed ones get rewritten, so the
+    rest keep the old build's edges until they happen to change. The parse cache
+    self-invalidates on such a change (``parser_fingerprint`` hashes the ``.scm``
+    sources) and the update rebuilds the whole graph in memory anyway, so the
+    correct edges are already computed and only the write is too narrow. Widen
+    it whenever the fingerprint that last wrote the table differs from the
+    running one, then re-stamp. One comparison covers every future extraction
+    change; :func:`_edges_predate_cohesion` is the bespoke predecessor, kept
+    until shipped stores have all been stamped.
     """
     if graph_builder is None or not parsed_files:
         return
+    from repowise.core.ingestion.parse_cache import parser_fingerprint
     from repowise.core.persistence.crud import reconcile_edges_for_files
 
-    if await _edges_predate_cohesion(session, repo_id, graph_builder):
-        # Widen the reconcile to the whole parsed set, once. Same code path,
-        # so the delete-then-insert still drops edges a file no longer has —
-        # which is what clears the pre-fix resolution mistakes, an upsert
-        # alone would leave them behind.
+    # Widen the reconcile to the whole parsed set, once. Same code path, so the
+    # delete-then-insert still drops edges a file no longer has — which is what
+    # clears the old build's resolution mistakes, an upsert alone would leave
+    # them behind.
+    fingerprint = parser_fingerprint()
+    parser_changed = await _stored_edges_parser_fingerprint(session, repo_id) != fingerprint
+    if parser_changed:
+        changed_paths = [pf.file_info.path for pf in parsed_files]
+        logger.info("graph_edges_parser_backfill", repo_id=repo_id, files=len(changed_paths))
+    elif await _edges_predate_cohesion(session, repo_id, graph_builder):
         changed_paths = [pf.file_info.path for pf in parsed_files]
         logger.info("graph_edges_cohesion_backfill", repo_id=repo_id, files=len(changed_paths))
 
@@ -566,6 +626,11 @@ async def persist_incremental_edges(
     if not reconcile_paths:
         return
     await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
+    # Only after the widen actually ran to completion. Raising here (or in any
+    # caller before the commit) leaves the old stamp, so the next update retries
+    # rather than stranding the files it never reached.
+    if parser_changed:
+        await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
 
 
 # Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
@@ -1302,6 +1367,7 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
                 "edge_type": data.get("edge_type", "imports"),
                 "confidence": data.get("confidence", 1.0),
                 "hint_source": data.get("hint_source"),
+                "resolution_origin": data.get("resolution_origin"),
             }
         )
     if edges:
@@ -1509,20 +1575,14 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             logger.warning("health_snapshot_skipped", error=str(_snap_err))
 
     # ---- Decision records ----------------------------------------------------
-    # Two contributors merge into one upsert: the multi-source extractor
-    # (decision_report) and the Phase-2 LLM-docs harvest (ridden on each
-    # generated page's metadata, already gated at generation time). Folding
-    # them into a single bulk_upsert lets harvested candidates corroborate
-    # extracted decisions (extra evidence row + confidence bump) or stand alone
-    # as low-rank ``proposed`` records awaiting review.
+    # One contributor: the multi-source extractor. A second read used to fold
+    # ``page.metadata["harvested_decisions"]`` in from LLM page generation, but
+    # nothing ever wrote that key — harvesting only ever ran on ``file_page``,
+    # and file pages are rendered structurally now, so the directive had no
+    # host and the loop was permanently a no-op.
     decision_dicts: list[dict] = []
     if result.decision_report and result.decision_report.decisions:
         decision_dicts.extend(dataclasses.asdict(d) for d in result.decision_report.decisions)
-    if result.generated_pages:
-        for page in result.generated_pages:
-            harvested = page.metadata.get("harvested_decisions")
-            if harvested:
-                decision_dicts.extend(harvested)
 
     # Restore records the semantic supersession detector retired before it was
     # turned off. ``superseded`` is a protected status, so nothing else will

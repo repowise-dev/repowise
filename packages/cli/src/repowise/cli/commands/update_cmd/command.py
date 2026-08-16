@@ -43,6 +43,7 @@ from repowise.core.reasoning import REASONING_MODES
 
 from .incremental import (
     _build_update_vector_store,
+    _load_stored_function_mod_p80,
     _load_stored_git_meta,
     _rebuild_graph_and_git,
     _refresh_knowledge_graph,
@@ -841,28 +842,42 @@ def run_update(
         # rather than a change, silently skipping the regeneration it should
         # trigger.
         needs_backfill = prev_config_fp is None or prev_renderer_fp is None
-        if needs_backfill and not dry_run:
-            save_state(
-                repo_path,
-                {
-                    **state,
-                    "config_fingerprint": curr_config_fp,
-                    "renderer_fingerprint": curr_renderer_fp,
-                },
-            )
         # Self-heal a row a pre-fix run left behind: state.json can already be
         # current here while the DB head_commit is still the last full index.
+        #
+        # These state/DB writes must sit under the single-flight lock below
+        # just like a content-changing update, or two updates racing on the
+        # "already up to date" path could stomp each other's save_state — the
+        # exact race the lock exists to prevent. If another update holds the
+        # lock, its run will perform this heal; skip ours rather than write
+        # from outside the lock.
         if not dry_run:
-            stamp_head_commit(repo_path, head)
-            # A capture added after this repo was indexed would otherwise wait
-            # for the next commit to land, which on a quiet repo is never.
-            heal_commit_offsets(repo_path)
-            _refresh_editor_stamp(repo_path, agents_md)
-            # The index is current, so any pending marker a bailed update left
-            # is by definition caught-up (or older); drop it here too rather
-            # than waiting for the next content-changing update. This is the
-            # quiescent state a stale marker was observed lingering in.
-            consume_update_pending(repo_path, head)
+            heal_lock = try_acquire_update_lock(repo_path, head)
+            if heal_lock is not None:
+                log.debug("self_heal_skipped", reason="another update holds the lock")
+            else:
+                try:
+                    if needs_backfill:
+                        save_state(
+                            repo_path,
+                            {
+                                **state,
+                                "config_fingerprint": curr_config_fp,
+                                "renderer_fingerprint": curr_renderer_fp,
+                            },
+                        )
+                    stamp_head_commit(repo_path, head)
+                    # A capture added after this repo was indexed would otherwise wait
+                    # for the next commit to land, which on a quiet repo is never.
+                    heal_commit_offsets(repo_path)
+                    _refresh_editor_stamp(repo_path, agents_md)
+                    # The index is current, so any pending marker a bailed update left
+                    # is by definition caught-up (or older); drop it here too rather
+                    # than waiting for the next content-changing update. This is the
+                    # quiescent state a stale marker was observed lingering in.
+                    consume_update_pending(repo_path, head)
+                finally:
+                    release_update_lock(repo_path)
         # Up-to-date code does not mean an up-to-date store: a wiki indexed by an
         # older release may still benefit from a re-index (concept tree, written
         # prose). That is the common upgrade path, so surface the once-per-store
@@ -1204,7 +1219,9 @@ def run_update(
 
     # ``git_meta_map`` holds this run's changed files only; the dead-code
     # analyzer scores confidence per file and would read every unchanged file
-    # as "no commits" without the stored rows.
+    # as "no commits" without the stored rows. The stored function-mod p80
+    # keeps the hotspot gate repo-wide instead of derived from the changed
+    # subset (issue #1484).
     partial_health_report, dead_code_report = _run_partial_analysis(
         repo_path,
         graph_builder,
@@ -1213,6 +1230,7 @@ def run_update(
         file_diffs,
         source_map,
         stored_git_meta=_load_stored_git_meta(repo_path),
+        repo_function_mod_p80=_load_stored_function_mod_p80(repo_path),
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
@@ -1750,9 +1768,13 @@ def run_update(
     flush_cost_tracker(cost_tracker)
 
     # LLM re-enrichment of the refreshed KG (layer naming + summary backfill
-    # from this run's regenerated pages), mirroring the init pipeline. Only
-    # runs when the graph shape changed — carry-forward already preserved the
-    # prior names, so an unchanged KG never pays an enrichment call.
+    # from this run's regenerated pages), mirroring the init pipeline. Runs
+    # whenever the refresh returned a result, which is the graph shape moving
+    # *or* KG_BUILDER_VERSION being bumped by a release — the second is a graph
+    # that did not change, and it still pays here. That is deliberate and it is
+    # the one cost of the version bump: a wider edge map or a new entry-point
+    # ranking changes the layers, and layer names the carry-forward restored
+    # were written against the old ones.
     if knowledge_graph_result is not None:
         try:
             from repowise.core.generation.knowledge_graph import enrich_knowledge_graph

@@ -8,6 +8,7 @@ exception must suppress an otherwise-denied edge.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from repowise.core.workspace.config import (
     ConformanceConfig,
@@ -177,8 +178,9 @@ def test_two_node_cycle():
         [_node("a"), _node("b")],
         [_edge("a", "b"), _edge("b", "a")],
     )
-    cycles = detect_cycles(g)
+    cycles, total = detect_cycles(g)
     assert len(cycles) == 1
+    assert total == 1
     assert set(cycles[0].nodes) == {"a", "b"}
     assert len(cycles[0].edge_ids) == 2
 
@@ -188,8 +190,9 @@ def test_longer_cycle():
         [_node("a"), _node("b"), _node("c")],
         [_edge("a", "b"), _edge("b", "c"), _edge("c", "a")],
     )
-    cycles = detect_cycles(g)
+    cycles, total = detect_cycles(g)
     assert len(cycles) == 1
+    assert total == 1
     assert set(cycles[0].nodes) == {"a", "b", "c"}
     assert cycles[0].length == 3
 
@@ -199,7 +202,7 @@ def test_acyclic_graph_has_no_cycles():
         [_node("a"), _node("b"), _node("c")],
         [_edge("a", "b"), _edge("b", "c")],
     )
-    assert detect_cycles(g) == []
+    assert detect_cycles(g) == ([], 0)
 
 
 def test_cycles_ignore_behavioral_edges():
@@ -208,7 +211,7 @@ def test_cycles_ignore_behavioral_edges():
         [_node("a"), _node("b")],
         [_edge("a", "b"), _edge("b", "a", kind="co_change", structural=False)],
     )
-    assert detect_cycles(g) == []
+    assert detect_cycles(g) == ([], 0)
 
 
 # ---------------------------------------------------------------------------
@@ -312,3 +315,50 @@ def test_run_conformance_check_persists(tmp_path: Path):
     # persisted
     loaded = load_conformance_report(tmp_path)
     assert loaded is not None and len(loaded.violations) == 1
+
+
+# ---------------------------------------------------------------------------
+# Never-ran vs found-nothing
+# ---------------------------------------------------------------------------
+
+
+def test_building_a_report_stamps_it():
+    """Producing a report is running the check. Before this, run_conformance_check
+    left generated_at empty on every run, so a real all-clear was
+    indistinguishable from a check that never happened."""
+    g = _graph([_node("a"), _node("b")], [_edge("a", "b")])
+    report = build_conformance_report(g, [])
+    assert report.ran
+    assert report.generated_at
+    assert report.to_dict()["generated_at"]
+
+
+def test_an_unbuilt_report_is_not_a_clean_one():
+    report = ConformanceReport()
+    assert not report.ran
+    assert report.generated_at is None
+    assert not report.has_findings  # zero findings...
+    # ...but the zero is meaningless, and the artifact says so.
+    assert report.to_dict()["generated_at"] is None
+
+
+def test_legacy_empty_string_stamp_reads_as_never_ran():
+    """Artifacts written before the check was clocked carry "". They cannot be
+    told apart from never-ran, so they must not read as a pass."""
+    restored = ConformanceReport.from_dict({"generated_at": "", "rules_evaluated": 3})
+    assert restored.generated_at is None
+    assert not restored.ran
+
+
+def test_report_carries_the_true_cycle_count_past_the_cap():
+    import repowise.core.workspace.cycles as cy
+
+    nodes = [_node(n) for n in "abcd"]
+    # Every ordered pair, so there are far more elementary cycles than the cap.
+    edges = [_edge(s, t) for s in "abcd" for t in "abcd" if s != t]
+    g = _graph(nodes, edges)
+    with patch.object(cy, "MAX_CYCLES", 2):
+        report = build_conformance_report(g, [])
+    assert len(report.cycles) == 2
+    assert report.total_cycles > 2
+    assert report.to_dict()["total_cycles"] == report.total_cycles

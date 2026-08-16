@@ -518,7 +518,7 @@ repowise init --provider anthropic --model claude-haiku-4-5-20251001
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-repowise init --provider openai --model gpt-4.1
+repowise init --provider openai --model gpt-5.6-luna
 ```
 
 For an OpenAI-compatible Qwen3 endpoint served by vLLM or SGLang:

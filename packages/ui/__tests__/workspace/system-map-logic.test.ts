@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 import type { SystemEdge, SystemGraph, SystemNode } from "@repowise-dev/types";
 import { collapseToRepos } from "../../src/workspace/system-map/collapse";
-import { applyView } from "../../src/workspace/system-map/layout";
+import {
+  applyCollapse,
+  applyView,
+  computeSystemMapPositions,
+  layoutSignature,
+  SYSTEM_MAP_MAX_LAYOUT_NODES,
+} from "../../src/workspace/system-map/layout";
 import {
   edgeKindStyle,
   matchTypeDash,
@@ -365,6 +371,7 @@ function conformanceReport(over: Partial<ConformanceReport> = {}): ConformanceRe
     cycles,
     violation_count: violations.length,
     cycle_count: cycles.length,
+    total_cycles: cycles.length,
     violating_repos: [],
     ...over,
   };
@@ -484,5 +491,69 @@ describe("buildDsm", () => {
 
   it("returns an empty matrix for an empty graph", () => {
     expect(buildDsm(null)).toEqual({ axis: [], labels: [], cells: [] });
+  });
+});
+
+describe("layout stability under filtering", () => {
+  const g = graph(
+    [node("api", "api"), node("web", "web")],
+    [
+      edge("web", "api"),
+      edge("api", "web", { id: "api->web:co", kind: "co_change", structural: false }),
+    ],
+  );
+
+  it("lays out the whole shape while drawing only the filtered edges", () => {
+    const all = new Set(["http", "co_change"] as const);
+    const httpOnly = new Set(["http"] as const);
+
+    // What we lay out keeps every edge, so a filter cannot move a node…
+    expect(applyCollapse(g, false).edges).toHaveLength(2);
+
+    // …while the drawn graph really does lose the filtered edge.
+    expect(applyView(g, { visibleKinds: httpOnly, collapsed: false }).edges.map((e) => e.id)).toEqual([
+      "web->api",
+    ]);
+    expect(applyView(g, { visibleKinds: all, collapsed: false }).edges).toHaveLength(2);
+
+    // The property that matters: the layout input is filter-independent.
+    expect(layoutSignature(applyView(g, { visibleKinds: all, collapsed: false }))).toBe(
+      layoutSignature(applyCollapse(g, false)),
+    );
+    expect(layoutSignature(applyView(g, { visibleKinds: httpOnly, collapsed: false }))).not.toBe(
+      layoutSignature(applyCollapse(g, false)),
+    );
+  });
+
+  it("changes the layout signature when collapse changes the node set", () => {
+    const withServices = graph(
+      [node("api::svc/a", "api"), node("api::svc/b", "api"), node("web", "web")],
+      [edge("web", "api::svc/a")],
+    );
+    expect(layoutSignature(applyCollapse(withServices, false))).not.toBe(
+      layoutSignature(applyCollapse(withServices, true)),
+    );
+  });
+});
+
+describe("computeSystemMapPositions", () => {
+  it("lays out a normal graph with ELK and reports it is not simplified", async () => {
+    const result = await computeSystemMapPositions(
+      graph([node("api", "api"), node("web", "web")], [edge("web", "api")]),
+    );
+    expect(result.simplified).toBe(false);
+    expect(result.positions.size).toBe(2);
+  });
+
+  it("falls back to a grid above the layout bound and says so", async () => {
+    const many = Array.from({ length: SYSTEM_MAP_MAX_LAYOUT_NODES + 1 }, (_, i) =>
+      node(`n${i}`, `r${i}`),
+    );
+    const result = await computeSystemMapPositions(graph(many, []));
+    expect(result.simplified).toBe(true);
+    expect(result.positions.size).toBe(many.length);
+    // A grid, not a pile: no two nodes share a position.
+    const seen = new Set([...result.positions.values()].map((p) => `${p.x},${p.y}`));
+    expect(seen.size).toBe(many.length);
   });
 });

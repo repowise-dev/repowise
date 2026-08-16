@@ -31,9 +31,11 @@ import json
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.fsutils import atomic_write_text
 from repowise.core.workspace.config import WORKSPACE_DATA_DIR, ensure_workspace_data_dir
 from repowise.core.workspace.contract_schema import ContractSchema, SchemaField
 from repowise.core.workspace.contracts import (
@@ -177,15 +179,24 @@ class BreakingChange:
 
 @dataclass
 class BreakingChangeReport:
-    """The full set of breaking changes from one workspace update + rollups."""
+    """The full set of breaking changes from one workspace update + rollups.
+
+    ``generated_at`` is ``None`` until detection actually runs. An empty
+    ``changes`` list means "nothing broke" only when this is stamped.
+    """
 
     version: int = 1
-    generated_at: str = ""
+    generated_at: str | None = None
     changes: list[BreakingChange] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
         return bool(self.changes)
+
+    @property
+    def ran(self) -> bool:
+        """Whether this report is the result of an actual detection pass."""
+        return bool(self.generated_at)
 
     @property
     def breaking_count(self) -> int:
@@ -232,7 +243,9 @@ class BreakingChangeReport:
     def from_dict(cls, data: dict[str, Any]) -> BreakingChangeReport:
         return cls(
             version=data.get("version", 1),
-            generated_at=data.get("generated_at", ""),
+            # Artifacts written before detection was clocked carry ``""``; they
+            # read as never-ran until the next update rewrites them.
+            generated_at=data.get("generated_at") or None,
             changes=[BreakingChange.from_dict(c) for c in data.get("changes", [])],
         )
 
@@ -491,13 +504,16 @@ def detect_breaking_changes(
     current: ContractStore,
     *,
     version: int = 1,
-    generated_at: str = "",
+    generated_at: str | None = None,
 ) -> BreakingChangeReport:
     """Diff *previous* vs *current* provider contracts into a report (pure).
 
     Walks every provider contract id seen in either store, dispatches the
     contract-level and (when both sides carry a schema) field-level rules, and
     attaches each change's direct cross-repo consumers from the matched links.
+
+    Producing a report *is* running detection, so ``generated_at`` defaults to
+    now. An unstamped report is one that was never built.
     """
     prev_providers = _index_providers(previous.contracts)
     curr_providers = _index_providers(current.contracts)
@@ -545,7 +561,11 @@ def detect_breaking_changes(
 
     # Stable order: breaking before warning, then by contract id + kind.
     changes.sort(key=lambda c: (c.severity != SEVERITY_BREAKING, c.contract_id, c.kind))
-    return BreakingChangeReport(version=version, generated_at=generated_at, changes=changes)
+    return BreakingChangeReport(
+        version=version,
+        generated_at=generated_at or datetime.now(UTC).isoformat(),
+        changes=changes,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -557,9 +577,10 @@ def save_breaking_change_report(report: BreakingChangeReport, workspace_root: Pa
     """Write the report to ``.repowise-workspace/breaking_changes.json``."""
     data_dir = ensure_workspace_data_dir(workspace_root)
     out_path = data_dir / BREAKING_CHANGES_FILENAME
-    out_path.write_text(
-        json.dumps(report.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(
+        out_path, json.dumps(report.to_dict(), indent=2, ensure_ascii=False)
     )
     return out_path
 
@@ -587,7 +608,7 @@ def run_breaking_change_detection(
     previous: ContractStore,
     current: ContractStore,
     *,
-    generated_at: str = "",
+    generated_at: str | None = None,
 ) -> BreakingChangeReport:
     """Diff the previous vs current contract stores and persist the report.
 

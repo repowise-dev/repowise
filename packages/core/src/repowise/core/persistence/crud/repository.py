@@ -102,7 +102,7 @@ def _read_head_commit(local_path: str) -> str | None:
         git_dir = Path(local_path) / ".git"
         # Linked worktrees use a ``.git`` *file* (gitdir pointer), not a dir;
         # treated as non-git here on purpose so this stays in lockstep with the
-        # MCP ``_meta._read_live_head`` reader (same is_dir() guard), keeping
+        # MCP ``_meta.read_live_head`` reader (same is_dir() guard), keeping
         # the written commit and the read-back comparison symmetric.
         if not git_dir.is_dir():
             return None

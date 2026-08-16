@@ -9,6 +9,7 @@ import {
 } from "@repowise-dev/ui/decisions/decisions-table";
 import { getDecisionCounts, listDecisions } from "@/lib/api/decisions";
 import type { DecisionRecord } from "@repowise-dev/types/decisions";
+import type { DecisionCounts } from "@repowise-dev/api-client/types";
 
 interface DecisionsTableWrapperProps {
   repoId: string;
@@ -75,9 +76,7 @@ export function DecisionsTableWrapper({
   );
 
   const total = counts
-    ? filters.status === "all"
-      ? counts.total
-      : (counts[filters.status] ?? 0)
+    ? countFor(counts, filters.status)
     : !source && filters.status === "all"
       ? initialTotal
       : undefined;
@@ -125,6 +124,36 @@ export function DecisionsTableWrapper({
       )}
     </div>
   );
+}
+
+/**
+ * The measured total behind one status filter, or undefined when nobody
+ * counted it.
+ *
+ * Not every status has a count: dismissed records are tombstones and the
+ * counts endpoint excludes them by design, so that filter reports the window
+ * it loaded rather than an "of 0" beside a table with rows in it. A switch
+ * rather than an index, so a status added later fails the build here instead
+ * of quietly reading undefined.
+ */
+function countFor(
+  counts: DecisionCounts,
+  status: DecisionsTableFilters["status"],
+): number | undefined {
+  switch (status) {
+    case "all":
+      return counts.total;
+    case "active":
+      return counts.active;
+    case "proposed":
+      return counts.proposed;
+    case "deprecated":
+      return counts.deprecated;
+    case "superseded":
+      return counts.superseded;
+    case "dismissed":
+      return undefined;
+  }
 }
 
 function PageButton({

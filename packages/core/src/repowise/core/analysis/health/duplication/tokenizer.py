@@ -71,6 +71,13 @@ _LITERAL_KINDS = frozenset(
         "nil",
         "None",
         "boolean",
+        # Pascal (tree-sitter-pascal): numbers and strings are ``literalNumber``
+        # / ``literalString``; ``True`` / ``False`` / ``Nil`` are named keyword
+        # tokens (``kTrue`` / ``kFalse`` / ``kNil``), which fall through to the
+        # raw-text branch below like any other keyword -- fine, since their
+        # text is already the shortest possible normalized form.
+        "literalNumber",
+        "literalString",
     }
 )
 

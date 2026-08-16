@@ -3,9 +3,20 @@
 These tuples / frozensets shape what the analyzer treats as "always
 alive" (framework decorators, never-flag path globs) and where to skip
 entirely (test fixture directories, non-code languages).
+
+``never_flag_match`` lives here rather than on the analyzer because the
+pattern list it reads is here and because it is a pure function of a path:
+:func:`~.file_reachability.is_file_reachable` needs it, and a matcher that
+only the analyzer could reach was the reason the two callers of that
+predicate answered "is this file reachable?" differently.
 """
 
 from __future__ import annotations
+
+import fnmatch
+import os
+import re
+from functools import lru_cache
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
@@ -1072,6 +1083,94 @@ _TS_JSX_NAMESPACE_TYPES: frozenset[str] = frozenset(
         "LibraryManagedAttributes",
     }
 )
+
+
+@lru_cache(maxsize=8)
+def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile *patterns* into one alternation regex equivalent to fnmatch.
+
+    ``fnmatch.fnmatch(path, p)`` normcases both sides and matches the
+    translated glob; doing that per (node x pattern) costs ~540 fnmatch
+    calls per node and dominated the whole dead-code pass (measured: 50s of
+    a 51s analyze() on a 13k-node graph, mostly Windows ``normcase``).
+    One pre-normcased alternation keeps the exact same match semantics at
+    one regex match per node.
+    """
+    return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
+
+
+@lru_cache(maxsize=8)
+def _never_flag_suffix_index(
+    patterns: tuple[str, ...],
+) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]], tuple[int, ...]]:
+    """Split *patterns* into suffix-keyed buckets that can be skipped wholesale.
+
+    ``_never_flag_regex`` puts all 579 patterns in one alternation, and
+    ``.match()`` tries every branch at position 0 — most of them beginning
+    ``.*``, so each branch scans the path. Measured cold on a 63k-node repo
+    that is 206 microseconds per unique path and 12.8s of an 18.1s dead-code
+    analysis, the single largest cost in the pass.
+
+    The filter is sound because ``fnmatch.translate`` ends *each* alternative
+    with ``\\Z`` and the join keeps that per-branch (``(?s:A)\\Z|(?s:B)\\Z``),
+    so every branch has to match the whole string. A pattern whose text after
+    its last ``*`` is the literal ``S`` can therefore only match a path ending
+    in ``S``: testing it against a path that does not end in ``S`` is wasted
+    work, never a dropped match. Patterns ending in ``*`` constrain nothing at
+    the tail and stay in one always-tried group.
+
+    Within a bucket the branches keep their original translated form, so the
+    atomic groups ``fnmatch`` emits for interior ``*literal`` runs — which
+    commit to the first occurrence and never retry a later one — behave
+    exactly as they did in the single alternation. Alternation order does not
+    matter to a boolean "did anything match".
+
+    Returns ``(always_tried_regex_or_None, {suffix: regex}, suffix_lengths)``.
+    """
+    always: list[str] = []
+    by_suffix: dict[str, list[str]] = {}
+    for pattern in patterns:
+        norm = os.path.normcase(pattern)
+        # No pattern in the set uses ``?`` or a character class (checked by
+        # test_never_flag_suffix_index_covers_pattern_shapes), so the text
+        # after the last ``*`` is a plain literal tail.
+        suffix = norm.rsplit("*", 1)[-1]
+        translated = fnmatch.translate(norm)
+        if suffix:
+            by_suffix.setdefault(suffix, []).append(translated)
+        else:
+            always.append(translated)
+    compiled = {s: re.compile("|".join(v)) for s, v in by_suffix.items()}
+    return (
+        re.compile("|".join(always)) if always else None,
+        compiled,
+        tuple(sorted({len(s) for s in compiled})),
+    )
+
+
+@lru_cache(maxsize=131072)
+def never_flag_match(path: str) -> bool:
+    """Memoized never-flag match for the default pattern set.
+
+    Equivalent to ``_never_flag_regex(_NEVER_FLAG_PATTERNS).match(...)``, and
+    pinned to it path-for-path by ``test_never_flag_regex.py``. Pure function
+    of *path*: the pattern set is a module constant, so process-wide
+    memoization is sound. The detector passes ask about the same node ids
+    repeatedly (every graph node is checked by the unreachable-files and the
+    unused-exports passes), which is what the cache is for; this function is
+    what the *first* ask of each id costs.
+    """
+    norm = os.path.normcase(path)
+    always, by_suffix, suffix_lengths = _never_flag_suffix_index(_NEVER_FLAG_PATTERNS)
+    if always is not None and always.match(norm):
+        return True
+    for length in suffix_lengths:
+        if length > len(norm):
+            break
+        bucket = by_suffix.get(norm[-length:])
+        if bucket is not None and bucket.match(norm):
+            return True
+    return False
 
 
 def _is_fixture_path(path: str) -> bool:

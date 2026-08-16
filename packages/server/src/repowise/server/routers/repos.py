@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.docs_mode import resolve_docs_mode
@@ -21,14 +23,24 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GenerationJob,
+    GitMetadata,
     GraphNode,
+    HealthSnapshot,
     Page,
     Repository,
 )
 from repowise.server.deps import get_db_session, get_fts, verify_api_key
 from repowise.server.job_executor import execute_job
+from repowise.server.mcp_server._meta import read_live_head, resolve_indexed_commit
 from repowise.server.routers._sorting import repository_sort_key
-from repowise.server.schemas import RepoCreate, RepoResponse, RepoStatsResponse, RepoUpdate
+from repowise.server.schemas import (
+    RepoCreate,
+    RepoResponse,
+    ReposSummaryResponse,
+    RepoStatsResponse,
+    RepoSummaryRow,
+    RepoUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +304,190 @@ async def list_repos(
     return responses
 
 
+def _fresh_case(column: Any, value: Any) -> Any:
+    """Portable conditional count. ``count(...) FILTER (WHERE ...)`` needs
+    SQLite 3.30+ and this project ships no version floor, so every conditional
+    count in the codebase is a ``sum(case(...))`` — see ``routers/git.py``."""
+    return func.coalesce(func.sum(case((column == value, 1), else_=0)), 0)
+
+
+async def _summary_rows_for(session: AsyncSession) -> dict[str, dict[str, Any]]:
+    """Headline figures for every repo in one database, five queries total.
+
+    Grouped by ``repository_id`` rather than filtered per repo: the route this
+    replaces ran six queries *per repository* for the stats alone, and
+    ``/git-summary`` hydrated every ``git_metadata`` row (one per file, ~3.5k on
+    this repo) to produce two integers.
+
+    A table that does not exist yet — a repo registered but never analysed, an
+    older store — degrades that section to zero rather than 500-ing the whole
+    dashboard, which is the same contract ``routers/stats.py`` documents.
+    """
+    out: dict[str, dict[str, Any]] = {}
+
+    def row_for(repo_id: str) -> dict[str, Any]:
+        return out.setdefault(repo_id, {})
+
+    # Files, symbols and entry points. `graph_nodes` holds symbol rows in the
+    # same table, so every count here is scoped to `node_type == "file"`; the
+    # unscoped count is what makes /stats report 38,813 "files" for 3,600.
+    with contextlib.suppress(SQLAlchemyError):
+        result = await session.execute(
+            select(
+                GraphNode.repository_id,
+                func.count(GraphNode.id),
+                func.coalesce(func.sum(GraphNode.symbol_count), 0),
+                _fresh_case(GraphNode.is_entry_point, True),
+            )
+            .where(GraphNode.node_type == "file")
+            .group_by(GraphNode.repository_id)
+        )
+        for repo_id, files, symbols, entries in result.all():
+            row_for(repo_id).update(
+                file_count=int(files or 0),
+                symbol_count=int(symbols or 0),
+                entry_point_count=int(entries or 0),
+            )
+
+    # Documentation pages and the fresh subset. Never selects `content`.
+    with contextlib.suppress(SQLAlchemyError):
+        result = await session.execute(
+            select(
+                Page.repository_id,
+                func.count(Page.id),
+                _fresh_case(Page.freshness_status, "fresh"),
+            ).group_by(Page.repository_id)
+        )
+        for repo_id, pages, fresh in result.all():
+            row_for(repo_id).update(
+                doc_page_count=int(pages or 0),
+                doc_fresh_page_count=int(fresh or 0),
+            )
+
+    # Open unused exports — the one dead-code figure the dashboard quotes.
+    with contextlib.suppress(SQLAlchemyError):
+        result = await session.execute(
+            select(DeadCodeFinding.repository_id, func.count(DeadCodeFinding.id))
+            .where(
+                DeadCodeFinding.kind == "unused_export",
+                DeadCodeFinding.status == "open",
+            )
+            .group_by(DeadCodeFinding.repository_id)
+        )
+        for repo_id, dead in result.all():
+            row_for(repo_id).update(dead_export_count=int(dead or 0))
+
+    # Hotspots, and the tracked-file denominator they are meaningful against.
+    with contextlib.suppress(SQLAlchemyError):
+        result = await session.execute(
+            select(
+                GitMetadata.repository_id,
+                func.count(GitMetadata.id),
+                _fresh_case(GitMetadata.is_hotspot, True),
+            ).group_by(GitMetadata.repository_id)
+        )
+        for repo_id, tracked, hotspots in result.all():
+            row_for(repo_id).update(
+                tracked_file_count=int(tracked or 0),
+                hotspot_count=int(hotspots or 0),
+            )
+
+    # Latest health snapshot per repo. Three scalar columns only: a snapshot
+    # row carries `per_file_scores_json`, ~186 KB apiece, and selecting the
+    # entity would pull the whole retained history's worth of it for two
+    # floats (see crud.get_health_snapshot_headline's docstring). Reduced in
+    # Python rather than with a window function, because retention bounds the
+    # row count to tens per repo and window syntax is not uniform across the
+    # two supported backends.
+    with contextlib.suppress(SQLAlchemyError):
+        result = await session.execute(
+            select(
+                HealthSnapshot.repository_id,
+                HealthSnapshot.taken_at,
+                HealthSnapshot.average_health,
+                HealthSnapshot.hotspot_health,
+            ).order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
+        )
+        for repo_id, taken_at, average, hotspot in result.all():
+            # Ascending order means the last write per repo wins.
+            row_for(repo_id).update(
+                average_health=round(float(average), 2) if average is not None else None,
+                hotspot_health=round(float(hotspot), 2) if hotspot is not None else None,
+                health_taken_at=taken_at,
+            )
+
+    return out
+
+
+def _freshness_for(repo: RepoResponse) -> tuple[str | None, str | None, bool | None]:
+    """(indexed commit, live HEAD, is the index behind) for one repo.
+
+    Both reads are plain file I/O — `read_live_head` parses `.git/HEAD` and
+    follows at most one ref rather than spawning git — so this stays cheap
+    enough to run per repo on a page load. Returns ``None`` for
+    ``index_behind`` when either side is unavailable, so "current" and
+    "could not tell" never collapse into the same answer.
+    """
+    if not repo.local_path:
+        return None, None, None
+    indexed = resolve_indexed_commit(repo.head_commit, repo.local_path)
+    live = read_live_head(repo.local_path)
+    if not indexed or not live:
+        return (indexed[:12] if indexed else None), (live[:12] if live else None), None
+    return indexed[:12], live[:12], indexed != live
+
+
+@router.get("/summary", response_model=ReposSummaryResponse)
+async def repos_summary(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> ReposSummaryResponse:
+    """One-call payload for the multi-repo dashboard.
+
+    Replaces a `2N+1` waterfall — `/api/repos`, then `/stats` and
+    `/git-summary` per repository — with a single request whose cost does not
+    grow with the number of repos.
+
+    Declared **before** ``/{repo_id}``: FastAPI matches in declaration order,
+    so a literal path registered after the parameterised one is unreachable
+    and would answer 404 "Repository not found" instead.
+    """
+    repos = await list_repos(request, session)
+
+    # Grouped aggregates from the ambient DB. In workspace mode each repo
+    # keeps its own wiki.db and the primary session cannot see those rows, so
+    # fan out the same way `list_repos` does. One unreadable DB drops that
+    # repo's figures to zero rather than failing the page.
+    stats = await _summary_rows_for(session)
+    ws_sessions: dict = getattr(request.app.state, "workspace_sessions", {})
+    for repo_id, ws_factory in ws_sessions.items():
+        if repo_id in stats:
+            continue
+        try:
+            async with ws_factory() as ws_session:
+                stats.update(await _summary_rows_for(ws_session))
+        except Exception:  # one unreadable store must not fail the whole list
+            logger.debug("repos_summary_workspace_db_unreadable", extra={"repo": repo_id})
+
+    rows: list[RepoSummaryRow] = []
+    for repo in repos:
+        indexed, live, behind = _freshness_for(repo)
+        rows.append(
+            RepoSummaryRow(
+                id=repo.id,
+                name=repo.name,
+                local_path=repo.local_path,
+                updated_at=repo.updated_at,
+                status=repo.workspace_status or "indexed",
+                indexed_commit=indexed,
+                live_head=live,
+                index_behind=behind,
+                **stats.get(repo.id, {}),
+            )
+        )
+    return ReposSummaryResponse(repos=rows)
+
+
 @router.get("/{repo_id}", response_model=RepoResponse)
 async def get_repo(
     repo_id: str,
@@ -392,8 +588,16 @@ async def get_repo_stats(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    # File nodes only. `graph_nodes` holds symbol rows in the same table, so
+    # the unscoped count reported ~10x the real figure — 38,813 against 3,600
+    # on this codebase — under a field named `file_count`. Both surfaces that
+    # read it printed that as "N files": the multi-repo dashboard and the chat
+    # empty state.
     file_count_result = await session.execute(
-        select(func.count(GraphNode.id)).where(GraphNode.repository_id == repo_id)
+        select(func.count(GraphNode.id)).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+        )
     )
     file_count = file_count_result.scalar_one() or 0
 

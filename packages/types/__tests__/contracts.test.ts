@@ -120,9 +120,13 @@ describe("DeadCodeFinding optional enrichment", () => {
 });
 
 describe("DecisionRecord literal unions", () => {
-  it("constrains status to the four-literal union", () => {
+  it("constrains status to the five-literal union", () => {
+    // `dismissed` belongs here: the engine has always accepted it and treats it
+    // differently from `deprecated` — skipped on re-extraction, hidden from
+    // listings — and its absence is what left the UI sending `deprecated` for
+    // a dismissal.
     expectTypeOf<DecisionStatus>().toEqualTypeOf<
-      "proposed" | "active" | "deprecated" | "superseded"
+      "proposed" | "active" | "deprecated" | "dismissed" | "superseded"
     >();
     expectTypeOf<DecisionRecord["status"]>().toEqualTypeOf<DecisionStatus>();
   });

@@ -47,7 +47,7 @@ export function PanelChrome({ view, host }: { view: PanelViewId; host: WebviewHo
         className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)]"
       >
         <Home className="h-4 w-4" />
-        <span className="hidden text-[11px] font-semibold tracking-wide sm:inline">Repowise</span>
+        <span className="hidden text-xs font-semibold tracking-wide sm:inline">Repowise</span>
       </button>
       <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-[var(--color-border-default)]" />
       <nav aria-label="Dashboards" className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
@@ -95,7 +95,7 @@ function Tab({
       aria-current={active ? "page" : undefined}
       title={item.title}
       className={
-        "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors " +
+        "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors " +
         (active
           ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)]")

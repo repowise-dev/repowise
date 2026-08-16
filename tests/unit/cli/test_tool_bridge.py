@@ -189,7 +189,7 @@ def test_it_falls_back_to_an_in_memory_store_when_the_repo_has_no_lancedb(
     monkeypatch.setattr(
         "repowise.cli.providers.embedders.resolve_embedder_for_repo", lambda p: "mock"
     )
-    monkeypatch.setattr("repowise.cli.providers.embedders.build_embedder", lambda name: object())
+    monkeypatch.setattr("repowise.cli.providers.embedders.build_embedder", lambda name, _p=None: object())
 
     import asyncio
 
@@ -214,7 +214,7 @@ def test_a_repo_whose_embedder_key_went_away_is_recorded_as_degraded(
         "repowise.cli.providers.embedders.resolve_embedder_for_repo", lambda p: "openai"
     )
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda name: KeylessEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda name, _p=None: KeylessEmbedder()
     )
     asyncio.run(tool_bridge._open_vector_store(tmp_path))
 
@@ -380,7 +380,7 @@ def test_a_repo_that_asked_for_keyless_is_not_reported_as_degraded(
         "repowise.cli.providers.embedders.resolve_embedder_for_repo", lambda p: "mock"
     )
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda name: KeylessEmbedder()
+        "repowise.cli.providers.embedders.build_embedder", lambda name, _p=None: KeylessEmbedder()
     )
     asyncio.run(tool_bridge._open_vector_store(tmp_path))
 

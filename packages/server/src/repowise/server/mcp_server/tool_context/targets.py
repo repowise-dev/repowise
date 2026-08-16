@@ -54,6 +54,12 @@ from repowise.server.mcp_server.tool_context.kg import (
 )
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
+#: How many users of a symbol the card carries. The asymmetry is recorded, not
+#: explained: the sibling ``imported_by`` on a file target carries no cap at
+#: all, and nothing in the code or its history says whether that is a decision
+#: or an omission. This constant only names the cut that already existed.
+_MAX_USED_BY = 20
+
 # Skeleton-by-default is GONE; ``include=["skeleton"]`` still serves it in full.
 #
 # It was introduced on the claim that "a 1,400-line file's default card costs
@@ -787,16 +793,38 @@ async def _resolve_one_target(
                 docs["file_summary"] = sym_page.summary or ""
                 if want_full_doc:
                     docs["documentation"] = sym_page.content
-            # Used by — same requirement as ``imported_by`` above.
+            # Used by — same requirement as ``imported_by`` above, plus the one
+            # ``imported_by`` does not have: this list is cut at
+            # ``_MAX_USED_BY`` and the agent never learns what fell off. Left
+            # unordered, the survivors were whichever rows the table handed
+            # back: on the 42-index corpus 4,743 symbol targets carry more than
+            # ``_MAX_USED_BY`` users, and ranking moves the kept set on 4,447 of
+            # them, a median of 7 of the 20 and up to all 20. Rank by the source
+            # file's PageRank, path breaking ties. Distinct sources, because two
+            # files joined by both an import and a call are one user of this
+            # symbol — that is a guard, not a fix: the same corpus holds zero
+            # duplicate rows, so it costs nothing and prevents nothing today.
             res = await session.execute(
-                select(GraphEdge).where(
+                select(GraphEdge.source_node_id, GraphNode.pagerank)
+                .outerjoin(
+                    GraphNode,
+                    (GraphNode.repository_id == GraphEdge.repository_id)
+                    & (GraphNode.node_id == GraphEdge.source_node_id),
+                )
+                .where(
                     GraphEdge.repository_id == repo_id,
                     GraphEdge.target_node_id == sym.file_path,
                     GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
                 )
             )
-            edges = res.scalars().all()
-            docs["used_by"] = filter_path_list([e.source_node_id for e in edges], exclude_spec)[:20]
+            best_rank: dict[str, float] = {}
+            for source_node_id, pagerank in res.all():
+                rank = float(pagerank or 0.0)
+                if rank > best_rank.get(source_node_id, -1.0):
+                    best_rank[source_node_id] = rank
+            docs["used_by"] = filter_path_list(
+                sorted(best_rank, key=lambda p: (-best_rank[p], p)), exclude_spec
+            )[:_MAX_USED_BY]
             # Candidates
             if len(sym_matches) > 1:  # type: ignore[possibly-undefined]
                 docs["candidates"] = filter_dicts_by_key(

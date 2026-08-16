@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,14 +46,18 @@ from ..structural_labels import resolve_structural_labels, structural_page_title
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
-from .prompts import SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
+from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .structural import (
     StructuralRenderMixin,
     as_markdown,
     oneline,
     signature,
 )
-from .validation import reset_artifact_check_counts, validate_generated_response
+from .validation import (
+    InvalidGeneratedContentError,
+    reset_artifact_check_counts,
+    validate_generated_response,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
@@ -398,12 +402,59 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             reasoning=self._config.reasoning,
             cache_hints=cache_hints,
         )
-        validate_generated_response(response)
+        try:
+            validate_generated_response(response)
+        except InvalidGeneratedContentError as first_failure:
+            # One corrective re-ask. Without it a single banned phrase anywhere
+            # in a finished page discards the whole thing with the tokens
+            # already spent, and the only recovery is --resume regenerating it
+            # from scratch. The re-ask names the rule that was broken, because
+            # a blind retry at the same temperature tends to reproduce the
+            # sentence that failed.
+            if not first_failure.retryable:
+                raise
+            log.warning(
+                "page_generation.retrying_after_validation_failure",
+                page_type=page_type,
+                target_path=target_path,
+                reason=str(first_failure),
+            )
+            discarded = response
+            response = await self._provider.generate(
+                system_prompt,
+                self._corrective_prompt(user_prompt, first_failure),
+                max_tokens=self._config.max_tokens,
+                temperature=self._config.temperature,
+                request_id=request_id,
+                reasoning=self._config.reasoning,
+                cache_hints=cache_hints,
+            )
+            # A second failure raises, so the caller's stub-fallback path is
+            # reached exactly as it was before the retry existed.
+            validate_generated_response(response)
+            # The discarded attempt was billed. Carrying its tokens forward is
+            # what keeps the run report's totals equal to what the provider
+            # actually charged for; the page itself is the retry's content.
+            # ``self_repair`` fills the report row of the same name, which
+            # distinguishes a page that needed a second attempt from one that
+            # was lost — the artifact tallies alone cannot tell them apart.
+            response = replace(
+                response,
+                input_tokens=response.input_tokens + discarded.input_tokens,
+                output_tokens=response.output_tokens + discarded.output_tokens,
+                cached_tokens=response.cached_tokens + discarded.cached_tokens,
+                usage={**response.usage, "self_repair": True},
+            )
 
         if self._config.cache_enabled:
             self._cache[key] = response
 
         return response
+
+    @staticmethod
+    def _corrective_prompt(user_prompt: str, failure: InvalidGeneratedContentError) -> str:
+        """The original request plus a note naming what the last attempt broke."""
+        return f"{user_prompt}\n\n{CORRECTIVE_RETRY_DIRECTIVE.format(reason=failure.retry_hint)}"
 
     def _build_system_prompt(self, page_type: str) -> str:
         base_system = SYSTEM_PROMPTS[page_type]
@@ -498,6 +549,11 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # exists byte-identically.
         if response.usage.get("reused_from_prior_run"):
             page.metadata["reused_from_prior_run"] = True
+        # A first attempt was rejected and the re-ask produced this page. Feeds
+        # the report's "Self-repaired pages" row, so a run says how often the
+        # backstop was load-bearing instead of only how often it failed.
+        if response.usage.get("self_repair"):
+            page.metadata["self_repair"] = True
         return page
 
     def _render(self, template_name: str, *, style_prefix: bool = True, **kwargs: Any) -> str:

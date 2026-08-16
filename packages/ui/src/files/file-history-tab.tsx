@@ -1,31 +1,44 @@
-import { GitBranch, Bot } from "lucide-react";
+import type { ElementType } from "react";
+import { GitBranch } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { AgentTierBar } from "../git/agent-tier-bar";
 import { OwnershipDonut } from "../git/ownership-donut";
 import { ChangeHistoryCard } from "../git/change-history-card";
-import { FixHistoryBadge } from "../git/fix-history-badge";
-import { StatGrid, StatTile } from "../shared/stat-grid";
-import { Badge } from "../ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { summarizeFixHistory } from "../lib/fix-history";
-import { formatAgeDays, formatRelativeTime, truncatePath } from "../lib/format";
+import { formatAgeDays, formatNumber, formatRelativeTime, truncatePath } from "../lib/format";
 import type { FileDetailGit } from "@repowise-dev/types/files";
+import { FileSection, Fig } from "./file-section";
+import { FileMark } from "./file-marks";
+
+/** Matches `FixHistoryBadge`'s default tooltip — same claim, same wording. */
+const FIX_HISTORY_TITLE =
+  "Bug-fix commits that touched this file in the trailing defect window.";
 
 interface FileHistoryTabProps {
   git: FileDetailGit | null;
   linkPrefix: string;
   /** Build a file-page href for a co-change partner. */
   partnerHref: (path: string) => string;
+  /** Router link; defaults to `<a>` so the package stays framework-neutral. */
+  LinkComponent?: ElementType | undefined;
 }
 
-export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabProps) {
+export function FileHistoryTab({
+  git,
+  linkPrefix,
+  partnerHref,
+  LinkComponent = "a",
+}: FileHistoryTabProps) {
+  const A = LinkComponent;
   if (!git) {
     return (
       <EmptyState
+        titleAs="h2"
         icon={<GitBranch className="h-8 w-8" />}
-        title="No git history"
-        description="Git metadata appears once the repository's history is indexed."
+        title="No git history for this file"
+        description="Commits, authors and co-change partners land the first time the repository's history is indexed."
       />
     );
   }
@@ -33,9 +46,9 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
   const hasCategories = Object.values(git.commit_categories ?? {}).some((v) => v > 0);
   const agentPct =
     git.agent.agent_authored_pct != null ? Math.round(git.agent.agent_authored_pct * 100) : null;
-  // Same helper the wiki sidebar uses, so one file's fix history reads
-  // identically on both surfaces. Null means no counted fixes: render nothing.
-  const fix = summarizeFixHistory(git.prior_defect_count, git.last_fix_at, git.bug_magnet);
+  // Same helper the wiki sidebar uses, so one file's history reads identically
+  // on both surfaces. Null means nothing counted: render nothing.
+  const summary = summarizeFixHistory(git.prior_defect_count, git.last_fix_at, git.bug_magnet);
   // A file whose git indexing never completed lands with zeroes across the
   // board, and `formatAgeDays(0)` reads "< 1 day". Anchor the age to having
   // at least one commit so an unindexed file is not called brand new.
@@ -43,168 +56,181 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
   const age =
     commits > 0 && Number.isFinite(git.age_days) ? formatAgeDays(git.age_days as number) : null;
 
+  const stats: RibbonStat[] = [
+    {
+      label: "Commits",
+      value: formatNumber(commits),
+      ...(age ? { sub: `over ${age}` } : {}),
+    },
+    { label: "Last 90 days", value: formatNumber(git.commit_count_90d) },
+    { label: "Contributors", value: formatNumber(git.contributor_count) },
+    { label: "Bus factor", value: formatNumber(git.bus_factor) },
+  ];
+  if (git.churn_percentile != null) {
+    stats.push({ label: "Churn", value: `${Math.round(git.churn_percentile)}th pct` });
+  }
+
   return (
-    <div className="space-y-4">
-      {(fix || git.is_stable) && (
-        <div className="flex flex-wrap items-center gap-2">
-          {git.is_stable && <Badge variant="fresh">Stable</Badge>}
-          <FixHistoryBadge
-            count={git.prior_defect_count ?? null}
-            lastFixAt={git.last_fix_at ?? null}
-            bugMagnet={git.bug_magnet ?? false}
-          />
-        </div>
+    <div>
+      <FileSection
+        first
+        title="Change rhythm"
+        description={
+          <>
+            Mined from the full git history Repowise indexed. Churn is a percentile against every
+            other file in the repository, and bus factor is how many people would have to leave
+            before nobody knew this file.
+          </>
+        }
+      >
+        {/* `FixHistoryBadge` renders the same summary as a bordered, tinted
+            `Badge`. Beside a `FileMark` — which is what the header row above
+            uses for exactly this job — that is two vocabularies for "one thing
+            worth knowing about this file", and the bordered one is the pill
+            rule 9 kills. `summarizeFixHistory` is the shared copy rule, so
+            reading it directly keeps the wording identical to the badge's
+            everywhere the badge still ships. */}
+        {(summary || git.is_stable) && (
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            {git.is_stable && (
+              <FileMark title="No recent commits — this file has settled.">Stable</FileMark>
+            )}
+            {summary && (
+              <FileMark title={FIX_HISTORY_TITLE}>
+                {summary.magnet ? `Bug magnet · ${summary.label}` : summary.label}
+              </FileMark>
+            )}
+          </div>
+        )}
+
+        <StatRibbon stats={stats} />
+
+        {/* Self-contained: returns null when there is nothing to say, so an
+            entropy-less, never-renamed file loses no space to it. No border
+            box around it — the section's own rhythm is the grouping. */}
+        <ChangeHistoryCard
+          changeEntropyPct={git.change_entropy_pct ?? null}
+          priorDefectCount={git.prior_defect_count ?? null}
+          lastFixAt={git.last_fix_at ?? null}
+          originalPath={git.original_path ?? null}
+          commitCountCapped={git.commit_count_capped ?? false}
+        />
+
+        {hasCategories && <CommitCategorySparkline categories={git.commit_categories} />}
+      </FileSection>
+
+      {git.significant_commits.length > 0 && (
+        <FileSection
+          title="Significant commits"
+          description="The commits that moved this file the most, largest first."
+        >
+          <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
+            {git.significant_commits.slice(0, 8).map((c) => (
+              <li key={c.sha}>
+                <A
+                  href={`${linkPrefix}/commits?commit=${c.sha}`}
+                  className="-mx-2 flex items-baseline gap-3 rounded px-2 py-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
+                >
+                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+                    {c.sha.slice(0, 8)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-[var(--color-text-primary)]">
+                    {c.message}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)]">
+                    {c.date ? formatRelativeTime(c.date) : ""}
+                  </span>
+                </A>
+              </li>
+            ))}
+          </ul>
+        </FileSection>
       )}
 
-      <StatGrid columns={4}>
-        <StatTile
-          label="Commits (total)"
-          value={commits}
-          {...(age ? { hint: `over ${age}` } : {})}
-        />
-        <StatTile label="Commits (90d)" value={git.commit_count_90d} />
-        <StatTile label="Contributors" value={git.contributor_count} />
-        <StatTile label="Bus factor" value={git.bus_factor} />
-      </StatGrid>
-
-      {/* Self-contained: returns null when there is nothing to say, so an
-          entropy-less, never-fixed, never-renamed file loses no space to it. */}
-      <ChangeHistoryCard
-        changeEntropyPct={git.change_entropy_pct ?? null}
-        priorDefectCount={git.prior_defect_count ?? null}
-        lastFixAt={git.last_fix_at ?? null}
-        originalPath={git.original_path ?? null}
-        commitCountCapped={git.commit_count_capped ?? false}
-        className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3"
-      />
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Significant commits</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {git.significant_commits.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                No significant commits recorded.
-              </p>
-            ) : (
-              <ul className="space-y-1.5">
-                {git.significant_commits.slice(0, 8).map((c) => (
-                  <li key={c.sha}>
-                    <a
-                      href={`${linkPrefix}/commits?commit=${c.sha}`}
-                      className="flex items-center gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
-                    >
-                      <span className="text-xs font-mono text-[var(--color-text-tertiary)] shrink-0">
-                        {c.sha.slice(0, 8)}
-                      </span>
-                      <span className="text-xs text-[var(--color-text-primary)] truncate flex-1">
-                        {c.message}
-                      </span>
-                      <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
-                        {c.date ? formatRelativeTime(c.date) : ""}
-                      </span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
+      <FileSection
+        title="Who writes it"
+        description={
+          <>
+            Commit share by author across the indexed history
+            {git.agent.agent_commit_count > 0 && (
+              <>
+                , and how much of it came from a coding agent —{" "}
+                <Fig>{formatNumber(git.agent.agent_commit_count)}</Fig>{" "}
+                {git.agent.agent_commit_count === 1 ? "commit" : "commits"}
+                {agentPct != null && <> ({agentPct}%)</>}
+              </>
             )}
-          </CardContent>
-        </Card>
-
-        <div className="space-y-4">
-          {hasCategories && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Commit mix</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <CommitCategorySparkline categories={git.commit_categories} />
-              </CardContent>
-            </Card>
-          )}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Bot className="h-4 w-4 text-[var(--color-text-secondary)]" />
-                Agent share
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {git.agent.agent_commit_count === 0 ? (
-                <p className="text-xs text-[var(--color-text-tertiary)]">
-                  No agent-attributed commits on this file.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-xs text-[var(--color-text-secondary)]">
-                    <span className="text-base font-semibold tabular-nums text-[var(--color-text-primary)]">
-                      {git.agent.agent_commit_count}
-                    </span>{" "}
-                    agent commit{git.agent.agent_commit_count === 1 ? "" : "s"}
-                    {agentPct != null && ` · ${agentPct}% of indexed history`}
-                  </p>
-                  {Object.keys(git.agent.tier_counts).length > 0 && (
-                    <AgentTierBar tierCounts={git.agent.tier_counts} />
-                  )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Top authors</CardTitle>
-          </CardHeader>
-          <CardContent>
+            .
+          </>
+        }
+      >
+        <div className="grid grid-cols-1 gap-x-10 gap-y-8 lg:grid-cols-2">
+          <div className="min-w-0">
             {git.top_authors.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-tertiary)]">No author data.</p>
+              <p className="text-sm text-[var(--color-text-tertiary)]">
+                Author attribution lands with the next index.
+              </p>
             ) : (
               <OwnershipDonut
-                slices={git.top_authors.map((a) => ({
-                  name: a.name,
-                  value: a.commit_count,
-                }))}
+                slices={git.top_authors.map((a) => ({ name: a.name, value: a.commit_count }))}
               />
             )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Changes together with</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {git.co_change_partners.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                No co-change partners detected.
+          </div>
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+              Agent share
+            </p>
+            {git.agent.agent_commit_count === 0 ? (
+              <p className="mt-2 text-sm text-[var(--color-text-tertiary)]">
+                No agent-attributed commits on this file.
               </p>
             ) : (
-              <ul className="space-y-2">
-                {git.co_change_partners.slice(0, 8).map((p) => (
-                  <li key={p.file_path}>
-                    <a
-                      href={partnerHref(p.file_path)}
-                      className="flex items-center justify-between gap-2 -mx-2 px-2 py-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
-                    >
-                      <span className="font-mono text-xs text-[var(--color-text-primary)] truncate" title={p.file_path}>
-                        {truncatePath(p.file_path, 44)}
-                      </span>
-                      <span className="text-xs tabular-nums text-[var(--color-text-tertiary)] shrink-0">
-                        ×{p.co_change_count}
-                      </span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
+              Object.keys(git.agent.tier_counts).length > 0 && (
+                <div className="mt-3">
+                  <AgentTierBar tierCounts={git.agent.tier_counts} />
+                </div>
+              )
             )}
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </div>
+      </FileSection>
+
+      <FileSection
+        title="Changes together with"
+        description={
+          git.co_change_partners.length > 0 ? (
+            <>
+              Files that land in the same commit as this one. The count is how many commits touched
+              both — a partner you did not expect is usually a coupling nobody wrote down.
+            </>
+          ) : (
+            "Files that repeatedly land in the same commit as this one appear here once the history has enough commits to be sure."
+          )
+        }
+      >
+        {git.co_change_partners.length > 0 && (
+          <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
+            {git.co_change_partners.slice(0, 8).map((p) => (
+              <li key={p.file_path}>
+                <A
+                  href={partnerHref(p.file_path)}
+                  className="-mx-2 flex items-baseline justify-between gap-3 rounded px-2 py-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
+                >
+                  <span
+                    className="min-w-0 truncate font-mono text-xs text-[var(--color-text-primary)]"
+                    title={p.file_path}
+                  >
+                    {truncatePath(p.file_path, 44)}
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
+                    {p.co_change_count}&times;
+                  </span>
+                </A>
+              </li>
+            ))}
+          </ul>
+        )}
+      </FileSection>
     </div>
   );
 }

@@ -45,7 +45,7 @@ def _prime(tmp_path, changed: frozenset[str] | None):
 
 
 def test_head_match_is_silent(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _INDEXED)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _INDEXED)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "stale_warning" not in out
     assert out["index_behind"] is False
@@ -58,13 +58,13 @@ def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
     Without a live HEAD the comparison never runs, so claiming ``false`` here
     would report a repo as verified-current on no evidence at all.
     """
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: None)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "index_behind" not in out
 
 
 def test_served_target_changed_warns(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
     assert "stale_warning" in out
@@ -73,7 +73,7 @@ def test_served_target_changed_warns(tmp_path, monkeypatch):
 
 
 def test_unaffected_targets_get_index_behind_not_warning(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"docs/README.md"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
     assert "stale_warning" not in out
@@ -82,13 +82,13 @@ def test_unaffected_targets_get_index_behind_not_warning(tmp_path, monkeypatch):
 
 
 def test_no_targets_keeps_repo_level_warning(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
     assert "stale_warning" in out
 
 
 def test_empty_targets_means_nothing_served_and_never_warns(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=[])
     assert "stale_warning" not in out
@@ -104,7 +104,7 @@ def test_no_targets_with_zero_changed_files_does_not_warn(tmp_path, monkeypatch)
     A warning that fires when zero files changed is the loudest possible way to
     be wrong, and it trains an agent to stop reading the field.
     """
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset())
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
     assert "stale_warning" not in out
@@ -114,7 +114,7 @@ def test_no_targets_with_zero_changed_files_does_not_warn(tmp_path, monkeypatch)
 
 def test_no_targets_with_real_changes_still_warns(tmp_path, monkeypatch):
     """The zero-change carve-out must not silence a genuinely behind index."""
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
     assert "stale_warning" in out
@@ -156,7 +156,7 @@ def test_empty_commit_over_real_git_is_not_stale(tmp_path):
 
 
 def test_git_diff_failure_falls_back_to_repo_level_warning(tmp_path, monkeypatch):
-    monkeypatch.setattr(_meta, "_read_live_head", lambda p: _LIVE)
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, None)  # git couldn't answer (rebased-away SHA, timeout)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
     assert "stale_warning" in out

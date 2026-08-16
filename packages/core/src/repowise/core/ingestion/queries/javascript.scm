@@ -179,10 +179,12 @@
   arguments: (arguments) @call.arguments
 ) @call.site
 
-; Method call: obj.method(args)
+; Method call: obj.method(args) — and self-dispatch: this.method(args).
+; See typescript.scm for why ``this`` rides an alternation in the receiver slot
+; instead of a second pattern.
 (call_expression
   function: (member_expression
-    object: (identifier) @call.receiver
+    object: [(identifier) (this)] @call.receiver
     property: (property_identifier) @call.target
   )
   arguments: (arguments) @call.arguments

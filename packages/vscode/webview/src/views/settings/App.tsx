@@ -7,8 +7,17 @@
  * one place to quiet the squiggles, gutter, and explorer badges.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink, RotateCcw, Settings2 } from "lucide-react";
+import {
+  SaveIndicator,
+  SettingsRow,
+  SettingsRows,
+  type SaveState,
+} from "@repowise-dev/ui/settings/settings-primitives";
+import { OverviewSection } from "@repowise-dev/ui/overview";
+import { Input } from "@repowise-dev/ui/ui/input";
+import { Switch } from "@repowise-dev/ui/ui/switch";
 import type {
   SettingKey,
   SettingsValues,
@@ -217,6 +226,21 @@ const GROUPS: Group[] = [
 export function App({ host, refreshToken }: ViewProps<"settings">) {
   const [values, setValues] = useState<SettingsValues | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+
+  /** Monotonic stamp per write. A response that is no longer the newest is
+   *  dropped: this panel is exactly where someone flips four switches in two
+   *  seconds, and the host echoes the whole canonical map back, so an older
+   *  reply landing last silently un-does the newer one. */
+  const seq = useRef(0);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
 
   const load = useCallback(() => {
     host.api
@@ -225,7 +249,12 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
         setValues(v);
         setError(null);
       })
-      .catch(() => setError("Could not load settings."));
+      .catch(() => {
+        setError("Could not load settings.");
+        // The indicator is the only thing that speaks on this surface, so a
+        // failed read has to reach it too, not just a failed write.
+        setSaveState("error");
+      });
   }, [host]);
 
   useEffect(() => load(), [load, refreshToken]);
@@ -235,18 +264,33 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
       // Optimistic: the control reflects the new value immediately; the host
       // echoes the canonical map back, and a rejected write reverts.
       setValues((prev) => (prev ? { ...prev, [key]: value } : prev));
+      const stamp = ++seq.current;
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      setSaveState("saving");
       host.api
         .updateSetting(key, value)
         .then((fresh) => {
+          if (stamp !== seq.current) return;
           setValues(fresh);
           setError(null);
+          setSaveState("saved");
+          savedTimer.current = setTimeout(() => setSaveState("idle"), 2000);
         })
         .catch((e: unknown) => {
+          if (stamp !== seq.current) return;
           setError(e instanceof Error ? e.message : "Could not save that setting.");
-          load();
+          setSaveState("error");
+          // Roll the control back to what the server actually has. Re-reads
+          // values only: `load()` would clear the error it was called to
+          // explain, leaving the indicator on the generic fallback and losing
+          // the host's real reason ("port 7777 already in use").
+          host.api
+            .getSettings()
+            .then(setValues)
+            .catch(() => undefined);
         });
     },
-    [host, load],
+    [host],
   );
 
   if (!values) {
@@ -258,51 +302,42 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
   }
 
   return (
-    <div className="mx-auto min-h-full max-w-3xl space-y-6 bg-[var(--color-bg-root)] px-6 py-6">
+    <div className="mx-auto flex min-h-full max-w-3xl flex-col gap-6 bg-[var(--color-bg-root)] px-6 py-6 sm:gap-8">
       <header className="flex items-center gap-2.5">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]">
           <Settings2 className="h-4 w-4" />
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="text-base font-semibold text-[var(--color-text-primary)]">
+          <h1 className="text-[22px] font-semibold tracking-tight text-[var(--color-text-primary)]">
             Repowise Settings
           </h1>
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Saved to this workspace. Changes apply immediately.
           </p>
         </div>
+        {/* The one save affordance: nothing at rest, a spinner in flight,
+            "Saved" for two seconds, the error until it is fixed. It is
+            `aria-live="polite"`, which is right for "Saved" and wrong for a
+            rejected write, so the failure keeps the assertive announcement the
+            banner this replaced had. */}
+        <SaveIndicator state={saveState} error={error} className="shrink-0" />
+        <span role="alert" className="sr-only">
+          {saveState === "error" ? (error ?? "Could not save") : ""}
+        </span>
         <button
           type="button"
           onClick={() => host.openNativeSettings()}
           title="Open these settings in the VS Code Settings editor (search, sync, per-scope overrides)"
-          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
         >
           <ExternalLink className="h-3.5 w-3.5" />
           Open in Settings editor
         </button>
       </header>
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-lg border border-[var(--color-error)] bg-[var(--color-bg-surface)] px-3 py-2 text-xs text-[var(--color-error)]"
-        >
-          {error}
-        </p>
-      ) : null}
-
       {GROUPS.map((group) => (
-        <section
-          key={group.title}
-          className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
-        >
-          <div className="border-b border-[var(--color-border-default)] px-4 py-3">
-            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
-              {group.title}
-            </h2>
-            <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{group.blurb}</p>
-          </div>
-          <div className="divide-y divide-[var(--color-border-default)]">
+        <OverviewSection key={group.title} title={group.title} description={group.blurb}>
+          <SettingsRows>
             {group.rows.map((row) => (
               <SettingRow
                 key={row.key}
@@ -312,8 +347,8 @@ export function App({ host, refreshToken }: ViewProps<"settings">) {
                 onCommit={commit}
               />
             ))}
-          </div>
-        </section>
+          </SettingsRows>
+        </OverviewSection>
       ))}
     </div>
   );
@@ -332,32 +367,23 @@ function SettingRow({
 }) {
   const value = values[row.key];
   const controlId = `set-${row.key.replace(/\./g, "-")}`;
-  // Rows gated by a parent toggle are indented under it with an elbow connector,
-  // so a dimmed child reads as "controlled by the switch above", not broken.
+  // Rows gated by a parent toggle are indented under it behind a left
+  // hairline, so a dimmed child reads as "controlled by the switch above"
+  // rather than as broken. It holds at every width: in a narrow editor column
+  // an indent that only starts at `sm` leaves the gated row looking broken at
+  // exactly the size where that reading matters most.
   const indented = row.needs != null;
   return (
-    <div
+    <SettingsRow
+      label={row.label}
+      htmlFor={controlId}
+      hint={row.description}
       className={
         (disabled ? "opacity-50 " : "") +
-        "flex items-start gap-3 py-3 pr-4 " +
-        (indented ? "pl-8" : "pl-4")
+        (indented ? "border-l border-[var(--color-border-default)] pl-4" : "")
       }
     >
-      {indented ? (
-        <span
-          aria-hidden
-          className="mt-1 h-3 w-3 shrink-0 rounded-bl border-b border-l border-[var(--color-border-default)]"
-        />
-      ) : null}
-      <div className="min-w-0 flex-1">
-        <label htmlFor={controlId} className="block text-[13px] font-medium text-[var(--color-text-primary)]">
-          {row.label}
-        </label>
-        <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]">
-          {row.description}
-        </p>
-      </div>
-      <div className="shrink-0 pt-0.5">
+      <div className="flex sm:justify-end">
         <Control
           id={controlId}
           row={row}
@@ -366,7 +392,7 @@ function SettingRow({
           onCommit={(v) => onCommit(row.key, v)}
         />
       </div>
-    </div>
+    </SettingsRow>
   );
 }
 
@@ -385,7 +411,20 @@ function Control({
 }) {
   switch (row.kind) {
     case "toggle":
-      return <Toggle id={id} checked={value === true} disabled={disabled} onChange={onCommit} />;
+      return (
+        // The shared switch draws its off state as a white thumb on
+        // `bg-elevated` with a transparent border, which on the light ramp is
+        // cream on cream. Give the off state a real border so the control is
+        // visible at rest — and so `.hc` can reach it, since a transparent
+        // border cannot pick up `--vscode-contrastBorder`.
+        <Switch
+          id={id}
+          checked={value === true}
+          disabled={disabled}
+          onCheckedChange={onCommit}
+          className="border data-[state=unchecked]:border-[var(--color-border-hover)] data-[state=unchecked]:bg-[var(--color-bg-inset)]"
+        />
+      );
     case "select":
       return (
         <Select
@@ -439,46 +478,16 @@ function Control({
   }
 }
 
-function Toggle({
-  id,
-  checked,
-  disabled,
-  onChange,
-}: {
-  id: string;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <button
-      id={id}
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={
-        // The off state carries a border and a filled knob so the switch stays
-        // visible on a light card, where bg-inset alone is nearly the surface color.
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:cursor-not-allowed " +
-        (checked
-          ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]"
-          : "border-[var(--color-border-default)] bg-[var(--color-bg-inset)]")
-      }
-    >
-      <span
-        className={
-          "inline-block h-4 w-4 transform rounded-full shadow-sm transition-transform " +
-          (checked ? "translate-x-4 bg-white" : "translate-x-0.5 bg-[var(--color-text-tertiary)]")
-        }
-      />
-    </button>
-  );
-}
-
+/**
+ * The native `<select>` is kept where the shared Radix `Select` is not.
+ *
+ * Everything else here is now the shared control. This one stays because it
+ * buys nothing: it themes through the same tokens either way, and the Radix
+ * version renders through a portal, which is a real behaviour to take on inside
+ * a webview in exchange for no visual difference at these three call sites.
+ */
 const CONTROL_CLASS =
-  "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-2 py-1 text-[12px] text-[var(--color-text-primary)] focus:border-[var(--color-accent-primary)] focus:outline-none disabled:cursor-not-allowed";
+  "h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 text-xs text-[var(--color-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)] disabled:cursor-not-allowed disabled:opacity-50";
 
 function Select({
   id,
@@ -537,7 +546,7 @@ function MultiSelect({
             aria-pressed={on}
             onClick={() => toggle(o.value)}
             className={
-              "rounded-full border px-2 py-0.5 text-[11px] transition-colors disabled:cursor-not-allowed " +
+              "rounded-full border px-2 py-0.5 text-xs transition-colors disabled:cursor-not-allowed " +
               (on
                 ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                 : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]")
@@ -578,7 +587,7 @@ function NumberInput({
     setDraft(String(clamped));
   };
   return (
-    <input
+    <Input
       id={id}
       type="number"
       inputMode="decimal"
@@ -590,7 +599,7 @@ function NumberInput({
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-      className={CONTROL_CLASS + " w-20 text-right"}
+      className="w-24 text-right"
     />
   );
 }
@@ -622,7 +631,7 @@ function PortInput({
     if (n !== value) onCommit(n);
   };
   return (
-    <input
+    <Input
       id={id}
       type="text"
       inputMode="numeric"
@@ -632,7 +641,7 @@ function PortInput({
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-      className={CONTROL_CLASS + " w-20 text-right"}
+      className="w-24 text-right"
     />
   );
 }
@@ -657,7 +666,7 @@ function TextInput({
   };
   return (
     <span className="flex items-center gap-1.5">
-      <input
+      <Input
         id={id}
         type="text"
         value={draft}
@@ -666,7 +675,7 @@ function TextInput({
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-        className={CONTROL_CLASS + " w-44"}
+        className="w-44"
       />
       {value !== "" ? (
         <button

@@ -46,18 +46,16 @@ get_why()                                          # health dashboard
 
 ## Where decisions come from
 
-Six capture sources run at index time. Five are deterministic passes over the
-repo and its git history; the sixth is a harvest during LLM doc generation, and
-it is the only one that needs a provider.
+Five capture sources run at index time, each a pass over the repo and its git
+history.
 
 | Source | Key | Reads | Notes |
 |--------|-----|-------|-------|
 | ADR files | `adr` | `adr/`, `adrs/`, `docs/adr/`, `docs/adrs/`, `docs/decisions/`, `decisions/`, `architecture/`, `doc/adr/` | Nygard and MADR headings plus YAML frontmatter, parsed without an LLM. Up to 60 files. `accepted`/`approved` map to `active`, `draft` to `proposed`, `rejected` to `deprecated`. |
-| Inline markers | `inline_marker` | `# WHY:` / `# DECISION:` / `# TRADEOFF:` / `# ADR:` / `# RATIONALE:` / `# REJECTED:` | Any comment syntax (`#`, `//`, `--`, `/*`, `*`). Up to 5 continuation lines, plus 20 lines of surrounding context. Fenced code blocks in Markdown are skipped. |
+| Inline markers | `inline_marker` | `# WHY:` / `# DECISION:` / `# TRADEOFF:` / `# ADR:` / `# RATIONALE:` / `# REJECTED:` | Any comment syntax (`#`, `//`, `--`, `/*`, `*`). The keyword is case-sensitive and must be capitalised, like `TODO:` and `FIXME:` — otherwise ordinary prose ("# Rejected: nothing to extract.") becomes an architectural decision. Up to 5 continuation lines, plus 20 lines of surrounding context. Fenced code blocks in Markdown are skipped. |
 | Git archaeology | `git_archaeology` | Commit messages | Gated on 19 decision verbs (migrate, switch to, replace, adopt, deprecate, drop, rewrite, split, revert, and the rest). |
 | PR bodies | `pr` | Squash-merge and PR commit bodies | A body only qualifies when it looks like a PR description (`## Why`, `## Motivation`, `## Context`, `Closes #`, `Before:` / `After:`). Up to 25 bodies. |
 | Code comments | `comment` | Block comments and docstrings on high-centrality files | Bounded to 30 nodes, and to prose carrying a rationale cue ("because", "instead of", "rather than", "trade-off", "we chose", "deliberately"). Centrality-bounded on purpose: comment archaeology across a whole repo is noise. |
-| Doc generation | `llm_inferred` | The wiki generation pass | The page generator proposes decisions it inferred while writing a page. Every field must survive the grounding gate below. |
 
 Two more sources sit outside the index-time set: `session` (mined from your
 coding-agent transcripts, below) and `cli` (a decision you typed yourself, the

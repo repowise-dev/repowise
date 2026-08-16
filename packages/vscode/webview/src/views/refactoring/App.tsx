@@ -202,10 +202,10 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
                 key={row.label}
                 className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2"
               >
-                <dt className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+                <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
                   {row.label}
                 </dt>
-                <dd className="mt-0.5 font-mono text-sm tabular-nums text-[var(--color-text-primary)]">
+                <dd className="mt-0.5 font-mono text-[15px] tabular-nums text-[var(--color-text-primary)]">
                   {row.value}
                 </dd>
               </div>
@@ -237,7 +237,7 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
               </li>
             ))}
             {affected.length > 25 ? (
-              <li className="px-3.5 py-2 text-[11px] text-[var(--color-text-tertiary)]">
+              <li className="px-3.5 py-2 text-xs text-[var(--color-text-tertiary)]">
                 +{affected.length - 25} more
               </li>
             ) : null}
@@ -261,7 +261,7 @@ function PlanHeader({ plan, onOpenFile }: { plan: RefactoringPlan; onOpenFile: (
     <header>
       <div className="flex flex-wrap items-center gap-3">
         <span
-          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm font-semibold"
+          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[15px] font-semibold"
           style={{ backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}
         >
           <Icon className="h-4 w-4" />
@@ -319,7 +319,7 @@ function CopyForAgentRow({ host, planId }: { host: WebviewHost; planId: string }
 
   return (
     <div className="sticky bottom-0 mt-8 -mx-6 border-t border-[var(--color-border-default)] bg-[var(--color-bg-root)]/95 px-6 py-3 backdrop-blur">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+      <div className="mb-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         <Sparkles className="h-3.5 w-3.5" />
         Copy for agent
       </div>
@@ -397,7 +397,7 @@ function SummaryStrip({
         <span className="text-2xl font-semibold tabular-nums text-[var(--color-text-primary)]">
           {summary.total}
         </span>
-        <span className="text-sm text-[var(--color-text-secondary)]">
+        <span className="text-[15px] text-[var(--color-text-secondary)]">
           refactoring plan{summary.total === 1 ? "" : "s"}
           {filePath ? (
             <>
@@ -431,7 +431,7 @@ function SummaryStrip({
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="mt-6">
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+      <h2 className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {title}
       </h2>
       {children}
@@ -464,7 +464,7 @@ function Badge({
 
 function CenteredNote({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[var(--color-text-tertiary)]">
+    <div className="flex h-full items-center justify-center px-6 text-center text-[15px] text-[var(--color-text-tertiary)]">
       {children}
     </div>
   );
@@ -472,7 +472,7 @@ function CenteredNote({ children }: { children: ReactNode }) {
 
 function ErrorNote({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-sm">
+    <div className="m-6 rounded-lg border border-[var(--color-error)] p-4 text-[15px]">
       <p className="font-medium text-[var(--color-error)]">{title}</p>
       <p className="mt-2 text-[var(--color-text-secondary)]">{children}</p>
     </div>

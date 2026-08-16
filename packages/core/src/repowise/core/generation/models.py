@@ -281,13 +281,6 @@ class GenerationConfig:
     # an empty / nearly-empty store anyway, so the search is a wasted
     # round-trip until enough content is indexed to return useful hits.
     rag_min_store_size: int = 10
-    # Phase 2: harvest candidate architectural decisions from Tier-1 LLM page
-    # generation (file pages). On by default, escapable via
-    # ``--no-harvest-decisions``. The model is instructed to emit a decision
-    # block only on a genuine hit, so the output-token cost lands only on files
-    # that carry a decision; harvested candidates pass the same substring gate
-    # as every other source before storage.
-    harvest_decisions: bool = True
     # ---- In-loop self-repair (hallucinated symbol refs) ----------------
     # When the post-generation validator flags at least this many backtick
     # identifiers that do not exist in the documented file, the tier-1 file
@@ -526,8 +519,7 @@ class GeneratedPage:
     metadata: dict[str, object] = field(default_factory=dict)
     # Cross-run reuse KEY (not a plain file hash): SHA256 of the documented
     # file's raw-bytes hash folded with the generation fingerprint (template,
-    # system prompt, language, style, harvest flag — see
-    # PageGenerator._reuse_content_hash). Empty for pages not built from a
+    # system prompt, language, style). Empty for pages not built from a
     # single file (module/overview/architecture). Unlike source_hash it is
     # stable across runs for an unchanged file + unchanged settings, so
     # cross-run reuse can key on it even when the rendered prompt (RAG

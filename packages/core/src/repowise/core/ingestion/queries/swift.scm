@@ -72,10 +72,12 @@
   )
 ) @call.site
 
-; Member call: obj.method(args)
+; Member call: obj.method(args) — and self-dispatch: self.method(args).
+; Swift spells it ``self``, which the resolver treats identically to ``this``.
+; See typescript.scm for why this is an alternation rather than a second pattern.
 (call_expression
   (navigation_expression
-    (simple_identifier) @call.receiver
+    [(simple_identifier) (self_expression)] @call.receiver
     (navigation_suffix
       (simple_identifier) @call.target
     )

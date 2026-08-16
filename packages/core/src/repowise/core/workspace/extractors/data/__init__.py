@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..base import ScanContext, iter_source_files
+from ..base import ScanContext, select_files
 from .ddl import DdlDialect
 from .dialect import DataDialect
 from .names import normalize_table_name
@@ -27,10 +27,12 @@ from .orm_models import (
 from .sql_strings import SqlStringsDialect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from repowise.core.workspace.contracts import Contract
+
+    from ..base import SourceFile
 
 # Table-ownership recognisers (DDL + one per ORM family).
 PROVIDER_DIALECTS: tuple[DataDialect, ...] = (
@@ -59,18 +61,25 @@ class DataExtractor:
     provider_dialects: tuple[DataDialect, ...] = PROVIDER_DIALECTS
     consumer_dialects: tuple[DataDialect, ...] = CONSUMER_DIALECTS
 
+    @classmethod
+    def source_extensions(cls) -> frozenset[str]:
+        """Every extension this extractor's dialects claim."""
+        return _union_extensions(cls.provider_dialects) | _union_extensions(
+            cls.consumer_dialects
+        )
+
     def extract(
         self,
         repo_path: Path,
         repo_alias: str = "",
         exclude: Callable[[str], bool] | None = None,
+        files: Sequence[SourceFile] | None = None,
     ) -> list[Contract]:
         """Scan all source files in *repo_path* and return Contract instances."""
-        all_exts = _union_extensions(self.provider_dialects) | _union_extensions(
-            self.consumer_dialects
-        )
         contracts: list[Contract] = []
-        for rel_path, suffix, content in iter_source_files(repo_path, all_exts, exclude):
+        for rel_path, suffix, content in select_files(
+            repo_path, self.source_extensions(), exclude, files
+        ):
             ctx = ScanContext(repo_alias, rel_path, suffix, content)
             for dialect in self.provider_dialects:
                 if suffix in dialect.extensions:

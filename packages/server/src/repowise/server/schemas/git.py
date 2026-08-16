@@ -286,8 +286,33 @@ class ChangeFeaturesResponse(BaseModel):
     exp: int | None
 
 
+class FixHistoryFileResponse(BaseModel):
+    """One changed file's recency-weighted bug-fix record."""
+
+    path: str
+    churn: int
+    fix_pressure: float
+
+
+class FixHistoryResponse(BaseModel):
+    """Bug-fix history of the files a change touches.
+
+    The size-orthogonal half of the answer: unlike ``score``, none of this grows
+    with the diff. ``density`` is the churn-weighted mean fix pressure of the
+    touched files; ``percentile`` ranks it against the repository's own
+    fix-bearing files, and is ``None`` when there is too little history to rank.
+    """
+
+    #: False when the history walk could not run — distinguishes "no fixes
+    #: here" from "we could not look".
+    available: bool
+    density: float
+    percentile: float | None
+    files: list[FixHistoryFileResponse]
+
+
 class RiskRangeResponse(BaseModel):
-    """Change-risk score for a live ``base..head`` git range.
+    """Change-risk report for a live ``base..head`` git range.
 
     Scored on demand from the working tree rather than the indexed commit
     table, so it works for ranges that haven't been indexed yet (an open PR
@@ -297,11 +322,21 @@ class RiskRangeResponse(BaseModel):
 
     base: str
     head: str
+    #: Where the change lands. Read this before ``score``: it is the part that
+    #: distinguishes a small edit to a fragile file from a large boring one.
+    fix_history: FixHistoryResponse
     score: float
-    probability: float
-    level: str
+    #: What ``score`` measures. It tracks diff size and spread, not danger.
+    score_measures: str
+    #: The unit ``score`` is calibrated on. A range is several commits' worth
+    #: of diff, so it reads high against a single-commit scale.
+    score_unit: str
     risk_percentile: float | None
     review_priority: str | None
+    classification: str | None
+    #: Absolute calibrated band, present only when there was no baseline to
+    #: rank against — so it is not a peer of ``review_priority``.
+    fallback_band: str | None
     is_fix: bool
     features: ChangeFeaturesResponse
     drivers: list[RiskDriverResponse]

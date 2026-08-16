@@ -26,6 +26,7 @@ from typing import Any
 import structlog
 
 from ..persist import persist_analysis, persist_git, persist_ingestion
+from ..progress import emit_warning
 from .ledger import ResumeLedger
 from .phases import RESUME_PHASE_ORDER, ResumePhase
 from .rehydrate import (
@@ -136,8 +137,12 @@ class ResumeController:
         external_systems: list[dict] | None = None,
         execution_flow_report: Any | None = None,
         source_map: dict[str, bytes] | None = None,
+        progress: Any | None = None,
     ) -> None:
         """Persist the INDEX phase (graph + symbols + git) and record it.
+
+        *progress* is taken per call rather than at construction because the
+        controller is built before the CLI opens its progress display.
 
         Idempotent UPSERTs throughout, so a later full persist that re-writes
         the same rows (e.g. graph nodes with entry-point scores once execution
@@ -166,6 +171,15 @@ class ResumeController:
                 await persist_git(view, session, self._repo_id)
         except Exception as exc:
             logger.warning("resume_checkpoint_index_failed", error=str(exc))
+            # The CLI tells the user their index was saved and that
+            # ``--resume`` will pick it up. When this write fails that promise
+            # is false, and silence is the one outcome that lets them find out
+            # only by paying for the whole index a second time.
+            emit_warning(
+                progress,
+                f"Index checkpoint not saved ({exc}); "
+                "a resumed run will have to recompute it.",
+            )
             return
         self._index_persisted = True
         await self._ledger.mark_completed(ResumePhase.INDEX)
@@ -179,6 +193,7 @@ class ResumeController:
         decision_report: Any | None,
         git_metadata_list: list[dict],
         vector_store: Any | None = None,
+        progress: Any | None = None,
     ) -> None:
         """Persist the ANALYSIS phase (dead code + health + decisions) and record it.
 
@@ -187,9 +202,7 @@ class ResumeController:
         lets a generation interrupt resume past analysis instead of recomputing
         it (decision extraction in particular can run for minutes). Best-effort:
         a persistence hiccup is logged and swallowed, leaving ANALYSIS unmarked
-        so the resumed run simply recomputes it. ``generated_pages`` is empty at
-        this point, so harvested-decision folding still happens at the final
-        end-of-run persist.
+        so the resumed run simply recomputes it.
         """
         from repowise.core.persistence import get_session
 
@@ -207,6 +220,11 @@ class ResumeController:
                 await persist_analysis(view, session, self._repo_id)
         except Exception as exc:
             logger.warning("resume_checkpoint_analysis_failed", error=str(exc))
+            emit_warning(
+                progress,
+                f"Analysis checkpoint not saved ({exc}); "
+                "a resumed run will have to recompute dead code, health and decisions.",
+            )
             return
         await self._ledger.mark_completed(ResumePhase.ANALYSIS)
         logger.info("resume_checkpoint_analysis", repo_id=self._repo_id)

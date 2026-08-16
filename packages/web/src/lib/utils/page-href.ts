@@ -1,4 +1,8 @@
-import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { docsPagePath, fileEntityPath, filePageId } from "@repowise-dev/ui/shared/entity";
+
+/** The `file_page:` id prefix, derived from the builder rather than restated,
+ *  so the parse here cannot drift from the construction there. */
+const FILE_PAGE_PREFIX = filePageId("");
 
 /**
  * Resolve the best in-app destination for a wiki page id.
@@ -8,8 +12,9 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
  * so navigation keeps the tree/reading context.
  */
 export function pageHref(repoId: string, pageId: string): string {
-  if (pageId.startsWith("file_page:")) {
-    return fileEntityPath(`/repos/${repoId}`, pageId.slice("file_page:".length));
+  const prefix = `/repos/${repoId}`;
+  if (pageId.startsWith(FILE_PAGE_PREFIX)) {
+    return fileEntityPath(prefix, pageId.slice(FILE_PAGE_PREFIX.length));
   }
-  return `/repos/${repoId}/docs?page=${encodeURIComponent(pageId)}`;
+  return docsPagePath(prefix, pageId);
 }

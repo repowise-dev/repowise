@@ -19,6 +19,9 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
         ("gpt-5.4-nano", 0.0002, 0.00125),
         ("gpt-5.4-mini", 0.00075, 0.0045),
         ("gpt-5.4", 0.0025, 0.015),
+        # The default. An unpriced model reads as free here (_lookup_cost
+        # falls through to (0.0, 0.0)), so this row is the guard.
+        ("gpt-5.6-luna", 0.0002, 0.0012),
         # Gemini
         ("gemini-3.1-flash-lite-preview", 0.00025, 0.0015),
         ("gemini-3-flash-preview", 0.0005, 0.003),
