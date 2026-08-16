@@ -94,5 +94,22 @@ SPEC = LanguageSpec(
             "FnOnce",
         }
     ),
+    # Primitives plus the prelude names a file may use without importing them,
+    # so a type reference to one can never point at a file this repo declares.
+    # Wider than ``builtin_parents``: that set only has to cover what may sit in
+    # an impl clause, this one every position a type may be written in.
+    builtin_types=frozenset(
+        {
+            "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize",
+            "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
+            "String", "Vec", "Option", "Result", "Box", "Arc", "Rc",
+            "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Cow",
+            "Pin", "Future", "Send", "Sync", "Sized", "Copy", "Clone",
+            "Debug", "Display", "Default", "Iterator", "IntoIterator",
+            "From", "Into", "TryFrom", "TryInto", "AsRef", "AsMut",
+            "Fn", "FnMut", "FnOnce", "Drop", "Deref", "DerefMut",
+            "Self", "self",
+        }
+    ),
     color_hex="#DEA584",
 )

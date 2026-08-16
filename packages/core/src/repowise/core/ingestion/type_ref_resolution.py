@@ -158,19 +158,6 @@ def _resolve_csharp_type_refs(
 # Strategy: Rust
 # ---------------------------------------------------------------------------
 
-_RUST_BUILTIN_TYPES = frozenset({
-    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize",
-    "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
-    "String", "Vec", "Option", "Result", "Box", "Arc", "Rc",
-    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Cow",
-    "Pin", "Future", "Send", "Sync", "Sized", "Copy", "Clone",
-    "Debug", "Display", "Default", "Iterator", "IntoIterator",
-    "From", "Into", "TryFrom", "TryInto", "AsRef", "AsMut",
-    "Fn", "FnMut", "FnOnce", "Drop", "Deref", "DerefMut",
-    "Self", "self",
-})
-
-
 def _resolve_rust_type_refs(
     parsed: ParsedFile,
     ctx: ResolverContext,
@@ -181,6 +168,10 @@ def _resolve_rust_type_refs(
     if not parsed.type_refs:
         return 0
 
+    from .language_data import get_builtin_types
+    from .type_names import bare_type_name
+
+    rust_builtin_types = get_builtin_types("rust")
     from_path = parsed.file_info.path
     emitted = 0
 
@@ -193,10 +184,12 @@ def _resolve_rust_type_refs(
 
     for ref in parsed.type_refs:
         type_name = ref.type_name
-        if not type_name or type_name in _RUST_BUILTIN_TYPES:
+        if not type_name:
             continue
-        bare = type_name.rsplit("::", 1)[-1]
-        if bare in _RUST_BUILTIN_TYPES:
+        # Tested after reduction, so a path ending in a prelude type is caught
+        # as well as one written bare.
+        bare = bare_type_name(type_name)
+        if bare in rust_builtin_types:
             continue
 
         target = _find_rust_type_file(
