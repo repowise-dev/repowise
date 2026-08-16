@@ -30,7 +30,13 @@ from typing import Any
 
 import structlog
 
-from .models import CallSite, NamedBinding, ParsedFile, ResolutionOrigin
+from .models import (
+    CallSite,
+    NamedBinding,
+    ParsedFile,
+    ResolutionOrigin,
+    symbol_id_language,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -74,13 +80,6 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
 }
-
-
-def _file_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
-    """Extract language from a symbol ID's file via the parsed files map."""
-    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
-    parsed = parsed_files.get(file_path)
-    return parsed.file_info.language if parsed else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -754,8 +753,8 @@ class CallResolver:
         # Tier 3: global unique match — only within the same language
         candidates = self._global_symbols.get(target_name, [])
         if len(candidates) == 1 and candidates[0] != caller_id:
-            caller_lang = _file_language(self._parsed_files, caller_id)
-            callee_lang = _file_language(self._parsed_files, candidates[0])
+            caller_lang = symbol_id_language(self._parsed_files, caller_id)
+            callee_lang = symbol_id_language(self._parsed_files, candidates[0])
             if caller_lang and callee_lang and caller_lang != callee_lang:
                 return None  # reject cross-language Tier 3 match
             return ResolvedCall(caller_id, candidates[0], 0.50, call.line, "global_unique")

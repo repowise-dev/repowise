@@ -57,6 +57,9 @@ _SCOPE = (
     _INGESTION / "type_ref_resolution.py",
     _INGESTION / "call_resolver.py",
     _INGESTION / "heritage_resolver.py",
+    # Holds the shared symbol-ID splitter both resolvers used to keep a copy
+    # of; in scope so moving it did not move it out of reach.
+    _INGESTION / "models.py",
 )
 
 _PREFIX = "packages/core/src/repowise/core/ingestion/"
@@ -67,9 +70,10 @@ _PREFIX = "packages/core/src/repowise/core/ingestion/"
 _KNOWN: dict[str, int] = {
     # Splits our own `path::Class::method` symbol IDs, which we mint. The
     # separator is ours rather than the language's, so the shared helper would
-    # be answering about a type where these ask about an ID.
-    _PREFIX + "call_resolver.py": 3,
-    _PREFIX + "heritage_resolver.py": 1,
+    # be answering about a type where these ask about an ID. `models.py` holds
+    # the one both resolvers used to duplicate.
+    _PREFIX + "call_resolver.py": 2,
+    _PREFIX + "models.py": 1,
     # Normalises the method name out of `#selector(Type.method)`. The last
     # segment here is a member, not a type.
     _PREFIX + "dynamic_hints/swift.py": 1,

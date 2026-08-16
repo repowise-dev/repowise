@@ -80,7 +80,7 @@ workspace overlays, MCP responses, and CLI output.
 | Call confidence | Confidence that a call edge points to the right callee. | `CallResolver` | `0.95` same-file, `0.90` import binding, `0.50` global unique |
 | `extends` edge | Class/struct inheritance edge. | `HeritageResolver` | `UserView -> BaseView` |
 | `implements` edge | Interface/trait implementation edge. | `HeritageResolver` | `UserRepository -> Repository` |
-| Heritage confidence | Confidence that inheritance/implementation resolved correctly. | `HeritageResolver` | `0.95` same-file, `0.90` imported, `0.50` global unique |
+| Heritage confidence | Confidence that inheritance/implementation resolved correctly. | `HeritageResolver` | `0.95` same-file, `0.90` named import, `0.85` any imported file, `0.50` global unique |
 | `framework` edge | Synthetic edge from framework conventions. | `framework_edges.py` | `urls.py -> views.py`, `app.py -> routers/users.py` |
 | Dynamic edge | Edge inferred from runtime/dynamic patterns. | `dynamic_hints/*` and `GraphBuilder.add_dynamic_edges()` | `{edge_type: "dynamic_imports", hint_source: "django", weight: 1.0}` |
 | `co_changes` edge | File-to-file historical coupling edge. | `GraphBuilder.add_co_change_edges()` from git metadata | `src/a.py -> src/b.py` with `weight: 4.2` |

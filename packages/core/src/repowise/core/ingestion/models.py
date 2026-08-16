@@ -515,6 +515,17 @@ class ParsedFile:
     references: list[CallSite] = field(default_factory=list)
 
 
+def symbol_id_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
+    """Language of the file a symbol ID belongs to, or ``None`` if unparsed.
+
+    Lives beside the ID vocabulary rather than in either resolver — both need
+    it for the same cross-language rejection.
+    """
+    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
+    parsed = parsed_files.get(file_path)
+    return parsed.file_info.language if parsed else None
+
+
 def compute_content_hash(source: bytes) -> str:
     """Return the SHA-256 hex digest of *source*."""
     return hashlib.sha256(source).hexdigest()

@@ -8,11 +8,11 @@ target is an edge desert — files connect only through the rare
 cross-module ``import``, so exactly the most cohesive unit of a Swift
 codebase reads as disconnected files.
 
-This pass mirrors the JVM same-package prior art
-(:mod:`.jvm_same_package`): a per-target map of declared top-level
-types (class/struct/enum/protocol/actor), then a conservative scan of
-each file's capitalized identifiers. An edge A → B is emitted only
-when ALL of:
+This is the Swift binding of the shared implicit-scope scan
+(:mod:`.scope_scan`): this module supplies a per-target map of declared
+top-level types (class/struct/enum/protocol/actor) and the stdlib skip list,
+and that module runs the identifier scan and emits the edges. An edge A → B
+is emitted only when ALL of:
 
 - the identifier names a top-level type declared in exactly **one**
   file B of A's own SPM target (ambiguous names link to no one);
@@ -39,8 +39,9 @@ false positives stay diagnosable.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from .scope_scan import FileScope, ScopeTier, collect_source_texts, emit_scope_edges
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -53,8 +54,6 @@ _SWIFT_TYPE_DECL_RE = re.compile(
     r"(?:class|struct|enum|protocol|actor)\s+([A-Z]\w*)",
     re.MULTILINE,
 )
-
-_TYPE_IDENT_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 
 # Ubiquitous Swift stdlib / Foundation names — references are
 # overwhelmingly to the framework type even when a target shadows one.
@@ -116,52 +115,35 @@ def resolve_swift_same_module_refs(
         for m in _SWIFT_TYPE_DECL_RE.finditer(texts[path]):
             type_map.setdefault(m.group(1), []).append(path)
 
-    count = 0
-    for module, files in files_by_module.items():
-        if len(files) < 2:
-            continue
+    scannable = {
+        path: module
+        for module, files in files_by_module.items()
+        if len(files) >= 2
+        for path in files
+    }
+
+    def plan(path: str, _text: str) -> FileScope | None:
+        module = scannable.get(path)
+        if module is None:
+            return None
         type_map = declared[module]
-        for path in files:
-            text = texts[path]
-            found: dict[str, list[str]] = {}
-            for ident in sorted(set(_TYPE_IDENT_RE.findall(text))):
-                if ident in _SWIFT_COMMON_TYPES:
-                    continue
-                declaring = type_map.get(ident)
-                if not declaring or len(set(declaring)) != 1:
-                    continue  # unknown here, or ambiguous — no edge
-                target = declaring[0]
-                if target == path:
-                    continue
-                found.setdefault(target, []).append(ident)
+        return FileScope(
+            tiers=(
+                ScopeTier(
+                    hint=_SAME_MODULE_HINT,
+                    lookup=lambda ident: set(type_map.get(ident, ())),
+                ),
+            )
+        )
 
-            for target, names in sorted(found.items()):
-                if not graph.has_node(path) or not graph.has_node(target):
-                    continue
-                if graph.has_edge(path, target):
-                    continue  # a declared import (or stronger) wins
-                graph.add_edge(
-                    path,
-                    target,
-                    edge_type="imports",
-                    imported_names=names,
-                    hint_source=_SAME_MODULE_HINT,
-                )
-                count += 1
-
-    return count
+    return emit_scope_edges(
+        graph,
+        ((path, texts[path]) for path in sorted(texts)),
+        plan,
+        skip_names=_SWIFT_COMMON_TYPES,
+    )
 
 
 def collect_swift_source_texts(parsed_files: dict[str, Any]) -> dict[str, str]:
     """Read each parsed Swift file's source from disk, keyed by repo path."""
-    out: dict[str, str] = {}
-    for path, parsed in parsed_files.items():
-        if parsed.file_info.language != "swift":
-            continue
-        try:
-            out[path] = Path(parsed.file_info.abs_path).read_text(
-                encoding="utf-8", errors="ignore"
-            )
-        except OSError:
-            continue
-    return out
+    return collect_source_texts(parsed_files, ("swift",))

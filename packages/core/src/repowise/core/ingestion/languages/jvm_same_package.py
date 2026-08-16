@@ -9,10 +9,10 @@ import resolvers therefore produce **no edge at all** between the files
 of a tightly-coupled package, which makes exactly the most cohesive
 parts of a Java/Kotlin codebase look disconnected.
 
-This pass mirrors the C# member-reads prior art
-(:mod:`.csharp_member_reads`): a self-contained, regex-driven scan over
-raw source text that emits conservative graph edges after the regular
-import resolution phases ran.
+This is the JVM binding of the shared implicit-scope scan
+(:mod:`.scope_scan`): that module owns the identifier scan, the
+one-declaring-file rule and the edge emission; this one supplies the package
+index, the default-import skip list and the JVM shadowing rule.
 
 For each JVM file A in a multi-file package, every capitalized
 identifier in A's source is checked against the package's declared
@@ -41,16 +41,17 @@ separately and any false positive is diagnosable at the source.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from ..cohesion import SAME_PACKAGE_HINT
+from .scope_scan import FileScope, ScopeTier, collect_source_texts, emit_scope_edges
 
 if TYPE_CHECKING:
     import networkx as nx
 
     from ..resolvers.jvm_workspace import JvmWorkspaceIndex
 
-# Capitalized identifier — candidate type reference.
-_TYPE_IDENT_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
+_JVM_LANGUAGES = ("java", "kotlin", "scala")
 
 # ``import a.b.C`` / ``import static a.b.C.d`` — collect the simple type
 # name so explicitly-imported names never produce a same-package edge.
@@ -99,7 +100,20 @@ _SCALA_DEFAULT_TYPES = frozenset({
     "Tuple3", "Range", "App", "Serializable", "Product", "Equals", "Unit",
 })
 
-_SAME_PACKAGE_HINT = "same_package"
+
+def _shadowed_names(text: str) -> frozenset[str]:
+    """Simple names *text* imports explicitly — those shadow a package sibling.
+
+    Wildcard and static-member imports shadow nothing here: neither yields a
+    capitalized simple name.
+    """
+    names = {
+        m.group(1).rstrip(".").rsplit(".", 1)[-1]
+        for m in _IMPORT_LINE_RE.finditer(text)
+    }
+    for m in _IMPORT_BRACES_RE.finditer(text):
+        names.update(re.findall(r"\w+", m.group(1)))
+    return frozenset(names)
 
 
 def resolve_jvm_same_package_refs(
@@ -116,68 +130,33 @@ def resolve_jvm_same_package_refs(
     """
     from ..resolvers.jvm_workspace import _JAVA_LANG_TYPES
 
-    skip_names = _JAVA_LANG_TYPES | _KOTLIN_DEFAULT_TYPES | _SCALA_DEFAULT_TYPES
-
-    count = 0
-    for path, text in texts.items():
+    def plan(path: str, text: str) -> FileScope | None:
         pkg_fqn = jvm_index.package_for_file(path)
         if not pkg_fqn:
-            continue
+            return None
         pkg = jvm_index.packages.get(pkg_fqn)
         if pkg is None or len(pkg.files) < 2:
-            continue
+            return None
+        # Not deduped: a file declaring a name twice reads as ambiguous.
+        # Changing that moves edges, so it needs its own measurement.
+        return FileScope(
+            tiers=(
+                ScopeTier(
+                    hint=SAME_PACKAGE_HINT,
+                    lookup=lambda ident: pkg.exported_top_level.get(ident, ()),
+                ),
+            ),
+            shadowed=_shadowed_names(text),
+        )
 
-        # Simple names this file already imports explicitly — an explicit
-        # import of com.other.Foo shadows a same-package Foo.
-        explicit_imports = {
-            m.group(1).rstrip(".").rsplit(".", 1)[-1]
-            for m in _IMPORT_LINE_RE.finditer(text)
-        }
-        for m in _IMPORT_BRACES_RE.finditer(text):
-            explicit_imports.update(re.findall(r"\w+", m.group(1)))
-
-        # target file → referenced type names
-        found: dict[str, list[str]] = {}
-        for ident in sorted(set(_TYPE_IDENT_RE.findall(text))):
-            if ident in skip_names or ident in explicit_imports:
-                continue
-            declaring = pkg.exported_top_level.get(ident)
-            if not declaring or len(declaring) != 1:
-                # Unknown in this package, or ambiguous (≥2 declaring
-                # files) — no edge to anyone.
-                continue
-            target = declaring[0]
-            if target == path:
-                continue
-            found.setdefault(target, []).append(ident)
-
-        for target, names in sorted(found.items()):
-            if not graph.has_node(path) or not graph.has_node(target):
-                continue
-            if graph.has_edge(path, target):
-                continue  # a real import (or stronger evidence) wins
-            graph.add_edge(
-                path,
-                target,
-                edge_type="imports",
-                imported_names=names,
-                hint_source=_SAME_PACKAGE_HINT,
-            )
-            count += 1
-
-    return count
+    return emit_scope_edges(
+        graph,
+        texts.items(),
+        plan,
+        skip_names=_JAVA_LANG_TYPES | _KOTLIN_DEFAULT_TYPES | _SCALA_DEFAULT_TYPES,
+    )
 
 
 def collect_jvm_source_texts(parsed_files: dict[str, Any]) -> dict[str, str]:
     """Read each parsed JVM file's source from disk, keyed by repo path."""
-    out: dict[str, str] = {}
-    for path, parsed in parsed_files.items():
-        if parsed.file_info.language not in ("java", "kotlin", "scala"):
-            continue
-        try:
-            out[path] = Path(parsed.file_info.abs_path).read_text(
-                encoding="utf-8", errors="ignore"
-            )
-        except OSError:
-            continue
-    return out
+    return collect_source_texts(parsed_files, _JVM_LANGUAGES)
