@@ -41,6 +41,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..type_names import bare_type_name
+
 if TYPE_CHECKING:
     import networkx as nx
 
@@ -74,12 +76,6 @@ _PRIMARY_TYPE_RE = re.compile(
 _READS_CONFIDENCE = 0.6
 
 
-def _head_type(raw: str) -> str:
-    """Strip generic parameters / namespace prefix to a bare identifier."""
-    head = raw.split("<", 1)[0]
-    return head.rsplit(".", 1)[-1]
-
-
 def resolve_csharp_member_reads(
     graph: nx.DiGraph,
     cs_texts: dict[str, str],
@@ -108,7 +104,7 @@ def resolve_csharp_member_reads(
             type_name = m.group("type2") or m.group("type1")
             if not type_name:
                 continue
-            local_type[m.group("name")] = _head_type(type_name)
+            local_type[m.group("name")] = bare_type_name(type_name)
 
         primary_match = _PRIMARY_TYPE_RE.search(text)
         primary_type = primary_match.group("name") if primary_match else None

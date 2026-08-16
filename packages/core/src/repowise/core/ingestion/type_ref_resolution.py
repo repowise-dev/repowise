@@ -254,10 +254,11 @@ def _resolve_go_type_refs(
         return 0
 
     from .cohesion import SAME_PACKAGE_HINT
-    from .parser_helpers import _GO_BUILTIN_TYPES
+    from .language_data import get_builtin_types
     from .resolvers.go_workspace import get_or_build_go_index
 
     index = get_or_build_go_index(ctx)
+    go_builtin_types = get_builtin_types("go")
     from_path = parsed.file_info.path
 
     # Candidate defining files: same-package siblings (referenced with no
@@ -286,7 +287,7 @@ def _resolve_go_type_refs(
     same_file_refs: set[str] = set()
     for ref in parsed.type_refs:
         name = ref.type_name
-        if not name or name in _GO_BUILTIN_TYPES:
+        if not name or name in go_builtin_types:
             continue
         # Check cross-file candidates first.
         target = _find_go_type_file(name, sorted_candidates, defined_names)
@@ -394,10 +395,11 @@ def _resolve_c_type_refs(
     if not parsed.type_refs:
         return 0
 
-    from .parser_helpers import _C_BUILTIN_TYPES
+    from .language_data import get_builtin_types
 
     from_path = parsed.file_info.path
     is_cpp = parsed.file_info.language == "cpp"
+    c_builtin_types = get_builtin_types("c")
 
     import_targets: set[str] = set()
     for imp in parsed.imports:
@@ -422,7 +424,7 @@ def _resolve_c_type_refs(
     seen_targets: set[tuple[str, str]] = set()
     for ref in parsed.type_refs:
         name = ref.type_name
-        if not name or name in _C_BUILTIN_TYPES:
+        if not name or name in c_builtin_types:
             continue
         if is_cpp and name in _CPP_STL_HEAD_NAMES:
             continue

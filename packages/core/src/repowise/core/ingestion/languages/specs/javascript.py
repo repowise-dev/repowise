@@ -1,6 +1,7 @@
 """LanguageSpec for javascript (extracted from the registry data table)."""
 
 from ..spec import LanguageSpec
+from .typescript import BUILTIN_TYPES as _TS_BUILTIN_TYPES
 
 SPEC = LanguageSpec(
     tag="javascript",
@@ -71,5 +72,8 @@ SPEC = LanguageSpec(
         }
     ),
     builtin_parents=frozenset({"Error", "Object"}),
+    # Same TS extractor and type grammar as typescript.py, so the same
+    # builtin set applies.
+    builtin_types=_TS_BUILTIN_TYPES,
     color_hex="#F1E05A",
 )

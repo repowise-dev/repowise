@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {"build", "target", "out", "node_modules", ".git", ".gradle", ".idea"}
@@ -119,7 +120,7 @@ class JvmDynamicHints(DynamicHintExtractor):
 
             for match in _CLASS_FORNAME_RE.finditer(text):
                 fqn = match.group(1)
-                target = fqn_to_file.get(fqn) or type_to_file.get(fqn.rsplit(".", 1)[-1])
+                target = fqn_to_file.get(fqn) or type_to_file.get(bare_type_name(fqn))
                 _emit(rel, target, "class_forname")
 
             for match in _MOCKITO_RE.finditer(text):
