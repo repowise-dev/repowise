@@ -360,7 +360,7 @@ class FileTraverser:
         self.repo_root = repo_root.resolve()
         self.max_file_size_bytes = max_file_size_kb * 1024
         self._extra_ignore_filename = extra_ignore_filename
-        self._gitignore = _load_gitignore_spec(self.repo_root)
+        self._gitignore = load_gitignore_spec(self.repo_root)
         self._extra_ignore = _load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
         self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
@@ -1182,13 +1182,18 @@ def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
     return pathspec.PathSpec(patterns)
 
 
-def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
+def load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
     """Root ignore spec: ``.gitignore`` merged with ``.git/info/exclude``.
 
     ``info/exclude`` is git's local-only ignore file — paths excluded there
     (scratch dirs, private checkouts) are invisible to ``git status`` and
     must be equally invisible to the index, or local-only files leak into
     the graph, blast-radius lists, and generated docs.
+
+    Public because :mod:`repowise.core.fs_walk` deliberately does not read
+    ignore files — every repo-wide scan that must respect them (the index
+    traversal here, ADR discovery in the decision extractor) pairs a pruned
+    walk with this spec.
     """
     lines: list[str] = []
     for ignore_file in (

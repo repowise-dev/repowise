@@ -9,8 +9,61 @@ release history.
 
 ## 0.8.0
 
-A small release. The webviews compile the shared Repowise UI at build time, so
-these arrived with a rebuild rather than with edits to the extension itself.
+The views are on the current design language, and the risk panel now leads with
+where a change lands rather than with how big it is. Much of the rest arrived
+with a rebuild: the webviews compile the shared Repowise UI at build time, so
+improvements to the shared components ship here when the extension is rebuilt.
+
+**Requires repowise 0.43.0 or newer.** The risk panel reads a payload field no
+earlier server sends, so the status bar flags an older one and asks you to
+upgrade with `pip install --upgrade repowise`.
+
+### Design language
+
+- Two local copies of the health score colour called anything at or above 7.5
+  healthy-green, while the canonical bands start Healthy at 8 and the shared
+  ramp paints 7.5 to 7.99 amber. The health panel therefore printed a file's
+  score in green beside a map colouring the same file amber. Both copies are
+  gone, so the figure, the map and the web app's file table now agree.
+- High-contrast themes get a high-contrast treatment. They used to fall through
+  to the ordinary ramps, so a user who explicitly asked for high contrast got
+  0.07-alpha hairlines and ordinary tertiary text. The brand palette stays:
+  editor greys have no vocabulary for a health band, and remapping would trade
+  contrast for making the map unreadable as data.
+- Health takes the same lede, map, lens switcher, legend and trend the web page
+  leads with. Churn is a lens over the map rather than its own quadrant chart,
+  fetched on selection and joined onto the map rows by path.
+- Settings takes the shared rows, switches, inputs and save indicator, and
+  stamps each write so a slow response cannot undo a newer one. The optimistic
+  update and its rollback are unchanged.
+- The risk view's thirty card wrappers, none of them clickable, become
+  hairlines and vertical rhythm, with the score on the shared page lede. The
+  home sidebar's two statistics lose their card chrome; the seven launchers
+  keep theirs, because those are navigation buttons.
+- Decisions takes the shared status mark, whose `proposed` colour differed from
+  the local copy's.
+
+### Change risk
+
+- The panel leads with the repo-relative ranking. The classification and
+  percentile are the headline, the raw 0-10 score drops to a secondary line
+  that names the corpus it is anchored to, and a new note says which of the
+  touched files have broken before and where that sits among the repo's own
+  fix-bearing files. That is the signal the score cannot see: the score
+  restates diff size, so a small edit to a file that keeps breaking used to
+  read safer than a large mechanical change to files that never have.
+- `probability` is gone from the payload. It was the score divided by ten with
+  extra decimal places, presented as a second, more precise-looking number for
+  the same quantity.
+- The language-model tool description says what the tool now returns, so an
+  agent asking for it is told to read the fix history before the score.
+
+### Decisions
+
+- Dismiss dismisses. The button sent "deprecated", which the engine keeps
+  re-deriving on every re-index, so dismissing a wrong proposal did not stick.
+  A Dismissed filter comes with it, without which a dismissal is a one-way door
+  with nothing able to show or undo it.
 
 ### Docs
 

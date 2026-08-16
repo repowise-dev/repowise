@@ -48,6 +48,8 @@ import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
 from repowise.core.analysis.decisions.scope import resolve_module_nodes
+from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+from repowise.core.ingestion.traverser import load_gitignore_spec
 
 from .prompts import (
     _SYSTEM_PROMPT,
@@ -248,23 +250,10 @@ MARKER_RE = re.compile(
     r"\s*:\s*(?P<text>.+)",
 )
 
-_SKIP_DIRS = frozenset(
-    {
-        ".git",
-        "node_modules",
-        "__pycache__",
-        ".repowise",
-        ".venv",
-        "venv",
-        ".tox",
-        ".mypy_cache",
-        ".pytest_cache",
-        "dist",
-        "build",
-        ".next",
-        ".nuxt",
-    }
-)
+# fs_walk's never-source set plus the two derived-output names the decision
+# walks have always skipped: a bundled ``dist``/``build`` copy of a source file
+# would double every marker it contains.
+_SKIP_DIRS = PRUNED_DIRS | {"dist", "build"}
 
 # Regex to detect fenced code blocks in markdown files (``` or ~~~).
 _CODE_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -339,17 +328,20 @@ DECISION_SIGNAL_KEYWORDS = [
 # ADR / PR / comment source configuration
 # ---------------------------------------------------------------------------
 
-# Directories conventionally holding Architecture Decision Records, plus a
-# filename glob for ADRs that live loose. Globbed relative to the repo root.
-_ADR_DIR_GLOBS = (
-    "adr/*.md",
-    "adrs/*.md",
-    "docs/adr/*.md",
-    "docs/adrs/*.md",
-    "docs/decisions/*.md",
-    "decisions/*.md",
-    "architecture/*.md",
-    "doc/adr/*.md",
+# Conventional ADR homes, as repo-root-relative posix directories. Every ``.md``
+# directly inside one is a candidate regardless of filename; matching is on the
+# whole relative dir, so a stray ``vendor/x/adr/`` does not qualify.
+_ADR_DIRS = frozenset(
+    {
+        "adr",
+        "adrs",
+        "docs/adr",
+        "docs/adrs",
+        "docs/decisions",
+        "decisions",
+        "architecture",
+        "doc/adr",
+    }
 )
 _MAX_ADR_FILES = 60
 
@@ -788,49 +780,53 @@ class DecisionExtractor:
     def _find_adr_files(self) -> list[Path]:
         """Collect candidate ADR files from the conventional dirs + name match.
 
-        Performance: the conventional-dir globs are shallow (one directory
-        each). The loose ``*adr*.md`` scan uses a pruned ``os.walk`` rather than
-        a recursive ``**`` glob so it never descends into ``node_modules`` /
-        ``.git`` / ``.venv`` on a large repo, and bails as soon as the cap is
-        hit.
+        One :func:`walk_repo` pass answers both halves: files directly under a
+        conventional ADR directory (root-anchored, as the old shallow globs
+        were) rank ahead of loose ``*adr*.md`` name matches, and the cap is
+        applied to the two buckets in that order.
+
+        Ignored paths are excluded. :mod:`repowise.core.fs_walk` prunes junk
+        dirs and nested repos but deliberately reads no ignore files, so
+        gitignore/``info/exclude`` handling is this function's job: without it
+        a scratch dir that ``git status`` cannot see contributes ``active``
+        decision records citing files no clone of the repo contains.
         """
-        import os
+        ignore = load_gitignore_spec(self._repo_path)
+        conventional: list[Path] = []
+        loose: list[Path] = []
+        for dirpath, dirnames, filenames in walk_repo(self._repo_path, prune_dirs=_SKIP_DIRS):
+            rel_dir = dirpath.relative_to(self._repo_path).as_posix()
+            rel_dir = "" if rel_dir == "." else rel_dir
+            # Prune ignored and packaging-metadata subtrees in place. Ignored
+            # DIRECTORIES match with a trailing slash, as git matches them.
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if not d.endswith((".egg-info", ".dist-info"))
+                and not ignore.match_file(f"{rel_dir}/{d}/" if rel_dir else f"{d}/")
+            ]
 
-        seen: set[Path] = set()
-        files: list[Path] = []
-        for pattern in _ADR_DIR_GLOBS:
-            for p in self._repo_path.glob(pattern):
-                if p.is_file() and p not in seen:
-                    seen.add(p)
-                    files.append(p)
+            in_adr_dir = rel_dir in _ADR_DIRS
+            for fname in filenames:
+                low = fname.lower()
+                if not low.endswith(".md"):
+                    continue
+                if in_adr_dir:
+                    bucket = conventional
+                elif "adr" in low and low != "readme.md" and "template" not in low:
+                    bucket = loose
+                else:
+                    continue
+                if ignore.match_file(f"{rel_dir}/{fname}" if rel_dir else fname):
+                    continue
+                bucket.append(dirpath / fname)
 
-        if len(files) < _MAX_ADR_FILES:
-            for dirpath, dirnames, filenames in os.walk(self._repo_path):
-                # Prune skip-listed + nested-git subtrees in place.
-                dirnames[:] = [
-                    d
-                    for d in dirnames
-                    if d not in _SKIP_DIRS
-                    and not d.endswith((".egg-info", ".dist-info"))
-                    and not (Path(dirpath) / d / ".git").exists()
-                ]
-                for fname in filenames:
-                    low = fname.lower()
-                    if not low.endswith(".md") or "adr" not in low:
-                        continue
-                    if low == "readme.md" or "template" in low:
-                        continue
-                    p = Path(dirpath) / fname
-                    if p in seen:
-                        continue
-                    seen.add(p)
-                    files.append(p)
-                    if len(files) >= _MAX_ADR_FILES:
-                        break
-                if len(files) >= _MAX_ADR_FILES:
-                    break
+            if len(conventional) + len(loose) >= _MAX_ADR_FILES:
+                break
 
-        return files[:_MAX_ADR_FILES]
+        # No dedup pass: walk_repo yields each directory once, and each file
+        # lands in exactly one bucket.
+        return [*conventional, *loose][:_MAX_ADR_FILES]
 
     def _parse_adr(self, content: str, rel_path: str) -> ExtractedDecision | None:
         """Deterministically parse a structured ADR. Returns None if unstructured.
@@ -1432,31 +1428,20 @@ class DecisionExtractor:
     def _iter_source_files(self):
         """Yield source files under repo_path, skipping irrelevant dirs.
 
-        Uses os.walk so we can prune entire subtrees (nested git repos,
-        node_modules, etc.) without descending into them. When the repo is a git
-        checkout, the walk is further restricted to git-tracked files so
-        untracked / excluded working directories never contribute decisions;
-        gitless indexes fall back to the full walk.
+        Walks via :func:`walk_repo`, which prunes junk subtrees and nested git
+        repos (separate codebases that must not contribute decisions to the
+        parent) without descending into them. When the repo is a git checkout,
+        the walk is further restricted to git-tracked files so untracked /
+        excluded working directories never contribute decisions; gitless
+        indexes fall back to the full walk.
         """
-        import os
-
         tracked = self._tracked_files()
 
-        for dirpath, dirnames, filenames in os.walk(self._repo_path):
-            # Prune skip-listed directories in-place so os.walk won't descend
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in _SKIP_DIRS
-                # Skip setuptools build metadata: PKG-INFO embeds the README
-                # verbatim, so example marker lines in docs become spurious
-                # decisions. Same risk for *.dist-info from wheels.
-                and not d.endswith(".egg-info")
-                and not d.endswith(".dist-info")
-                # Skip nested git repositories — they are separate codebases
-                # and should not contribute decisions to the parent repo.
-                and not (Path(dirpath) / d / ".git").exists()
-            ]
+        for dirpath, dirnames, filenames in walk_repo(self._repo_path, prune_dirs=_SKIP_DIRS):
+            # Skip setuptools build metadata: PKG-INFO embeds the README
+            # verbatim, so example marker lines in docs become spurious
+            # decisions. Same risk for *.dist-info from wheels.
+            dirnames[:] = [d for d in dirnames if not d.endswith((".egg-info", ".dist-info"))]
 
             for fname in filenames:
                 fpath = Path(dirpath) / fname
