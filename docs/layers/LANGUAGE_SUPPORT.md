@@ -304,6 +304,10 @@ Both dialects parse: GDScript 4 (`@export var`) and GDScript 3 (`export var`,
   `class_name X, "res://icon.png"` reference real files that are not recorded.
 - **Setter/getter bodies are not symbols**, so calls made inside one attribute
   to the enclosing `variable` symbol.
+- **Lambdas are not symbols.** A `lambda` is its own node type and may be a
+  variable's value or a call argument, so callback-heavy code
+  (`tween.finished.connect(func(): ...)`) is invisible to the symbol layer.
+  A lambda bound to a variable still yields the *variable* as a symbol.
 - **Code health: duplication markers DO run** (the clone tokenizer needs only a
   grammar), but complexity, performance and dataflow dialects are not
   registered — that gap is what keeps GDScript at Good rather than Full.

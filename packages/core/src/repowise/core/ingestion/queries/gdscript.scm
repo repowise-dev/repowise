@@ -3,8 +3,16 @@
 ; tree-sitter-gdscript (PrestonKnopp/tree-sitter-gdscript) >= 6.1
 ; =============================================================================
 ;
-; Node-shape reference, read off src/node-types.json + grammar.js at 6.1.0
-; (not guessed -- every field name below is verified against those two files):
+; Node-shape reference for the constructs this file captures, read off
+; src/node-types.json + grammar.js at 6.1.0 (not guessed -- every field name
+; below is verified against those two files).
+;
+; NOT a complete inventory of the grammar. Deliberately absent, because
+; nothing here matches them: `get_node` ($Path / %Unique), `annotation`
+; (@export / @rpc / @icon and their arguments), `lambda`, and setget's
+; `set_body` / `get_body`. Each is a documented gap in
+; docs/layers/LANGUAGE_SUPPORT.md, not an oversight -- do not read the list
+; below as "these are all the node types that exist".
 ;
 ;   source                     := top-level; statements are DIRECT children
 ;                                 (_compound_statement is an inlined rule, so
