@@ -51,8 +51,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-from ...dead_code.file_reachability import BARREL_FILENAMES
 from ....test_paths import is_test_related_path
+from ...dead_code.file_reachability import BARREL_FILENAMES
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
 

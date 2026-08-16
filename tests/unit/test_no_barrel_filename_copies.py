@@ -5,9 +5,7 @@ import pathlib
 
 import pytest
 
-from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
 from repowise.core.analysis.health.refactoring.split_file import _is_generated_path
-
 
 _KNOWN: frozenset[str] = frozenset(
     {
@@ -23,12 +21,14 @@ _BARREL_MARKERS = {"__init__.py", "index.ts", "index.js", "mod.rs"}
 
 
 def _check_assignment(node: ast.AST) -> list[str]:
-    if isinstance(node, ast.Assign):
-        if any(isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES" for target in node.targets):
-            return ["BARREL_FILENAMES"]
-    elif isinstance(node, ast.AnnAssign):
-        if isinstance(node.target, ast.Name) and node.target.id == "BARREL_FILENAMES":
-            return ["BARREL_FILENAMES"]
+    if (isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES" for target in node.targets
+    )) or (
+        isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "BARREL_FILENAMES"
+    ):
+        return ["BARREL_FILENAMES"]
     return []
 
 
