@@ -103,6 +103,41 @@ describe("FilePageHeader marks", () => {
   });
 });
 
+describe("FilePageHeader documentation door", () => {
+  // This link used to live inside the Doc tab, which made the file page's one
+  // way back to the wiki reachable only from the tab that already renders the
+  // wiki. In the header it is on screen from Health, Dependencies and the rest.
+  it("offers the documentation page when there is one", () => {
+    render(
+      <FilePageHeader
+        data={makeData()}
+        linkPrefix="/repos/r1"
+        wikiHref="/repos/r1/docs?page=file_page%3Aa.ts"
+      />,
+    );
+    const link = screen.getByRole("link", { name: /Read in Docs/i });
+    expect(link.getAttribute("href")).toBe("/repos/r1/docs?page=file_page%3Aa.ts");
+  });
+
+  it("names the surface, not the tab", () => {
+    // "Documentation" is the tab, forty pixels below this and staying on the
+    // page. A door out wearing near enough the same name is two controls for
+    // one subject; "Docs" is what the nav calls the place it goes.
+    render(
+      <FilePageHeader data={makeData()} linkPrefix="/repos/r1" wikiHref="/x" />,
+    );
+    expect(screen.queryByRole("link", { name: /Documentation/i })).toBeNull();
+  });
+
+  it("renders no door when the file has no page", () => {
+    // Rule 21. The docs reader replies to a `?page=` it cannot find by naming
+    // the missing page, which is a fine answer to a reader who typed it and a
+    // poor one to a link this header offered — and here we already know.
+    render(<FilePageHeader data={makeData()} linkPrefix="/repos/r1" />);
+    expect(screen.queryByRole("link", { name: /Read in Docs/i })).toBeNull();
+  });
+});
+
 describe("fileTabsFor", () => {
   it("badges only what there is something to say about", () => {
     const tabs = fileTabsFor(makeData());

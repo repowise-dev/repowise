@@ -114,8 +114,15 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
     if (pageParam) {
       // Set straight from the URL without waiting for the list: a page id is
       // enough to fetch it, so the reading column and the tree load side by
-      // side rather than one behind the other. An id that turns out not to
-      // exist resolves to the reader's empty state, same as before.
+      // side rather than one behind the other.
+      //
+      // Deliberately no fallback to the overview when the id resolves to
+      // nothing. Opening a different page would look like the link worked and
+      // put a reader who asked about one file in front of another's prose;
+      // the reader says which page was missing instead. Every caller that
+      // builds `?page=file_page:<path>` for an arbitrary path — the hotspot
+      // and symbol row actions, the file card — depends on that, because page
+      // selection is budgeted and most files have no page.
       setSelectedPageId(pageParam);
       return;
     }
@@ -299,6 +306,13 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
           // Reading-column skeleton while its own page is in flight, and while
           // the list is still deciding which page to open on.
           isLoading={pageLoading || (!selectedPageId && isLoading)}
+          // The id resolved to nothing. Guarded on `!pageLoading` so the
+          // "no page for this one" line cannot flash over a request still in
+          // flight, and on `!selectedPage` so it never shows over a page that
+          // did land.
+          missingPageId={
+            selectedPageId && !pageLoading && !selectedPage ? selectedPageId : undefined
+          }
           onSelectPage={handleSelectPage}
           persona={persona}
           sidebarOpen={sidebarOpen}

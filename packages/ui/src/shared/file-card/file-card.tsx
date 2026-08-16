@@ -11,6 +11,7 @@ import {
   Flame,
   Users,
   ExternalLink,
+  ArrowUpRight,
 } from "lucide-react";
 import { Badge } from "../../ui/badge";
 import { formatLOC } from "../../lib/format";
@@ -240,6 +241,13 @@ export function FileCard({ data, links, hideHeader = false, className }: FileCar
 
       {links && Object.values(links).some(Boolean) && (
         <div className="flex flex-wrap gap-1.5 pt-2 border-t border-[var(--color-border-default)]">
+          {/* First, and the only one that leads anywhere this card is a
+              summary of. Everything after it is a different surface filtered
+              to this path; this one is the file's own page. */}
+          {/* Not `FileText`: that icon is already the card's own header mark,
+              where it means "this card is about a file". Reusing it on a
+              button forty pixels below would make it identify nothing. */}
+          {links.file && <LinkButton href={links.file} icon={ArrowUpRight} label="File page" />}
           {links.graph && <LinkButton href={links.graph} icon={GitBranch} label="Graph" />}
           {links.docs && <LinkButton href={links.docs} icon={BookOpen} label="Docs" />}
           {links.symbols && <LinkButton href={links.symbols} icon={Code2} label="Symbols" />}

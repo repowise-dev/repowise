@@ -20,14 +20,22 @@ export interface BuildFilePanelsOptions {
   docSlot?: ReactNode;
   /** Shiki HTML with per-line `data-covered` attributes (Coverage tab). */
   coverageCodeHtml?: string | undefined;
-  /** Deep link into the docs reading surface. */
-  wikiHref?: string | undefined;
   /**
    * The Health panel. It is the one tab body that is genuinely interactive, so
    * the host supplies it already wrapped in whatever client component owns the
    * triage callback — a function cannot cross a server boundary as a prop.
    */
   healthPanel?: ReactNode;
+  /**
+   * Router link, forwarded to every tab body that renders one.
+   *
+   * The tab bodies are server components and stay server components: a
+   * `next/link` element rendered *from* a server component is still server
+   * markup, so this does not drag any of them back across the hydration
+   * boundary the way an `onClick` would. Threading it here rather than letting
+   * a body import a router is the same reason the Decisions tab already took
+   * it — `packages/ui` must not know what framework mounts it.
+   */
   LinkComponent?: ElementType | undefined;
 }
 
@@ -53,22 +61,34 @@ export function buildFilePanels({
   symbolHref,
   docSlot,
   coverageCodeHtml,
-  wikiHref,
   healthPanel,
   LinkComponent,
 }: BuildFilePanelsOptions): Partial<Record<FilePageTab, ReactNode>> {
+  const link = LinkComponent ? { LinkComponent } : {};
   return {
-    overview: <FileOverviewTab data={data} symbolHref={symbolHref} fileHref={fileHref} />,
-    doc: <FileDocTab wikiPage={data.wiki_page} docSlot={docSlot} wikiHref={wikiHref} />,
+    overview: (
+      <FileOverviewTab
+        data={data}
+        symbolHref={symbolHref}
+        fileHref={fileHref}
+        {...link}
+      />
+    ),
+    doc: <FileDocTab wikiPage={data.wiki_page} docSlot={docSlot} />,
     health: healthPanel,
     history: (
-      <FileHistoryTab git={data.git} linkPrefix={linkPrefix} partnerHref={fileHref} />
+      <FileHistoryTab
+        git={data.git}
+        linkPrefix={linkPrefix}
+        partnerHref={fileHref}
+        {...link}
+      />
     ),
     decisions: (
       <FileDecisionsTab
         decisions={data.governing_decisions ?? []}
         linkPrefix={linkPrefix}
-        {...(LinkComponent ? { LinkComponent } : {})}
+        {...link}
       />
     ),
     graph: (
@@ -78,6 +98,7 @@ export function buildFilePanels({
         linkPrefix={linkPrefix}
         fileHref={fileHref}
         symbolHref={symbolHref}
+        {...link}
       />
     ),
     coverage: (

@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { AlertTriangle } from "lucide-react";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { FilesIndex } from "@repowise-dev/ui/files";
+import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { getFilesIndex } from "@/lib/api/files";
 
 export function FilesExplorer({ repoId }: { repoId: string }) {
@@ -15,8 +16,7 @@ export function FilesExplorer({ repoId }: { repoId: string }) {
   );
 
   const fileHref = useCallback(
-    (path: string) =>
-      `/repos/${repoId}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
+    (path: string) => fileEntityPath(`/repos/${repoId}`, path),
     [repoId],
   );
 

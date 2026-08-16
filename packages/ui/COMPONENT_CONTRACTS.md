@@ -930,6 +930,49 @@ Bands come from `bandForScore` (`@repowise-dev/types/health`), never from
 sits one click from the treemap and the health map, which both paint the
 canonical three.
 
+**The doors, and who owns each end.** The page had thirty surfaces linking
+into it and almost nothing linking out, and the docs surface — the one that
+knows a page documents *this exact path* — linked to it zero times.
+
+- `FilePageHeader` takes `wikiHref`. It used to live in the Doc tab, which
+  made the only link to the wiki reachable only from the tab that already
+  renders the wiki. Pass it **only when a page exists** — this route already
+  knows, and the reader's missing-page reply is for someone who typed the id,
+  not for a link the product offered. It reads "Read in Docs", naming the
+  surface the nav names: "Documentation" is the tab forty pixels below it, and
+  two controls with near enough one name, one staying and one leaving, is the
+  two-verbs-one-subject problem relocated rather than fixed.
+- `DocsReader` takes `buildFileHref`, and renders the door only for a
+  `file_page`. `page.target_path` is the repo-relative path the file route
+  takes, so nothing parses an id. Optional, so a host with no file route
+  (the VS Code webview) renders no door rather than a broken one.
+- `buildFilePanels` forwards `LinkComponent` to Overview, History, Decisions
+  and Dependencies. **This does not move the hydration boundary**: a
+  `next/link` element *rendered from* a server component is still server
+  markup. An `onClick` would not be — that is what would drag a body back
+  into the client bundle.
+- Because those cross-file links are soft navigations now, the shell's
+  `key` on the file path is load-bearing rather than defensive. Without it a
+  file → file click keeps React's tab state at the same tree position and
+  strands the active tab out of sync with the URL.
+
+Route builders are `fileEntityPath`, `symbolEntityPath`, `filePageId` and
+`docsPagePath` from `shared/entity`. `filePageId` exists because the
+`"file_page:<path>"` id has to agree with a backend primary key and was
+spelled out at five call sites; `pageHref` derives its parse prefix from the
+builder so the two cannot drift. The docs surface reads `?page=`, never
+`?file=` — three surfaces shipped a `?file=` link that nothing read, which
+meant they silently opened the repo overview and looked like they had worked.
+
+Repointing them at `?page=` puts real traffic on ids that resolve to nothing,
+because page selection is budgeted and most files have no page. So
+`DocsReader` takes `missingPageId` and answers by naming the page that is
+missing, instead of the "Select a page, choose one from the tree" prompt meant
+for a reader who asked for nothing. `docs-explorer` sets it only once the
+fetch has settled, or the line flashes over a request about to succeed. It
+deliberately does **not** fall back to the overview: a reader who asked about
+one file must not silently land in another file's prose.
+
 ### `dashboard/attention-panel` â€” `AttentionPanel`
 
 Categorised list of items needing developer attention. Re-exports the

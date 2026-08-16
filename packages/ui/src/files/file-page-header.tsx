@@ -11,6 +11,23 @@ export interface FilePageHeaderProps {
   data: FileDetailResponse;
   /** Route prefix for the repo, e.g. `/repos/:id`. */
   linkPrefix: string;
+  /**
+   * Deep link into the docs reading surface for this file's page.
+   *
+   * It lives in the header rather than in the Doc tab, where it used to be the
+   * only way to reach the wiki from here: a reader on Health or Dependencies
+   * had no idea a documentation page existed, and the one link to it was
+   * behind the tab that already shows the page. Omitted when the file has no
+   * page: the docs reader tells a reader that the page they asked for was
+   * never written, which is a fine answer to a question they asked and a poor
+   * one to a link they were offered. Rule 21.
+   *
+   * Named for the surface the nav names ("Docs"), not for the tab. The tab is
+   * "Documentation" and sits forty pixels below this; two controls with near
+   * enough the same name, one staying on the page and one leaving it, is the
+   * two-verbs-one-subject problem relocated rather than fixed.
+   */
+  wikiHref?: string | undefined;
   LinkComponent?: React.ElementType | undefined;
 }
 
@@ -31,7 +48,12 @@ export interface FilePageHeaderProps {
  * health map all paint: a 6.9 read one way here and another 200px away on the
  * map that links to this page.
  */
-export function FilePageHeader({ data, linkPrefix, LinkComponent }: FilePageHeaderProps) {
+export function FilePageHeader({
+  data,
+  linkPrefix,
+  wikiHref,
+  LinkComponent,
+}: FilePageHeaderProps) {
   const A = LinkComponent ?? "a";
   const score = data.health.metric?.score;
   const dir = data.file_path.slice(0, data.file_path.lastIndexOf("/") + 1);
@@ -40,9 +62,23 @@ export function FilePageHeader({ data, linkPrefix, LinkComponent }: FilePageHead
   return (
     <header className="flex flex-col gap-6">
       <div>
-        <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          File
-        </p>
+        {/* Eyebrow left, the one door out right. The pairing is deliberate:
+            both are page-level, neither is about the file's numbers, and
+            putting the link here means it is on screen from whichever tab you
+            arrive on rather than only from the one that duplicates it. */}
+        <div className="flex items-baseline justify-between gap-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            File
+          </p>
+          {wikiHref && (
+            <A
+              href={wikiHref}
+              className="shrink-0 text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
+            >
+              Read in Docs <span aria-hidden>&rarr;</span>
+            </A>
+          )}
+        </div>
         {/* `break-all`, never an ellipsis: a path is the identity of this page
             and rule 6 puts no truncation in the primary column. The directory
             is set quieter than the leaf so a deep path still reads as one

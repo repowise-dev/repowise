@@ -4,7 +4,11 @@ import Link from "next/link";
 import { bundledLanguages, getSingletonHighlighter, type BundledLanguage } from "shiki";
 import { getFileContent, getFileDetail } from "@/lib/api/files";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
-import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity";
+import {
+  docsPagePath,
+  fileEntityPath,
+  symbolEntityPath,
+} from "@repowise-dev/ui/shared/entity";
 import {
   asFilePageTab,
   buildFilePanels,
@@ -159,6 +163,14 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
     refetchTabs.push("coverage");
   }
 
+  // Only when a page actually exists. The docs reader answers a `?page=` it
+  // cannot find by naming the page that is missing, which is the right reply
+  // to a reader who typed it and the wrong one to a link this page offered:
+  // we already know here whether there is anything to open.
+  const wikiHref = detail.wiki_page
+    ? docsPagePath(prefix, detail.wiki_page.id)
+    : undefined;
+
   const panels = buildFilePanels({
     data: detail,
     linkPrefix: prefix,
@@ -168,9 +180,6 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
       ? { docSlot: <WikiMarkdown content={detail.wiki_page.content} /> }
       : {}),
     coverageCodeHtml,
-    ...(detail.wiki_page
-      ? { wikiHref: `${prefix}/docs?page=${encodeURIComponent(detail.wiki_page.id)}` }
-      : {}),
     healthPanel: (
       <FileHealthPanel
         repoId={id}
@@ -192,7 +201,14 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
         // same tree position and the active tab strands out of sync with the
         // URL the new page was rendered for.
         key={detail.file_path}
-        header={<FilePageHeader data={detail} linkPrefix={prefix} LinkComponent={Link} />}
+        header={
+          <FilePageHeader
+            data={detail}
+            linkPrefix={prefix}
+            wikiHref={wikiHref}
+            LinkComponent={Link}
+          />
+        }
         tabs={tabs}
         panels={panels}
         initialTab={initialTab}

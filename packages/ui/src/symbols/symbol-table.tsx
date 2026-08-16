@@ -20,6 +20,7 @@ import { EmptyState } from "../shared/empty-state";
 import { ResultsFooter } from "../shared/results-footer";
 import { RowActions } from "../shared/row-actions";
 import { VirtualizedTable } from "../shared/virtualized-table";
+import { docsPagePath, filePageId } from "../shared/entity/routes";
 import { truncatePath } from "../lib/format";
 import { cn } from "../lib/cn";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
@@ -388,7 +389,11 @@ export function SymbolTable({
                         {
                           icon: BookOpen,
                           label: "Docs",
-                          href: `${prefix}/docs?file=${encodeURIComponent(sym.file_path)}`,
+                          // `?file=` was read by nothing, so this opened the
+                          // repo overview. `?page=` is the docs reader's
+                          // parameter and takes a wiki page id; a file with no
+                          // page gets told so by name.
+                          href: docsPagePath(prefix, filePageId(sym.file_path)),
                         },
                       ]}
                     />

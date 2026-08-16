@@ -1,3 +1,4 @@
+import type { ElementType } from "react";
 import { Network } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
@@ -13,17 +14,27 @@ interface FileGraphTabProps {
   fileHref: (path: string) => string;
   /** Build a symbol-page href for a neighbor symbol node. */
   symbolHref: (symbolId: string) => string;
+  /**
+   * Router link. Every href here leaves this page, and a neighbour link is the
+   * one that goes file page → file page: a full document load on a surface
+   * whose whole point is walking the graph. Defaults to `<a>` so the package
+   * stays framework-neutral.
+   */
+  LinkComponent?: ElementType | undefined;
 }
 
 function NeighborList({
   neighbors,
   fileHref,
   symbolHref,
+  LinkComponent = "a",
 }: {
   neighbors: FileGraphNeighbor[];
   fileHref: (path: string) => string;
   symbolHref: (symbolId: string) => string;
+  LinkComponent?: ElementType | undefined;
 }) {
+  const A = LinkComponent;
   if (neighbors.length === 0) {
     return <p className="text-sm text-[var(--color-text-tertiary)]">None in the indexed graph.</p>;
   }
@@ -61,12 +72,12 @@ function NeighborList({
             {isExternalNode ? (
               <div className="flex items-center gap-3">{row}</div>
             ) : (
-              <a
+              <A
                 href={href}
                 className="-mx-2 flex items-center gap-3 rounded px-2 transition-colors hover:bg-[var(--color-bg-elevated)]"
               >
                 {row}
-              </a>
+              </A>
             )}
             {n.imported_names.length > 0 && (
               <p
@@ -109,7 +120,9 @@ export function FileGraphTab({
   linkPrefix,
   fileHref,
   symbolHref,
+  LinkComponent = "a",
 }: FileGraphTabProps) {
+  const A = LinkComponent;
   if (!graph) {
     return (
       <EmptyState
@@ -142,15 +155,20 @@ export function FileGraphTab({
           </>
         }
         action={
-          <a
+          <A
             href={`${linkPrefix}/architecture?view=graph&node=${encodeURIComponent(filePath)}`}
             className="text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
           >
             Show in the dependency graph <span aria-hidden>→</span>
-          </a>
+          </A>
         }
       >
-        <NeighborList neighbors={graph.dependents} fileHref={fileHref} symbolHref={symbolHref} />
+        <NeighborList
+          neighbors={graph.dependents}
+          fileHref={fileHref}
+          symbolHref={symbolHref}
+          LinkComponent={LinkComponent}
+        />
       </FileSection>
 
       <FileSection
@@ -163,15 +181,20 @@ export function FileGraphTab({
           </>
         }
         action={
-          <a
+          <A
             href={`${linkPrefix}/architecture?view=symbols&file=${encodeURIComponent(filePath)}`}
             className="text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
           >
             View symbols <span aria-hidden>→</span>
-          </a>
+          </A>
         }
       >
-        <NeighborList neighbors={graph.dependencies} fileHref={fileHref} symbolHref={symbolHref} />
+        <NeighborList
+          neighbors={graph.dependencies}
+          fileHref={fileHref}
+          symbolHref={symbolHref}
+          LinkComponent={LinkComponent}
+        />
       </FileSection>
     </div>
   );

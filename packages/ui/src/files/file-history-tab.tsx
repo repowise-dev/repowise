@@ -1,3 +1,4 @@
+import type { ElementType } from "react";
 import { GitBranch } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
@@ -20,9 +21,17 @@ interface FileHistoryTabProps {
   linkPrefix: string;
   /** Build a file-page href for a co-change partner. */
   partnerHref: (path: string) => string;
+  /** Router link; defaults to `<a>` so the package stays framework-neutral. */
+  LinkComponent?: ElementType | undefined;
 }
 
-export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabProps) {
+export function FileHistoryTab({
+  git,
+  linkPrefix,
+  partnerHref,
+  LinkComponent = "a",
+}: FileHistoryTabProps) {
+  const A = LinkComponent;
   if (!git) {
     return (
       <EmptyState
@@ -118,7 +127,7 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
           <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
             {git.significant_commits.slice(0, 8).map((c) => (
               <li key={c.sha}>
-                <a
+                <A
                   href={`${linkPrefix}/commits?commit=${c.sha}`}
                   className="-mx-2 flex items-baseline gap-3 rounded px-2 py-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
                 >
@@ -131,7 +140,7 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
                   <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)]">
                     {c.date ? formatRelativeTime(c.date) : ""}
                   </span>
-                </a>
+                </A>
               </li>
             ))}
           </ul>
@@ -203,7 +212,7 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
           <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
             {git.co_change_partners.slice(0, 8).map((p) => (
               <li key={p.file_path}>
-                <a
+                <A
                   href={partnerHref(p.file_path)}
                   className="-mx-2 flex items-baseline justify-between gap-3 rounded px-2 py-2.5 transition-colors hover:bg-[var(--color-bg-elevated)]"
                 >
@@ -216,7 +225,7 @@ export function FileHistoryTab({ git, linkPrefix, partnerHref }: FileHistoryTabP
                   <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-text-tertiary)]">
                     {p.co_change_count}&times;
                   </span>
-                </a>
+                </A>
               </li>
             ))}
           </ul>

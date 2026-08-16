@@ -8,11 +8,9 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
-  /** Deep link into the docs reading surface. */
-  wikiHref?: string | undefined;
 }
 
-export function FileDocTab({ wikiPage, docSlot, wikiHref }: FileDocTabProps) {
+export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
   if (!wikiPage) {
     return (
       <EmptyState
@@ -29,26 +27,21 @@ export function FileDocTab({ wikiPage, docSlot, wikiHref }: FileDocTabProps) {
       {/* The freshness marker lives in the header, where it sits beside the
           score and is on screen from whichever tab you arrive on. Repeating it
           here would be a badge on a row that already carries one. What is
-          local to this tab is when the page was written and where to read it
-          full-width. */}
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        {wikiPage.updated_at && (
-          <span
-            className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
-            title={new Date(wikiPage.updated_at).toLocaleString()}
-          >
-            Written {formatRelativeTime(wikiPage.updated_at)}
-          </span>
-        )}
-        {wikiHref && (
-          <a
-            href={wikiHref}
-            className="ml-auto text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
-          >
-            Open in Documentation <span aria-hidden>→</span>
-          </a>
-        )}
-      </div>
+          local to this tab is when the page was written.
+
+          "Open in Documentation" used to sit here too, which made the one link
+          out of this page reachable only from the tab that already renders the
+          page. It is in the header now, so a reader on Health or Dependencies
+          can see it. Leaving a second copy here would be two doors to one
+          destination on one screen. */}
+      {wikiPage.updated_at && (
+        <p
+          className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
+          title={new Date(wikiPage.updated_at).toLocaleString()}
+        >
+          Written {formatRelativeTime(wikiPage.updated_at)}
+        </p>
+      )}
 
       {wikiPage.human_notes && (
         <div className="border-l-2 border-[var(--color-accent-primary)] pl-4">

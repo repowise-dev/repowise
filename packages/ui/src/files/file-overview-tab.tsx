@@ -1,3 +1,4 @@
+import type { ElementType } from "react";
 import { FileQuestion } from "lucide-react";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 import { isExternal, nodeKind } from "@repowise-dev/types";
@@ -12,6 +13,8 @@ interface FileOverviewTabProps {
   symbolHref: (symbolId: string) => string;
   /** Build a file-page href. */
   fileHref: (path: string) => string;
+  /** Router link; defaults to `<a>` so the package stays framework-neutral. */
+  LinkComponent?: ElementType | undefined;
 }
 
 /**
@@ -24,7 +27,13 @@ interface FileOverviewTabProps {
  * `StatRibbon`, which is on screen whichever tab is open; a four-tile grid
  * repeating them under the tab row was the same five numbers twice.
  */
-export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabProps) {
+export function FileOverviewTab({
+  data,
+  symbolHref,
+  fileHref,
+  LinkComponent = "a",
+}: FileOverviewTabProps) {
+  const A = LinkComponent;
   const deadLines = data.dead_code.reduce((s, f) => s + f.lines, 0);
   // Keyed on the row's own symbol_id, not a rebuilt `${path}::${name}`: some
   // extractors mint ids from the qualified name, and those would never match.
@@ -110,7 +119,7 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
             {keySymbols.map((s) => {
               const fixes = fixesIn(s.symbol_id);
               return (
-                <a
+                <A
                   key={s.symbol_id}
                   href={symbolHref(s.symbol_id)}
                   className="inline-flex items-center gap-1.5 rounded border border-[var(--color-border-default)] px-2 py-1 font-mono text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
@@ -125,7 +134,7 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
                       {fixes} {fixes === 1 ? "fix" : "fixes"}
                     </span>
                   )}
-                </a>
+                </A>
               );
             })}
           </div>
@@ -152,12 +161,14 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
               nodes={data.graph.dependents.slice(0, 5).map((n) => n.node_id)}
               fileHref={fileHref}
               symbolHref={symbolHref}
+              LinkComponent={LinkComponent}
             />
             <NeighborColumn
               label="Depends on"
               nodes={data.graph.dependencies.slice(0, 5).map((n) => n.node_id)}
               fileHref={fileHref}
               symbolHref={symbolHref}
+              LinkComponent={LinkComponent}
             />
           </div>
         </FileSection>
@@ -211,12 +222,15 @@ function NeighborColumn({
   nodes,
   fileHref,
   symbolHref,
+  LinkComponent = "a",
 }: {
   label: string;
   nodes: string[];
   fileHref: (path: string) => string;
   symbolHref: (id: string) => string;
+  LinkComponent?: ElementType | undefined;
 }) {
+  const A = LinkComponent;
   return (
     <div className="min-w-0">
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
@@ -242,13 +256,13 @@ function NeighborColumn({
           }
           return (
             <li key={id} className="min-w-0">
-              <a
+              <A
                 href={symbol ? symbolHref(id) : fileHref(id)}
                 className="block truncate font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)]"
                 title={id}
               >
                 {truncatePath(id, 40)}
-              </a>
+              </A>
             </li>
           );
         })}

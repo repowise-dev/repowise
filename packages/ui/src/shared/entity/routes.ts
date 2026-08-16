@@ -15,6 +15,24 @@ export function symbolEntityPath(prefix: string, symbolId: string): string {
   return `${prefix}/symbols/${encodeURIComponent(symbolId)}`;
 }
 
+/** The wiki page id a file's documentation is stored under.
+ *
+ *  The literal was hardcoded in five places that all had to agree with the
+ *  backend's `"{page_type}:{target_path}"` primary key, and one of them
+ *  (`pageHref`) had to parse it back off again. */
+export function filePageId(filePath: string): string {
+  return `file_page:${filePath}`;
+}
+
+/** Canonical route to a wiki page inside the docs reading surface.
+ *
+ *  `/docs?page=` and not `/wiki/<id>`: the docs route keeps the tree and the
+ *  rail around the page, and the standalone wiki route redirects into it
+ *  anyway. */
+export function docsPagePath(prefix: string, pageId: string): string {
+  return `${prefix}/docs?page=${encodeURIComponent(pageId)}`;
+}
+
 /**
  * Resolve the canonical href for an entity. Centralizing this here keeps every
  * link consistent and makes the route map auditable in one place.
