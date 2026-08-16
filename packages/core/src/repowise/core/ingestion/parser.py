@@ -79,6 +79,7 @@ from .parser_helpers import (
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _run_query,
+    _rust_shadowed_by_type_param,
 )
 from .python_local_refs import extract_python_local_refs
 from .sfc_source import component_call_sites, prepare_source
@@ -1091,6 +1092,11 @@ class ASTParser:
                 continue
 
             if target_name in _call_builtins:
+                continue
+
+            if file_info.language == "rust" and _rust_shadowed_by_type_param(
+                target_nodes[0], target_name, src
+            ):
                 continue
 
             line = site_node.start_point[0] + 1

@@ -1082,6 +1082,44 @@ def _count_arguments(arg_node: Node) -> int:
     return sum(1 for child in arg_node.children if child.type not in skip_types)
 
 
+def _rust_type_param_name(param: Node, src: str) -> str | None:
+    """Return the bound name of a ``type_parameter``/``const_parameter`` node.
+
+    Both node types put the binding name first, before any trait bound or
+    default (``T: Clone``, ``D = Foo``, ``const N: usize``) — later
+    ``type_identifier`` children are constraints, not the binding itself.
+    """
+    for child in param.children:
+        if child.type in ("type_identifier", "identifier"):
+            return node_text(child, src).strip()
+    return None
+
+
+def _rust_shadowed_by_type_param(node: Node, target_name: str, src: str) -> bool:
+    """True if *target_name* is bound as a generic type parameter by an
+    ancestor item of *node* (``struct Wrapper<Item> { value: Item }``).
+
+    Rust's field/generic-argument type captures can't distinguish a type
+    parameter's own name from a real type reference — both are plain
+    ``type_identifier`` nodes. Without this check, a type parameter that
+    happens to share a name with a real struct/enum produces a false
+    "used" edge to that struct, hiding it from dead-code detection even
+    when it is genuinely unreferenced.
+    """
+    ancestor = node.parent
+    while ancestor is not None:
+        for child in ancestor.children:
+            if child.type != "type_parameters":
+                continue
+            for param in child.children:
+                if param.type not in ("type_parameter", "const_parameter"):
+                    continue
+                if _rust_type_param_name(param, src) == target_name:
+                    return True
+        ancestor = ancestor.parent
+    return False
+
+
 def _find_enclosing_symbol(
     line: int,
     symbol_ranges: list[tuple[int, int, str]],
