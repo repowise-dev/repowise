@@ -1,8 +1,7 @@
 """What the receiver-type scan reads off a function body, and what it refuses.
 
 The refusals matter more than the matches. Every wrong type this scan returns
-is a wrong edge the resolver's validator has to catch, and the cases below are
-the ones a real precision audit found rather than the ones that read well.
+is a wrong edge the resolver's validator has to catch.
 """
 
 from __future__ import annotations

@@ -76,7 +76,6 @@ _TYPED_RECEIVER = ("_resolve_typed_receiver",)
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
     member=("_resolve_jvm_receiver_same_package",),
-    member_fallback=_TYPED_RECEIVER,
 )
 
 _CPP_STRATEGIES = _LanguageCallStrategies(free=("_resolve_cpp_same_target",))
@@ -88,7 +87,10 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         free=("_resolve_go_same_package",),
         member=("_resolve_go_package_call",),
     ),
-    "java": _JVM_STRATEGIES,
+    # Kotlin shares the JVM tiers but not the typed-receiver fallback: it has
+    # no declaration shapes yet, so registering it would promise a resolution
+    # the language gate immediately declines.
+    "java": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "kotlin": _JVM_STRATEGIES,
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
@@ -113,9 +115,14 @@ class ResolvedCall:
 class CallResolver:
     """Resolve raw CallSites to symbol-level edges.
 
-    Constructed once per ``GraphBuilder.build()`` call with the full set
-    of parsed files and import edges. Stateless after construction —
-    ``resolve_file()`` can be called concurrently for different files.
+    Constructed once per ``GraphBuilder.build()`` call with the full set of
+    parsed files and import edges, then driven one file at a time.
+
+    ``resolve_file()`` is **not** safe to call concurrently. Several lazy
+    caches are filled during resolution, and the capped ones evict wholesale.
+    Every cached value is a pure function of state fixed at construction, so a
+    race would cost recomputation rather than a wrong answer, but the eviction
+    makes concurrent use pointless as well as unsupported.
     """
 
     def __init__(

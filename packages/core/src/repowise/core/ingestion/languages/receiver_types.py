@@ -43,7 +43,6 @@ _TYPED_DECLARATION = re.compile(
     rf"(?<![\w.])(?P<type>{_TYPE})\s+(?P<name>[a-z_]\w*)\s*(?=[=;,):])"
 )
 
-# ``var name = new T(...)``, where the type is on the right of the binding.
 _INFERRED_FROM_NEW = re.compile(
     r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*new\s+(?P<type>[A-Z]\w*(?:\.\w+)*)"
 )
