@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import type { FileLanguageCount, FileRow } from "@repowise-dev/types/files";
 import { bandForScore } from "@repowise-dev/types/health";
@@ -8,6 +8,10 @@ import { cn } from "../lib/cn";
 import { formatLOC, formatNumber } from "../lib/format";
 import { FilesTreemap, type TreemapColor, type TreemapSize } from "./files-treemap";
 import { FilesTable, type SortKey } from "./files-table";
+// One `Fig`, shared with the file detail page. The two Files surfaces are meant
+// to emphasise a figure identically, and two identical local copies is how that
+// stops being true without anyone noticing.
+import { Fig } from "./file-section";
 
 interface FilesIndexProps {
   files: FileRow[];
@@ -85,12 +89,6 @@ function Segmented<T extends string>({
       {control}
     </div>
   );
-}
-
-/** A figure inside the lede sentence. No `tabular-nums`: it is not in a column
- *  and cannot change in place, which is where that rule applies. */
-function Fig({ children }: { children: ReactNode }) {
-  return <span className="font-medium text-[var(--color-text-primary)]">{children}</span>;
 }
 
 export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {

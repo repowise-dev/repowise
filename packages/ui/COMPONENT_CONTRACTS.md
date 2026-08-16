@@ -887,15 +887,48 @@ link to `/commits?commit=`). `SavingsMini` accepts the structural
 ## `files/*` — File entity page
 
 The canonical "everything about this file" page used by
-`/repos/[id]/files/<path>`. `FilePage` (client) assembles the header
-(path, health badge, signal chips, governing decisions) plus Doc /
-Health / History / Coverage / Graph tabs; per-tab components are
-exported individually. Data arrives as one `FileDetailResponse`
-(`@repowise-dev/types/files`); the host supplies `docSlot` (rendered
-markdown), `coverageCodeHtml` (shiki output whose `.line` nodes carry
-`data-covered` attributes), and `onFindingStatusChange` for triage.
-`symbols/symbol-page` (`SymbolPage`) is the symbol-page sibling fed by
-`SymbolDetailResponse`.
+`/repos/[id]/files/<path>`. `symbols/symbol-page` (`SymbolPage`) is the
+symbol-page sibling fed by `SymbolDetailResponse`.
+
+**The page is four pieces, not one component, and the split is the
+hydration boundary.** A host composes them; it does not hand a
+`FileDetailResponse` to a client component.
+
+| Piece | Where it runs | Job |
+|---|---|---|
+| `FilePageHeader` | server | Eyebrow, path as identity, the `PageLede` figure, the marker row, the `StatRibbon`. |
+| `fileTabsFor(data)` | server | The tab row as `FileTabDef[]` — label, blurb, badge. `resolveFileTab` narrows a `?tab=` value against it. |
+| `buildFilePanels({...})` | server | Renders the six pure tab bodies and returns them keyed by tab id. Takes `healthPanel` as an already-wrapped node. |
+| `FilePage` | client | The shell: header slot, `ViewTabs`, active panel. Imports `ViewTabs` and nothing else from the slice. |
+
+`FilePage` used to be `"use client"` and import all seven tab bodies, so
+the whole slice plus a twice-serialised `FileDetailResponse` reached the
+browser to render one tab. `file-health-tab` is now the only file in
+`files/*` carrying `"use client"` — it owns triage state, two virtualised
+lists and a measured trend. Because its triage callback and href builders
+are functions, a host wraps it itself and passes the result in as
+`healthPanel`; that wrapper is the page's only client boundary besides
+the shell.
+
+Two consequences a host must honour:
+
+- **Key the shell on the file path.** Tab clicks are a shallow
+  `history.replaceState`, so a soft navigation from one file page to
+  another keeps React's state at the same tree position and strands the
+  active tab out of sync with the URL. Every cross-file link in the tab
+  bodies is a plain `<a>` today, which hides this; converting one to a
+  router link without the key surfaces it.
+- **`fields=slim` is the default fetch.** Only Documentation, Health and
+  Coverage read the four unbounded blocks the aggregate can drop, so the
+  route fetches slim unless the requested tab is one of those, and tells
+  the shell through `refetchTabs` which tabs need a round trip on first
+  click. A tab with nothing behind it is left out of that list rather
+  than buying a trip to be shown the same empty state.
+
+Bands come from `bandForScore` (`@repowise-dev/types/health`), never from
+`scoreBadgeClass` — that is a four-step presentation ramp and this page
+sits one click from the treemap and the health map, which both paint the
+canonical three.
 
 ### `dashboard/attention-panel` â€” `AttentionPanel`
 

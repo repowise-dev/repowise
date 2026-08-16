@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import file_signals
@@ -24,7 +24,12 @@ from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
-from repowise.core.persistence.models import DeadCodeFinding, Page, WikiSymbol
+from repowise.core.persistence.models import (
+    DeadCodeFinding,
+    GitFunctionBlame,
+    Page,
+    WikiSymbol,
+)
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server._graph_utils import parse_community_meta
 from repowise.server.routers.code_health import (
@@ -221,8 +226,9 @@ async def file_detail(
         "everything. 'slim' drops the four unbounded payloads — the wiki page "
         "body, the coverage line array, per-function blame, and each finding's "
         "'details' map — for a caller that renders the summary numbers only. "
-        "'coverage.covered_line_count' is present in both modes, so the "
-        "coverage headline survives the cut.",
+        "'coverage.covered_line_count' and 'function_blame_count' are present "
+        "in both modes, so a caller can still tell an empty block from a "
+        "dropped one.",
     ),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
@@ -407,11 +413,29 @@ async def file_detail(
         )
     ).all()
     # Skipped outright under ``fields=slim`` — a query the caller cannot read.
-    blame_rows = (
-        []
-        if slim
-        else await crud.get_git_function_blames(session, repo_id, file_path=file_path)
-    )
+    # The *count* still goes on the wire, for the same reason
+    # ``covered_line_count`` does: a caller deciding whether the Health tab is
+    # worth a round trip cannot tell an empty table from a dropped one, and
+    # guessing either way is wrong for some file. One indexed COUNT against
+    # ``(repository_id, file_path)``.
+    blame_rows: list[Any] = []
+    blame_count = 0
+    if slim:
+        blame_count = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(GitFunctionBlame)
+                    .where(
+                        GitFunctionBlame.repository_id == repo_id,
+                        GitFunctionBlame.file_path == file_path,
+                    )
+                )
+            ).scalar_one()
+        )
+    else:
+        blame_rows = list(await crud.get_git_function_blames(session, repo_id, file_path=file_path))
+        blame_count = len(blame_rows)
 
     # --- Governing decisions + dead code -------------------------------------
     governing = [
@@ -453,6 +477,7 @@ async def file_detail(
         "graph": graph,
         "symbols": [_symbol_slim(s) for s in symbol_rows],
         "function_blame": [_blame_to_dict(b) for b in blame_rows],
+        "function_blame_count": blame_count,
         "governing_decisions": governing,
         "dead_code": dead_code,
     }

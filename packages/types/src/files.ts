@@ -253,7 +253,16 @@ export interface FileDetailResponse {
   coverage: FileDetailCoverage | null;
   graph: FileDetailGraph | null;
   symbols: FileSymbolSlim[];
+  /** Empty under `fields=slim`; read `function_blame_count` for the total. */
   function_blame: FunctionBlameRow[];
+  /**
+   * How many blame rows exist, in both modes. Optional so a frontend ahead of
+   * its backend degrades rather than rendering `NaN` — the same contract
+   * `coverage.covered_line_count` follows, and for the same reason: a caller
+   * deciding whether a block is worth fetching cannot otherwise tell an empty
+   * table from a dropped one.
+   */
+  function_blame_count?: number;
   governing_decisions: GoverningDecisionRef[];
   dead_code: FileDeadCodeFinding[];
 }
