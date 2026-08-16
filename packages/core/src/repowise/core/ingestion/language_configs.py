@@ -390,6 +390,41 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # guessed).
         parent_class_types=frozenset({"declType"}),
     ),
+    "gdscript": LanguageConfig(
+        symbol_node_types={
+            # `class_name Foo` names the script-level class. The node spans
+            # only that statement, not the whole file -- GDScript has no
+            # syntactic node for "the implicit outer class", so there is
+            # nothing wider to point at.
+            "class_name_statement": "class",
+            "class_definition": "class",  # inner `class Foo:` blocks
+            "function_definition": "function",
+            "constructor_definition": "function",  # `func _init(...)`
+            "variable_statement": "variable",
+            "export_variable_statement": "variable",  # GDScript 3 `export var`
+            "onready_variable_statement": "variable",  # GDScript 3 `onready var`
+            "const_statement": "constant",
+            "enum_definition": "enum",
+            # No "signal"/"event" member in the SymbolKind literal. "variable"
+            # is the same bucket Pascal's `declProp` and C#'s
+            # `property_declaration` land in -- a declared member that is not
+            # a callable of this class.
+            "signal_statement": "variable",
+        },
+        # `preload(...)`/`load(...)` are ordinary calls; see queries/gdscript.scm.
+        import_node_types=["call", "extends_statement"],
+        export_node_types=[],  # GDScript has no re-export syntax
+        # GDScript's privacy convention is Python's, leading underscore and
+        # all -- including the engine callbacks (`_ready`, `_process`), which
+        # genuinely are not meant to be called by other scripts. Reusing
+        # py_visibility rather than adding a byte-identical gdscript_visibility.
+        visibility_fn=py_visibility,
+        parent_extraction="nesting",
+        # Only class_definition: `class_name_statement` is a sibling of the
+        # members it logically owns, not their ancestor, so a script-level
+        # func gets no parent -- which is correct, it belongs to the file.
+        parent_class_types=frozenset({"class_definition"}),
+    ),
     "luau": LanguageConfig(
         symbol_node_types={
             "function_declaration": "function",

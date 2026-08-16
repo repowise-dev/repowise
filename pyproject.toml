@@ -52,6 +52,8 @@ dependencies = [
     "tree-sitter-pascal>=0.11,<1",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
+    # GDScript / Godot grammar (not on PyPI — install from upstream git)
+    "tree-sitter-gdscript @ git+https://github.com/PrestonKnopp/tree-sitter-gdscript.git@v6.1.0",
     # Markup grammars for single-file components: these locate <script> blocks
     # and markup expressions only; the JS inside them is parsed with the
     # TypeScript grammar (see sfc_source.py). There is no tree-sitter-vue on
