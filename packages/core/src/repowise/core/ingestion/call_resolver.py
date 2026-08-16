@@ -40,6 +40,42 @@ log = structlog.get_logger(__name__)
 _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 
 
+@dataclass(frozen=True, slots=True)
+class _LanguageCallStrategies:
+    """What a language resolves that the language-neutral tiers cannot.
+
+    ``free`` runs after the same-file tier and before the import tiers;
+    ``member`` runs before every receiver strategy. Both stop at the first hit.
+    Strategies are named rather than bound so a probe can substitute one.
+    """
+
+    free: tuple[str, ...] = ()
+    member: tuple[str, ...] = ()
+
+
+_NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
+
+_JVM_STRATEGIES = _LanguageCallStrategies(
+    free=("_resolve_jvm_same_package",),
+    member=("_resolve_jvm_receiver_same_package",),
+)
+
+_CPP_STRATEGIES = _LanguageCallStrategies(free=("_resolve_cpp_same_target",))
+
+# Rust's crate-root strategy is deliberately absent: it runs for every language
+# today, and gating it here would drop crate-name receivers in mixed repos.
+_LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
+    "go": _LanguageCallStrategies(
+        free=("_resolve_go_same_package",),
+        member=("_resolve_go_package_call",),
+    ),
+    "java": _JVM_STRATEGIES,
+    "kotlin": _JVM_STRATEGIES,
+    "cpp": _CPP_STRATEGIES,
+    "c": _CPP_STRATEGIES,
+}
+
+
 def _file_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
     """Extract language from a symbol ID's file via the parsed files map."""
     file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
@@ -145,6 +181,9 @@ class CallResolver:
         self._cpp_index: Any = None
         self._cpp_index_built = False
 
+        # Per-file view of the language strategy registry below.
+        self._strategies_by_file: dict[str, _LanguageCallStrategies] = {}
+
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
 
@@ -248,17 +287,15 @@ class CallResolver:
         self._go_index = build_go_package_index(_Ctx(self._repo_path, self._parsed_files))
         return self._go_index
 
-    def _is_go(self, file_path: str) -> bool:
-        parsed = self._parsed_files.get(file_path)
-        return bool(parsed and parsed.file_info.language == "go")
-
-    def _is_jvm(self, file_path: str) -> bool:
-        parsed = self._parsed_files.get(file_path)
-        return bool(parsed and parsed.file_info.language in ("java", "kotlin"))
-
-    def _is_cpp_family(self, file_path: str) -> bool:
-        parsed = self._parsed_files.get(file_path)
-        return bool(parsed and parsed.file_info.language in ("cpp", "c"))
+    def _strategies_for(self, file_path: str) -> _LanguageCallStrategies:
+        """The extra strategies this file's language gets, cached per file."""
+        cached = self._strategies_by_file.get(file_path)
+        if cached is None:
+            parsed = self._parsed_files.get(file_path)
+            language = parsed.file_info.language if parsed else ""
+            cached = _LANGUAGE_CALL_STRATEGIES.get(language, _NO_LANGUAGE_STRATEGIES)
+            self._strategies_by_file[file_path] = cached
+        return cached
 
     def _get_cpp_index(self) -> Any:
         """Lazily build a CppWorkspaceIndex via a minimal stand-in context."""
@@ -347,6 +384,29 @@ class CallResolver:
             sym_id = syms.get(call.target_name)
             if sym_id is not None and sym_id != caller_id:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
+        return None
+
+    def _resolve_jvm_receiver_same_package(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve ``Receiver.method()`` where the receiver is a package sibling.
+
+        JVM files in the same package see each other's types with no import,
+        so the receiver may name a class declared in any sibling file.
+        """
+        key = (call.receiver_name or "", call.target_name)
+        if key not in self._global_methods:
+            return None
+        index = self._get_jvm_index()
+        if index is None:
+            return None
+        for sibling in index.same_package_files(file_path):
+            sym_id = self._file_methods.get(sibling, {}).get(key)
+            if sym_id is not None:
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "receiver_same_package")
         return None
 
     def _resolve_go_package_call(
@@ -631,6 +691,9 @@ class CallResolver:
     ) -> ResolvedCall | None:
         """Resolve a free function call (no receiver)."""
         target_name = call.target_name
+        # Every tier keys on the target name, so a name the repo declares
+        # nowhere can only be matched under an import alias (2a below).
+        declared = target_name in self._global_symbols
 
         # Tier 1: same-file
         file_syms = self._file_symbols.get(file_path, {})
@@ -645,28 +708,14 @@ class CallResolver:
             if callee_id != caller_id:  # no self-recursion edges for now
                 return ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
 
-        # Go: a bare call may target a function defined in a sibling file of
-        # the same package (shared namespace, no import). Resolve against the
-        # package before the weaker import/global tiers.
-        if self._is_go(file_path):
-            go_same_pkg = self._resolve_go_same_package(file_path, call, caller_id)
-            if go_same_pkg is not None:
-                return go_same_pkg
-
-        # JVM: same-package implicit access — classes in the same package
-        # reference each other with no import statement.
-        if self._is_jvm(file_path):
-            jvm_same_pkg = self._resolve_jvm_same_package(file_path, call, caller_id)
-            if jvm_same_pkg is not None:
-                return jvm_same_pkg
-
-        # C/C++: same-target unqualified access — a bare call may target a
-        # function declared in a header consumed by the importer's CMake/
-        # Bazel target and defined in any sibling TU of that target.
-        if self._is_cpp_family(file_path):
-            cpp_same_target = self._resolve_cpp_same_target(file_path, call, caller_id)
-            if cpp_same_target is not None:
-                return cpp_same_target
+        # The caller's language may see names no import statement mentions —
+        # a Go or JVM package sibling, a C/C++ translation unit in the same
+        # build target — and those beat the weaker import/global tiers.
+        if declared:
+            for strategy in self._strategies_for(file_path).free:
+                hit = getattr(self, strategy)(file_path, call, caller_id)
+                if hit is not None:
+                    return hit
 
         # Tier 2: import-scoped
         # 2a: Check specific imported name → source file (binding-aware)
@@ -683,6 +732,9 @@ class CallResolver:
                 return ResolvedCall(
                     caller_id, source_syms[lookup_name], 0.90, call.line, "import_scoped"
                 )
+
+        if not declared:
+            return None
 
         # 2a fallback: plain _import_names (for imports without binding data)
         name_to_file = self._import_names.get(file_path, {})
@@ -726,27 +778,19 @@ class CallResolver:
         method_name = call.target_name
         assert receiver_name is not None
 
-        # Go: ``pkg.Func()`` where ``pkg`` is an import alias resolves to the
-        # function in *any* file of that package, not just the single
-        # representative the import resolved to. Try this first for Go so a
-        # multi-file package's exported funcs are reached correctly.
-        if self._is_go(file_path):
-            go_pkg_call = self._resolve_go_package_call(file_path, call, caller_id)
-            if go_pkg_call is not None:
-                return go_pkg_call
+        # Every strategy below ends in a lookup keyed on the method name, so a
+        # name the repo declares nowhere cannot resolve. That is most member
+        # calls — the callee is usually external — and this is the whole of
+        # what those call sites now cost.
+        if method_name not in self._global_symbols:
+            return None
 
-        # JVM: receiver may be a class in the same package (no import needed)
-        if self._is_jvm(file_path):
-            index = self._get_jvm_index()
-            if index is not None:
-                siblings = index.same_package_files(file_path)
-                for sibling in siblings:
-                    methods = self._file_methods.get(sibling, {})
-                    key = (receiver_name, method_name)
-                    if key in methods:
-                        return ResolvedCall(
-                            caller_id, methods[key], 0.90, call.line, "receiver_same_package"
-                        )
+        # A language may reach a receiver no import statement mentions: a Go
+        # package alias spanning several files, a JVM class in the same package.
+        for strategy in self._strategies_for(file_path).member:
+            hit = getattr(self, strategy)(file_path, call, caller_id)
+            if hit is not None:
+                return hit
 
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
@@ -779,31 +823,32 @@ class CallResolver:
                         caller_id, root_syms[method_name], 0.88, call.line, "crate_root"
                     )
 
-        # Strategy 2: receiver is a known class name → look for method on that class
-        # Check same-file classes first
-        file_methods = self._file_methods.get(file_path, {})
+        # Strategies 2 and 2b: the receiver names a class that declares the
+        # method — in this file, in an imported one, or anywhere at all. No
+        # class declares the pair unless the global method index holds it, and
+        # that check also keeps the merged-import view from being built for a
+        # pair that cannot be in it.
         key = (receiver_name, method_name)
-        if key in file_methods:
-            return ResolvedCall(
-                caller_id, file_methods[key], 0.93, call.line, "receiver_same_file"
-            )
+        if key in self._global_methods:
+            file_methods = self._file_methods.get(file_path, {})
+            if key in file_methods:
+                return ResolvedCall(
+                    caller_id, file_methods[key], 0.93, call.line, "receiver_same_file"
+                )
 
-        # Check imported files for (class, method) pairs (pre-merged lookup)
-        merged_methods = self._merged_methods_for(file_path)
-        if key in merged_methods:
-            return ResolvedCall(
-                caller_id, merged_methods[key], 0.88, call.line, "receiver_import"
-            )
+            merged_methods = self._merged_methods_for(file_path)
+            if key in merged_methods:
+                return ResolvedCall(
+                    caller_id, merged_methods[key], 0.88, call.line, "receiver_import"
+                )
 
-        # Strategy 2b: trait method dispatch — receiver is a type that
-        # implements a trait; the method may be defined on the trait's
-        # impl block in another file. The global index preserves the old
-        # file-insertion match order; entries from the caller's own file
-        # are skipped exactly as before.
-        for _path, sym_id in self._global_methods.get(key, ()):
-            if _path == file_path:
-                continue
-            return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
+            # Trait method dispatch — the method may be defined on a trait's
+            # impl block in another file. The global index preserves
+            # file-insertion match order; the caller's own file is skipped.
+            for _path, sym_id in self._global_methods[key]:
+                if _path == file_path:
+                    continue
+                return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
 
         # Strategy 3: receiver is "self" or "this" — look in same class.
         # Only the caller's own file can hold the match, so index straight
@@ -811,15 +856,9 @@ class CallResolver:
         if receiver_name in ("self", "this"):
             caller_class = _extract_class_from_symbol_id(caller_id)
             if caller_class:
-                for (cls_name, meth_name), sym_id in self._file_methods.get(
-                    file_path, {}
-                ).items():
-                    if (
-                        meth_name == method_name
-                        and sym_id != caller_id
-                        and cls_name == caller_class
-                    ):
-                        return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
+                sym_id = self._file_methods.get(file_path, {}).get((caller_class, method_name))
+                if sym_id is not None and sym_id != caller_id:
+                    return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
 
         # No further fallback: any (class, method) pair present in any file's
         # method index was already resolved by strategy 2 (same file) or 2b

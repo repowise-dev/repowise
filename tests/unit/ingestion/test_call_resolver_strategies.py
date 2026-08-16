@@ -207,7 +207,15 @@ _LANGUAGE_STRATEGIES = (
     "_resolve_go_same_package",
     "_resolve_go_package_call",
     "_resolve_jvm_same_package",
+    "_resolve_jvm_receiver_same_package",
     "_resolve_cpp_same_target",
+)
+
+# Declares the called names elsewhere, so a dispatch test measures dispatch and
+# not the reject-early gate. Kotlin so nothing else in these repos can match it.
+_DECOY = (
+    "kotlin",
+    "class Decoy {\n    fun elsewhere() {}\n    fun Elsewhere() {}\n}\n",
 )
 
 
@@ -222,35 +230,36 @@ def spy(monkeypatch: pytest.MonkeyPatch) -> _Spy:
 class TestLanguageDispatch:
     """Which language-specific strategies a file reaches, and which it does not."""
 
+    def test_every_registered_strategy_exists(self) -> None:
+        from repowise.core.ingestion.call_resolver import _LANGUAGE_CALL_STRATEGIES
+
+        for strategies in _LANGUAGE_CALL_STRATEGIES.values():
+            for name in strategies.free + strategies.member:
+                assert callable(getattr(CallResolver, name, None)), name
+
     @pytest.mark.parametrize(
         ("rel", "lang", "source", "expected"),
         [
             (
                 "main.go",
                 "go",
-                "package main\n\nfunc run() {\n\tabsent()\n}\n",
+                "package main\n\nfunc run() {\n\telsewhere()\n}\n",
                 ["_resolve_go_same_package"],
             ),
             (
                 "Main.java",
                 "java",
-                "class Main {\n    void run() {\n        absent();\n    }\n}\n",
-                ["_resolve_jvm_same_package"],
-            ),
-            (
-                "Main.kt",
-                "kotlin",
-                "class Main {\n    fun run() {\n        absent()\n    }\n}\n",
+                "class Main {\n    void run() {\n        elsewhere();\n    }\n}\n",
                 ["_resolve_jvm_same_package"],
             ),
             (
                 "main.cc",
                 "cpp",
-                "void run() {\n  absent();\n}\n",
+                "void run() {\n  elsewhere();\n}\n",
                 ["_resolve_cpp_same_target"],
             ),
-            ("main.py", "python", "def run():\n    absent()\n", []),
-            ("main.rs", "rust", "fn run() {\n    absent();\n}\n", []),
+            ("main.py", "python", "def run():\n    elsewhere()\n", []),
+            ("main.rs", "rust", "fn run() {\n    elsewhere();\n}\n", []),
         ],
     )
     def test_a_bare_call_consults_only_its_own_languages_strategies(
@@ -262,7 +271,7 @@ class TestLanguageDispatch:
         source: str,
         expected: list[str],
     ) -> None:
-        parsed = _parse_all(tmp_path, {rel: (lang, source)})
+        parsed = _parse_all(tmp_path, {rel: (lang, source), "Decoy.kt": _DECOY})
         _edges(parsed, tmp_path)
         assert spy.calls == expected
 
@@ -272,15 +281,29 @@ class TestLanguageDispatch:
         parsed = _parse_all(
             tmp_path,
             {
-                "main.go": (
-                    "go",
-                    "package main\n\nfunc run() {\n\tpkg.Absent()\n}\n",
-                ),
-                "main.py": ("python", "def run(pkg):\n    pkg.absent()\n"),
+                "main.go": ("go", "package main\n\nfunc run() {\n\tpkg.Elsewhere()\n}\n"),
+                "main.py": ("python", "def run(pkg):\n    pkg.elsewhere()\n"),
+                "Decoy.kt": _DECOY,
             },
         )
         _edges(parsed, tmp_path)
         assert spy.calls == ["_resolve_go_package_call"]
+
+    def test_an_undeclared_name_reaches_no_strategy_at_all(
+        self, tmp_path: Path, spy: _Spy
+    ) -> None:
+        """The reject-early gate: nothing declares it, so nothing can match it."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "main.go": (
+                    "go",
+                    "package main\n\nfunc run() {\n\tnowhere()\n\tpkg.Nowhere()\n}\n",
+                )
+            },
+        )
+        assert _edges(parsed, tmp_path) == []
+        assert spy.calls == []
 
     def test_a_language_strategy_runs_before_the_import_tiers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
