@@ -31,10 +31,11 @@ from .language_data import get_builtin_types
 # on all three can only ever be right.
 _QUALIFIER_SEPARATORS = (".", "::", "\\")
 
-# Opening delimiters for type arguments, including Kotlin/C# constructor and
-# record argument lists, which sit in the same position and are not part of the
-# name either.
-_TYPE_ARGUMENT_OPENERS = ("<", "[", "(")
+# Bracket pairs that delimit type arguments. A constructor call's ``(...)``
+# is deliberately not here: it sits in the same position but means something
+# else, and a Python base written ``factory().__class__`` must keep its last
+# attribute rather than yield the callee.
+_TYPE_ARGUMENT_BRACKETS = (("<", ">"), ("[", "]"))
 
 # Languages where a leading ``$`` starts a real user type rather than a
 # compiler artefact. This is consumer policy, not language identity: ``$`` is a
@@ -43,20 +44,49 @@ _TYPE_ARGUMENT_OPENERS = ("<", "[", "(")
 _DOLLAR_START_LANGUAGES = frozenset({"typescript", "javascript"})
 
 
+def strip_type_arguments(raw: str) -> str:
+    """Return *raw* with every balanced type-argument group removed.
+
+    Removed rather than truncated at the opener, because a qualifier can follow
+    the group: ``Impl<C>::type`` names ``type``, and cutting at ``<`` would
+    answer ``Impl``. Truncating is equally wrong the other way round —
+    ``Outer<a.b.C>`` must not have its qualifier taken from inside the group.
+    """
+    text = raw
+    for opener, closer in _TYPE_ARGUMENT_BRACKETS:
+        out: list[str] = []
+        depth = 0
+        for char in text:
+            if char == opener:
+                depth += 1
+            elif char == closer:
+                # An unbalanced closer means the text was already truncated
+                # upstream; dropping it is better than keeping a stray bracket.
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                out.append(char)
+        text = "".join(out)
+    return text
+
+
+def strip_call_arguments(raw: str) -> str:
+    """Return *raw* without a trailing constructor-call argument list.
+
+    For the languages whose heritage clause names a base by calling it —
+    Kotlin's ``Bar()``, a C# record's ``Base(x)``.
+    """
+    head, sep, _ = raw.partition("(")
+    return head if sep else raw
+
+
 def bare_type_name(raw: str) -> str:
     """Return *raw* without its type arguments or qualifier.
 
     ``Gen<Arg>`` → ``Gen``; ``ns.Qual`` → ``Qual``; ``ns.Both<Arg>`` → ``Both``;
-    ``\\Ns\\Qual`` → ``Qual``; ``NS::Widget`` → ``Widget``.
-
-    Type arguments go first: stripping the qualifier first would take the last
-    segment of ``Outer<a.b.C>`` and return ``C>``.
+    ``\\Ns\\Qual`` → ``Qual``; ``NS::Widget`` → ``Widget``;
+    ``Impl<C>::type`` → ``type``.
     """
-    text = raw.strip()
-    for opener in _TYPE_ARGUMENT_OPENERS:
-        head, sep, _ = text.partition(opener)
-        if sep:
-            text = head
+    text = strip_type_arguments(raw.strip())
     for separator in _QUALIFIER_SEPARATORS:
         text = text.rsplit(separator, 1)[-1]
     return text.strip()
