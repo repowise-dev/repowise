@@ -1,0 +1,313 @@
+"""Characterisation tests for the call-resolution cascade.
+
+Every strategy in ``CallResolver`` is reachable only through one long chain, and
+six of them had no test that triggered them at all. These pin the observable
+contract — which strategy fires, at which confidence, under which origin, and
+which languages consult a language-specific strategy — so a refactor of the
+chain is a refactor and not a rewrite.
+
+The dispatch tests use spies rather than fixtures because the alternative is a
+CMake or Cargo workspace per assertion; what is under test is which strategies a
+language reaches and in what order, and a spy states that directly.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from repowise.core.ingestion.call_resolver import CallResolver
+from repowise.core.ingestion.models import FileInfo, ParsedFile
+from repowise.core.ingestion.parser import parse_file
+
+
+def _file_info(rel: str, abs_: Path, lang: str) -> FileInfo:
+    return FileInfo(
+        path=rel,
+        abs_path=str(abs_),
+        language=lang,  # type: ignore[arg-type]
+        size_bytes=abs_.stat().st_size,
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+
+
+def _parse_all(tmp_path: Path, files: dict[str, tuple[str, str]]) -> dict[str, ParsedFile]:
+    out: dict[str, ParsedFile] = {}
+    for rel, (lang, content) in files.items():
+        abs_ = tmp_path / rel
+        abs_.parent.mkdir(parents=True, exist_ok=True)
+        abs_.write_text(content)
+        out[rel] = parse_file(_file_info(rel, abs_, lang), content.encode("utf-8"))
+    return out
+
+
+def _link_imports(parsed: dict[str, ParsedFile], links: dict[str, dict[str, str]]) -> None:
+    """Stand in for the import-resolution phase, which unit tests do not run."""
+    for path, module_to_file in links.items():
+        for imp in parsed[path].imports:
+            target = module_to_file.get(imp.module_path)
+            if target is not None:
+                imp.resolved_file = target
+
+
+def _edges(
+    parsed: dict[str, ParsedFile],
+    tmp_path: Path,
+    import_targets: dict[str, set[str]] | None = None,
+) -> list[tuple[str, str, float, str]]:
+    resolver = CallResolver(
+        parsed,
+        import_targets if import_targets is not None else {p: set() for p in parsed},
+        repo_path=str(tmp_path),
+    )
+    return [
+        (rc.caller_id, rc.callee_id, rc.confidence, rc.origin)
+        for path, pf in parsed.items()
+        for rc in resolver.resolve_file(path, pf.calls)
+    ]
+
+
+class TestUnpinnedStrategies:
+    """One test per strategy that no existing test triggered."""
+
+    def test_receiver_names_a_class_in_the_same_file(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "app.py": (
+                    "python",
+                    "class User:\n"
+                    "    def save(self):\n"
+                    "        return 1\n"
+                    "\n"
+                    "def run():\n"
+                    "    return User.save()\n",
+                )
+            },
+        )
+        assert (
+            "app.py::run",
+            "app.py::User::save",
+            0.93,
+            "receiver_same_file",
+        ) in _edges(parsed, tmp_path)
+
+    def test_a_repo_wide_unique_name_resolves_as_a_guess(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "lib.py": ("python", "def only_one_of_these():\n    return 1\n"),
+                "caller.py": ("python", "def run():\n    return only_one_of_these()\n"),
+            },
+        )
+        assert (
+            "caller.py::run",
+            "lib.py::only_one_of_these",
+            0.50,
+            "global_unique",
+        ) in _edges(parsed, tmp_path)
+
+    def test_a_repo_wide_ambiguous_name_resolves_to_nothing(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a.py": ("python", "def shared():\n    return 1\n"),
+                "b.py": ("python", "def shared():\n    return 2\n"),
+                "caller.py": ("python", "def run():\n    return shared()\n"),
+            },
+        )
+        assert _edges(parsed, tmp_path) == []
+
+    def test_receiver_is_a_module_alias(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "models.py": ("python", "def build():\n    return 1\n"),
+                "caller.py": ("python", "import models\n\ndef run():\n    return models.build()\n"),
+            },
+        )
+        _link_imports(parsed, {"caller.py": {"models": "models.py"}})
+        assert (
+            "caller.py::run",
+            "models.py::build",
+            0.88,
+            "module_alias",
+        ) in _edges(parsed, tmp_path)
+
+    def test_jvm_bare_call_reaches_a_same_package_sibling(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/com/example/Helper.java": (
+                    "java",
+                    "package com.example;\n\npublic class Helper {\n    Helper() {}\n}\n",
+                ),
+                "src/com/example/Main.java": (
+                    "java",
+                    "package com.example;\n\n"
+                    "public class Main {\n"
+                    "    void run() {\n"
+                    "        new Helper();\n"
+                    "    }\n"
+                    "}\n",
+                ),
+            },
+        )
+        hits = [e for e in _edges(parsed, tmp_path) if e[3] == "same_package"]
+        # The sibling's flat symbol index is last-wins, so the constructor and
+        # not the class is what ``Helper`` names by the time the tier reads it.
+        assert hits == [
+            (
+                "src/com/example/Main.java::Main::run",
+                "src/com/example/Helper.java::Helper::Helper",
+                0.90,
+                "same_package",
+            )
+        ]
+
+    def test_a_target_name_declared_nowhere_resolves_to_nothing(self, tmp_path: Path) -> None:
+        """The population the cascade spends most of its budget on."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "caller.py": (
+                    "python",
+                    "def run(obj):\n    obj.never_declared_anywhere()\n    "
+                    "also_never_declared()\n",
+                )
+            },
+        )
+        assert _edges(parsed, tmp_path) == []
+
+
+class _Spy:
+    """Records that a strategy was consulted, and declines to resolve."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def wrap(self, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+        original = getattr(CallResolver, name)
+
+        def spy(inner_self, *args, **kwargs):
+            self.calls.append(name)
+            return original(inner_self, *args, **kwargs)
+
+        monkeypatch.setattr(CallResolver, name, spy)
+
+
+_LANGUAGE_STRATEGIES = (
+    "_resolve_go_same_package",
+    "_resolve_go_package_call",
+    "_resolve_jvm_same_package",
+    "_resolve_cpp_same_target",
+)
+
+
+@pytest.fixture
+def spy(monkeypatch: pytest.MonkeyPatch) -> _Spy:
+    recorder = _Spy()
+    for name in _LANGUAGE_STRATEGIES:
+        recorder.wrap(monkeypatch, name)
+    return recorder
+
+
+class TestLanguageDispatch:
+    """Which language-specific strategies a file reaches, and which it does not."""
+
+    @pytest.mark.parametrize(
+        ("rel", "lang", "source", "expected"),
+        [
+            (
+                "main.go",
+                "go",
+                "package main\n\nfunc run() {\n\tabsent()\n}\n",
+                ["_resolve_go_same_package"],
+            ),
+            (
+                "Main.java",
+                "java",
+                "class Main {\n    void run() {\n        absent();\n    }\n}\n",
+                ["_resolve_jvm_same_package"],
+            ),
+            (
+                "Main.kt",
+                "kotlin",
+                "class Main {\n    fun run() {\n        absent()\n    }\n}\n",
+                ["_resolve_jvm_same_package"],
+            ),
+            (
+                "main.cc",
+                "cpp",
+                "void run() {\n  absent();\n}\n",
+                ["_resolve_cpp_same_target"],
+            ),
+            ("main.py", "python", "def run():\n    absent()\n", []),
+            ("main.rs", "rust", "fn run() {\n    absent();\n}\n", []),
+        ],
+    )
+    def test_a_bare_call_consults_only_its_own_languages_strategies(
+        self,
+        tmp_path: Path,
+        spy: _Spy,
+        rel: str,
+        lang: str,
+        source: str,
+        expected: list[str],
+    ) -> None:
+        parsed = _parse_all(tmp_path, {rel: (lang, source)})
+        _edges(parsed, tmp_path)
+        assert spy.calls == expected
+
+    def test_a_member_call_consults_only_its_own_languages_strategies(
+        self, tmp_path: Path, spy: _Spy
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "main.go": (
+                    "go",
+                    "package main\n\nfunc run() {\n\tpkg.Absent()\n}\n",
+                ),
+                "main.py": ("python", "def run(pkg):\n    pkg.absent()\n"),
+            },
+        )
+        _edges(parsed, tmp_path)
+        assert spy.calls == ["_resolve_go_package_call"]
+
+    def test_a_language_strategy_runs_before_the_import_tiers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Go's package tier owns a name an import tier would also answer."""
+        order: list[str] = []
+        for name in ("_resolve_go_same_package", "_merged_symbols_for"):
+            original = getattr(CallResolver, name)
+
+            def spy(inner_self, *args, _name=name, _original=original, **kwargs):
+                order.append(_name)
+                return _original(inner_self, *args, **kwargs)
+
+            monkeypatch.setattr(CallResolver, name, spy)
+
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "pkg/helper.go": ("go", "package pkg\n\nfunc Helper() int {\n\treturn 1\n}\n"),
+                "pkg/main.go": ("go", "package pkg\n\nfunc run() int {\n\treturn Helper()\n}\n"),
+            },
+        )
+        edges = _edges(parsed, tmp_path, {"pkg/main.go": {"pkg/helper.go"}, "pkg/helper.go": set()})
+        assert (
+            "pkg/main.go::run",
+            "pkg/helper.go::Helper",
+            0.90,
+            "same_package",
+        ) in edges
+        assert order == ["_resolve_go_same_package"]
