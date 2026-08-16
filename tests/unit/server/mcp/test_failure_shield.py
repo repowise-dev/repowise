@@ -175,17 +175,24 @@ def test_sync_callables_pass_through():
     assert shield(sync_fn) is sync_fn
 
 
-def test_server_composes_shield_into_middleware():
+@pytest.mark.asyncio
+async def test_server_composes_shield_into_middleware():
     """Pin the __init__.py wiring: every registered tool goes through the
     shield. Without this, a refactor could silently drop the composition and
-    reopen the isError-on-every-tool hole."""
-    import inspect as _inspect
+    reopen the isError-on-every-tool hole.
 
-    import repowise.server.mcp_server as mcp_mod
+    Asserted through behaviour rather than by matching the composition's
+    source text, so reordering or renaming the layers cannot fail this while
+    the guarantee still holds — nor pass while it does not.
+    """
+    from repowise.server.mcp_server import tool_middleware
 
-    source = _inspect.getsource(mcp_mod)
-    assert "_failure_shield" in source
-    assert "_savings_instrument(_failure_shield(fn))" in source
+    async def exploding_tool() -> dict:
+        raise RuntimeError("boom")
+
+    result = await tool_middleware(exploding_tool)()
+    assert isinstance(result, dict), "an exception escaped the shield"
+    assert "boom" not in repr(result).lower() or "error" in repr(result).lower()
 
 
 # ---------------------------------------------------------------------------

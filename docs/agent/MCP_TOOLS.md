@@ -395,7 +395,9 @@ Modification risk assessment for files or a set of changed files.
 | `changed_files` | list[string] | No | Files in a PR/changeset for blast radius analysis; passing this switches the response into PR-directive mode |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** Per-file risk score (0-10), hotspot status, dependent count, co-change partners, blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
+**Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, dependent count, co-change partners (each with a recency-decayed `weight`, not an integer count), blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
+
+> **Scales.** Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
 
 When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests the per-test coverage map proves execute the changed files, as pytest-runnable ids to validate the change; empty until a coverage map is ingested with `repowise coverage add`). In workspace mode that directive also carries the cross-repo fallout of the changed repo:
 

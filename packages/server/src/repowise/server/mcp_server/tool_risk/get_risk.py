@@ -39,9 +39,9 @@ async def get_risk(
 ) -> dict:
     """What history says about touching these files — bug fixes, churn, owners.
 
-    Fuses git temporal signals (churn percentile, trend, bus factor) with
-    graph topology (dependents, co-changes, impact surface) and security
-    findings. Consult before editing a bug-fixed or busy file. Pass
+    Fuses git temporal signals (``hotspot_score``/``owner_pct`` are 0-1; trend;
+    bus factor) with graph topology (dependents, co-changes, impact surface)
+    and security findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
     (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
     first. tests_to_run is coverage-backed: the tests the per-test map proves

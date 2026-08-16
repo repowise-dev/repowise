@@ -85,6 +85,32 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
 _surface_applied = False
 
 
+def tool_middleware(fn: Any) -> Any:
+    """Compose the layers wrapped around every registered MCP tool.
+
+    Each layer is signature-preserving, so the tool schemas are unchanged.
+    Ordering, innermost first:
+
+    1. ``shield`` — no exception may escape to FastMCP as a protocol-level
+       isError (an early isError teaches the agent to abandon the server for
+       the whole session), so it must see the raw tool.
+    2. ``quantize`` — rounds every float in the response. Outside the shield so
+       shaped error responses are covered too, and inside the savings layer so
+       the ledger measures the payload as actually delivered.
+    3. ``instrument`` — savings/telemetry, outermost, so shaped error responses
+       are still dead-end-debited in the ledger.
+
+    Named rather than inlined at the ``apply`` call so tests can wrap a tool in
+    the real composition; ``tests/unit/server/mcp/test_number_precision.py``
+    relies on that to prove no raw double reaches an agent.
+    """
+    from repowise.server.mcp_server._failure_shield import shield
+    from repowise.server.mcp_server._rounding import quantize
+    from repowise.server.mcp_server._savings import instrument
+
+    return instrument(quantize(shield(fn)))
+
+
 def ensure_full_surface() -> Any:
     """Import every tool module and attach the registry to the FastMCP server.
 
@@ -109,19 +135,9 @@ def ensure_full_surface() -> Any:
         importlib.import_module(f"{__name__}.{module}")
 
     from repowise.core.registry import mcp_tool_registry
-    from repowise.server.mcp_server._failure_shield import shield as _failure_shield
-    from repowise.server.mcp_server._savings import instrument as _savings_instrument
     from repowise.server.mcp_server._tool_selection import snapshot_full_surface
 
-    # ``middleware`` wraps each tool twice, both layers signature-preserving so
-    # the tool schemas are unchanged. The failure shield sits innermost: no
-    # exception may escape to FastMCP as a protocol-level isError (an early
-    # isError teaches the agent to abandon the server for the whole session).
-    # The savings layer wraps it, so shaped error responses are still
-    # dead-end-debited in the ledger.
-    mcp_tool_registry.apply(
-        _mcp, middleware=lambda fn: _savings_instrument(_failure_shield(fn))
-    )
+    mcp_tool_registry.apply(_mcp, middleware=tool_middleware)
 
     # Snapshot the full registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.

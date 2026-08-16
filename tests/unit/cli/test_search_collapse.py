@@ -118,7 +118,7 @@ RISK_PAYLOAD = {
             "co_change_partners": [
                 {
                     "file_path": "packages/core/src/repowise/core/persistence/models.py",
-                    "count": 19.13,
+                    "weight": 19.13,
                     "last_co_change": "2026-08-01",
                     "has_import_link": True,
                 }

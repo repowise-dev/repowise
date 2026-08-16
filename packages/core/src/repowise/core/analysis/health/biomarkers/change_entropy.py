@@ -82,7 +82,11 @@ class ChangeEntropyDetector:
                 line_end=None,
                 details={
                     "change_entropy": round(entropy, 4),
-                    "change_entropy_pct": round(percentile, 3),
+                    # 0-100, matching FileSignals._entropy_pct and every other
+                    # emitted copy of this field. The stored column is 0-1, and
+                    # emitting it raw here put two scales under one key in a
+                    # single get_health response.
+                    "change_entropy_pct": round(percentile * 100.0, 1),
                     "commit_count_90d": commits_90d,
                 },
                 reason=(

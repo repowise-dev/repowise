@@ -74,7 +74,7 @@ class RiskDriver:
     """One feature's contribution to the change-risk logit."""
 
     feature: str
-    value: float  # raw feature value
+    value: float | None  # raw feature value; None when the feature is unknown
     contribution: float  # signed push on the logit (coef * standardized value)
     label: str  # human-readable explanation
 
@@ -176,11 +176,13 @@ def score_change(features: ChangeFeatures) -> ChangeRisk:
         raw = getattr(features, name)
         if raw is None:
             # Unknown feature (e.g. author experience on a diff-only caller):
-            # contribute nothing rather than impute, and say so.
+            # contribute nothing rather than impute, and say so. The value is
+            # None, not NaN — NaN is not JSON, and every serializing boundary
+            # would otherwise have to strip it back out one by one.
             drivers.append(
                 RiskDriver(
                     feature=name,
-                    value=float("nan"),
+                    value=None,
                     contribution=0.0,
                     label=f"{name} (unknown)",
                 )
