@@ -340,6 +340,39 @@ class TestGDScriptCalls:
         assert append.receiver_name == "slots"
 
 
+class TestKnownGrammarGap:
+    """Sentinel for the one upstream gap, so a grammar bump tells us it is fixed.
+
+    tree-sitter-gdscript still reserves `export` / `onready` at statement
+    position for the GDScript 3 `export var` / `onready var` forms. GDScript 4
+    respells those `@export` / `@onready`, so both are ordinary identifiers
+    again and `export()` is a legal call -- but a *bare* call statement fails
+    to parse. Hit once in 651 corpus files (Pixelorama ExportDialog.gd:469).
+    """
+
+    @pytest.mark.parametrize("word", ["export", "onready"])
+    def test_bare_call_statement_still_fails(self, parser: ASTParser, word: str) -> None:
+        src = f"func f():\n\t{word}()\n".encode()
+        result = parser.parse_file(_gd("a.gd"), src)
+        assert result.parse_errors, (
+            f"`{word}()` now parses -- the upstream grammar gap looks fixed. "
+            "Drop this test and the matching bullet in LANGUAGE_SUPPORT.md."
+        )
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            b"func export() -> void:\n\tpass\n",
+            b"func f():\n\tself.export()\n",
+            b"func f():\n\tvar x = export()\n",
+        ],
+    )
+    def test_only_the_bare_statement_form_is_affected(
+        self, parser: ASTParser, src: bytes
+    ) -> None:
+        assert parser.parse_file(_gd("a.gd"), src).parse_errors == []
+
+
 class TestGDScriptParsesCleanly:
     @pytest.mark.parametrize("source", [PLAYER_SOURCE, LEGACY_SOURCE])
     def test_no_parse_errors(self, parser: ASTParser, source: bytes) -> None:

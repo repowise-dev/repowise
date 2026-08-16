@@ -310,6 +310,14 @@ Both dialects parse: GDScript 4 (`@export var`) and GDScript 3 (`export var`,
 - **No `.tscn` / autoload / engine-callback awareness yet**, so despite the ✅
   in the pipeline table above, **dead-code output on a Godot project is not
   trustworthy** until that lands.
+- **One upstream grammar gap:** calling a function named `export` or `onready`
+  as a bare statement (`export()`) fails to parse, because the grammar still
+  reserves those words at statement position for the GDScript 3 `export var` /
+  `onready var` forms — which GDScript 4 respells `@export` / `@onready`, making
+  both legal identifiers again. `self.export()`, `var x = export()` and
+  `func export()` all parse; only the bare call statement fails. Contained to
+  the one file by tree-sitter error recovery. Seen once in 651 corpus files
+  (Pixelorama's `ExportDialog.gd`).
 
 ---
 
