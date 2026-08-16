@@ -46,22 +46,31 @@ SPEC = LanguageSpec(
     # constructors (Vector2, Color, ...). Engine *classes* (Node, Sprite2D,
     # ...) are deliberately absent: those are referenced as receivers
     # (`Node.new()`), not as bare call targets, so listing them here would
-    # buy nothing. Conservative on purpose -- a name filtered here can never
-    # form a project call edge, and project code is free to define a method
-    # that shadows one of these.
+    # buy nothing. Conservative on purpose, and it has to be: ASTParser's
+    # builtin check is receiver-BLIND (`if target_name in _call_builtins` runs
+    # before receiver_name is read), so a name listed here also deletes
+    # `obj.name()` method edges. Anything plausible as a project method name
+    # is therefore left out -- see `load` below.
     builtin_calls=frozenset({
-        # Output / diagnostics
+        # Output / diagnostics. `breakpoint` is deliberately absent: it has a
+        # dedicated breakpoint_statement node and never parses as a call.
         "print", "printerr", "printraw", "printt", "prints", "print_rich",
-        "push_error", "push_warning", "assert", "breakpoint",
+        "push_error", "push_warning", "assert",
         # Conversion / reflection
         "str", "int", "float", "bool", "char", "ord", "hash", "typeof",
         "type_string", "type_exists", "var_to_str", "str_to_var",
         "var_to_bytes", "bytes_to_var", "weakref", "is_instance_valid",
         "is_instance_id_valid", "instance_from_id", "len", "range",
-        # Resource loading (also captured as imports -- excluded here so the
-        # call graph does not gain a dangling `preload` node alongside the
-        # import edge the same expression already produced)
-        "preload", "load",
+        # `preload` is also captured as an import; excluded here so the call
+        # graph does not gain a dangling node beside that edge. `load` is
+        # deliberately NOT excluded despite being the same kind of global:
+        # the filter is receiver-blind, and `load` is a common project and
+        # engine method name (`ConfigFile.load`, `Image.load`, save
+        # managers), so listing it would silently delete those call edges.
+        "preload",
+        # Not a global, but GDScript 4's bare `super()` parses as a plain
+        # call whose target can never resolve to a project symbol.
+        "super",
         # Math
         "abs", "absi", "absf", "min", "mini", "minf", "max", "maxi", "maxf",
         "clamp", "clampi", "clampf", "round", "roundi", "roundf", "floor",

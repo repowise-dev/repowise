@@ -112,10 +112,18 @@ class TestGDScriptSymbols:
         assert ("MAX_HEALTH", "constant") in kinds
         assert ("Bullet", "constant") in kinds
         assert ("State", "enum") in kinds
+        # Enumerators are real constants in the enclosing scope.
+        assert ("IDLE", "constant") in kinds
         assert ("health", "variable") in kinds
         # No "signal" member in the SymbolKind literal -- signals share the
         # "variable" bucket with Pascal properties and C# events.
         assert ("health_changed", "variable") in kinds
+
+    def test_anonymous_enum_members_are_still_symbols(self, parser: ASTParser) -> None:
+        # `enum {A, B}` has no enum symbol of its own, but its members are
+        # the idiomatic Godot spelling for state/flag constants.
+        result = parser.parse_file(_gd(), b"enum { IDLE, RUNNING }\n")
+        assert {"IDLE", "RUNNING"} <= {s.name for s in result.symbols}
 
     def test_annotated_export_and_onready_vars(self, parser: ASTParser) -> None:
         # GDScript 4 `@export var` is an ordinary variable_statement carrying
@@ -191,12 +199,28 @@ class TestGDScriptHeritage:
         rels = {(r.child_name, r.parent_name, r.kind) for r in result.heritage}
         assert ("Enemy", "KinematicBody2D", "extends") in rels
 
-    def test_inner_class_heritage(self, parser: ASTParser) -> None:
+    def test_inner_class_engine_parent_is_filtered(self, parser: ASTParser) -> None:
+        # Named for what it actually checks: `Resource` is in builtin_parents,
+        # so the relation is filtered rather than left dangling. The positive
+        # inner-class case is the next test.
         result = parser.parse_file(_gd(), PLAYER_SOURCE)
         rels = {(r.child_name, r.parent_name) for r in result.heritage}
-        # `Resource` is in builtin_parents, so the relation is filtered out
-        # rather than left dangling.
         assert ("Inventory", "Resource") not in rels
+
+    def test_inner_class_extends_written_inside_the_body(self, parser: ASTParser) -> None:
+        # The grammar admits `extends` as a statement in the class body, not
+        # only in the `class Inner extends X:` header.
+        src = b"class_name Outer\n\nclass Inner:\n\textends SomeProjectType\n\tpass\n"
+        result = parser.parse_file(_gd("a.gd"), src)
+        rels = {(r.child_name, r.parent_name, r.kind) for r in result.heritage}
+        assert ("Inner", "SomeProjectType", "extends") in rels
+
+    def test_qualified_parent_keeps_its_last_segment(self, parser: ASTParser) -> None:
+        # `extends Inventory.BaseSlot` must record `BaseSlot`; HeritageResolver
+        # matches bare symbol names, so the dotted form would never resolve.
+        src = b"class_name Slot\nextends Inventory.BaseSlot\n"
+        result = parser.parse_file(_gd("a.gd"), src)
+        assert {r.parent_name for r in result.heritage} == {"BaseSlot"}
 
     def test_inner_class_heritage_on_a_project_type_survives(
         self, parser: ASTParser
@@ -250,6 +274,29 @@ class TestGDScriptImports:
         result = parser.parse_file(_gd(), b'var path = "res://x.gd"\nvar r = load(path)\n')
         assert result.imports == []
 
+    def test_resourceloader_load_is_an_import(self, parser: ASTParser) -> None:
+        # Parses as attribute -> attribute_call, never as a bare `call`, so
+        # it needs its own pattern. The standard runtime-fetch idiom.
+        result = parser.parse_file(_gd(), b'var s = ResourceLoader.load("res://a.gd")\n')
+        assert {i.module_path for i in result.imports} == {"res://a.gd"}
+
+    def test_type_hint_argument_is_not_mistaken_for_a_path(self, parser: ASTParser) -> None:
+        # Real case from dialogic: ResourceLoader.load(style, "DialogicStyle")
+        # passes the path as a variable and a TYPE HINT as the second
+        # argument. Only the first argument may be read as a module path.
+        result = parser.parse_file(
+            _gd(), b'func f(style):\n\treturn ResourceLoader.load(style, "DialogicStyle")\n'
+        )
+        assert result.imports == []
+
+    def test_load_as_a_method_name_still_makes_a_call_edge(self, parser: ASTParser) -> None:
+        # The builtin filter is receiver-blind, so listing `load` in
+        # builtin_calls would silently delete this edge.
+        result = parser.parse_file(_gd(), b"func f():\n\tsave_manager.load(0)\n")
+        assert ("load", "save_manager") in {
+            (c.target_name, c.receiver_name) for c in result.calls
+        }
+
     def test_preload_is_also_a_constant_symbol(self, parser: ASTParser) -> None:
         # `const X = preload(...)` is legitimately both a constant and an
         # import; the two captures are independent.
@@ -270,6 +317,21 @@ class TestGDScriptCalls:
         assert "clamp" not in targets
         # preload is an import, and must not double as a call node.
         assert "preload" not in targets
+
+    def test_gdscript_3_parent_call_is_recorded(self, parser: ASTParser) -> None:
+        # `.ready()` in LEGACY_SOURCE -- the base_call pattern. Previously
+        # advertised in the fixture header but asserted nowhere.
+        result = parser.parse_file(_gd("actors/enemy.gd"), LEGACY_SOURCE)
+        assert "ready" in {c.target_name for c in result.calls}
+
+    def test_super_method_call_records_super_as_receiver(self, parser: ASTParser) -> None:
+        src = b"func _ready():\n\tsuper._ready()\n\tsuper()\n"
+        result = parser.parse_file(_gd("a.gd"), src)
+        calls = {(c.target_name, c.receiver_name) for c in result.calls}
+        assert ("_ready", "super") in calls
+        # Bare `super()` can never resolve to a project symbol, so it is
+        # filtered rather than left as a dangling call target.
+        assert "super" not in {c.target_name for c in result.calls}
 
     def test_method_call_records_its_receiver(self, parser: ASTParser) -> None:
         result = parser.parse_file(_gd(), PLAYER_SOURCE)

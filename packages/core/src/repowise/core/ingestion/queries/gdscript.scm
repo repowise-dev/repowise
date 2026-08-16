@@ -67,9 +67,10 @@
   name: (name) @symbol.name) @symbol.def
 
 ; ---------------------------------------------------------------
-; Functions. Not anchored to source/class_body: GDScript has no
-; nested `func`, and ASTParser._has_callable_ancestor already drops
-; anything that somehow sits inside another callable.
+; Functions. Not anchored to source/class_body: a GDScript 4 lambda
+; is spelled `func` but parses as its own `lambda` node (which has
+; its own `name` field for the `var cb = func on_done(): ...` form),
+; so a `function_definition` can never nest inside another one.
 ; ---------------------------------------------------------------
 
 (function_definition
@@ -101,19 +102,16 @@
   (variable_statement
     name: (name) @symbol.name) @symbol.def)
 
+; Only `source`-anchored: node-types.json gives class_body exactly
+; {class_definition, const_statement, extends_statement,
+;  enum_definition, function_definition, pass_statement,
+;  signal_statement, variable_statement}, so the GDScript 3
+; export/onready statement forms cannot appear inside a class body.
 (source
   (export_variable_statement
     name: (name) @symbol.name) @symbol.def)
 
-(class_body
-  (export_variable_statement
-    name: (name) @symbol.name) @symbol.def)
-
 (source
-  (onready_variable_statement
-    name: (name) @symbol.name) @symbol.def)
-
-(class_body
   (onready_variable_statement
     name: (name) @symbol.name) @symbol.def)
 
@@ -135,10 +133,12 @@
     name: (name) @symbol.name
     parameters: (parameters)? @symbol.params) @symbol.def)
 
-; `name` is optional on enum_definition -- an anonymous `enum {A, B}`
-; declares its enumerators into the enclosing scope and has no symbol
-; of its own to name, so requiring the field here skips exactly the
-; declarations that have nothing to record.
+; `name` is optional on enum_definition: `enum {A, B}` is anonymous and
+; has no symbol of its own to name. Its *enumerators* are still real
+; constants in the enclosing scope though, so they are captured
+; separately below -- an anonymous enum is the idiomatic Godot spelling
+; for a set of state/flag constants, and dropping it entirely would
+; lose every one of them.
 (source
   (enum_definition
     name: (name) @symbol.name) @symbol.def)
@@ -146,6 +146,13 @@
 (class_body
   (enum_definition
     name: (name) @symbol.name) @symbol.def)
+
+; Enumerators of both named and anonymous enums. `left` is the member
+; identifier; `right` is the optional `= <expr>` value.
+(enum_definition
+  body: (enumerator_list
+    (enumerator
+      left: (identifier) @symbol.name) @symbol.def))
 
 ; ---------------------------------------------------------------
 ; Imports -- `preload("res://a.gd")`, `load("res://b.tscn")` and
@@ -158,17 +165,36 @@
 ; Only string-literal arguments are captured. `load(some_var)` is
 ; unresolvable without dataflow, and emitting the variable's *name*
 ; as a module path would manufacture a wrong edge.
+;
+; The `.` anchors the string to the FIRST argument. Without it the
+; pattern also matches a later string argument when the path itself
+; is a variable -- `ResourceLoader.load(style, "DialogicStyle")` in
+; dialogic passes a type hint as arg 2, which was being picked up as
+; a module path.
 ; ---------------------------------------------------------------
 
 (call
   (identifier) @_preload_fn
-  arguments: (arguments (string) @import.module)
+  arguments: (arguments . (string) @import.module)
   (#eq? @_preload_fn "preload")) @import.statement
 
 (call
   (identifier) @_load_fn
-  arguments: (arguments (string) @import.module)
+  arguments: (arguments . (string) @import.module)
   (#eq? @_load_fn "load")) @import.statement
+
+; `ResourceLoader.load("res://x.gd")` -- the standard idiom for a
+; runtime (non-preload) fetch. It parses as an `attribute` holding an
+; `attribute_call`, never as a bare `call`, so the pattern above cannot
+; see it. Matched on the method name alone, so `image.load("res://a.png")`
+; and `cfg.load("user://s.cfg")` are caught too; both are genuine
+; resource references, and a non-res:// path resolves to an external
+; node rather than a wrong edge.
+(attribute
+  (attribute_call
+    (identifier) @_rl_fn
+    arguments: (arguments . (string) @import.module))
+  (#eq? @_rl_fn "load")) @import.statement
 
 (extends_statement
   (string) @import.module) @import.statement

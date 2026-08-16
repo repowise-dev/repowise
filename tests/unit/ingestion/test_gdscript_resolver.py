@@ -119,6 +119,16 @@ class TestRelativePaths:
         got = resolve_gdscript_import("../lib/util.gd", "actors/player.gd", ctx)
         assert got == "lib/util.gd"
 
+    def test_escaping_above_the_repo_root_is_external_not_clamped(
+        self, tmp_path: Path
+    ) -> None:
+        # Clamping the `..` would fold this onto `vendor/shared/player.gd`
+        # and resolve to that unrelated file. The real target is outside the
+        # checkout, so the only correct answer is external.
+        ctx = _ctx({"player.gd", "vendor/shared/player.gd"}, repo_path=tmp_path)
+        got = resolve_gdscript_import("../../vendor/shared/player.gd", "player.gd", ctx)
+        assert got == "external:../../vendor/shared/player.gd"
+
 
 class TestUnresolved:
     def test_missing_target_becomes_external_not_a_stem_guess(self, tmp_path: Path) -> None:

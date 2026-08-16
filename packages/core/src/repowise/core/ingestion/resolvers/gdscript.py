@@ -117,14 +117,20 @@ def resolve_gdscript_import(
 
     # Godot also accepts a path relative to the importing script.
     candidate = _join_relative(PurePosixPath(importer_path).parent, raw)
-    if candidate in ctx.path_set:
+    if candidate is not None and candidate in ctx.path_set:
         return candidate
 
     return ctx.add_external_node(raw)
 
 
-def _join_relative(base: PurePosixPath, relative: str) -> str:
+def _join_relative(base: PurePosixPath, relative: str) -> str | None:
     """Join *relative* onto *base*, collapsing ``.``/``..`` textually.
+
+    Returns None if the path escapes above the repo root. Clamping the
+    escape instead would fold ``../../vendor/shared/player.gd`` onto
+    ``vendor/shared/player.gd`` and, if that unrelated file happened to
+    exist, resolve to it -- a wrong edge, which this module's whole
+    contract is to avoid.
 
     Not ``Path.resolve()``: resolution must not touch the filesystem (the
     target is looked up in ``ctx.path_set``, and in tests no such file
@@ -133,8 +139,9 @@ def _join_relative(base: PurePosixPath, relative: str) -> str:
     parts: list[str] = [p for p in base.parts if p not in ("", ".")]
     for segment in relative.split("/"):
         if segment == "..":
-            if parts:
-                parts.pop()
+            if not parts:
+                return None
+            parts.pop()
         elif segment not in ("", "."):
             parts.append(segment)
     return "/".join(parts)

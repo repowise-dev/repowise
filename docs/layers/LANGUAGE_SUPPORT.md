@@ -54,7 +54,7 @@ produce meaningful output.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (6) | C · Swift · PHP · Dart · Object Pascal · GDScript | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP and GDScript don't yet |
+| **Good** (6) | C · Swift · PHP · Dart · Object Pascal · GDScript | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP and GDScript don't yet. GDScript has a dedicated import resolver but no framework edges or named bindings (see [Known gaps](#gdscript-known-gaps)) |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
 | **Lightweight** (8) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML · QML | A real file-to-file import graph, no symbol-level claims |
@@ -286,13 +286,30 @@ Both dialects parse: GDScript 4 (`@export var`) and GDScript 3 (`export var`,
   type name.
 - **Engine methods on implicit `self`** (`get_node`, `emit_signal`, `connect`)
   are unresolved targets; only Godot's *global* scope is filtered as builtin.
-  Same tradeoff as Pascal's framework calls.
+  Same tradeoff as Pascal's framework calls. Note the builtin filter is
+  receiver-blind, so a project method sharing a global's name (`hash`, `seed`,
+  `str`) loses its call edge. `load` is excluded from the filter for exactly
+  this reason.
 - **`uid://` paths and `load(some_variable)` stay external** — the first needs
   the excluded `.uid` sidecars, the second needs dataflow. Neither is guessed.
 - **Signals share the `variable` kind** (no `signal` member in `SymbolKind`).
-- **No code-health markers yet**, and no `.tscn` / autoload / engine-callback
-  awareness — until that lands, dead-code output on a Godot project is not
-  trustworthy.
+- **No framework edges and no named bindings.** Unlike C / Swift / PHP / Dart
+  at this tier, there is no Godot framework-edge handler and no binding
+  extractor, so every `Import` carries `bindings=[]`.
+- **String and annotation dispatch is invisible**: `@rpc` methods invoked via
+  `rpc("name")`, `connect(..., "method_name")`, GDScript 3 `setget` accessor
+  names, and `$NodePath` / `%UniqueName` lookups produce no edges, so those
+  methods read as unreferenced.
+- **Annotation arguments are not imports** — `@icon("res://…")` and
+  `class_name X, "res://icon.png"` reference real files that are not recorded.
+- **Setter/getter bodies are not symbols**, so calls made inside one attribute
+  to the enclosing `variable` symbol.
+- **Code health: duplication markers DO run** (the clone tokenizer needs only a
+  grammar), but complexity, performance and dataflow dialects are not
+  registered — that gap is what keeps GDScript at Good rather than Full.
+- **No `.tscn` / autoload / engine-callback awareness yet**, so despite the ✅
+  in the pipeline table above, **dead-code output on a Godot project is not
+  trustworthy** until that lands.
 
 ---
 

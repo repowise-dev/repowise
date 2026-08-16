@@ -415,6 +415,10 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "onready_variable_statement": "variable",  # GDScript 3 `onready var`
             "const_statement": "constant",
             "enum_definition": "enum",
+            # Members of both named and anonymous enums. An anonymous
+            # `enum {IDLE, RUNNING}` has no enum symbol at all, so without
+            # this its members would vanish entirely.
+            "enumerator": "constant",
             # No "signal"/"event" member in the SymbolKind literal. "variable"
             # is the same bucket Pascal's `declProp` and C#'s
             # `property_declaration` land in -- a declared member that is not

@@ -26,7 +26,12 @@ def _parent_from_extends(extends_node: Node, src: str) -> str | None:
     for child in extends_node.named_children:
         if child.type == "type":
             text = node_text(child, src).strip()
-            return text or None
+            # `type` is choice(attribute, identifier, subscript), so a
+            # qualified parent arrives dotted (`extends Inventory.BaseSlot`).
+            # HeritageResolver matches bare symbol names, and the inner class
+            # is indexed as `BaseSlot`, so keep the last segment -- the same
+            # thing the Kotlin and C# extractors do for qualified parents.
+            return text.rsplit(".", 1)[-1].strip() or None
     return None
 
 
@@ -39,8 +44,10 @@ def _extract_gdscript_heritage(
     Two node types reach this function (see ``heritage_node_types`` in
     languages/specs/gdscript.py):
 
-    ``class_definition`` -- an inner class. Always carries its own
-    ``extends`` field, so the lookup is direct.
+    ``class_definition`` -- an inner class. Usually carries its own
+    ``extends`` field from the header form ``class Inner extends Baz:``,
+    but the grammar also admits ``extends`` as a statement inside the
+    class body, so that is checked as a fallback.
 
     ``class_name_statement`` -- the script-level class. The grammar gives it
     an optional ``extends`` field, which is populated only for the one-line
@@ -57,12 +64,21 @@ def _extract_gdscript_heritage(
     """
     extends_node = def_node.child_by_field_name("extends")
 
-    if extends_node is None and def_node.type == "class_name_statement":
-        parent = def_node.parent
-        if parent is not None:
-            for sibling in parent.named_children:
-                if sibling.type == "extends_statement":
-                    extends_node = sibling
+    if extends_node is None:
+        # Where to look for a standalone `extends` depends on the node:
+        # a class_name_statement's is a sibling under `source`, an inner
+        # class's is a statement inside its own class_body (node-types.json
+        # lists extends_statement among class_body's children, so the
+        # header form is not the only way to spell it).
+        scope = (
+            def_node.parent
+            if def_node.type == "class_name_statement"
+            else def_node.child_by_field_name("body")
+        )
+        if scope is not None:
+            for child in scope.named_children:
+                if child.type == "extends_statement":
+                    extends_node = child
                     break
 
     if extends_node is None:
