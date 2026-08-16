@@ -94,7 +94,7 @@ class TestRustFieldTypeCapture:
         assert "Bar" in names
 
     def test_reference_field_type_captured(self) -> None:
-        names = self._calls("pub struct Foo { bar: &Bar }\n")
+        names = self._calls("pub struct Foo<'a> { bar: &'a Bar }\n")
         assert "Bar" in names
 
     def test_generic_type_param_not_captured_as_reference(self) -> None:
