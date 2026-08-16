@@ -216,10 +216,16 @@
   arguments: (arguments) @call.arguments
 ) @call.site
 
-; Method call: obj.method(args)
+; Method call: obj.method(args) — and self-dispatch: this.method(args).
+; ``this`` is its own node type, not an identifier, so it is an alternation in
+; the receiver slot rather than a second pattern: one pattern means tree-sitter
+; does not run an extra match pass over every call_expression (measured +29-40%
+; parse time on angular for the two-pattern form, ~0% for this one), and there
+; is no duplicate rule to keep in sync. ``receiver_name`` then reads "this",
+; which call_resolver Strategy 3 already resolves against the caller's class.
 (call_expression
   function: (member_expression
-    object: (identifier) @call.receiver
+    object: [(identifier) (this)] @call.receiver
     property: (property_identifier) @call.target
   )
   arguments: (arguments) @call.arguments
