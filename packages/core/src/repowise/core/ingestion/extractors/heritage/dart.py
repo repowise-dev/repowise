@@ -12,8 +12,6 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
-from ...type_names import bare_type_name
-from ..helpers import node_text
 from ._types import type_runs
 
 _SUPERCLASS_SEPARATORS = frozenset({"extends"})
@@ -21,6 +19,8 @@ _MIXIN_SEPARATORS = frozenset({"with"})
 _INTERFACE_SEPARATORS = frozenset({"implements"})
 # The mixin list is a child of ``superclass`` and is read separately.
 _SUPERCLASS_SKIP = frozenset({"mixins"})
+_ON_SEPARATORS = frozenset({"on"})
+_MIXIN_DECL_SKIP = frozenset({"class_body"})
 
 
 def _append(out: list[HeritageRelation], name: str, parent: str, kind: str, line: int) -> None:
@@ -53,9 +53,11 @@ def _extract_dart_heritage(
                 for _, parent in type_runs(child, src, _INTERFACE_SEPARATORS):
                     _append(out, name, parent, "implements", line)
     elif def_node.type == "mixin_declaration":
-        # ``mixin M on Base`` — the ``on`` constraint types are direct
-        # type_identifier children of the declaration, alongside the mixin's
-        # own name and body, so these are picked rather than run-joined.
-        for child in def_node.children:
-            if child.type == "type_identifier":
-                _append(out, name, bare_type_name(node_text(child, src)), "extends", line)
+        # ``mixin M on Base`` — the constraints are flat siblings of the
+        # declaration, sharing it with the mixin's own name and body, so only
+        # the runs the ``on`` keyword introduces are constraints.
+        for separator, parent in type_runs(
+            def_node, src, _ON_SEPARATORS, _MIXIN_DECL_SKIP
+        ):
+            if separator == "on":
+                _append(out, name, parent, "extends", line)
