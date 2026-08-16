@@ -1129,6 +1129,15 @@ class DeadCodeAnalyzer:
                 # binary" — never observable in the static graph.
                 if sym.get("is_exported_symbol"):
                     continue
+                # A C/C++ forward declaration whose definition was found is not
+                # independently deletable — the definition is the unit of
+                # deletion, and call resolution attaches the use edge there
+                # rather than to the header line, so reporting the declaration
+                # too would only restate what the definition says (#1601). A
+                # prototype with no definition anywhere is the opposite case:
+                # nothing else can carry the finding, so it still gets one.
+                if sym.get("is_declaration") and sym.get("defined_by"):
+                    continue
                 # Names that contain a dot are namespace path fragments
                 # (e.g. ``eShop.ClientApp``), not user-visible exports.
                 if "." in sym_name:

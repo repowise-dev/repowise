@@ -481,6 +481,15 @@ class ResolveMixin:
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
         )
+
+        # Record which C/C++ declarations were paired with a definition. The
+        # dead-code pass suppresses a declaration only when one was found: a
+        # prototype whose body exists nowhere in the repo is real dead code,
+        # and the header that declares it is the only place left to report it.
+        for decl_id, def_id in resolver.declaration_definitions.items():
+            if decl_id in self._graph:
+                self._graph.nodes[decl_id]["defined_by"] = def_id
+
         total_resolved = 0
 
         files_with_calls = [

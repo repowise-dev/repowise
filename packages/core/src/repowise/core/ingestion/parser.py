@@ -755,6 +755,7 @@ class ASTParser:
                     language=file_info.language,
                     parent_name=parent_name,
                     is_exported_symbol=is_exported_symbol,
+                    is_declaration=node_type in config.declaration_node_types,
                 )
             )
             node_types.append(node_type)

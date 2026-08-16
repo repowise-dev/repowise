@@ -186,6 +186,12 @@ class Symbol:
     # ``__declspec(dllexport)`` / ``__attribute__((visibility("default")))``).
     # Used by dead-code analysis to whitelist exported entry points.
     is_exported_symbol: bool = False
+    # True when this record is a bodiless declaration — a C/C++ forward
+    # declaration in a header. The definition carrying the same name lives in
+    # a .cpp and is the symbol a call should attach to; the call resolver
+    # redirects onto it, and the dead-code pass never reports a declaration,
+    # since a declaration is not independently deletable.
+    is_declaration: bool = False
 
 
 @dataclass

@@ -80,6 +80,11 @@ class CallResolver:
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
 
+        # C/C++ forward declaration → the definition it declares. Populated by
+        # ``_build_indices``; applied to every resolved call so the edge lands
+        # on the body rather than the header line that announced it.
+        self._decl_to_def: dict[str, str] = {}
+
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
 
@@ -395,13 +400,28 @@ class CallResolver:
 
         (Import-name maps are shared — see ``import_index.build_import_name_maps``.)
         """
+        # (parent, name) → [(file, symbol_id)] over symbols that carry a body,
+        # and the bodiless declarations waiting to be paired against them.
+        # Both feed ``_link_declarations`` once every file has been indexed.
+        definitions: dict[tuple[str | None, str], list[tuple[str, str]]] = defaultdict(list)
+        declarations: list[tuple[str, str, tuple[str | None, str]]] = []
+
         for path, parsed in parsed_files.items():
             file_syms: dict[str, str] = {}
             file_methods: dict[tuple[str, str], str] = {}
 
             for sym in parsed.symbols:
-                # File-level symbol index (top-level symbols and methods)
-                file_syms[sym.name] = sym.id
+                decl_key = (sym.parent_name, sym.name)
+                if sym.is_declaration:
+                    declarations.append((path, sym.id, decl_key))
+                    # A declaration must never displace a definition already
+                    # indexed under this name — a .cpp that forward-declares a
+                    # helper above its own body holds both.
+                    file_syms.setdefault(sym.name, sym.id)
+                else:
+                    definitions[decl_key].append((path, sym.id))
+                    # File-level symbol index (top-level symbols and methods)
+                    file_syms[sym.name] = sym.id
 
                 # Method index: (class_name, method_name) → symbol_id
                 if sym.parent_name:
@@ -414,6 +434,72 @@ class CallResolver:
 
             self._file_symbols[path] = file_syms
             self._file_methods[path] = file_methods
+
+        self._decl_to_def = self._link_declarations(declarations, definitions)
+
+    def _link_declarations(
+        self,
+        declarations: list[tuple[str, str, tuple[str | None, str]]],
+        definitions: dict[tuple[str | None, str], list[tuple[str, str]]],
+    ) -> dict[str, str]:
+        """Pair each C/C++ forward declaration with the definition it declares.
+
+        A header declares ``double Area(double)`` and a .cpp defines it, so the
+        two land as separate same-named symbols. Every tier below Tier 1 looks
+        the name up in the *header's* symbol table — the header is what the
+        caller includes — so the call edge attached to the declaration and left
+        the definition with no inbound edge at all, which read as dead code
+        (#1601). Resolving the pairing here lets ``resolve_file`` move the edge
+        onto the definition, where it belongs.
+
+        Pairing prefers a definition whose translation unit includes the
+        declaring header, which is the one-definition rule C++ actually means
+        and keeps same-named functions in sibling namespaces apart. Failing
+        that, a repo-wide unique definition is unambiguous enough to use. An
+        overload set spanning several files matches neither test, and stays
+        unlinked rather than guessed at.
+        """
+        redirects: dict[str, str] = {}
+        for decl_file, decl_id, key in declarations:
+            candidates = definitions.get(key, ())
+            if not candidates:
+                continue
+            including = [
+                sym_id
+                for def_file, sym_id in candidates
+                if decl_file in self._import_targets.get(def_file, ())
+            ]
+            if len(including) == 1:
+                redirects[decl_id] = including[0]
+            elif len(candidates) == 1:
+                redirects[decl_id] = candidates[0][1]
+        return redirects
+
+    @property
+    def declaration_definitions(self) -> dict[str, str]:
+        """``{declaration symbol id: definition symbol id}`` for paired decls.
+
+        Read by the graph builder, which stamps the pairing on the declaration
+        node so the dead-code pass can tell a superseded declaration from an
+        orphaned prototype whose definition no longer exists.
+        """
+        return self._decl_to_def
+
+    def _redirect_to_definition(self, resolved: ResolvedCall) -> ResolvedCall:
+        """Move a call edge off a forward declaration onto its definition.
+
+        No-op for every language but C/C++, and for the tiers that already
+        landed on a definition.
+
+        The self-edge guard carries a recursive function whose prototype sits
+        in a header: Tier 1 declines to link the call to the body it is
+        already inside, Tier 2 then finds the header declaration, and the
+        redirect would point the edge straight back at the caller.
+        """
+        target = self._decl_to_def.get(resolved.callee_id)
+        if target is None or target == resolved.caller_id:
+            return resolved
+        return ResolvedCall(resolved.caller_id, target, resolved.confidence, resolved.line)
 
     def _merged_symbols_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{name → symbol_id}`` across every file *file_path* imports.
@@ -462,7 +548,7 @@ class CallResolver:
 
             resolved = self._resolve_one(file_path, call)
             if resolved:
-                results.append(resolved)
+                results.append(self._redirect_to_definition(resolved))
 
         return results
 

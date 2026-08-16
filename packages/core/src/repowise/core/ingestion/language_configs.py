@@ -58,6 +58,11 @@ class LanguageConfig:
     # Node types that indicate a class context (used with "nesting" mode)
     parent_class_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Node types whose symbols are bodiless declarations. C/C++ headers declare
+    # what a .cpp defines, so both sides land as same-named symbols; this is
+    # what tells them apart downstream (see ``Symbol.is_declaration``).
+    declaration_node_types: frozenset[str] = field(default_factory=frozenset)
+
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
@@ -184,6 +189,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_specifier", "struct_specifier"}),
+        declaration_node_types=frozenset({"declaration"}),
     ),
     "c": LanguageConfig(
         symbol_node_types={
@@ -200,6 +206,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
+        declaration_node_types=frozenset({"declaration"}),
     ),
     "kotlin": LanguageConfig(
         symbol_node_types={
