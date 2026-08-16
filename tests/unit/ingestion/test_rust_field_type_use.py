@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 import networkx as nx
 
@@ -198,7 +199,7 @@ class TestRustGenericTypeParamCollision:
     ``Item`` struct is no longer flagged.
     """
 
-    _SOURCES: dict[str, str] = {
+    _SOURCES: ClassVar[dict[str, str]] = {
         "Cargo.toml": '[package]\nname = "net"\nversion = "0.1.0"\n',
         "src/lib.rs": (
             "pub struct Item { pub id: u32 }\n\n"
