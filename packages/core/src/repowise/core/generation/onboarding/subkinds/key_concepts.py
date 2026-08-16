@@ -109,6 +109,10 @@ _RELATION_VERB: dict[str, str] = {
     "implements": "implements",
     "method_implements": "implements",
     "reads": "reads from",
+    # Named rather than called: a dispatch-table entry, a callback field, an
+    # argument to a registration macro. "references" is the honest verb, since
+    # "calls" would claim an invocation this edge never observed.
+    "references": "references",
 }
 
 

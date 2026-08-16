@@ -240,3 +240,49 @@
 (template_argument_list
   (type_descriptor
     type: (_) @param.type))
+
+; ---------------------------------------------------------------------------
+; Bare references — drive symbol-level ``references`` edges
+; ---------------------------------------------------------------------------
+; Naming a function without calling it is a use, and none of the call
+; patterns above can see it: a dispatch table, a callback field and a
+; registration macro all mention the function as a plain identifier. The
+; referenced function then carries no inbound edge and reads as a
+; ``safe_to_delete`` unused export, which took out whole subsystems of
+; handlers and interop shims (#1602).
+;
+; Only the identifier forms are captured, so ``NodeType::Add`` in a table
+; (a ``qualified_identifier``) filters itself out. The parser drops any name
+; that does not resolve to a function or method, which is what keeps a
+; same-named local variable from minting an edge.
+
+; Dispatch table: Entry g_table[] = { {"a", HandleAlpha} };
+; The query is recursive, so nested initialiser rows match too. Captured under
+; its own name because the parser additionally requires a table to sit at file
+; / namespace / class scope: inside a function body the same shape is a
+; constructor member-init or a local aggregate, where ``{data, size}`` names
+; parameters rather than functions.
+(initializer_list
+  (identifier) @reference.table)
+
+; Designated initialiser: static Ops o = { .write = MyWrite };
+(initializer_pair
+  value: (identifier) @reference.name)
+
+; Callback field assignment: tool.Handler = Handle_SceneSummary;
+; Restricted to a member on the left. A plain ``x = y`` is overwhelmingly
+; local bookkeeping, and C++ getters are named exactly like the locals that
+; feed them (``offset_ = offset`` beside an ``offset()`` accessor), so the
+; unrestricted form manufactured a reference edge for half of leveldb.
+(assignment_expression
+  left: (field_expression)
+  right: (identifier) @reference.name)
+
+; Registration macro: REGISTER_HOOK(OnFrameStart);
+; ``@reference.via`` carries the macro name so the parser can require the
+; SCREAMING_CASE convention. Without that guard this would capture every
+; identifier argument of every ordinary call in the codebase.
+(call_expression
+  function: (identifier) @reference.via
+  arguments: (argument_list
+    (identifier) @reference.name))

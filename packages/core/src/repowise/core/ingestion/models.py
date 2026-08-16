@@ -295,6 +295,13 @@ EdgeType = Literal[
     # from ``imports`` so analyses can weight it lower and so the
     # persistence layer can surface provenance for these edges.
     "type_use",
+    # A function named without being called: a dispatch-table entry, a
+    # callback field, an argument to a registration macro (currently C/C++;
+    # see the ``@reference.name`` captures). Symbol → symbol, and deliberately
+    # not ``calls`` — nothing here proves the function is ever invoked, only
+    # that something holds a handle to it, which is enough to make deleting it
+    # unsafe.
+    "references",
 ]
 
 # Runtime mirror of the Literal, for the places that must test membership
@@ -384,6 +391,10 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         "implements",
         "method_implements",
         "reads",
+        # Naming a function is using it. A handler sitting in a dispatch table
+        # is never called anywhere a parser can see, and treating that as "no
+        # use" reported entire registration layers as safe to delete (#1602).
+        "references",
     }
 )
 
@@ -455,6 +466,12 @@ class ParsedFile:
     # Python only; lets the dead-code unused-export pass rescue symbols whose
     # only use is intra-module. See ``python_local_refs``.
     local_refs: frozenset[str] = field(default_factory=frozenset)
+    # C/C++ sites that name a function without calling it: a dispatch table
+    # entry, a callback field, an argument to a registration macro. Reuses
+    # ``CallSite`` because resolving one is the identical problem — a name, the
+    # symbol enclosing it, and a line — and it lets these ride the same
+    # resolution tiers. They become ``references`` edges, not ``calls``.
+    references: list[CallSite] = field(default_factory=list)
 
 
 def compute_content_hash(source: bytes) -> str:

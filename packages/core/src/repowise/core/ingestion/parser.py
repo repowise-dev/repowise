@@ -106,6 +106,11 @@ _MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
 # a TS buffer at identical offsets, so every TS/JS code path applies verbatim.
 _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 
+# Languages whose query defines the ``@reference.*`` captures. Every other
+# language would only scan the whole match list to find nothing, so the check
+# is here rather than inside ``_extract_references``.
+_REFERENCE_LANGUAGES = ("cpp", "c")
+
 
 @cache
 def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
@@ -422,6 +427,11 @@ class ASTParser:
         # tsx.scm turns ``<Component />`` into a call for React. Returns [] for
         # every non-SFC language.
         calls.extend(component_call_sites(lang, original_source, symbols))
+        references = (
+            self._extract_references(matches, file_info, src, symbols)
+            if lang in _REFERENCE_LANGUAGES
+            else []
+        )
         heritage = extract_heritage(matches, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
@@ -458,6 +468,7 @@ class ASTParser:
             content_hash=content_hash,
             type_refs=type_refs,
             local_refs=local_refs,
+            references=references,
         )
 
     # ------------------------------------------------------------------
@@ -1119,6 +1130,94 @@ class ASTParser:
             )
 
         return calls
+
+    def _extract_references(
+        self,
+        matches: list[dict],
+        file_info: FileInfo,
+        src: str,
+        symbols: list[Symbol],
+    ) -> list[CallSite]:
+        """Extract sites that name a function without calling it.
+
+        Three C/C++ shapes carry a function by name and never call it where a
+        parser can see: a dispatch-table entry, a callback field, and an
+        argument to a registration macro. Each leaves the named function with
+        no inbound edge, which read as a ``safe_to_delete`` unused export and
+        took out whole handler and interop layers (#1602).
+
+        Self-gating on the reference captures, so a language whose query
+        defines none produces nothing and pays two dict lookups. Two guards
+        keep these broad syntactic positions from claiming ordinary code:
+
+        * A macro argument requires a SCREAMING_CASE callee and must be that
+          macro's only argument. Uppercase alone is not enough: assertion
+          macros are spelled the same way and take values, so ``EXPECT_EQ(
+          capacity, 100)`` bound a local to whatever free function shared its
+          name. Registering something registers one thing, which separates
+          ``BENCHMARK(BM_Foo)`` from ``TEST(SuiteName, TestName)``.
+        * A table entry must sit outside any function body. A dispatch table is
+          a file-, namespace- or class-scope aggregate; the same braces inside
+          a function are a constructor member-init or a local aggregate, where
+          ``{data, size}`` names parameters. Measured on fmt, admitting those
+          turned ``data``, ``size``, ``begin``, ``end``, ``capacity`` and
+          ``buffer`` into edges, every one of them wrong.
+
+        Whether the name denotes a function at all is settled later, at
+        resolution, where the symbol kind is known.
+        """
+        from .language_data import get_builtin_calls
+
+        builtins = get_builtin_calls(file_info.language)
+
+        symbol_ranges = sorted(
+            [(s.start_line, s.end_line, s.id) for s in symbols],
+            key=lambda t: (t[0], -t[1]),
+        )
+        callable_ids = {s.id for s in symbols if s.kind in ("function", "method")}
+
+        references: list[CallSite] = []
+        seen: set[tuple[int, str]] = set()
+
+        for capture_dict in matches:
+            plain_nodes = capture_dict.get("reference.name", [])
+            table_nodes = capture_dict.get("reference.table", [])
+            if not plain_nodes and not table_nodes:
+                continue
+
+            via_nodes = capture_dict.get("reference.via", [])
+            if via_nodes:
+                via = _node_text(via_nodes[0], src).strip()
+                if not via or not via.isupper():
+                    continue
+                arg_list = plain_nodes[0].parent if plain_nodes else None
+                if arg_list is None or len(arg_list.named_children) != 1:
+                    continue
+
+            candidates = [(node, False) for node in plain_nodes]
+            candidates += [(node, True) for node in table_nodes]
+            for name_node, is_table in candidates:
+                name = _node_text(name_node, src).strip()
+                if not name or name in builtins:
+                    continue
+                line = name_node.start_point[0] + 1
+                enclosing = _find_enclosing_symbol(line, symbol_ranges)
+                if is_table and enclosing in callable_ids:
+                    continue
+                if (line, name) in seen:
+                    continue
+                seen.add((line, name))
+                references.append(
+                    CallSite(
+                        target_name=name,
+                        receiver_name=None,
+                        caller_symbol_id=enclosing,
+                        line=line,
+                        argument_count=None,
+                    )
+                )
+
+        return references
 
     # ------------------------------------------------------------------
     # Export derivation

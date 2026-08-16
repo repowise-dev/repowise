@@ -210,7 +210,7 @@ class TestFingerprintDeterminism:
         one: whoever bumps the constant updates this line and sees, in the
         diff, that they are asking every existing store to re-curate.
         """
-        assert knowledge_graph.KG_BUILDER_VERSION == "2"
+        assert knowledge_graph.KG_BUILDER_VERSION == "3"
 
 
 # ---------------------------------------------------------------------------

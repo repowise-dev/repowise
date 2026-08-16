@@ -213,7 +213,9 @@ def _slugify(text: str) -> str:
 #
 # "2": `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points` changed its
 # ranking, neither of which moves a node or edge count.
-KG_BUILDER_VERSION = "2"
+# "3": `references` joined the map, so C/C++ dispatch tables and registration
+# macros reach the export instead of being dropped.
+KG_BUILDER_VERSION = "3"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
@@ -240,6 +242,7 @@ _EDGE_TYPE_MAP: dict[str, str] = {
     "implements": "depends_on",
     "method_implements": "depends_on",
     "reads": "depends_on",
+    "references": "depends_on",
 }
 
 
