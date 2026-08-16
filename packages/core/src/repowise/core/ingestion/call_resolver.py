@@ -31,7 +31,12 @@ from typing import Any
 
 import structlog
 
-from .languages.receiver_types import RECEIVER_TYPE_LANGUAGES, declared_types
+from .languages.receiver_types import (
+    RECEIVER_TYPE_LANGUAGES,
+    Declaration,
+    scan_declarations,
+    types_in_span,
+)
 from .models import (
     CallSite,
     NamedBinding,
@@ -173,10 +178,12 @@ class CallResolver:
         # hit, and the cap is what keeps a whole repo's source out of memory.
         # Scanning is memoised per *function*, not per reference — one scan
         # answers every unresolved receiver in a body.
-        self._source_lines: dict[str, list[str]] = {}
+        self._source_text: dict[str, str] = {}
+        self._declarations: dict[str, tuple[Declaration, ...]] = {}
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
         self._body_types: dict[tuple[str, str], dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
+        self._method_name_set: frozenset[str] | None = None
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
@@ -924,6 +931,13 @@ class CallResolver:
         if language not in RECEIVER_TYPE_LANGUAGES:
             return None
 
+        # Scanning a body is the expensive half, so refuse before it rather
+        # than after. Nothing here can resolve unless some class declares a
+        # method of this name; the gate above only proves some *symbol* does,
+        # which a free function satisfies.
+        if call.target_name not in self._method_names():
+            return None
+
         type_name = self._declared_types_in(file_path, caller_id, language).get(receiver_name)
         if type_name is None:
             return None
@@ -975,6 +989,12 @@ class CallResolver:
             return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_typed_import")
         return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_typed_global")
 
+    def _method_names(self) -> frozenset[str]:
+        """Every name declared as a method of some class, built once."""
+        if self._method_name_set is None:
+            self._method_name_set = frozenset(method for _, method in self._global_methods)
+        return self._method_name_set
+
     def _externally_bound_names(self, file_path: str) -> frozenset[str]:
         """Simple names this file imports from outside the repo.
 
@@ -1006,24 +1026,32 @@ class CallResolver:
         caller_id: str,
         language: str,
     ) -> dict[str, str]:
-        """``{name: type}`` for the body of one function, scanned once."""
+        """``{name: type}`` for the body of one function."""
         key = (file_path, caller_id)
         types = self._body_types.get(key)
         if types is not None:
             return types
 
         span = self._spans_for(file_path).get(caller_id)
-        lines = self._lines_for(file_path)
-        if span is None or not lines:
+        if span is None:
             types = {}
         else:
-            start, end = span
-            types = declared_types("\n".join(lines[start - 1 : end]), language)
+            types = types_in_span(self._declarations_for(file_path, language), *span)
 
         if len(self._body_types) >= _BODY_TYPE_CACHE_ENTRIES:
             self._body_types.clear()
         self._body_types[key] = types
         return types
+
+    def _declarations_for(self, file_path: str, language: str) -> tuple[Declaration, ...]:
+        """Every declaration in one file, scanned once however many bodies ask."""
+        found = self._declarations.get(file_path)
+        if found is None:
+            found = scan_declarations(self._text_of(file_path), language)
+            if len(self._declarations) >= _SOURCE_CACHE_FILES:
+                self._declarations.clear()
+            self._declarations[file_path] = found
+        return found
 
     def _spans_for(self, file_path: str) -> dict[str, tuple[int, int]]:
         """``{symbol_id: (start_line, end_line)}`` for one file."""
@@ -1036,14 +1064,14 @@ class CallResolver:
             self._symbol_spans[file_path] = spans
         return spans
 
-    def _lines_for(self, file_path: str) -> list[str]:
-        """One file's source lines, or empty if it cannot be read."""
-        lines = self._source_lines.get(file_path)
-        if lines is not None:
-            return lines
+    def _text_of(self, file_path: str) -> str:
+        """One file's source, or empty if it cannot be read."""
+        text = self._source_text.get(file_path)
+        if text is not None:
+            return text
 
         parsed = self._parsed_files.get(file_path)
-        lines = []
+        text = ""
         if parsed is not None:
             try:
                 text = Path(parsed.file_info.abs_path).read_text(
@@ -1051,12 +1079,11 @@ class CallResolver:
                 )
             except OSError:
                 text = ""
-            lines = text.splitlines()
 
-        if len(self._source_lines) >= _SOURCE_CACHE_FILES:
-            self._source_lines.clear()
-        self._source_lines[file_path] = lines
-        return lines
+        if len(self._source_text) >= _SOURCE_CACHE_FILES:
+            self._source_text.clear()
+        self._source_text[file_path] = text
+        return text
 
 
 def _rivals_a_class_method(symbol_id: str) -> bool:
