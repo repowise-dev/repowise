@@ -97,6 +97,14 @@ class TestRustFieldTypeCapture:
         names = self._calls("pub struct Foo { bar: &Bar }\n")
         assert "Bar" in names
 
+    def test_generic_type_param_not_captured_as_reference(self) -> None:
+        # `Item` here is the type parameter's own name, not a reference to
+        # a struct named `Item` — the two are indistinguishable as bare
+        # `type_identifier` nodes without checking the enclosing
+        # `type_parameters` list.
+        names = self._calls("pub struct Wrapper<Item> { pub value: Item }\n")
+        assert "Item" not in names
+
 
 # ---------------------------------------------------------------------------
 # Graph + dead-code outcome (end-to-end through GraphBuilder)
@@ -177,3 +185,59 @@ class TestRustFieldTypeDeadCodeOutcome:
             f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT
         }
         assert "DeadState" in unused_exports
+
+
+class TestRustGenericTypeParamCollision:
+    """A generic type parameter that shares a name with a real struct must
+    not rescue that struct from dead-code detection.
+
+    ``struct Wrapper<Item> { value: Item }`` — the field's ``Item`` is a
+    reference to the type parameter, not to the ``Item`` struct defined
+    elsewhere in the crate. Without the type-parameter check, that field
+    produces a false ``Wrapper -> Item`` edge, so the genuinely-dead
+    ``Item`` struct is no longer flagged.
+    """
+
+    _SOURCES: dict[str, str] = {
+        "Cargo.toml": '[package]\nname = "net"\nversion = "0.1.0"\n',
+        "src/lib.rs": (
+            "pub struct Item { pub id: u32 }\n\n"
+            "pub struct Wrapper<Item> { pub value: Item }\n\n"
+            "pub fn dead_fn() {}\n"
+        ),
+    }
+
+    def _build_graph(self, repo: Path) -> nx.DiGraph:
+        for rel, body in self._SOURCES.items():
+            p = repo / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+
+        builder = GraphBuilder(repo_path=repo)
+        for rel in self._SOURCES:
+            if not rel.endswith(".rs"):
+                continue
+            abs_path = str((repo / rel).resolve())
+            parsed = _PARSER.parse_file(_file_info(rel, abs_path), (repo / rel).read_bytes())
+            builder.add_file(parsed)
+        return builder.build()
+
+    def test_no_edge_from_shadowed_type_param(self, tmp_path: Path) -> None:
+        graph = self._build_graph(tmp_path)
+        assert not graph.has_edge("src/lib.rs::Wrapper", "src/lib.rs::Item")
+
+    def test_shadowed_struct_still_flagged_unused_export(self, tmp_path: Path) -> None:
+        graph = self._build_graph(tmp_path)
+        analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
+        report = analyzer.analyze(
+            {
+                "detect_unreachable_files": False,
+                "detect_zombie_packages": False,
+                "detect_unused_internals": False,
+                "min_confidence": 0.0,
+            }
+        )
+        unused_exports = {
+            f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT
+        }
+        assert "Item" in unused_exports
