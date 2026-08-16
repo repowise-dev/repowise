@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 
@@ -32,7 +33,7 @@ def _extract_go_heritage(
             type_child = field_decl.child_by_field_name("type")
             if name_node is None and type_child is not None:
                 parent = node_text(type_child, src).strip().lstrip("*")
-                bare = parent.split(".")[-1]
+                bare = bare_type_name(parent)
                 if bare:
                     out.append(
                         HeritageRelation(
@@ -48,8 +49,7 @@ def _extract_go_heritage(
             if child.type in ("{", "}", "\n"):
                 continue
             if child.type in ("type_identifier", "qualified_type"):
-                parent = node_text(child, src).strip()
-                bare = parent.split(".")[-1]
+                bare = bare_type_name(node_text(child, src))
                 if bare:
                     out.append(
                         HeritageRelation(

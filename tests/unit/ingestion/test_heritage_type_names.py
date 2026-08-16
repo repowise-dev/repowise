@@ -1,13 +1,19 @@
 """Characterisation: the parent name each language's heritage extractor emits.
 
 Every extractor answers one question — given a parent type written in source,
-what is the bare type name — and each answers it its own way. This table pins
+what is the bare type name — and each answered it its own way. This table pins
 the answer per language for four spellings of the same parent: bare, with type
 arguments, qualified, and both.
 
-Committed against pre-existing behaviour, so rows that encode a defect are
-marked. They are the phase's own diff: a row that changes must change on
-purpose.
+Every row now yields the bare name, because all fourteen extractors ask one
+module for it. The rows that moved to get here are what the table was committed
+to expose: type arguments survived into the parent name in six languages, a
+qualifier was emitted as a parent in its own right in three, and two dropped a
+qualified parent entirely.
+
+Two languages still produce no edge, and neither is a type-name defect. Pascal's
+grammar is not installed here. JavaScript's extractor looks for a clause node
+only TypeScript's grammar emits.
 """
 
 from __future__ import annotations
@@ -23,43 +29,37 @@ from repowise.core.ingestion.parser import ASTParser
 # (parent_name, kind) pairs). Templates declare one class so a failure names
 # one case.
 CASES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
-    # --- python: qualifier stripped, subscript type args survive -----------
+    # --- python ------------------------------------------------------------
     ("python", "py", "class Child({p}):\n    pass\n", "Bare", [("Bare", "extends")]),
-    ("python", "py", "class Child({p}):\n    pass\n", "Gen[Arg]", [("Gen[Arg]", "extends")]),
+    ("python", "py", "class Child({p}):\n    pass\n", "Gen[Arg]", [("Gen", "extends")]),
     ("python", "py", "class Child({p}):\n    pass\n", "ns.Qual", [("Qual", "extends")]),
-    ("python", "py", "class Child({p}):\n    pass\n", "ns.Both[Arg]", [("Both[Arg]", "extends")]),
-    # --- java: qualifier stripped, type args survive -----------------------
+    ("python", "py", "class Child({p}):\n    pass\n", "ns.Both[Arg]", [("Both", "extends")]),
+    # --- java --------------------------------------------------------------
     ("java", "java", "class Child extends {p} {{}}\n", "Bare", [("Bare", "extends")]),
-    ("java", "java", "class Child extends {p} {{}}\n", "Gen<Arg>", [("Gen<Arg>", "extends")]),
+    ("java", "java", "class Child extends {p} {{}}\n", "Gen<Arg>", [("Gen", "extends")]),
     ("java", "java", "class Child extends {p} {{}}\n", "ns.Qual", [("Qual", "extends")]),
-    ("java", "java", "class Child extends {p} {{}}\n", "ns.Both<Arg>", [("Both<Arg>", "extends")]),
-    # --- kotlin: same shape as java ---------------------------------------
+    ("java", "java", "class Child extends {p} {{}}\n", "ns.Both<Arg>", [("Both", "extends")]),
+    # --- kotlin ------------------------------------------------------------
     ("kotlin", "kt", "class Child : {p}()\n", "Bare", [("Bare", "extends")]),
-    ("kotlin", "kt", "class Child : {p}()\n", "Gen<Arg>", [("Gen<Arg>", "extends")]),
+    ("kotlin", "kt", "class Child : {p}()\n", "Gen<Arg>", [("Gen", "extends")]),
     ("kotlin", "kt", "class Child : {p}()\n", "ns.Qual", [("Qual", "extends")]),
-    ("kotlin", "kt", "class Child : {p}()\n", "ns.Both<Arg>", [("Both<Arg>", "extends")]),
-    # --- csharp: the only extractor that strips both today -----------------
+    ("kotlin", "kt", "class Child : {p}()\n", "ns.Both<Arg>", [("Both", "extends")]),
+    # --- csharp ------------------------------------------------------------
     ("csharp", "cs", "class Child : {p} {{}}\n", "Bare", [("Bare", "extends")]),
     ("csharp", "cs", "class Child : {p} {{}}\n", "Gen<Arg>", [("Gen", "extends")]),
     ("csharp", "cs", "class Child : {p} {{}}\n", "ns.Qual", [("Qual", "extends")]),
     ("csharp", "cs", "class Child : {p} {{}}\n", "ns.Both<Arg>", [("Both", "extends")]),
-    # --- cpp: ``::`` qualifier stripped, template args survive -------------
+    # --- cpp ---------------------------------------------------------------
     ("cpp", "cpp", "class Child : public {p} {{}};\n", "Bare", [("Bare", "extends")]),
-    ("cpp", "cpp", "class Child : public {p} {{}};\n", "Gen<Arg>", [("Gen<Arg>", "extends")]),
+    ("cpp", "cpp", "class Child : public {p} {{}};\n", "Gen<Arg>", [("Gen", "extends")]),
     ("cpp", "cpp", "class Child : public {p} {{}};\n", "ns::Qual", [("Qual", "extends")]),
-    (
-        "cpp",
-        "cpp",
-        "class Child : public {p} {{}};\n",
-        "ns::Both<Arg>",
-        [("Both<Arg>", "extends")],
-    ),
-    # --- go: struct embedding; qualifier stripped, type args survive -------
+    ("cpp", "cpp", "class Child : public {p} {{}};\n", "ns::Both<Arg>", [("Both", "extends")]),
+    # --- go: struct embedding ----------------------------------------------
     ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "Bare", [("Bare", "mixin")]),
-    ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "Gen[Arg]", [("Gen[Arg]", "mixin")]),
+    ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "Gen[Arg]", [("Gen", "mixin")]),
     ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "ns.Qual", [("Qual", "mixin")]),
-    ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "ns.Both[Arg]", [("Both[Arg]", "mixin")]),
-    # --- rust: trait impls already strip both ------------------------------
+    ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "ns.Both[Arg]", [("Both", "mixin")]),
+    # --- rust --------------------------------------------------------------
     ("rust", "rs", "struct Child;\nimpl {p} for Child {{}}\n", "Bare", [("Bare", "trait_impl")]),
     (
         "rust",
@@ -85,68 +85,38 @@ CASES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     # --- ruby: no generic syntax to mishandle ------------------------------
     ("ruby", "rb", "class Child < {p}\nend\n", "Bare", [("Bare", "extends")]),
     ("ruby", "rb", "class Child < {p}\nend\n", "Ns::Qual", [("Qual", "extends")]),
-    # --- typescript: raw clause text; type args split into a junk parent ---
+    # --- typescript --------------------------------------------------------
     ("typescript", "ts", "class Child extends {p} {{}}\n", "Bare", [("Bare", "extends")]),
-    (
-        "typescript",
-        "ts",
-        "class Child extends {p} {{}}\n",
-        "Gen<Arg>",
-        [("Gen", "extends"), ("<Arg>", "extends")],
-    ),
-    ("typescript", "ts", "class Child extends {p} {{}}\n", "ns.Qual", [("ns.Qual", "extends")]),
+    ("typescript", "ts", "class Child extends {p} {{}}\n", "Gen<Arg>", [("Gen", "extends")]),
+    ("typescript", "ts", "class Child extends {p} {{}}\n", "ns.Qual", [("Qual", "extends")]),
     (
         "typescript",
         "ts",
         "class Child extends {p} {{}}\n",
         "ns.Both<Arg>",
-        [("ns.Both", "extends"), ("<Arg>", "extends")],
+        [("Both", "extends")],
     ),
-    # --- javascript: no heritage at all, even for a bare parent ------------
+    # --- javascript: a grammar-shape gap, not a type-name one --------------
     ("javascript", "js", "class Child extends {p} {{}}\n", "Bare", []),
     ("javascript", "js", "class Child extends {p} {{}}\n", "ns.Qual", []),
-    # --- swift: a qualified parent emits the qualifier as its own edge -----
+    # --- swift -------------------------------------------------------------
     ("swift", "swift", "class Child: {p} {{}}\n", "Bare", [("Bare", "extends")]),
     ("swift", "swift", "class Child: {p} {{}}\n", "Gen<Arg>", [("Gen", "extends")]),
-    (
-        "swift",
-        "swift",
-        "class Child: {p} {{}}\n",
-        "Ns.Qual",
-        [("Ns", "extends"), ("Qual", "extends")],
-    ),
-    (
-        "swift",
-        "swift",
-        "class Child: {p} {{}}\n",
-        "Ns.Both<Arg>",
-        [("Ns", "extends"), ("Both", "extends")],
-    ),
-    # --- dart: same double-emission as swift -------------------------------
+    ("swift", "swift", "class Child: {p} {{}}\n", "Ns.Qual", [("Qual", "extends")]),
+    ("swift", "swift", "class Child: {p} {{}}\n", "Ns.Both<Arg>", [("Both", "extends")]),
+    # --- dart --------------------------------------------------------------
     ("dart", "dart", "class Child extends {p} {{}}\n", "Bare", [("Bare", "extends")]),
     ("dart", "dart", "class Child extends {p} {{}}\n", "Gen<Arg>", [("Gen", "extends")]),
-    (
-        "dart",
-        "dart",
-        "class Child extends {p} {{}}\n",
-        "ns.Qual",
-        [("ns", "extends"), ("Qual", "extends")],
-    ),
-    (
-        "dart",
-        "dart",
-        "class Child extends {p} {{}}\n",
-        "ns.Both<Arg>",
-        [("ns", "extends"), ("Both", "extends")],
-    ),
-    # --- scala: only a bare type_identifier is ever reached ----------------
+    ("dart", "dart", "class Child extends {p} {{}}\n", "ns.Qual", [("Qual", "extends")]),
+    ("dart", "dart", "class Child extends {p} {{}}\n", "ns.Both<Arg>", [("Both", "extends")]),
+    # --- scala -------------------------------------------------------------
     ("scala", "scala", "class Child extends {p}\n", "Bare", [("Bare", "extends")]),
-    ("scala", "scala", "class Child extends {p}\n", "Gen[Arg]", []),
-    ("scala", "scala", "class Child extends {p}\n", "ns.Qual", []),
-    ("scala", "scala", "class Child extends {p}\n", "ns.Both[Arg]", []),
-    # --- php: a namespaced parent is a different node type, so it is lost --
+    ("scala", "scala", "class Child extends {p}\n", "Gen[Arg]", [("Gen", "extends")]),
+    ("scala", "scala", "class Child extends {p}\n", "ns.Qual", [("Qual", "extends")]),
+    ("scala", "scala", "class Child extends {p}\n", "ns.Both[Arg]", [("Both", "extends")]),
+    # --- php ---------------------------------------------------------------
     ("php", "php", "<?php\nclass Child extends {p} {{}}\n", "Bare", [("Bare", "extends")]),
-    ("php", "php", "<?php\nclass Child extends {p} {{}}\n", "\\Ns\\Qual", []),
+    ("php", "php", "<?php\nclass Child extends {p} {{}}\n", "\\Ns\\Qual", [("Qual", "extends")]),
 ]
 
 

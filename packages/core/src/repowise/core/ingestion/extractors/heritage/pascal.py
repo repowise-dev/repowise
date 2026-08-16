@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 _CLASS_LIKE_KINDS = {"declClass", "declIntf", "declHelper"}
@@ -37,7 +38,7 @@ def _extract_pascal_heritage(
         return
 
     parent_nodes = type_node.children_by_field_name("parent")
-    parents = [node_text(p, src).strip() for p in parent_nodes if p.type == "typeref"]
+    parents = [bare_type_name(node_text(p, src)) for p in parent_nodes if p.type == "typeref"]
     parents = [p for p in parents if p and p != name]
 
     for i, parent in enumerate(parents):
@@ -59,7 +60,7 @@ def _extract_pascal_heritage(
         parent_typeref_ids = {p.id for p in parent_nodes}
         for child in type_node.named_children:
             if child.type == "typeref" and child.id not in parent_typeref_ids:
-                extended = node_text(child, src).strip()
+                extended = bare_type_name(node_text(child, src))
                 if extended and extended != name:
                     out.append(
                         HeritageRelation(

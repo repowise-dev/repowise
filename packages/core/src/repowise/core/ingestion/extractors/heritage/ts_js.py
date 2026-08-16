@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 
@@ -21,7 +22,7 @@ def _type_clause(
     for type_node in clause.children:
         if type_node.type in (keyword, ","):
             continue
-        parent = node_text(type_node, src).strip()
+        parent = bare_type_name(node_text(type_node, src))
         if parent:
             out.append(HeritageRelation(child_name=name, parent_name=parent, kind=kind, line=line))
 

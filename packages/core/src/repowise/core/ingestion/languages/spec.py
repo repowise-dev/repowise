@@ -141,6 +141,12 @@ class LanguageSpec:
     # -- Builtins --------------------------------------------------------
     builtin_calls: frozenset[str] = field(default_factory=frozenset)
     builtin_parents: frozenset[str] = field(default_factory=frozenset)
+    # Type names that never resolve to a symbol this repo declares, so a
+    # type-use lookup for one is waste. Distinct from ``builtin_parents``,
+    # which answers the narrower question of what may sit in an extends
+    # clause; a type may be ubiquitous in parameter position without ever
+    # being inherited from.
+    builtin_types: frozenset[str] = field(default_factory=frozenset)
 
     # -- Display ---------------------------------------------------------
     color_hex: str = "#8b5cf6"  # fallback purple ("other")

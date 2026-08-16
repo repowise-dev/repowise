@@ -47,3 +47,9 @@ def get_builtin_parents(language: str) -> frozenset[str]:
     """Return the builtin parent type names for a language."""
     spec = REGISTRY.get(language)
     return spec.builtin_parents if spec else frozenset()
+
+
+def get_builtin_types(language: str) -> frozenset[str]:
+    """Return the type names that never resolve to a repo-declared symbol."""
+    spec = REGISTRY.get(language)
+    return spec.builtin_types if spec else frozenset()

@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 _MIXIN_METHODS = {"include", "extend", "prepend"}
@@ -18,7 +19,7 @@ def _extract_ruby_heritage(
     if superclass:
         parent = node_text(superclass, src).strip()
         parent = parent.removeprefix("<").strip()
-        bare = parent.split("::")[-1]
+        bare = bare_type_name(parent)
         if bare:
             out.append(
                 HeritageRelation(
@@ -55,7 +56,7 @@ def _extract_ruby_heritage(
                     continue
                 for arg in args.children:
                     if arg.type == "constant":
-                        mixin_name = node_text(arg, src).strip().split("::")[-1]
+                        mixin_name = bare_type_name(node_text(arg, src))
                         if mixin_name:
                             out.append(
                                 HeritageRelation(
