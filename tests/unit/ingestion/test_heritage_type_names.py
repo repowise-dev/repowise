@@ -11,9 +11,8 @@ to expose: type arguments survived into the parent name in six languages, a
 qualifier was emitted as a parent in its own right in three, and two dropped a
 qualified parent entirely.
 
-Two languages still produce no edge, and neither is a type-name defect. Pascal's
-grammar is not installed here. JavaScript's extractor looks for a clause node
-only TypeScript's grammar emits.
+Pascal still produces no edge, and that is not a type-name defect: its grammar
+is not installed here.
 """
 
 from __future__ import annotations
@@ -96,9 +95,9 @@ CASES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
         "ns.Both<Arg>",
         [("Both", "extends")],
     ),
-    # --- javascript: a grammar-shape gap, not a type-name one --------------
-    ("javascript", "js", "class Child extends {p} {{}}\n", "Bare", []),
-    ("javascript", "js", "class Child extends {p} {{}}\n", "ns.Qual", []),
+    # --- javascript: no type arguments to mishandle -------------------------
+    ("javascript", "js", "class Child extends {p} {{}}\n", "Bare", [("Bare", "extends")]),
+    ("javascript", "js", "class Child extends {p} {{}}\n", "ns.Qual", [("Qual", "extends")]),
     # --- swift -------------------------------------------------------------
     ("swift", "swift", "class Child: {p} {{}}\n", "Bare", [("Bare", "extends")]),
     ("swift", "swift", "class Child: {p} {{}}\n", "Gen<Arg>", [("Gen", "extends")]),
