@@ -75,6 +75,10 @@ LanguageTag = Literal[
     "xaml",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
+    # Godot .tscn/.tres/.escn + project.godot: data with no symbols, but
+    # [ext_resource path=...] and [autoload] are how a Godot project reaches
+    # its scripts at all.
+    "godot_resource",
     "unknown",
 ]
 

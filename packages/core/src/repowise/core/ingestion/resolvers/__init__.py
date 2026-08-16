@@ -50,6 +50,9 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "luau": resolve_luau_import,
     # res:// resolved against the nearest project.godot, not the repo root.
     "gdscript": resolve_gdscript_import,
+    # .tscn/.tres/.escn and project.godot name their dependencies with the
+    # same res:// paths a .gd file does, so they share the resolver.
+    "godot_resource": resolve_gdscript_import,
     "ruby": resolve_ruby_import,
     "csharp": resolve_csharp_import,
     "swift": resolve_swift_import,

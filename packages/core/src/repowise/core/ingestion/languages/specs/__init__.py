@@ -26,6 +26,7 @@ from .erlang import SPEC as _ERLANG
 from .fsharp import SPEC as _FSHARP
 from .gdscript import SPEC as _GDSCRIPT
 from .go import SPEC as _GO
+from .godot_resource import SPEC as _GODOT_RESOURCE
 from .graphql import SPEC as _GRAPHQL
 from .haskell import SPEC as _HASKELL
 from .html import SPEC as _HTML
@@ -121,6 +122,11 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # emits ``dynamic_uses`` edges to bound C# types. Registered here so
     # that the traverser surfaces a file node these edges can attach to.
     _XAML,
+    # Godot scenes/resources and project.godot. Data, so never reported as
+    # dead — but a Godot script is attached to a scene rather than imported
+    # by another script, so these files carry nearly every inbound edge the
+    # .gd graph has. See the spec's docstring.
+    _GODOT_RESOURCE,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though

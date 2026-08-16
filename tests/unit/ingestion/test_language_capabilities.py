@@ -138,6 +138,9 @@ _FULL = {
     # res:// is an absolute path from the nearest project.godot, so GDScript
     # import targets resolve exactly rather than through a stem guess.
     "gdscript",
+    # .tscn/.tres/.escn, project.godot and plugin.cfg name their dependencies
+    # with the same res:// paths and share the same resolver.
+    "godot_resource",
     "go",
     "java",
     "javascript",
