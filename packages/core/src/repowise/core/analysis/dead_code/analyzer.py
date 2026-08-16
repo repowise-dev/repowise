@@ -678,6 +678,7 @@ class DeadCodeAnalyzer:
         # along so the evidence line can say why.
         self._unindexed_source_files = list(unindexed_source_files or [])
         self._repo_root = repo_root
+        self._source_map = source_map
         self._unindexed_tokens: frozenset[str] | None = None
         # Kept for the absence check below, which is the one pass that needs
         # the raw text of *every* indexed file rather than of a suffix-filtered
@@ -1521,11 +1522,18 @@ class DeadCodeAnalyzer:
         return None
 
     def _read_file_text(self, file_path: str) -> str | None:
-        """Safely read the content of a file."""
+        """Safely read the content of a file, using source_map if available."""
         try:
+            if getattr(self, "_source_map", None) is not None:
+                abs_path = (
+                    str(Path(self._repo_root) / file_path)
+                    if getattr(self, "_repo_root", None) and not Path(file_path).is_absolute()
+                    else file_path
+                )
+                return read_source_text(file_path, abs_path, self._source_map)
             p = Path(file_path)
-            if not p.is_absolute() and getattr(self, "repo_path", None):
-                p = Path(self.repo_path) / p
+            if not p.is_absolute() and getattr(self, "_repo_root", None):
+                p = Path(self._repo_root) / p
             if p.exists():
                 return p.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:

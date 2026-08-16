@@ -1191,7 +1191,7 @@ class ASTParser:
                 arg_node = arg_nodes[0]
                 arg_count = _count_arguments(arg_node)
 
-            supplied_props: set[str] | None = None
+            supplied_props: frozenset[str] | None = None
             if site_node.type in ("jsx_self_closing_element", "jsx_opening_element"):
                 props_set: set[str] = set()
                 has_spread = False

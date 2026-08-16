@@ -426,3 +426,17 @@ export function ComponentB() {
     unused = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
     sym_names = [f.symbol_name for f in unused]
     assert "ComponentB" not in sym_names
+
+
+def test_read_file_text_relative_path(tmp_path):
+    """_read_file_text should resolve relative paths when repo_root is provided."""
+    sub_dir = tmp_path / "src"
+    sub_dir.mkdir()
+    rel_file = sub_dir / "Test.tsx"
+    rel_file.write_text("const x = 1;")
+
+    g = _build_graph(nodes={})
+    analyzer = DeadCodeAnalyzer(g, repo_root=tmp_path)
+    content = analyzer._read_file_text("src/Test.tsx")
+    assert content == "const x = 1;"
+

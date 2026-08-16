@@ -92,9 +92,7 @@ def extract_guarded_jsx_renders(
                     left = c
                 else:
                     right = c
-            if op == "&&" and left and right:
-                return _extract_prop_names(left) + _extract_prop_names(right)
-            elif op in ("===", "==") and left and right:
+            if op in ("&&", "===", "==") and left and right:
                 return _extract_prop_names(left) + _extract_prop_names(right)
             elif op in ("!==", "!=") and left and right:
                 right_text = _node_text(right)
