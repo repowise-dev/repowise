@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Flame, DoorOpen, Trash2, Users } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -74,11 +74,11 @@ export function FilePage({
   const defaultTab: FilePageTab =
     rawTab === "decisions" && !hasDecisions ? "overview" : rawTab;
 
+  // `defaultTab` seeds the state and nothing more. The effect that re-applied
+  // it on every change fired a redundant second state update on top of the one
+  // `handleTabChange` had just done, and only ever mattered because the host
+  // re-rendered the server tree on a tab click. It no longer does.
   const [activeTab, setActiveTab] = useState<FilePageTab>(defaultTab);
-
-  useEffect(() => {
-    setActiveTab(defaultTab);
-  }, [defaultTab]);
 
   const handleTabChange = (tab: FilePageTab) => {
     setActiveTab(tab);

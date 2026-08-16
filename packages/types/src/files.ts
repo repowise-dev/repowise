@@ -129,6 +129,14 @@ export interface FileDetailCoverage {
   line_coverage_pct: number;
   branch_coverage_pct: number | null;
   total_coverable_lines: number;
+  /**
+   * How many lines `covered_lines` names. Always sent, including under
+   * `fields=slim` where the array itself is dropped — the coverage headline
+   * only ever wanted the count, and counting it client-side is what forced the
+   * whole integer array across the wire. Optional so older payloads parse.
+   */
+  covered_line_count?: number;
+  /** Empty under `fields=slim`; read `covered_line_count` for the total. */
   covered_lines: number[];
   source_format: string;
   ingested_at: string | null;

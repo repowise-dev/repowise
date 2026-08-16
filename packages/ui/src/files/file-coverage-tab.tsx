@@ -26,7 +26,7 @@ export function FileCoverageTab({ coverage, coverageCodeHtml }: FileCoverageTabP
   }
 
   const pct = coverage.line_coverage_pct;
-  const coveredCount = coverage.covered_lines.length;
+  const coveredCount = coverage.covered_line_count ?? coverage.covered_lines.length;
 
   return (
     <div className="space-y-4">

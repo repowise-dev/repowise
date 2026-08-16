@@ -155,7 +155,9 @@ async def file_score_breakdown(
     finding_dicts = await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings]
     )
-    snapshots = await crud.list_health_snapshots(session, repo_id)
+    snapshots = await crud.list_health_snapshots(
+        session, repo_id, limit=crud.FILE_TREND_SNAPSHOT_WINDOW
+    )
     return {
         "file_path": file_path,
         "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,

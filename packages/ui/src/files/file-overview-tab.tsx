@@ -38,6 +38,14 @@ export function FileOverviewTab({ data, symbolHref, fileHref }: FileOverviewTabP
   const fixesIn = (symbolId: string) =>
     perSymbolSignal ? (rawFixCounts[symbolId] ?? 0) : 0;
 
+  // Two full sorts of every symbol in the file to pick eight chips. Left
+  // unmemoized deliberately: `useMemo` would make this a client component, and
+  // this is one of the five tab bodies that are pure and hookless today —
+  // which is what lets the hydration boundary move down to `file-health-tab`
+  // alone. Radix mounts only the active tab, and the redundant tab-change
+  // effect and the refetch-on-click are both gone, so the sorts now run once
+  // per mount rather than on every parent render.
+  //
   // Complexity picks the list, as it always has: biasing the whole sort on a
   // "was fixed" boolean would evict the file's most complex symbol in favour
   // of eight trivial helpers that took one fix each.

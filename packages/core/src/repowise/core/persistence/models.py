@@ -319,6 +319,17 @@ class GraphEdge(Base):
             "edge_type",
             name="uq_graph_edge_typed",
         ),
+        # The unique constraint above serves every read keyed on
+        # ``source_node_id`` and nothing keyed on ``target_node_id``, so the
+        # inbound half of every adjacency question — "what depends on this?" —
+        # scanned the table. ``get_graph_edges_for_node`` records the measured
+        # cost in its own docstring: on django's 120k-edge index the hottest
+        # node goes 10.9ms to 38.2ms once the inbound branch has to sort its
+        # scan into a temp b-tree for the ranked cut. The file page pays that
+        # twice per view, through that function and through
+        # ``get_node_degree_counts``. Additive, so ``_reconcile_schema``
+        # creates it on existing databases at the next ``init_db``.
+        Index("ix_graph_edges_repo_target", "repository_id", "target_node_id"),
     )
 
 
@@ -1134,6 +1145,10 @@ class DeadCodeFinding(Base):
     analyzed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+
+    # The table had no index, so the per-file lookup the file page issues
+    # full-scanned every finding in the repo to return the handful on one path.
+    __table_args__ = (Index("ix_dead_code_repo_path", "repository_id", "file_path"),)
 
 
 class HealthFinding(Base):

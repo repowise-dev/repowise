@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -587,8 +587,8 @@ async def get_graph_edges_for_node(
         on django's 120k-edge index: the hottest node (1,525 inbound edges)
         goes 10.9 ms to 38.2 ms; a low-degree node is unchanged at ~37 ms
         because it was already scanning. The fix is an index on
-        ``(repository_id, target_node_id)``, which is a migration and is not
-        this change.
+        ``(repository_id, target_node_id)``, which ``GraphEdge`` now declares
+        as ``ix_graph_edges_repo_target``.
     """
     results: list[GraphEdge] = []
 
@@ -736,6 +736,42 @@ async def get_all_file_metrics(
         )
     )
     return list(result.scalars().all())
+
+
+async def get_pagerank_percentile(
+    session: AsyncSession,
+    repository_id: str,
+    pagerank: float,
+) -> int:
+    """Percentile rank (0-100) of *pagerank* among the repo's file nodes.
+
+    Counted in SQL. The callers that want one file's rank used to load every
+    file node through :func:`get_all_file_metrics` and scan the list in Python,
+    which is the whole repo graph materialized as ORM objects to produce a
+    single integer.
+
+    The arithmetic deliberately matches ``mcp_server._graph_utils.percentile_rank``
+    — ``round(100 * below / n)`` over every ``node_type == "file"`` row — so
+    swapping a caller over does not move the number it prints. Note this is not
+    the same figure the Files *index* shows under ``pagerank_pct``: that one
+    drops external and framework nodes first and divides by ``n - 1``.
+    Reconciling the two is a behaviour change and not this function's job.
+    """
+    row = (
+        await session.execute(
+            select(
+                func.count().label("total"),
+                func.sum(case((GraphNode.pagerank < pagerank, 1), else_=0)).label("below"),
+            ).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "file",
+            )
+        )
+    ).one()
+    total = row.total or 0
+    if not total:
+        return 0
+    return round(100.0 * (row.below or 0) / total)
 
 
 async def get_cross_community_edges(

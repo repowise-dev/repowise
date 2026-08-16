@@ -14,7 +14,7 @@ import bisect
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +26,7 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import DeadCodeFinding, Page, WikiSymbol
 from repowise.server.deps import get_db_session, verify_api_key
-from repowise.server.mcp_server._graph_utils import parse_community_meta, percentile_rank
+from repowise.server.mcp_server._graph_utils import parse_community_meta
 from repowise.server.routers.code_health import (
     _file_signals_to_dict,
     _file_trend_to_dict,
@@ -68,7 +68,36 @@ def _blame_to_dict(b: Any) -> dict:
     }
 
 
-def _symbol_slim(s: WikiSymbol) -> dict:
+def _finding_dict(finding: Any, *, slim: bool) -> dict:
+    """One health finding, with ``details`` emptied under ``fields=slim``.
+
+    ``details_json`` is an open per-biomarker map and the only unbounded part
+    of a finding; everything else is a scalar the summary rows read.
+    """
+    out = _finding_to_dict(finding)
+    if slim:
+        out["details"] = {}
+    return out
+
+
+#: The nine of ``wiki_symbols``' seventeen columns the page renders. Selected
+#: by name so the other eight — the doc strings and the decorator/parameter
+#: JSON among them — are never read off the table, rather than hydrating whole
+#: entities and discarding two thirds of each in :func:`_symbol_slim`.
+_SYMBOL_COLUMNS = (
+    WikiSymbol.symbol_id,
+    WikiSymbol.name,
+    WikiSymbol.kind,
+    WikiSymbol.signature,
+    WikiSymbol.start_line,
+    WikiSymbol.end_line,
+    WikiSymbol.visibility,
+    WikiSymbol.complexity_estimate,
+    WikiSymbol.is_async,
+)
+
+
+def _symbol_slim(s: Any) -> dict:
     return {
         "symbol_id": s.symbol_id,
         "name": s.name,
@@ -186,9 +215,24 @@ async def files_index(
 async def file_detail(
     repo_id: str,
     file_path: str,
+    fields: str = Query(
+        "full",
+        description="How much of each block to return. 'full' (the default) is "
+        "everything. 'slim' drops the four unbounded payloads — the wiki page "
+        "body, the coverage line array, per-function blame, and each finding's "
+        "'details' map — for a caller that renders the summary numbers only. "
+        "'coverage.covered_line_count' is present in both modes, so the "
+        "coverage headline survives the cut.",
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Aggregate join over every per-file data source we persist."""
+    if fields not in ("full", "slim"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown fields '{fields}'. Valid: full, slim.",
+        )
+    slim = fields == "slim"
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -214,21 +258,20 @@ async def file_detail(
         raise HTTPException(status_code=404, detail=f"File not indexed: {file_path}")
 
     # --- Wiki page ref ----------------------------------------------------
-    page_row = (
-        await session.execute(
-            select(Page).where(
-                Page.repository_id == repo_id,
-                Page.page_type == "file_page",
-                Page.target_path == file_path,
-            )
-        )
-    ).scalar_one_or_none()
+    # A primary-key get, not a three-column filter: ``Page.id`` *is*
+    # ``"{page_type}:{target_path}"`` (see the model docstring), so the row this
+    # predicate described was always reachable by key. The repo check stays
+    # because one database can hold several repositories while the page id is
+    # unique across the table.
+    page_row = await session.get(Page, f"file_page:{file_path}")
+    if page_row is not None and page_row.repository_id != repo_id:
+        page_row = None
     wiki_page = (
         {
             "id": page_row.id,
             "title": page_row.title,
             "summary": page_row.summary,
-            "content": page_row.content,
+            "content": "" if slim else page_row.content,
             "freshness_status": page_row.freshness_status,
             "confidence": page_row.confidence,
             "human_notes": page_row.human_notes,
@@ -240,11 +283,13 @@ async def file_detail(
 
     # --- Health -----------------------------------------------------------
     findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
-    snapshots = await crud.list_health_snapshots(session, repo_id)
+    snapshots = await crud.list_health_snapshots(
+        session, repo_id, limit=crud.FILE_TREND_SNAPSHOT_WINDOW
+    )
     health = {
         "metric": _metric_to_dict(metric, _primary_and_magnitude(findings)) if metric else None,
         "breakdown": _score_breakdown_from_findings(findings) if findings else None,
-        "findings": [_finding_to_dict(f) for f in findings],
+        "findings": [_finding_dict(f, slim=slim) for f in findings],
         "trend": _file_trend_to_dict(file_trend(snapshots, file_path)),
         "signals": _file_signals_to_dict(file_signals(git_meta, degrees)),
     }
@@ -274,11 +319,15 @@ async def file_detail(
     coverage: dict | None = None
     if coverage_rows:
         c = coverage_rows[0]
+        covered_lines = _json_or(c.covered_lines_json, [])
         coverage = {
             "line_coverage_pct": c.line_coverage_pct,
             "branch_coverage_pct": c.branch_coverage_pct,
             "total_coverable_lines": c.total_coverable_lines,
-            "covered_lines": _json_or(c.covered_lines_json, []),
+            # Sent in both modes so "N of M lines hit" never has to count the
+            # array client-side, which is what forced the array to travel.
+            "covered_line_count": len(covered_lines),
+            "covered_lines": [] if slim else covered_lines,
             "source_format": c.source_format,
             "ingested_at": c.ingested_at.isoformat() if c.ingested_at else None,
             "ingested_commit_sha": c.ingested_commit_sha,
@@ -287,7 +336,6 @@ async def file_detail(
     # --- Graph context ------------------------------------------------------
     graph: dict | None = None
     if node is not None:
-        all_files = await crud.get_all_file_metrics(session, repo_id)
         assert degrees is not None  # node is not None here, so degrees was loaded
         meta = parse_community_meta(node)
         # Dependencies only. Unfiltered, this served the file's own `defines`
@@ -335,8 +383,12 @@ async def file_detail(
             "is_test": node.is_test,
             "symbol_count": node.symbol_count,
             "pagerank": round(node.pagerank or 0.0, 6),
-            "pagerank_percentile": percentile_rank(
-                node.pagerank or 0.0, [n.pagerank or 0.0 for n in all_files]
+            # Counted in SQL. This used to load every file node in the repo
+            # through ``get_all_file_metrics`` — a projection-free ``SELECT *``
+            # with no limit — and scan the hydrated list in Python, to produce
+            # this one integer.
+            "pagerank_percentile": await crud.get_pagerank_percentile(
+                session, repo_id, node.pagerank or 0.0
             ),
             "in_degree": degrees["in_degree"],
             "out_degree": degrees["out_degree"],
@@ -348,17 +400,18 @@ async def file_detail(
 
     # --- Symbols + per-function blame ---------------------------------------
     symbol_rows = (
-        (
-            await session.execute(
-                select(WikiSymbol)
-                .where(WikiSymbol.repository_id == repo_id, WikiSymbol.file_path == file_path)
-                .order_by(WikiSymbol.start_line)
-            )
+        await session.execute(
+            select(*_SYMBOL_COLUMNS)
+            .where(WikiSymbol.repository_id == repo_id, WikiSymbol.file_path == file_path)
+            .order_by(WikiSymbol.start_line)
         )
-        .scalars()
-        .all()
+    ).all()
+    # Skipped outright under ``fields=slim`` — a query the caller cannot read.
+    blame_rows = (
+        []
+        if slim
+        else await crud.get_git_function_blames(session, repo_id, file_path=file_path)
     )
-    blame_rows = await crud.get_git_function_blames(session, repo_id, file_path=file_path)
 
     # --- Governing decisions + dead code -------------------------------------
     governing = [
