@@ -40,11 +40,11 @@ def extract_guarded_jsx_renders(
     def _node_text(n: Any) -> str:
         return code[n.start_byte : n.end_byte].decode("utf-8", errors="replace")
 
-    def _extract_prop_names(n: Any) -> list[str]:
+    def _extract_prop_names(n: Any, local_vars: set[str] | None = None) -> list[str]:
         if n.type == "parenthesized_expression":
             for c in n.children:
                 if c.type not in ("(", ")"):
-                    return _extract_prop_names(c)
+                    return _extract_prop_names(c, local_vars)
         elif n.type == "member_expression":
             obj_node = n.children[0]
             obj_text = _node_text(obj_node)
@@ -59,7 +59,9 @@ def extract_guarded_jsx_renders(
                 return [prop_text]
         elif n.type == "identifier":
             name = _node_text(n)
-            if name not in ("true", "false", "undefined", "null"):
+            if name not in ("true", "false", "undefined", "null") and (
+                local_vars is None or name not in local_vars
+            ):
                 return [name]
         elif n.type == "unary_expression":
             op = None
@@ -79,7 +81,7 @@ def extract_guarded_jsx_renders(
                         else:
                             sub_operand = sub
                     if sub_op == "!" and sub_operand:
-                        return _extract_prop_names(sub_operand)
+                        return _extract_prop_names(sub_operand, local_vars)
                 return []
         elif n.type == "binary_expression":
             op = None
@@ -93,14 +95,14 @@ def extract_guarded_jsx_renders(
                 else:
                     right = c
             if op in ("&&", "===", "==") and left and right:
-                return _extract_prop_names(left) + _extract_prop_names(right)
+                return _extract_prop_names(left, local_vars) + _extract_prop_names(right, local_vars)
             elif op in ("!==", "!=") and left and right:
                 right_text = _node_text(right)
                 left_text = _node_text(left)
                 if right_text in ("undefined", "null", "false"):
-                    return _extract_prop_names(left)
+                    return _extract_prop_names(left, local_vars)
                 elif left_text in ("undefined", "null", "false"):
-                    return _extract_prop_names(right)
+                    return _extract_prop_names(right, local_vars)
         return []
 
     def _find_jsx_targets(n: Any) -> list[str]:
@@ -130,7 +132,46 @@ def extract_guarded_jsx_renders(
                 targets.extend(_find_jsx_targets(c))
         return targets
 
-    def _walk(n: Any, current_fn: str | None = None) -> None:
+    def _extract_bound_names(n: Any) -> list[str]:
+        names: list[str] = []
+        if n.type in ("identifier", "shorthand_property_identifier_pattern"):
+            names.append(_node_text(n))
+        elif n.type in (
+            "array_pattern",
+            "object_pattern",
+            "pair_pattern",
+            "variable_declarator",
+            "rest_pattern",
+        ):
+            for c in n.children:
+                if c.type not in (":", "=", ",", "[", "]", "{", "}", "...", "var", "let", "const"):
+                    names.extend(_extract_bound_names(c))
+        return names
+
+    def _collect_function_local_vars(fn_node: Any) -> set[str]:
+        local_vars: set[str] = set()
+
+        def _scan(n: Any) -> None:
+            if n != fn_node and n.type in (
+                "function_declaration",
+                "arrow_function",
+                "function_expression",
+                "method_definition",
+            ):
+                return
+            if n.type == "variable_declarator":
+                for c in n.children:
+                    if c.type in ("identifier", "array_pattern", "object_pattern"):
+                        local_vars.update(_extract_bound_names(c))
+                        break
+            for c in n.children:
+                _scan(c)
+
+        _scan(fn_node)
+        return local_vars
+
+    def _walk(n: Any, current_fn: str | None = None, local_vars: set[str] | None = None) -> None:
+        current_local_vars = local_vars
         if n.type in (
             "function_declaration",
             "arrow_function",
@@ -149,6 +190,7 @@ def extract_guarded_jsx_renders(
                         fn_name = _node_text(c)
                         break
             current_fn = fn_name or "Anonymous"
+            current_local_vars = _collect_function_local_vars(n)
 
         if n.type == "binary_expression":
             op = None
@@ -164,7 +206,7 @@ def extract_guarded_jsx_renders(
             if op == "&&" and left and right:
                 jsx_targets = _find_jsx_targets(right)
                 if jsx_targets and current_fn:
-                    prop_names = _extract_prop_names(left)
+                    prop_names = _extract_prop_names(left, current_local_vars)
                     for prop_name in prop_names:
                         for target in jsx_targets:
                             results.append((current_fn, target, prop_name))
@@ -181,13 +223,13 @@ def extract_guarded_jsx_renders(
             if cond and consequence and current_fn:
                 jsx_targets = _find_jsx_targets(consequence)
                 if jsx_targets:
-                    prop_names = _extract_prop_names(cond)
+                    prop_names = _extract_prop_names(cond, current_local_vars)
                     for prop_name in prop_names:
                         for target in jsx_targets:
                             results.append((current_fn, target, prop_name))
 
         for child in n.children:
-            _walk(child, current_fn)
+            _walk(child, current_fn, current_local_vars)
 
     _walk(tree.root_node)
     return results

@@ -1490,11 +1490,14 @@ class DeadCodeAnalyzer:
                 self._guard_cache[pred_file] = (
                     extract_guarded_jsx_renders(pred_file, src) if src else []
                 )
+            pred_parent = pred.split("::")[-1] if "::" in pred else None
             guarded = self._guard_cache[pred_file]
             found_guard = None
-            for _parent_fn, child_comp, prop_name in guarded:
-                if child_comp == sym_name:
-                    found_guard = (prop_name, pred.split("::")[-1])
+            for parent_fn, child_comp, prop_name in guarded:
+                if child_comp == sym_name and (
+                    pred_parent is None or parent_fn == pred_parent or parent_fn == "Anonymous"
+                ):
+                    found_guard = (prop_name, parent_fn if parent_fn != "Anonymous" else (pred_parent or ""))
                     break
 
             if found_guard:
