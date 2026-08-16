@@ -181,7 +181,6 @@ class CallResolver:
         self._cpp_index: Any = None
         self._cpp_index_built = False
 
-        # Per-file view of the language strategy registry below.
         self._strategies_by_file: dict[str, _LanguageCallStrategies] = {}
 
         self._build_indices(parsed_files)
@@ -288,14 +287,10 @@ class CallResolver:
         return self._go_index
 
     def _strategies_for(self, file_path: str) -> _LanguageCallStrategies:
-        """The extra strategies this file's language gets, cached per file."""
-        cached = self._strategies_by_file.get(file_path)
-        if cached is None:
-            parsed = self._parsed_files.get(file_path)
-            language = parsed.file_info.language if parsed else ""
-            cached = _LANGUAGE_CALL_STRATEGIES.get(language, _NO_LANGUAGE_STRATEGIES)
-            self._strategies_by_file[file_path] = cached
-        return cached
+        """The extra strategies this file's language gets."""
+        parsed = self._parsed_files.get(file_path)
+        language = parsed.file_info.language if parsed else ""
+        return _LANGUAGE_CALL_STRATEGIES.get(language, _NO_LANGUAGE_STRATEGIES)
 
     def _get_cpp_index(self) -> Any:
         """Lazily build a CppWorkspaceIndex via a minimal stand-in context."""
