@@ -473,7 +473,7 @@ the orchestrators. Full matrix and the contributor recipe:
 
 ## Supported languages
 
-**20 languages parsed to AST · 37 on a five-rung ladder · framework-aware across
+**21 languages parsed to AST · 38 on a five-rung ladder · framework-aware across
 all of them.**
 
 "Do you support X" has five useful answers, not two, so languages land on a
@@ -505,6 +505,7 @@ ladder and every rung says what it buys you.
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
   <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
@@ -516,7 +517,7 @@ still doing real work rather than being ignored:
 | Rung | Languages | What you get |
 |---|---|---|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (5) | C · Swift · PHP · Dart · Object Pascal | All of the above except the full health suite |
+| **Good** (6) | C · Swift · PHP · Dart · Object Pascal · GDScript | All of the above except the full health suite |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here; the rungs below come from git and imports* ⎯⎯ |
 | **Lightweight** (8) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML · QML | A real file-to-file import graph, and no symbol-level claims |
