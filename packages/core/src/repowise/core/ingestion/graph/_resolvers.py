@@ -528,12 +528,17 @@ class ResolveMixin:
                             rc.callee_id,
                             edge_type="calls",
                             confidence=rc.confidence,
+                            resolution_origin=rc.origin,
                         )
                         total_resolved += 1
                     else:
+                        # Several call sites collapse onto one edge; the
+                        # strongest wins, and the origin has to follow the
+                        # confidence it explains.
                         existing = self._graph[rc.caller_id][rc.callee_id]
                         if rc.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rc.confidence
+                            existing["resolution_origin"] = rc.origin
             if progress:
                 progress.on_item_done("graph.calls")
 
@@ -591,6 +596,7 @@ class ResolveMixin:
                     rc.callee_id,
                     edge_type="references",
                     confidence=rc.confidence,
+                    resolution_origin=rc.origin,
                 )
                 total += 1
         log.info("Reference edges resolved", total=total)

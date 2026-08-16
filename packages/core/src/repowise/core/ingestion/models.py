@@ -315,6 +315,40 @@ EdgeType = Literal[
 # copy is the exact failure this phase exists to remove.
 EDGE_TYPE_VALUES: frozenset[str] = frozenset(get_args(EdgeType))
 
+# Which resolution strategy produced a `calls` / `references` edge. Same
+# closed-vocabulary discipline as `EdgeType`, held shut by the same test.
+#
+# An edge is not a fact. `global_unique` binds a name to the only symbol
+# carrying it anywhere in the repo, which is a guess; `same_file` is a
+# certainty. Both used to reach a consumer as an unlabelled arrow, so an agent
+# reading a flow could not tell which it was looking at.
+#
+# Every origin has exactly one confidence (see `CallResolver`), so the origin
+# distribution and the confidence histogram are two views of the same data —
+# which is what makes the stamping checkable against the existing numbers.
+# NULL on an edge means the row predates this vocabulary, not "unknown origin".
+ResolutionOrigin = Literal[
+    "same_file",  # 0.95 — defined in the calling file
+    "self_scope",  # 0.95 — self/this, method on the caller's own class
+    "receiver_same_file",  # 0.93 — receiver names a class in this file
+    "same_package",  # 0.90 — Go/JVM sibling file, no import needed
+    "import_scoped",  # 0.90 — the name was imported from the defining file
+    "receiver_same_package",  # 0.90 — receiver is a same-package class (JVM)
+    "package_alias",  # 0.88 — Go pkg.Func, resolved across the whole package
+    "module_alias",  # 0.88 — receiver is an imported module
+    "crate_root",  # 0.88 — Rust crate-scoped reference
+    "receiver_import",  # 0.88 — receiver class found in an imported file
+    "import_merged",  # 0.85 — in *some* imported file; which one is unattributed
+    "same_target",  # 0.85 — C/C++ sibling TU of the same build target
+    # 0.75 — the (class, method) pair exists somewhere in the repo. The member
+    # analogue of `global_unique`, and no more than that: the strategy is
+    # named for Rust trait impls but is gated on no language.
+    "receiver_global",
+    "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+]
+
+RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))
+
 # What a dynamic-hint extractor reports, *before* `add_dynamic_edges` prefixes
 # it. Deliberately a separate vocabulary from `EdgeType`: `url_route` is a
 # legal hint kind and never a legal graph edge type, and conflating the two is

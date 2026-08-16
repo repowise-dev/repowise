@@ -93,6 +93,10 @@ def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
         # (_resolvers.py:504-505). A pair can carry several resolved calls of
         # differing confidence; a last-write upsert could stamp a real call
         # below _FLOW_CALLS_CONF_FLOOR (0.5) and drop it from flow-path answers.
+        # The origin explains the confidence, so it moves only when the
+        # confidence does.
+        if confidence > (existing.confidence or 0.0):
+            existing.resolution_origin = edge_data.get("resolution_origin")
         existing.confidence = max(existing.confidence or 0.0, confidence)
 
 
@@ -162,7 +166,8 @@ async def batch_upsert_graph_edges(
     """Upsert graph edges for a repository.
 
     Each element of *edges* should have ``source_node_id``, ``target_node_id``,
-    ``edge_type``, and optionally ``imported_names_json`` and ``confidence``.
+    ``edge_type``, and optionally ``imported_names_json``, ``confidence``,
+    ``hint_source`` and ``resolution_origin``.
 
     The unique constraint is (repository_id, source, target, edge_type),
     allowing multiple edge types between the same pair of nodes.
@@ -188,6 +193,7 @@ async def batch_upsert_graph_edges(
             edge_type=e.get("edge_type", "imports"),
             confidence=e.get("confidence", 1.0),
             hint_source=e.get("hint_source"),
+            resolution_origin=e.get("resolution_origin"),
         ),
     )
 
@@ -281,6 +287,7 @@ async def reconcile_edges_for_files(
                 edge_type=e.get("edge_type", "imports"),
                 confidence=e.get("confidence", 1.0),
                 hint_source=e.get("hint_source"),
+                resolution_origin=e.get("resolution_origin"),
             )
         )
     await session.flush()
@@ -514,6 +521,7 @@ async def get_all_graph_edges(
                 "confidence": row.confidence,
                 "imported_names": imported_names,
                 "hint_source": row.hint_source,
+                "resolution_origin": row.resolution_origin,
             }
         )
     return edges

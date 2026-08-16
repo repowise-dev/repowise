@@ -16,8 +16,10 @@ Resolution tiers (checked in order, first match wins):
         The call target matches exactly one symbol across the entire codebase.
         Only fires when the match is unambiguous to avoid false edges.
 
-Each resolved call produces a (source_id, target_id, confidence) triple that
-the GraphBuilder converts into a CALLS edge.
+Each resolved call produces a (source_id, target_id, confidence, origin) tuple
+that the GraphBuilder converts into a CALLS edge. The tiers above are the
+headline three; ``ResolutionOrigin`` in ``models`` is the full set, one name
+per strategy, and it is what the edge carries.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from typing import Any
 
 import structlog
 
-from .models import CallSite, NamedBinding, ParsedFile
+from .models import CallSite, NamedBinding, ParsedFile, ResolutionOrigin
 
 log = structlog.get_logger(__name__)
 
@@ -48,6 +50,7 @@ class ResolvedCall:
     callee_id: str  # symbol node ID of the called function/method
     confidence: float  # 0.0–1.0
     line: int  # call site line number (for diagnostics)
+    origin: ResolutionOrigin  # which strategy below produced it
 
 
 class CallResolver:
@@ -291,7 +294,7 @@ class CallResolver:
             syms = self._file_symbols.get(sibling, {})
             sym_id = syms.get(call.target_name)
             if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.85, call.line)
+                return ResolvedCall(caller_id, sym_id, 0.85, call.line, "same_target")
         return None
 
     def _get_jvm_index(self) -> Any:
@@ -335,7 +338,7 @@ class CallResolver:
             syms = self._file_symbols.get(sibling, {})
             sym_id = syms.get(call.target_name)
             if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line)
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
         return None
 
     def _resolve_go_package_call(
@@ -364,7 +367,7 @@ class CallResolver:
             syms = self._file_symbols.get(sibling, {})
             sym_id = syms.get(call.target_name)
             if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.88, call.line)
+                return ResolvedCall(caller_id, sym_id, 0.88, call.line, "package_alias")
         return None
 
     def _resolve_go_same_package(
@@ -392,7 +395,7 @@ class CallResolver:
             syms = self._file_symbols.get(sibling, {})
             sym_id = syms.get(call.target_name)
             if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line)
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
         return None
 
     def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
@@ -499,7 +502,13 @@ class CallResolver:
         target = self._decl_to_def.get(resolved.callee_id)
         if target is None or target == resolved.caller_id:
             return resolved
-        return ResolvedCall(resolved.caller_id, target, resolved.confidence, resolved.line)
+        return ResolvedCall(
+            resolved.caller_id,
+            target,
+            resolved.confidence,
+            resolved.line,
+            resolved.origin,
+        )
 
     def _merged_symbols_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{name → symbol_id}`` across every file *file_path* imports.
@@ -578,7 +587,7 @@ class CallResolver:
         if target_name in file_syms:
             callee_id = file_syms[target_name]
             if callee_id != caller_id:  # no self-recursion edges for now
-                return ResolvedCall(caller_id, callee_id, 0.95, call.line)
+                return ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
 
         # Go: a bare call may target a function defined in a sibling file of
         # the same package (shared namespace, no import). Resolve against the
@@ -615,7 +624,9 @@ class CallResolver:
                 source_file = barrel[lookup_name]
             source_syms = self._file_symbols.get(source_file, {})
             if lookup_name in source_syms:
-                return ResolvedCall(caller_id, source_syms[lookup_name], 0.90, call.line)
+                return ResolvedCall(
+                    caller_id, source_syms[lookup_name], 0.90, call.line, "import_scoped"
+                )
 
         # 2a fallback: plain _import_names (for imports without binding data)
         name_to_file = self._import_names.get(file_path, {})
@@ -626,12 +637,16 @@ class CallResolver:
                 source_file = barrel[target_name]
             source_syms = self._file_symbols.get(source_file, {})
             if target_name in source_syms:
-                return ResolvedCall(caller_id, source_syms[target_name], 0.90, call.line)
+                return ResolvedCall(
+                    caller_id, source_syms[target_name], 0.90, call.line, "import_scoped"
+                )
 
         # 2b: Check all imported files for the symbol (pre-merged lookup)
         merged_syms = self._merged_symbols_for(file_path)
         if target_name in merged_syms:
-            return ResolvedCall(caller_id, merged_syms[target_name], 0.85, call.line)
+            return ResolvedCall(
+                caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
+            )
 
         # Tier 3: global unique match — only within the same language
         candidates = self._global_symbols.get(target_name, [])
@@ -640,7 +655,7 @@ class CallResolver:
             callee_lang = _file_language(self._parsed_files, candidates[0])
             if caller_lang and callee_lang and caller_lang != callee_lang:
                 return None  # reject cross-language Tier 3 match
-            return ResolvedCall(caller_id, candidates[0], 0.50, call.line)
+            return ResolvedCall(caller_id, candidates[0], 0.50, call.line, "global_unique")
 
         return None
 
@@ -673,18 +688,18 @@ class CallResolver:
                     methods = self._file_methods.get(sibling, {})
                     key = (receiver_name, method_name)
                     if key in methods:
-                        return ResolvedCall(caller_id, methods[key], 0.90, call.line)
-                    syms = self._file_symbols.get(sibling, {})
-                    # Found the class; look for the method on it
-                    if receiver_name in syms and key in methods:
-                        return ResolvedCall(caller_id, methods[key], 0.88, call.line)
+                        return ResolvedCall(
+                            caller_id, methods[key], 0.90, call.line, "receiver_same_package"
+                        )
 
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
             source_syms = self._file_symbols.get(module_file, {})
             if method_name in source_syms:
-                return ResolvedCall(caller_id, source_syms[method_name], 0.88, call.line)
+                return ResolvedCall(
+                    caller_id, source_syms[method_name], 0.88, call.line, "module_alias"
+                )
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
         name_to_file = self._import_names.get(file_path, {})
@@ -692,7 +707,9 @@ class CallResolver:
             source_file = name_to_file[receiver_name]
             source_syms = self._file_symbols.get(source_file, {})
             if method_name in source_syms:
-                return ResolvedCall(caller_id, source_syms[method_name], 0.88, call.line)
+                return ResolvedCall(
+                    caller_id, source_syms[method_name], 0.88, call.line, "module_alias"
+                )
 
         # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
         # The receiver is a crate name, the target is a symbol in that crate's lib.rs
@@ -702,19 +719,25 @@ class CallResolver:
                 crate_root = f"{crate_src}/{root_file}"
                 root_syms = self._file_symbols.get(crate_root, {})
                 if method_name in root_syms:
-                    return ResolvedCall(caller_id, root_syms[method_name], 0.88, call.line)
+                    return ResolvedCall(
+                        caller_id, root_syms[method_name], 0.88, call.line, "crate_root"
+                    )
 
         # Strategy 2: receiver is a known class name → look for method on that class
         # Check same-file classes first
         file_methods = self._file_methods.get(file_path, {})
         key = (receiver_name, method_name)
         if key in file_methods:
-            return ResolvedCall(caller_id, file_methods[key], 0.93, call.line)
+            return ResolvedCall(
+                caller_id, file_methods[key], 0.93, call.line, "receiver_same_file"
+            )
 
         # Check imported files for (class, method) pairs (pre-merged lookup)
         merged_methods = self._merged_methods_for(file_path)
         if key in merged_methods:
-            return ResolvedCall(caller_id, merged_methods[key], 0.88, call.line)
+            return ResolvedCall(
+                caller_id, merged_methods[key], 0.88, call.line, "receiver_import"
+            )
 
         # Strategy 2b: trait method dispatch — receiver is a type that
         # implements a trait; the method may be defined on the trait's
@@ -724,7 +747,7 @@ class CallResolver:
         for _path, sym_id in self._global_methods.get(key, ()):
             if _path == file_path:
                 continue
-            return ResolvedCall(caller_id, sym_id, 0.75, call.line)
+            return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
 
         # Strategy 3: receiver is "self" or "this" — look in same class.
         # Only the caller's own file can hold the match, so index straight
@@ -740,7 +763,7 @@ class CallResolver:
                         and sym_id != caller_id
                         and cls_name == caller_class
                     ):
-                        return ResolvedCall(caller_id, sym_id, 0.95, call.line)
+                        return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
 
         # No further fallback: any (class, method) pair present in any file's
         # method index was already resolved by strategy 2 (same file) or 2b

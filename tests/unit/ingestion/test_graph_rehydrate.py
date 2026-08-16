@@ -129,6 +129,27 @@ def test_rehydrated_graph_is_traversal_equivalent():
             assert og[node][succ].get("edge_type") == hg[node][succ].get("edge_type")
 
 
+def test_resolution_origin_survives_rehydration():
+    """An edge's origin must outlive the process that resolved it.
+
+    The graph is rebuilt from rows on every incremental update, so an origin
+    that only exists in memory would be present on the indexing run and gone
+    on every read after it. A row without one stays without one — that is what
+    lets an index built before the vocabulary keep working unchanged.
+    """
+    original = _build_sample()
+    nodes, edges = _serialize(original)
+    edges[0] = {**edges[0], "edge_type": "calls", "resolution_origin": "same_file"}
+
+    hydrated = GraphBuilder.from_persisted(nodes, edges, original.file_metrics_snapshot())
+    graph = hydrated.graph()
+
+    stamped = graph[edges[0]["source_node_id"]][edges[0]["target_node_id"]]
+    assert stamped["resolution_origin"] == "same_file"
+    for e in edges[1:]:
+        assert "resolution_origin" not in graph[e["source_node_id"]][e["target_node_id"]]
+
+
 def test_rehydrate_without_metrics_falls_back_to_recompute():
     """No snapshot supplied → caches stay empty and metrics recompute on read."""
     original = _build_sample()

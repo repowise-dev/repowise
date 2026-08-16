@@ -314,6 +314,12 @@ class GraphEdge(Base):
     # repowise.core.ingestion.cohesion. Persisted because the health engine and
     # incremental updates run against a graph rehydrated from these rows.
     hint_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Which resolution strategy produced a ``calls`` / ``references`` edge, from
+    # the closed ``ResolutionOrigin`` vocabulary. NULL means the row predates
+    # the vocabulary or the edge is not resolver-produced — not "unknown".
+    # Persisted because the graph is rehydrated from these rows, so an
+    # unpersisted origin would exist only on the indexing run that minted it.
+    resolution_origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

@@ -489,6 +489,7 @@ def _changed_file_edges(
                 "edge_type": data.get("edge_type", "imports"),
                 "confidence": data.get("confidence", 1.0),
                 "hint_source": data.get("hint_source"),
+                "resolution_origin": data.get("resolution_origin"),
             }
         )
     return sorted(reconcile), edges
@@ -1366,6 +1367,7 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
                 "edge_type": data.get("edge_type", "imports"),
                 "confidence": data.get("confidence", 1.0),
                 "hint_source": data.get("hint_source"),
+                "resolution_origin": data.get("resolution_origin"),
             }
         )
     if edges:
