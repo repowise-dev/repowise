@@ -78,6 +78,13 @@ class Repository(Base):
     # reconcile. NULL on indexes written before this, which just means the next
     # capture walks once and anchors itself.
     churn_anchor_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # ``parser_fingerprint()`` of the build that last wrote this repo's
+    # ``graph_edges``. An incremental update only rewrites the git-changed
+    # files' edges, so a query/extractor change would otherwise reach a file
+    # only when that file happened to change. A mismatch here widens the next
+    # update's edge reconcile to every parsed file, once. NULL on stores written
+    # before this, which is treated as a mismatch and heals the same way.
+    graph_edges_parser_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
