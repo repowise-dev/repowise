@@ -7,11 +7,15 @@
  * co-changes historically). Clicking a service re-targets the ripple from it,
  * so you can walk the impact outward. Pure presentation — the host owns the
  * fetch and passes the result in; the ripple itself rides the map's overlay prop.
+ *
+ * Lives in the map's rail, as a card among the other panels, rather than floating
+ * on the canvas.
  */
 
-import { X, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 import type { CrossRepoBlastRadius, ImpactedNode } from "@repowise-dev/types";
 import { impactBadgeTone } from "./blast-radius";
+import { RailChip, RailEyebrow, SystemMapRailPanel } from "./system-map-rail";
 
 export interface SystemMapBlastPanelProps {
   result: CrossRepoBlastRadius | null;
@@ -20,22 +24,6 @@ export interface SystemMapBlastPanelProps {
   onSelectTarget: (nodeId: string) => void;
   onClear: () => void;
 }
-
-const panelStyle: React.CSSProperties = {
-  position: "absolute",
-  top: 12,
-  left: 12,
-  width: 290,
-  maxHeight: "calc(100% - 24px)",
-  overflowY: "auto",
-  background: "var(--color-bg-elevated)",
-  border: "1px solid var(--color-border-default)",
-  borderRadius: 10,
-  boxShadow: "0 8px 24px rgba(0,0,0,0.28)",
-  zIndex: 4,
-  fontSize: 12,
-  color: "var(--color-text-secondary)",
-};
 
 function toneColor(tone: "danger" | "warning" | "info"): string {
   switch (tone) {
@@ -62,46 +50,18 @@ function ImpactedRow({
       type="button"
       onClick={() => onSelect(node.id)}
       title={`Re-target the ripple from ${node.name}`}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        width: "100%",
-        textAlign: "left",
-        padding: "6px 12px",
-        cursor: "pointer",
-        background: "transparent",
-        borderBottom: "1px solid var(--color-border-subtle)",
-      }}
+      className="flex w-full cursor-pointer items-center gap-2 border-b border-[var(--color-border-subtle)] px-3 py-1.5 text-left hover:bg-[var(--color-bg-overlay)]"
     >
-      <span
-        title={`distance ${node.distance}`}
-        style={{
-          flexShrink: 0,
-          width: 22,
-          textAlign: "center",
-          color,
-          border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`,
-          background: `color-mix(in srgb, ${color} 16%, transparent)`,
-          borderRadius: 4,
-          fontSize: 9,
-          fontWeight: 700,
-          padding: "1px 0",
-        }}
-      >
-        d{node.distance}
+      <span title={`distance ${node.distance}`}>
+        <RailChip color={color}>d{node.distance}</RailChip>
       </span>
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ color: "var(--color-text-primary)", display: "block", fontWeight: 600 }}>
-          {node.name}
-        </span>
-        <span style={{ color: "var(--color-text-tertiary)", fontSize: 10 }}>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-semibold text-[var(--color-text-primary)]">{node.name}</span>
+        <span className="block truncate text-[10px] text-[var(--color-text-tertiary)]">
           {node.repo} · {node.edge_kinds.join(", ")}
         </span>
       </span>
-      <span style={{ flexShrink: 0, color: "var(--color-text-tertiary)", fontVariantNumeric: "tabular-nums" }}>
-        {node.score.toFixed(2)}
-      </span>
+      <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">{node.score.toFixed(2)}</span>
     </button>
   );
 }
@@ -118,18 +78,10 @@ function Section({
   if (nodes.length === 0) return null;
   return (
     <div>
-      <div
-        style={{
-          padding: "6px 12px",
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: 0.5,
-          textTransform: "uppercase",
-          color: "var(--color-text-tertiary)",
-          background: "var(--color-bg-surface)",
-        }}
-      >
-        {title} · {nodes.length}
+      <div className="bg-[var(--color-bg-surface)] px-3 py-1.5">
+        <RailEyebrow>
+          {title} · {nodes.length}
+        </RailEyebrow>
       </div>
       {nodes.map((n) => (
         <ImpactedRow key={n.id} node={n} onSelect={onSelect} />
@@ -150,41 +102,27 @@ export function SystemMapBlastPanel({
   const behavioral = result.impacted.filter((n) => !n.structural);
   const sourceLabel = result.targets.join(", ") || result.unresolved_targets.join(", ");
 
+  const repos = result.impacted_repos.length;
+
   return (
-    <div style={panelStyle}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "10px 12px",
-          borderBottom: "1px solid var(--color-border-default)",
-        }}
-      >
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <Zap size={13} style={{ color: "var(--color-accent-primary)" }} />
-          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--color-text-tertiary)" }}>
-            Blast radius
-          </span>
-        </span>
-        <button type="button" onClick={onClear} aria-label="Clear blast radius" style={{ cursor: "pointer", color: "var(--color-text-tertiary)", display: "inline-flex" }}>
-          <X size={14} />
-        </button>
-      </div>
-
-      <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--color-border-default)" }}>
-        <div style={{ color: "var(--color-text-primary)", fontWeight: 600, wordBreak: "break-word" }}>
-          {sourceLabel || "—"}
-        </div>
-        <div style={{ color: "var(--color-text-tertiary)", fontSize: 11, marginTop: 2 }}>
-          {loading
-            ? "Computing impact…"
-            : `${result.total_impacted} impacted across ${result.impacted_repos.length} other repo(s)`}
-        </div>
-      </div>
-
+    <SystemMapRailPanel
+      eyebrow="Blast radius"
+      icon={<Zap size={13} style={{ color: "var(--color-accent-primary)" }} />}
+      onClear={onClear}
+      clearLabel="Clear blast radius"
+      summary={
+        <>
+          <div className="break-words font-semibold text-[var(--color-text-primary)]">{sourceLabel || "—"}</div>
+          <div className="mt-0.5">
+            {loading
+              ? "Computing impact…"
+              : `${result.total_impacted} impacted across ${repos} other ${repos === 1 ? "repo" : "repos"}`}
+          </div>
+        </>
+      }
+    >
       {!loading && result.impacted.length === 0 && (
-        <div style={{ padding: "12px", color: "var(--color-text-tertiary)" }}>
+        <div className="p-3 text-[var(--color-text-tertiary)]">
           {result.targets.length === 0
             ? "No matching service in the graph."
             : "Nothing downstream — no other service depends on this one."}
@@ -193,6 +131,6 @@ export function SystemMapBlastPanel({
 
       <Section title="Will break (dependency)" nodes={structural} onSelect={onSelectTarget} />
       <Section title="May drift (co-change)" nodes={behavioral} onSelect={onSelectTarget} />
-    </div>
+    </SystemMapRailPanel>
   );
 }
