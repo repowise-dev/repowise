@@ -111,6 +111,46 @@ def test_go_nested_depth():
     assert deep.max_nesting >= 4
 
 
+def test_pascal_nested_depth():
+    results = _walk("pascal/nested.pas", "pascal")
+    deep = _find(results, "DeeplyNested")
+    shallow = _find(results, "Shallow")
+    assert deep is not None
+    assert shallow is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    assert shallow.max_nesting == 0
+    assert deep.ccn > shallow.ccn
+    assert shallow.param_count == 1
+
+
+def test_pascal_complex_method_ccn():
+    results = _walk("pascal/complex.pas", "pascal")
+    many = _find(results, "ManyBranches")
+    assert many is not None
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+    assert many.param_count == 5
+
+
+def test_pascal_no_class_metrics():
+    # Pascal method bodies live in a top-level ``defProc`` outside the
+    # ``declClass`` node (see languages.py's ``_PASCAL`` comment) -- class
+    # metrics are deliberately unmapped rather than emitting a misleading
+    # zero-method class, same posture as Go.
+    fcx = walk_file(
+        "unsupported.pas",
+        "pascal",
+        (
+            b"unit U;\n interface\n type\n TFoo = class\n"
+            b" public\n   procedure Bar;\n end;\n"
+            b" implementation\n"
+            b" procedure TFoo.Bar;\n begin\n end;\n"
+            b" end.\n"
+        ),
+    )
+    assert fcx.classes == []
+    assert _find(fcx.functions, "Bar") is not None
+
+
 def test_javascript_nested_depth():
     results = _walk("javascript/nested.js", "javascript")
     deep = _find(results, "deeplyNested")

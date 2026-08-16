@@ -70,6 +70,18 @@ def test_tokenize_file_drops_comments_and_normalizes_identifiers():
     assert not any("comment" in k for k in kinds)
 
 
+def test_tokenize_file_pascal_normalizes_identifiers_and_literals():
+    source = (
+        b"unit U;\n interface\n implementation\n"
+        b" procedure Foo;\n begin\n   WriteLn('hello', 42);\n end;\n end.\n"
+    )
+    toks = tokenize_file("pascal", source)
+    kinds = [t.kind for t in toks]
+    assert "ID" in kinds  # WriteLn / Foo collapsed
+    assert "LIT" in kinds  # 'hello' / 42 collapsed
+    assert not any("literalString" in k or "literalNumber" in k for k in kinds)
+
+
 def _write(tmp_path: Path, name: str, src: str) -> Path:
     p = tmp_path / name
     p.write_text(src)
