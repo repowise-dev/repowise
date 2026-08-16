@@ -275,6 +275,18 @@ def _get_language(tag: str) -> Language | None:
 _node_text = node_text
 
 
+def _normalize_php_receiver(text: str) -> str:
+    """Spell PHP's receiver the way the resolver's strategies expect.
+
+    `self::` and `static::` are the same dispatch as `$this`, and the self/this
+    strategy tests `in ("self", "this")` — so without this the whole implicit-
+    receiver population misses. `parent::` needs the heritage walk and is left
+    to miss rather than guessed at.
+    """
+    name = text.lstrip("$")
+    return "this" if name in ("self", "static") else name
+
+
 # ---------------------------------------------------------------------------
 # ASTParser
 # ---------------------------------------------------------------------------
@@ -1107,6 +1119,8 @@ class ASTParser:
 
             line = site_node.start_point[0] + 1
             receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+            if receiver_name and file_info.language == "php":
+                receiver_name = _normalize_php_receiver(receiver_name)
 
             dedup_key = (line, target_name, receiver_name)
             if dedup_key in seen:

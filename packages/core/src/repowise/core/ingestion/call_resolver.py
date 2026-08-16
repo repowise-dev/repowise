@@ -34,6 +34,11 @@ from .models import CallSite, NamedBinding, ParsedFile, ResolutionOrigin
 
 log = structlog.get_logger(__name__)
 
+# Languages with an implicit method receiver, where a bare ``foo()`` binds to
+# the caller's instance. Go, Python, PHP and JS/TS spell the receiver out, so a
+# bare call there is a free function and this tier would resolve it wrongly.
+_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
+
 
 def _file_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
     """Extract language from a symbol ID's file via the parsed files map."""
@@ -112,6 +117,9 @@ class CallResolver:
         # hash-randomized per process).
         self._merged_import_symbols: dict[str, dict[str, str]] = {}
         self._merged_import_methods: dict[str, dict[tuple[str, str], str]] = {}
+
+        # Lazy per-file set of (line, target) that also carry a receiver.
+        self._member_shaped: dict[str, set[tuple[int, str]]] = {}
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
@@ -573,6 +581,48 @@ class CallResolver:
         # --- Free function call: function() ---
         return self._resolve_free_call(file_path, call, caller_id)
 
+    def _member_shaped_sites(self, file_path: str) -> set[tuple[int, str]]:
+        """``(line, target)`` pairs at which this file also records a receiver.
+
+        Several grammars match ``obj.m()`` twice — once with a receiver, once
+        against the bare-call pattern — so a member call also arrives as a
+        receiver-less site.
+
+        Keyed on the line because a ``CallSite`` carries no column, so
+        ``foo(bar.foo())`` suppresses the tier for its own bare ``foo()``. That
+        costs the fix on that site, never a wrong edge; a column would fix it.
+        """
+        sites = self._member_shaped.get(file_path)
+        if sites is None:
+            parsed = self._parsed_files.get(file_path)
+            sites = {
+                (c.line, c.target_name) for c in (parsed.calls if parsed else ()) if c.receiver_name
+            }
+            self._member_shaped[file_path] = sites
+        return sites
+
+    def _enclosing_class_method(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> str | None:
+        """The caller's own class's method of this name, or None.
+
+        ``_file_symbols`` is flat and last-wins, so a bare ``foo()`` inside
+        class ``A`` bound to class ``B``'s ``foo`` when ``B`` came later in the
+        file. ``_file_methods`` already carries the class.
+        """
+        parsed = self._parsed_files.get(file_path)
+        if parsed is None or parsed.file_info.language not in _IMPLICIT_RECEIVER_LANGUAGES:
+            return None
+        caller_class = _extract_class_from_symbol_id(caller_id)
+        if not caller_class:
+            return None
+        if (call.line, call.target_name) in self._member_shaped_sites(file_path):
+            return None
+        return self._file_methods.get(file_path, {}).get((caller_class, call.target_name))
+
     def _resolve_free_call(
         self,
         file_path: str,
@@ -586,6 +636,12 @@ class CallResolver:
         file_syms = self._file_symbols.get(file_path, {})
         if target_name in file_syms:
             callee_id = file_syms[target_name]
+            own = self._enclosing_class_method(file_path, call, caller_id)
+            if own is not None and own != callee_id and _rivals_a_class_method(callee_id):
+                if own == caller_id:
+                    # Recursion the flat index handed to a stranger. No edge.
+                    return None
+                return ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
             if callee_id != caller_id:  # no self-recursion edges for now
                 return ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
 
@@ -769,6 +825,18 @@ class CallResolver:
         # method index was already resolved by strategy 2 (same file) or 2b
         # (global method index), which are built from the same symbols.
         return None
+
+
+def _rivals_a_class_method(symbol_id: str) -> bool:
+    """Another class's ordinary method — the one shape that proves last-wins.
+
+    Not a top-level function (Kotlin and C++ put these beside classes, and a
+    bare call may genuinely mean one) and not a constructor (name equals its
+    parent's), which ``new Entry()`` should reach even inside a class nesting
+    its own ``Entry``.
+    """
+    parts = symbol_id.split("::")
+    return len(parts) >= 3 and parts[-1] != parts[-2]
 
 
 def _extract_class_from_symbol_id(symbol_id: str) -> str | None:

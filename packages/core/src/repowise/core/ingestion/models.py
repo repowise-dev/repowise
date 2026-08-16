@@ -330,6 +330,7 @@ EDGE_TYPE_VALUES: frozenset[str] = frozenset(get_args(EdgeType))
 ResolutionOrigin = Literal[
     "same_file",  # 0.95 — defined in the calling file
     "self_scope",  # 0.95 — self/this, method on the caller's own class
+    "enclosing_class",  # 0.95 — bare call, bound to the caller's own class
     "receiver_same_file",  # 0.93 — receiver names a class in this file
     "same_package",  # 0.90 — Go/JVM sibling file, no import needed
     "import_scoped",  # 0.90 — the name was imported from the defining file
