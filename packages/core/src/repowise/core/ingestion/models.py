@@ -80,6 +80,10 @@ LanguageTag = Literal[
     "html",
     # Lightweight: qmldir-declared module imports and quoted references.
     "qml",
+    # Godot .tscn/.tres/.escn + project.godot: data with no symbols, but
+    # [ext_resource path=...] and [autoload] are how a Godot project reaches
+    # its scripts at all.
+    "godot_resource",
     "unknown",
 ]
 

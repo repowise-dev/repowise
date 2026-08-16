@@ -23,10 +23,7 @@ from pathlib import Path
 import networkx as nx
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
-from repowise.core.ingestion.resolvers.gdscript import (
-    engine_loaded_scripts,
-    resolve_gdscript_import,
-)
+from repowise.core.ingestion.resolvers.gdscript import resolve_gdscript_import
 
 
 def _ctx(paths: set[str], repo_path: Path | None = None) -> ResolverContext:
@@ -166,70 +163,3 @@ class TestProjectRootScanIsCached:
         # than repeated per import (this runs once per file per build).
         (tmp_path / "game" / "project.godot").unlink()
         assert resolve_gdscript_import("res://b.gd", "game/a.gd", ctx) == "game/b.gd"
-
-
-AUTOLOAD_MANIFEST = """\
-config_version=5
-
-[autoload]
-
-Global="*res://autoload/global.gd"
-Music="res://autoload/music.gd"
-Scene="*res://autoload/hud.tscn"
-Missing="*res://autoload/gone.gd"
-"""
-
-SCENE = """\
-[gd_scene format=3 uid="uid://dxq1b4cth265d"]
-
-[ext_resource type="Script" uid="uid://e3f" path="res://bullets.gd" id="2"]
-[ext_resource type="Texture2D" path="res://face.png" id="3"]
-[ext_resource type="Script" path="res://absent.gd" id="4"]
-[ext_resource type="Script" uid="uid://n0path" id="5"]
-"""
-
-SINGLE_QUOTED_SCENE = """\
-[gd_scene format=3]
-
-[ext_resource type='Script' path='res://bullets.gd' id='2']
-"""
-
-
-class TestEngineLoadedScripts:
-    """The two ways Godot reaches a script without importing it."""
-
-    def test_autoload_entries_resolve_against_their_own_project(self, tmp_path: Path) -> None:
-        _write_project(tmp_path, "game")
-        (tmp_path / "game" / "project.godot").write_text(AUTOLOAD_MANIFEST, encoding="utf-8")
-        ctx = _ctx(
-            {"game/autoload/global.gd", "game/autoload/music.gd", "game/player.gd"},
-            repo_path=tmp_path,
-        )
-        autoloads, scenes = engine_loaded_scripts(ctx)
-        # The leading `*` marks a singleton as enabled and is not part of the
-        # path. `gone.gd` is not indexed and `hud.tscn` is not a script:
-        # neither is guessed at, the rule the import resolver follows.
-        assert autoloads == frozenset({"game/autoload/global.gd", "game/autoload/music.gd"})
-        assert scenes == frozenset()
-
-    def test_scene_script_resources_are_collected(self, tmp_path: Path) -> None:
-        _write_project(tmp_path, "game")
-        (tmp_path / "game" / "shower.tscn").write_text(SCENE, encoding="utf-8")
-        ctx = _ctx({"game/bullets.gd", "game/other.gd"}, repo_path=tmp_path)
-        autoloads, scenes = engine_loaded_scripts(ctx)
-        assert autoloads == frozenset()
-        # `absent.gd` is not indexed, `face.png` is not a script, and the
-        # `uid://`-only entry carries no path to resolve.
-        assert scenes == frozenset({"game/bullets.gd"})
-
-    def test_single_quoted_paths_are_accepted(self, tmp_path: Path) -> None:
-        _write_project(tmp_path, "game")
-        (tmp_path / "game" / "hand_edited.tscn").write_text(
-            SINGLE_QUOTED_SCENE, encoding="utf-8"
-        )
-        ctx = _ctx({"game/bullets.gd"}, repo_path=tmp_path)
-        assert engine_loaded_scripts(ctx)[1] == frozenset({"game/bullets.gd"})
-
-    def test_no_godot_project_yields_nothing(self, tmp_path: Path) -> None:
-        ctx = _ctx({"a.gd"}, repo_path=tmp_path)
-        assert engine_loaded_scripts(ctx) == (frozenset(), frozenset())

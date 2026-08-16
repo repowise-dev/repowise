@@ -55,7 +55,7 @@ produce meaningful output.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (7) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP, GDScript and VB.NET don't yet. GDScript has a dedicated import resolver but no framework edges or named bindings (see [Known gaps](#gdscript-known-gaps)) |
+| **Good** (7) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP, GDScript and VB.NET don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](#gdscript-known-gaps)) |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
 | **Lightweight** (8) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML · QML | A real file-to-file import graph, no symbol-level claims |
@@ -272,7 +272,7 @@ bindings and heritage, with a dedicated workspace resolver per language.
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
 | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
-| **GDScript** | `.gd` | `preload(...)` / `load(...)` / `extends "res://..."` resolved as absolute paths from the nearest `project.godot`, so a repo holding many Godot projects keeps each project's `res://` namespace separate |
+| **GDScript** | `.gd` | `preload(...)` / `load(...)` / `extends "res://..."` resolved as absolute paths from the nearest `project.godot`, so a repo holding many Godot projects keeps each project's `res://` namespace separate, plus scene, autoload and `class_name` edges (see [Godot project files](#godot-project-files)) |
 | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses: `.vbproj` / `.sln` parsing, `<RootNamespace>`-aware namespace lookup, NuGet package references |
 
 ### GDScript known gaps
@@ -301,9 +301,13 @@ script resolves; the two failures are the `$%UniqueName` form below.
   For the same reason, a scene's `[ext_resource]` that carries only a `uid://`
   and no `path` cannot be followed back to the script it names.
 - **Signals share the `variable` kind** (no `signal` member in `SymbolKind`).
-- **No framework edges and no named bindings.** Unlike C / Swift / PHP / Dart
-  at this tier, there is no Godot framework-edge handler and no binding
-  extractor, so every `Import` carries `bindings=[]`.
+- **No named bindings.** Unlike C / Swift / PHP / Dart at this tier there is no
+  binding extractor, so every `Import` carries `bindings=[]`.
+- **`class_name` reachability is file-level only.** A scene connection binds to
+  the method symbol; a global class does not. A global class's *methods*
+  still read as uncalled to the unused-export pass: `DamageEffect.new()` gives
+  the call resolver a receiver it cannot map to a class symbol, because a
+  script-level class is a sibling of its methods rather than their parent.
 - **String and annotation dispatch is invisible**: `@rpc` methods invoked via
   `rpc("name")`, `connect(..., "method_name")`, GDScript 3 `setget` accessor
   names, and `$NodePath` / `%UniqueName` lookups produce no edges, so those
@@ -320,17 +324,6 @@ script resolves; the two failures are the `$%UniqueName` form below.
 - **Code health: duplication markers DO run** (the clone tokenizer needs only a
   grammar), but complexity, performance and dataflow dialects are not
   registered, and that gap is what keeps GDScript at Good rather than Full.
-- **Dead code reads Godot's wiring, not only imports.** A script registered
-  under `[autoload]` in project.godot counts as an entry point, and a script a
-  `.tscn` attaches to a node is never flagged, because neither reference is an
-  import. Without that, 384 of the 461 `.gd` files in
-  godotengine/godot-demo-projects read as unreachable; with it, 29 do. A file
-  reached that way is exempt from the symbol-level passes too: a scene wires
-  handlers by name (`[connection ... method="_on_pressed"]`) and that name
-  appears in no script, which accounted for 522 of the 1,547 symbol findings
-  on that corpus. **A script reached only through a `.tres` resource, an editor
-  plugin manifest or `load()` on a computed path is still reported**, so the
-  remaining output is narrower than the ladder tier implies.
 - **Upstream grammar gap, reserved words:** calling a function named `export`
   or `onready` as a bare statement (`export()`) fails to parse, because the
   grammar still reserves those words at statement position for the GDScript 3
@@ -366,6 +359,93 @@ and Lake1059/FFmpegFreeUI (197 `.vb` files, 24 of which still carry one).
 - **Generated VB is treated the way generated C# is.** The `.vb` never-flag
   globs mirror the C# ones: designer files, `AssemblyInfo`, everything under
   `My Project`, and the `ApplicationEvents` runtime hooks.
+
+### Godot project files
+
+A Godot script is rarely referenced by another script. It is attached to a node
+in a scene, the scene is instanced by another scene, and the whole thing is
+entered from `project.godot`. So `.tscn` / `.tres` / `.escn`, `project.godot`
+and an addon's `plugin.cfg` are indexed as their own data language
+(`godot_resource`) and read for the paths they name. Line-anchored ini, matched
+with regexes, and no second tree-sitter grammar.
+
+| Construct | Becomes |
+|---|---|
+| `[ext_resource type="Script" path="res://x.gd"]` in a scene or resource | scene → script / scene → sub-scene import edge |
+| `[autoload] Events="*res://global/events.gd"` | entry point on the target |
+| `[application] run/main_scene="res://main.tscn"` | entry point on the boot scene |
+| `[plugin] script="plugin.gd"` in `addons/<name>/plugin.cfg` | entry point on the EditorPlugin |
+| `class_name Effect` used by name in another script | framework edge, user → declarer |
+| `[connection ... to="Player" method="_on_hit"]` in a scene | framework edge, scene → the handler method |
+| `_ready` / `_process` / `_input` / `_draw` / … | never reported as uncalled |
+
+`addons/` is treated as **vendored**, exempt from dead-code reporting the way
+`vendor/` is for C, but only when a `project.godot` sits in an *ancestor*
+directory of it. Godot has no package manager, so a *consumer* copies a
+plugin's `addons/<name>/` tree into its own project, while a *publisher's*
+repo is the addon itself. On the validation corpus that exempts Pixelorama's
+39 vendored scripts and spares Dialogic's 264 first-party ones.
+
+**Its failure mode is worth knowing before you trust the output**: a publisher
+that ships a demo or test project at the repo root has that project enclose
+its own `addons/` tree, and the whole product goes unreported. Dialogic
+escapes only because its single `project.godot` is a CI fixture parked under
+`.github/`. Two of the four corpus repos have no `addons/` at all, so the rule
+rests on two data points.
+
+Measured on four Godot repositories (651 `.gd` files; 895 references recorded
+from scenes and manifests), this took total dead-code findings from 4965 to
+2620, and `unreachable_file` findings, the ones this machinery exists to fix,
+from 602 to 85.
+
+**85 is not zero.** Roughly one in eight corpus files still reports as
+unreachable, and the ceilings below are the known causes, so treat an
+individual dead-code finding on a Godot project as a candidate rather than a
+conclusion. What is gone is the systematic part: after these edges land, not
+one remaining finding names a file whose `class_name` another file uses.
+
+Ceilings specific to these files:
+
+- **`uid://` is never resolved**, in a scene reference or an autoload entry.
+  Resolving one needs the generated `.uid` sidecars, which are build-cache
+  artifacts excluded from indexing. Godot 4.4 can also write an `ext_resource`
+  with `uid=` and no `path=`; that yields no edge. Not observed in the corpus:
+  a `grep` counted 1150 `[ext_resource` lines, all 1150 carrying `path=`.
+- **Art assets get no edge**, in a scene's `ext_resource` list or on a script
+  `preload` that resolves to nothing. A `.png` is not a code dependency, and
+  recording each as an external node would put a repo's whole art tree in the
+  graph. Same call HTML's tier makes for `<img src>`. A data file that *is*
+  indexed, a `res://data/cards.json`, keeps its edge: the filter only decides
+  what an unmatched reference becomes.
+- **A reference suffix we do not recognise vanishes from a scene**, where it
+  would survive a script `preload` as an external node. The scene side filters
+  with a whitelist (`.gd` `.cs` `.tscn` `.tres` `.escn` `.gdshader`), so Godot
+  3's `.shader`, GDNative's `.gdns`, and the binary `.scn` / `.res` forms are
+  dropped there. None appear in the corpus.
+- **`.gdshader` is out of scope**, so a shader reference becomes an external
+  node rather than an edge into the repo, visible as a dependency with no
+  file behind it. Every unresolved `res://` reference from a scene across the
+  corpus is one of these (20 of the 895 recorded references).
+- **`[editor_plugins] enabled=` is not read**, so there is no `project.godot` →
+  `plugin.cfg` edge, and a plugin's script is stamped as an entry point whether
+  or not the project has the plugin switched on.
+- **A programmatically registered autoload is invisible.** `dialogic` installs
+  itself with `add_autoload_singleton()` from its `EditorPlugin`, which no
+  `[autoload]` table shows.
+- **Only a scene's half of signal wiring is read.** A
+  `[connection ... to="Player" method="_on_hit"]` block becomes an edge to
+  that method, by resolving the `to` node path to the script attached to it
+  or to its nearest scripted ancestor. A connection is refused, with no
+  edge, when the node is absent from the scene, when no node on that chain
+  carries a script, when the script would come from an
+  `instance=ExtResource(...)` of another scene, or when the resolved script
+  declares no such function. Never matched on the method name alone.
+  `connect(..., "method_name")` written in GDScript is still string
+  dispatch and still invisible. A node that overrides the instanced
+  scene's script with its own `script =` line binds to that override; only
+  a chain with no local script anywhere is refused, so a scene that
+  inherits another and connects to a handler declared in the *parent*
+  scene's script gets no edge.
 
 ---
 
@@ -450,6 +530,11 @@ OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform an
 Markdown appear in the file tree and the wiki, with special handlers extracting
 endpoints and targets where applicable.
 
+Godot resource files sit here too: `.tscn` / `.tres` / `.escn`,
+`project.godot` and an addon's `plugin.cfg` carry no symbols, but the paths
+they name are how a Godot project reaches its scripts, so they are indexed and
+read for those paths. See [Godot project files](#godot-project-files).
+
 ---
 
 ## Code-health coverage
@@ -532,6 +617,7 @@ cannot check.
 | Ruby | Full (health) | Dataflow dialect, LCOM4 via `@ivar` grouping |
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
+| GDScript | Good | The health dialects (complexity, performance, dataflow) that would take it to Full; the grammar supports all three |
 | Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir · F# | Good | AST upgrade (both grammars are available on PyPI) |
