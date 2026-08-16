@@ -31,6 +31,7 @@ from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatt
 from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
 from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .models import (
     EXTENSION_TO_LANGUAGE,
     SPECIAL_FILENAMES,
@@ -662,7 +663,20 @@ class FileTraverser:
 
         # Generated file detection: only meaningful for code files.  Skipping
         # for data/markup files avoids a 512-byte read per file with no benefit.
-        if language not in _SKIP_GENERATED_CHECK and _is_generated(abs_path):
+        #
+        # An include fragment is exempt even when generated. This skip exists to
+        # keep machine-written *modules* out of the index, and a .inl is not a
+        # module: it is text pasted into a hand-written translation unit, so
+        # dropping it deletes edges from code nobody generated. A generated
+        # binding table is often the only reason the macros it invokes have call
+        # sites at all, and skipping it reported those macros as unused (#1600).
+        # Parsing generated modules without documenting them is a wider question
+        # than this exemption, and is left alone.
+        if (
+            language not in _SKIP_GENERATED_CHECK
+            and abs_path.suffix.lower() not in INCLUDE_FRAGMENT_EXTENSIONS
+            and _is_generated(abs_path)
+        ):
             with self._count_lock:
                 self.stats.skipped_generated += 1
             log.debug("Skipping generated file", path=rel_str)

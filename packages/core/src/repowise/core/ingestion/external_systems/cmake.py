@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath
 
 import structlog
 
+from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import ExternalSystemRecord
 
 log = structlog.get_logger(__name__)
@@ -109,7 +110,12 @@ _SET_RHS_TERMINATORS: frozenset[str] = frozenset({
 
 _VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-_HEADER_EXTS: tuple[str, ...] = (".h", ".hpp", ".hxx", ".hh", ".h++", ".inc")
+# Include fragments bucket with the headers: a target that lists one is
+# shipping it as part of its interface, not compiling it on its own.
+_HEADER_EXTS: tuple[str, ...] = (
+    ".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+)
 _SOURCE_EXTS: tuple[str, ...] = (".c", ".cc", ".cpp", ".cxx", ".c++", ".cppm", ".ixx", ".mxx")
 
 

@@ -38,12 +38,16 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from ...ingestion.languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 
 # File extensions this module rescues. The C/C++ tree-sitter grammar
-# tag covers all of these; the resolver shares them too.
+# tag covers all of these; the resolver shares them too. Include fragments
+# count as headers here: like a header, a fragment has no importer of its
+# own beyond the translation unit that pastes it in.
 _CPP_HEADER_EXTS: tuple[str, ...] = (
     ".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
 )
 _CPP_SOURCE_EXTS: tuple[str, ...] = (
     ".c", ".cc", ".cpp", ".cxx", ".c++", ".C",

@@ -10,6 +10,8 @@ from typing import Any
 
 import structlog
 
+from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+
 log = structlog.get_logger(__name__)
 
 
@@ -251,7 +253,19 @@ class ResolveMixin:
         The pairing edge makes BFS transit headers into implementations.
         """
         header_exts = (".h", ".hpp", ".hxx", ".hh", ".h++")
-        source_exts = (".c", ".cc", ".cpp", ".cxx", ".c++")
+        # An include fragment pairs as the implementation side: ``vector.inl``
+        # holds what ``vector.h`` declares, which is the relationship this edge
+        # exists to carry. The reachability pass groups fragments with headers
+        # instead, because the question there is "who imports this", and a
+        # fragment has no importer of its own either. Different questions.
+        source_exts = (
+            ".c",
+            ".cc",
+            ".cpp",
+            ".cxx",
+            ".c++",
+            *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+        )
 
         cpp_files = [
             p

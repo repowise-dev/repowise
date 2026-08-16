@@ -2,6 +2,16 @@
 
 from ..spec import LanguageSpec
 
+#: Include fragments: C++ source that is ``#include``d into a translation unit
+#: rather than compiled as one of its own. The convention carries inline and
+#: template implementations, and generated binding tables pasted mid-file.
+#:
+#: Exported because three questions elsewhere need the same answer and used to
+#: each keep their own list: which extensions are C++ at all, which behave like
+#: a header for include resolution and reachability, and which are a fragment
+#: rather than a module. See ``traverser`` for the last of those.
+INCLUDE_FRAGMENT_EXTENSIONS: frozenset[str] = frozenset({".inl", ".ipp", ".tpp"})
+
 SPEC = LanguageSpec(
     tag="cpp",
     display_name="C++",
@@ -13,7 +23,8 @@ SPEC = LanguageSpec(
     # its API surface (fmt, leveldb, boost layouts). Root-anchored: a
     # vendored include/ deep in another tree must not mint the layer.
     layer_dir_hints=(("/include", "API"),),
-    extensions=frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"}),
+    extensions=frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"})
+    | INCLUDE_FRAGMENT_EXTENSIONS,
     grammar_package="tree_sitter_cpp",
     scm_file="cpp.scm",
     heritage_node_types=frozenset({"class_specifier", "struct_specifier"}),

@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {
@@ -19,7 +20,13 @@ _SKIP_DIRS = {
     "node_modules", ".git", "third_party", "vendor", "_deps",
 }
 
-_CPP_EXTS: tuple[str, ...] = (".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hxx", ".h")
+# Include fragments are scanned too: a generated binding table pasted into a
+# .inl is exactly where function-pointer and designated-initialiser wiring
+# tends to live, which is the wiring this extractor exists to find.
+_CPP_EXTS: tuple[str, ...] = (
+    ".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hxx", ".h",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+)
 
 # fp = some_function;  (function-pointer wiring — RHS must be a known
 # function name to count as a function-pointer assignment).
