@@ -346,6 +346,16 @@ ResolutionOrigin = Literal[
     # named for Rust trait impls but is gated on no language.
     "receiver_global",
     "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # The four below reach the same scopes as their untyped twins, but through
+    # a receiver whose type was read off its declaration rather than written at
+    # the call. They share their twin's confidence deliberately: the inferred
+    # type had to declare the method before an edge was emitted, so the
+    # evidence is no weaker — what differs is how the receiver was named, and
+    # that is precisely what an origin is for.
+    "receiver_typed_same_file",  # 0.93
+    "receiver_typed_same_package",  # 0.90 (JVM)
+    "receiver_typed_import",  # 0.88
+    "receiver_typed_global",  # 0.75
 ]
 
 RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))
