@@ -233,6 +233,64 @@ export interface SymbolNodeSummary {
   signature?: string | null;
 }
 
+/**
+ * Which resolution strategy produced a `calls` edge. Closed vocabulary owned
+ * by `ingestion/models.py::ResolutionOrigin`; the two are edited together.
+ * Render via `originDescriptor` (`@repowise-dev/ui/graph/edge-provenance`) —
+ * which origins count as a guess is one decision and lives in one place.
+ */
+export type ResolutionOrigin =
+  | "same_file"
+  | "self_scope"
+  | "enclosing_class"
+  | "receiver_same_file"
+  | "same_package"
+  | "import_scoped"
+  | "receiver_same_package"
+  | "package_alias"
+  | "module_alias"
+  | "crate_root"
+  | "receiver_import"
+  | "import_merged"
+  | "same_target"
+  | "receiver_global"
+  | "global_unique"
+  | "receiver_typed_same_file"
+  | "receiver_typed_same_package"
+  | "receiver_typed_import"
+  | "receiver_typed_global"
+  | "receiver_field_same_file"
+  | "receiver_field_same_package"
+  | "receiver_field_import"
+  | "receiver_field_global"
+  | "self_inherited"
+  | "enclosing_inherited";
+
+/**
+ * An origin as received, not as declared. An index outlives the bundle reading
+ * it, so a newer indexer can stamp a word this build predates —
+ * `originDescriptor` degrades those rather than throwing. Same `(string & {})`
+ * escape as `SymbolKind`: autocomplete on the vocabulary, no lie about the wire.
+ */
+export type ResolutionOriginWire = ResolutionOrigin | (string & {});
+
+/**
+ * What stopped a traced flow. Closed vocabulary owned by
+ * `analysis/execution_flows.py::FlowTermination`. A trace that merely ends
+ * reads as "execution ends here" whether it does or whether the walk ran out
+ * of things it could follow; this keeps those apart.
+ */
+export type FlowTermination =
+  | "depth_limit"
+  | "callees_truncated"
+  | "cycle"
+  | "confidence_filtered"
+  | "excluded_target"
+  | "no_callees";
+
+/** A termination as received. See `ResolutionOriginWire`. */
+export type FlowTerminationWire = FlowTermination | (string & {});
+
 export interface CallerCalleeEntry {
   symbol_id: string;
   name: string;
@@ -241,6 +299,8 @@ export interface CallerCalleeEntry {
   start_line?: number | null;
   edge_type: string;
   confidence: number;
+  /** Absent on an index built before origins were stamped. */
+  resolution_origin?: ResolutionOriginWire | null;
 }
 
 export interface CallersCallees {
@@ -316,6 +376,16 @@ export interface ExecutionFlowEntry {
   depth: number;
   crosses_community: boolean;
   communities_visited: number[];
+  /** Why the trace stopped. Absent on an index that carries no terminations. */
+  termination?: FlowTerminationWire | null;
+  /** For `confidence_filtered` only: declined origin -> count. */
+  termination_detail?: Record<string, number> | null;
+  /**
+   * Origin per hop, pairwise with `trace`, so `trace_via[i]` describes the hop
+   * from `trace[i]` to `trace[i + 1]` and the array is one shorter. Omitted
+   * when no hop carries one.
+   */
+  trace_via?: (ResolutionOriginWire | null)[] | null;
 }
 
 export interface ExecutionFlows {

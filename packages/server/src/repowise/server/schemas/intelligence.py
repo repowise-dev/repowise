@@ -23,6 +23,8 @@ class CallerCalleeEntry(BaseModel):
     start_line: int | None = None
     edge_type: str
     confidence: float
+    # None on an index built before origins were stamped.
+    resolution_origin: str | None = None
 
 
 class CallersCalleesResponse(BaseModel):
@@ -90,6 +92,12 @@ class ExecutionFlowEntry(BaseModel):
     depth: int
     crosses_community: bool
     communities_visited: list[int]
+    # Why the walk stopped, and how each hop was resolved. Both None/absent on
+    # an index predating them. `trace_via` is pairwise with `trace`, so it is
+    # one shorter: `trace_via[i]` describes the hop out of `trace[i]`.
+    termination: str | None = None
+    termination_detail: dict[str, int] | None = None
+    trace_via: list[str | None] | None = None
 
 
 class ExecutionFlowsResponse(BaseModel):

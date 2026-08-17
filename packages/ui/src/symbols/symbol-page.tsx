@@ -74,6 +74,7 @@ export function normalizeSymbolDetailResponse(
         file: c.file,
         edge_type: c.edge_type,
         confidence: c.confidence,
+        resolution_origin: c.resolution_origin ?? null,
       })),
       callees: data.graph.callees.map((c) => ({
         symbol_id: c.symbol_id,
@@ -81,6 +82,7 @@ export function normalizeSymbolDetailResponse(
         file: c.file,
         edge_type: c.edge_type,
         confidence: c.confidence,
+        resolution_origin: c.resolution_origin ?? null,
       })),
     },
     governing_decisions: data.governing_decisions,

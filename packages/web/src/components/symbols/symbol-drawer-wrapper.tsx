@@ -105,6 +105,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
           file: c.file,
           edge_type: c.edge_type,
           confidence: c.confidence,
+          resolution_origin: c.resolution_origin ?? null,
         })),
         callees: (callData?.callees ?? []).map((c) => ({
           symbol_id: c.symbol_id,
@@ -112,6 +113,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
           file: c.file,
           edge_type: c.edge_type,
           confidence: c.confidence,
+          resolution_origin: c.resolution_origin ?? null,
         })),
         pagerank_percentile: metrics?.pagerank_percentile ?? null,
         betweenness_percentile: metrics?.betweenness_percentile ?? null,

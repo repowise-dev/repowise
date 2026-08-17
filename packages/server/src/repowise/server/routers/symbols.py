@@ -421,13 +421,14 @@ async def symbol_detail(
                 "name": other.name
                 if other and other.name
                 else (other_id.split("::")[-1] if "::" in other_id else other_id),
-                "kind": other.kind if other else "unknown",
+                "kind": other.kind if other and other.kind else "unknown",
                 "file": other.file_path
                 if other and other.file_path
                 else (other_id.split("::")[0] if "::" in other_id else other_id),
                 "start_line": other.start_line if other else None,
                 "edge_type": e.edge_type,
                 "confidence": round(e.confidence or 0.0, 3),
+                "resolution_origin": e.resolution_origin,
             }
             (callers if inbound else callees).append(entry)
         callers.sort(key=lambda x: (-x["confidence"], x["name"]))

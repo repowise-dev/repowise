@@ -3,7 +3,7 @@
 import { ArrowRight } from "lucide-react";
 import type { SymbolBodyCall } from "@repowise-dev/types/symbols";
 import { truncatePath } from "../lib/format";
-import { cn } from "../lib/cn";
+import { originDescriptor } from "../graph/edge-provenance";
 
 interface SymbolCallGraphProps {
   centerName: string;
@@ -21,25 +21,25 @@ function CallNode({
   entry: SymbolBodyCall;
   symbolHref?: (id: string) => string;
 }) {
+  // The origin replaces a green/amber/grey confidence dot that carried no key
+  // and reached for the health ramp to say something that is not a health
+  // band. Only a name match is marked; everything else is ordinary resolution.
+  const origin = originDescriptor(entry.resolution_origin);
   const inner = (
-    <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 transition-colors hover:border-[var(--color-border-hover)]">
-      <div className="flex items-center gap-1.5">
-        <span
-          className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            (entry.confidence ?? 1) >= 0.9
-              ? "bg-[var(--color-success)]"
-              : (entry.confidence ?? 1) >= 0.7
-                ? "bg-[var(--color-caution)]"
-                : "bg-[var(--color-text-tertiary)]",
-          )}
-        />
-        <span className="truncate font-mono text-xs text-[var(--color-text-primary)]">
-          {entry.name}
-        </span>
+    <div
+      className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 transition-colors hover:border-[var(--color-border-hover)]"
+      {...(origin ? { title: `Resolved because ${origin.because}` } : {})}
+    >
+      <div className="truncate font-mono text-xs text-[var(--color-text-primary)]">
+        {entry.name}
       </div>
-      <div className="truncate pl-3 text-[10px] text-[var(--color-text-tertiary)]" title={entry.file}>
-        {truncatePath(entry.file, 28)}
+      <div className="flex items-baseline gap-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+        <span className="min-w-0 flex-1 truncate" title={entry.file}>
+          {truncatePath(entry.file, 28)}
+        </span>
+        {/* Not mono: this is an authored category, not a value the machine
+            emitted, so it takes the ordinary face like `SeverityMark`. */}
+        {origin?.tier === "name_match" && <span className="shrink-0">name match</span>}
       </div>
     </div>
   );

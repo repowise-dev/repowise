@@ -19,6 +19,8 @@ export interface CallerCalleeEntry {
   start_line?: number | null;
   edge_type: string;
   confidence: number;
+  /** Which resolution strategy produced the edge. Absent on an older index. */
+  resolution_origin?: string | null;
 }
 
 export interface CallersCalleesResponse {
@@ -86,6 +88,11 @@ export interface ExecutionFlowEntry {
   depth: number;
   crosses_community: boolean;
   communities_visited: number[];
+  /** Why the walk stopped, and how each hop resolved. Absent on an older index.
+   *  `trace_via` is pairwise with `trace`, so it is one shorter. */
+  termination?: string | null;
+  termination_detail?: Record<string, number> | null;
+  trace_via?: (string | null)[] | null;
 }
 
 export interface ExecutionFlowsResponse {

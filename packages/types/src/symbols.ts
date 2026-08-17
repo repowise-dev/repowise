@@ -6,6 +6,8 @@
  * adapters synthesise both before passing data to components.
  */
 
+import type { ResolutionOriginWire } from "./graph";
+
 export type SymbolKind =
   | "function"
   | "method"
@@ -85,6 +87,8 @@ export interface SymbolCallEntry {
   start_line: number | null;
   edge_type: string;
   confidence: number;
+  /** Absent on an index built before origins were stamped. */
+  resolution_origin?: ResolutionOriginWire | null;
 }
 
 export interface SymbolDetailGraph {
@@ -130,6 +134,7 @@ export interface SymbolBodyCall {
   file: string;
   edge_type: string;
   confidence?: number | null;
+  resolution_origin?: ResolutionOriginWire | null;
 }
 
 /** Graph-intelligence block for the unified body (optional — degrades when absent). */

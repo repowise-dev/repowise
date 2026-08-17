@@ -11,6 +11,8 @@ export * from "./graph-context-drawer";
 export * from "./graph-truncation-banner";
 export * from "./graph-canvas-shell";
 export * from "./graph-flow";
+export * from "./graph-flow-panel";
+export * from "./edge-provenance";
 export * from "./context";
 export * from "./elk-layout";
 export * from "./graph-scope-controls";

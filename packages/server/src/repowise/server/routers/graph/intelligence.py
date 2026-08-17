@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -158,16 +161,22 @@ async def get_callers_callees(
 
         entry = CallerCalleeEntry(
             symbol_id=other_id,
+            # All three columns are nullable while the response fields are not,
+            # so each needs the value checked and not just the row: a null here
+            # failed validation for the whole call rather than degrading one
+            # row of twenty. `symbol_detail` already guarded name and file this
+            # way; this endpoint guarded none of them.
             name=other.name
-            if other
+            if other and other.name
             else (other_id.split("::")[-1] if "::" in other_id else other_id),
-            kind=other.kind if other else "unknown",
+            kind=other.kind if other and other.kind else "unknown",
             file=other.file_path
-            if other
+            if other and other.file_path
             else (other_id.split("::")[0] if "::" in other_id else other_id),
             start_line=other.start_line if other else None,
             edge_type=e.edge_type,
             confidence=round(e.confidence or 0.0, 3),
+            resolution_origin=e.resolution_origin,
         )
 
         if is_caller:
@@ -225,10 +234,24 @@ async def get_execution_flows(
     flows: list[ExecutionFlowEntry] = []
 
     for ep_node, ep_score in entry_nodes:
-        trace = await bfs_trace(session, repo_id, ep_node.node_id, max_depth, node_cache)
+        hop_origins: dict[tuple[str, str], str] = {}
+        termination: dict[str, Any] = {}
+        trace = await bfs_trace(
+            session,
+            repo_id,
+            ep_node.node_id,
+            max_depth,
+            node_cache,
+            hop_origins,
+            termination,
+        )
         communities_visited, crosses = await resolve_trace_communities(
             session, repo_id, trace, node_cache
         )
+
+        # Null rather than a list of nulls on an older index, so a consumer can
+        # tell "no origins recorded" from "this hop has none".
+        via = [hop_origins.get(pair) for pair in pairwise(trace)]
 
         flows.append(
             ExecutionFlowEntry(
@@ -239,6 +262,9 @@ async def get_execution_flows(
                 depth=len(trace) - 1,
                 crosses_community=crosses,
                 communities_visited=communities_visited,
+                termination=termination.get("reason"),
+                termination_detail=termination.get("detail") or None,
+                trace_via=via if any(via) else None,
             )
         )
 
