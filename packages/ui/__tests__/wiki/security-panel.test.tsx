@@ -10,6 +10,9 @@ const finding: SecurityFinding = {
   severity: "high",
   snippet: "API_KEY = \"sk-1234\"",
   detected_at: "2026-01-01T00:00:00Z",
+  line_number: 12,
+  line_verified: true,
+  commit_at: null,
 };
 
 describe("SecurityPanel", () => {

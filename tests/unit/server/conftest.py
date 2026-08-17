@@ -49,6 +49,7 @@ def _create_test_app():
         refactoring,
         repos,
         search,
+        security,
         symbols,
         webhooks,
     )
@@ -97,6 +98,7 @@ def _create_test_app():
     app.include_router(overview.router)
     app.include_router(refactoring.router)
     app.include_router(providers.router)
+    app.include_router(security.router)
 
     return app
 

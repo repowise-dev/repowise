@@ -88,9 +88,18 @@ class SecurityFindingResponse(BaseModel):
     severity: str
     snippet: str | None
     detected_at: datetime
+    # Where in the file. Checked against the live tree before serving, so a
+    # line that drifted is either corrected or withdrawn — see
+    # ``services/security_lines.py``. ``None`` means the snippet is gone from
+    # the file and no line can honestly be given.
+    line_number: int | None
+    # False when the line above could not be confirmed against live source
+    # (file unreadable, or the snippet recurs). Surfaces must mark it.
+    line_verified: bool
     # Present when the finding was sourced from git history (full-history
     # scan). ``None`` for working-tree findings produced during indexing.
     commit_sha: str | None
+    commit_at: datetime | None
     found_in_history: bool
 
 

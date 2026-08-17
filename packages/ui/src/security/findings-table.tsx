@@ -7,21 +7,72 @@ import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { formatRelativeTimeOrNull } from "../lib/format";
+import type { SecurityFinding } from "@repowise-dev/types";
 
-export interface SecurityFinding {
-  id: number;
-  file_path: string;
-  kind: string;
-  severity: string;
-  snippet: string | null;
-  detected_at: string;
-}
+// One declaration of the wire shape, not a third hand-kept copy: this file's
+// local interface had already drifted behind the endpoint, which is how the
+// line number went unrendered.
+export type { SecurityFinding };
 
 const SEVERITY_VARIANT: Record<string, "outdated" | "stale" | "outline"> = {
   high: "outdated",
   med: "stale",
   low: "outline",
 };
+
+/**
+ * `path:line` for a finding, degrading honestly.
+ *
+ * The server checks the stored line against the live tree, so there are three
+ * states and they must look different: a confirmed line, a line it could not
+ * confirm (prefixed `~`, never presented as fact), and no line at all when the
+ * flagged code has moved away entirely. A wrong line here sends the reader to
+ * innocent code looking authoritative, which is worse than showing none.
+ */
+function FindingLocation({ finding }: { finding: SecurityFinding }) {
+  const line = finding.line_number;
+  const verified = finding.line_verified;
+
+  // Every state carries words, not just a colour and a tooltip: `title` is
+  // invisible to touch and to assistive tech, which is why VerificationBadge
+  // keeps an sr-only label beside its icon. Same convention here.
+  if (line == null) {
+    return (
+      <span
+        className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-primary)]"
+        title={`${finding.file_path} — the flagged code is no longer at the recorded line`}
+      >
+        {finding.file_path}
+        <span className="ml-1.5 not-italic text-2xs text-[var(--color-text-tertiary)]">
+          (line moved)
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-primary)]"
+      title={
+        verified
+          ? `${finding.file_path}:${line}`
+          : `${finding.file_path}:${line} — could not be confirmed against the current file`
+      }
+    >
+      {finding.file_path}
+      <span
+        className={
+          verified ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)]"
+        }
+      >
+        :{verified ? "" : "~"}
+        {line}
+      </span>
+      {!verified && <span className="sr-only"> (line unconfirmed)</span>}
+    </span>
+  );
+}
 
 export interface SecurityFindingsTableProps {
   findings: SecurityFinding[];
@@ -64,14 +115,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
       {
         key: "file_path",
         header: "File",
-        render: (f) => (
-          <span
-            className="block max-w-[280px] truncate font-mono text-xs text-[var(--color-text-primary)]"
-            title={f.file_path}
-          >
-            {f.file_path}
-          </span>
-        ),
+        render: (f) => <FindingLocation finding={f} />,
       },
       {
         key: "kind",
@@ -89,6 +133,22 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
             title={f.snippet ?? ""}
           >
             {f.snippet ?? "—"}
+          </span>
+        ),
+      },
+      {
+        key: "commit_at",
+        header: "Committed",
+        headerClassName: "w-28",
+        priority: 3,
+        // Only history findings carry an introducing commit; a working-tree
+        // finding has no commit to date, hence the dash.
+        render: (f) => (
+          <span
+            className="text-xs tabular-nums text-[var(--color-text-tertiary)]"
+            title={f.commit_at ? new Date(f.commit_at).toLocaleString() : undefined}
+          >
+            {formatRelativeTimeOrNull(f.commit_at)}
           </span>
         ),
       },
