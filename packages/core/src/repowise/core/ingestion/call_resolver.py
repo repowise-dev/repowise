@@ -286,6 +286,7 @@ class CallResolver:
         # "*" name (it is not a binding), so without this pass the barrel chain
         # dead-ends one hop short of the real definition and a call through the
         # barrel resolves to nothing.
+        wildcard_sources: dict[str, list[str]] = defaultdict(list)
         for path, parsed in self._parsed_files.items():
             file_syms = self._file_symbols.get(path, {})
             for imp in parsed.imports:
@@ -294,11 +295,55 @@ class CallResolver:
                     continue
                 if imp.resolved_file.startswith("external:"):
                     continue
+                # ``export * as ns from "x"`` forwards the module under ``ns``,
+                # so x's names are reachable as ``ns.name`` and are NOT this
+                # file's own exports. Flattening them makes a bare ``name``
+                # resolve into a nested namespace it was never in.
+                if any(
+                    b.local_name == "*" and b.exported_name for b in imp.bindings
+                ):
+                    continue
                 resolved = imp.resolved_file
+                if resolved != path:
+                    wildcard_sources[path].append(resolved)
                 source_syms = self._file_symbols.get(resolved, {})
                 for sym_name in source_syms:
                     if sym_name not in file_syms:
                         self._barrel_origins[path][sym_name] = resolved
+
+        # The pass above forwards only what the source file DECLARES, so a
+        # barrel over a barrel forwards nothing and the chain breaks at its
+        # first link rather than its last. Forward what the source file
+        # re-exports too, to a fixpoint. The multi-hop pass below cannot do
+        # this job — it deepens entries that exist, and here none do.
+        #
+        # Sorted so that a name two of this file's barrels both forward lands on
+        # the same origin whatever order the repository was walked in.
+        for _ in range(4):
+            changed = False
+            for path, sources in sorted(wildcard_sources.items()):
+                file_syms = self._file_symbols.get(path, {})
+                origins = self._barrel_origins[path]
+                for source in sorted(sources):
+                    source_bindings = self._import_bindings.get(source, {})
+                    for name, declaring in sorted(self._barrel_origins.get(source, {}).items()):
+                        if name in file_syms or name in origins or declaring == path:
+                            continue
+                        # The map keys a name as the source file spells it and
+                        # records only the declaring file, never the name the
+                        # symbol has there. A hop that renames therefore hands
+                        # on a key the declaring file may coincidentally
+                        # declare as something unrelated, and the receiving
+                        # file carries no binding to undo it with. Refuse those
+                        # rather than forward a name that means something else
+                        # at the far end; it costs reach, never correctness.
+                        binding = source_bindings.get(name)
+                        if binding is not None and (binding.exported_name or name) != name:
+                            continue
+                        origins[name] = declaring
+                        changed = True
+            if not changed:
+                break
 
         # Multi-hop: follow chains up to 5 hops
         for _ in range(4):
@@ -888,6 +933,24 @@ class CallResolver:
                 return ResolvedCall(
                     caller_id, source_syms[method_name], 0.88, call.line, "module_alias"
                 )
+            # A namespace over a barrel names a file that declares nothing of
+            # its own, so the lookup above can only ever miss. Chase the
+            # re-export map, as free calls and typed receivers already do.
+            #
+            # Keyed on the name the declaring file uses, not the one written
+            # here: a member access cannot rename, but the re-export it arrives
+            # through can, and the map records only the file. Without this an
+            # ``export { foo as bar }`` binds any unrelated ``bar`` the
+            # declaring file happens to hold.
+            origin = self._barrel_origins.get(module_file, {}).get(method_name)
+            if origin is not None and origin != module_file:
+                binding = self._import_bindings.get(module_file, {}).get(method_name)
+                declared_name = (binding.exported_name if binding else None) or method_name
+                origin_syms = self._file_symbols.get(origin, {})
+                if declared_name in origin_syms:
+                    return ResolvedCall(
+                        caller_id, origin_syms[declared_name], 0.88, call.line, "module_alias"
+                    )
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
         name_to_file = self._import_names.get(file_path, {})

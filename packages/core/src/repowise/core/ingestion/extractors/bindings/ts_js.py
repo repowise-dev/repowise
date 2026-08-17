@@ -108,10 +108,19 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
                             )
                         )
             elif child.type == "namespace_export":
-                # ``export * as ns from "x"`` — forwards the whole module.
+                # ``export * as ns from "x"`` — forwards the whole module, but
+                # under ``ns`` rather than flattened into this file's own
+                # namespace. The name rides on the wildcard binding so a
+                # consumer can tell the two shapes apart; the import-name maps
+                # drop a ``"*"`` binding before reading either field, so no
+                # lookup changes and ``imported_names`` stays as it was.
+                ns_name = next(
+                    (node_text(c, src) for c in child.children if c.type == "identifier"),
+                    None,
+                )
                 names.append("*")
                 bindings.append(
-                    NamedBinding(local_name="*", exported_name=None, source_file=None)
+                    NamedBinding(local_name="*", exported_name=ns_name, source_file=None)
                 )
             continue
 
