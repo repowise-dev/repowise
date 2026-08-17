@@ -144,33 +144,42 @@ _CONDITION_PRIORITY: tuple[str, ...] = (
 )
 
 
-def _flatten_export_value(value: Any) -> str | None:
-    """Collapse a Node ``exports`` entry to a single relative target string.
+def _ordered_export_targets(value: Any) -> tuple[str, ...]:
+    """Every target a Node ``exports`` entry can mean, best first.
 
-    Returns ``None`` for blocked entries (``null``) or shapes we can't
-    handle. Recursively unwraps nested condition objects and arrays.
+    Conditions this module ranks come first, in that order; conditions it does
+    not know follow, in manifest order. Callers probe the list and take the
+    first target the repository actually contains.
+
+    A single collapsed target is not enough, because a package may publish its
+    sources under a condition no fixed list can name — zod uses ``@zod/source``
+    — while every condition we do rank names build output that a source
+    checkout does not contain. Ranking still decides among targets that all
+    exist, so an entry that resolves today keeps resolving to the same file.
     """
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for cond in _CONDITION_PRIORITY:
-            inner = value.get(cond)
-            if inner is None:
-                continue
-            flat = _flatten_export_value(inner)
-            if flat:
-                return flat
-        return None
-    if isinstance(value, list):
-        for item in value:
-            flat = _flatten_export_value(item)
-            if flat:
-                return flat
-    return None
+    out: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str):
+            if node not in out:
+                out.append(node)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            for cond in _CONDITION_PRIORITY:
+                if cond in node:
+                    walk(node[cond])
+            for cond, inner in node.items():
+                if cond not in _CONDITION_PRIORITY:
+                    walk(inner)
+
+    walk(value)
+    return tuple(out)
 
 
-def _build_exports_map(pkg_data: dict) -> dict[str, str]:
-    """Return ``{exports_key: relative_target}`` for a workspace package.
+def _build_exports_map(pkg_data: dict) -> dict[str, tuple[str, ...]]:
+    """Return ``{exports_key: (target, ...)}`` for a workspace package.
 
     ``exports`` may be a single string (shorthand for ``{".": <str>}``)
     or a subpath dict. Keys that don't start with ``.`` are dropped (the
@@ -180,34 +189,37 @@ def _build_exports_map(pkg_data: dict) -> dict[str, str]:
     if raw is None:
         return {}
     if isinstance(raw, str):
-        return {".": raw}
+        return {".": (raw,)}
     if not isinstance(raw, dict):
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, ...]] = {}
     for key, value in raw.items():
         if not isinstance(key, str) or not key.startswith("."):
             continue
-        flat = _flatten_export_value(value)
-        if flat is None:
+        targets = _ordered_export_targets(value)
+        if not targets:
             continue
-        out[key] = flat
+        out[key] = targets
     return out
 
 
-def _match_export_key(subpath: str, exports_map: dict[str, str]) -> str | None:
+def _match_export_key(
+    subpath: str, exports_map: dict[str, tuple[str, ...]]
+) -> tuple[str, ...] | None:
     """Resolve a subpath against an ``exports`` map.
 
     ``subpath`` is the part of the import specifier after the package
     name, with no leading slash (``""`` for the bare package, ``"lib/x"``
     for ``@org/pkg/lib/x``). Exact keys win over wildcard patterns; among
-    wildcards the longest static prefix wins (Node spec).
+    wildcards the longest static prefix wins (Node spec). Returns the
+    matched key's candidate targets in priority order.
     """
     key = "." if subpath == "" else "./" + subpath
     if key in exports_map:
         return exports_map[key]
-    best_target: str | None = None
+    best_targets: tuple[str, ...] | None = None
     best_prefix_len = -1
-    for pattern, target in exports_map.items():
+    for pattern, targets in exports_map.items():
         if "*" not in pattern:
             continue
         prefix, _, suffix = pattern.partition("*")
@@ -220,11 +232,12 @@ def _match_export_key(subpath: str, exports_map: dict[str, str]) -> str | None:
             if suffix
             else key[len(prefix) :]
         )
-        resolved = target.replace("*", captured, 1) if "*" in target else target
         if len(prefix) > best_prefix_len:
-            best_target = resolved
+            best_targets = tuple(
+                t.replace("*", captured, 1) if "*" in t else t for t in targets
+            )
             best_prefix_len = len(prefix)
-    return best_target
+    return best_targets
 
 
 def _read_workspaces_field(pkg_data: dict) -> list[str]:
@@ -462,13 +475,13 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
 
     pkg = info[best_name]
     dir_posix: str = pkg["dir"]
-    exports_map: dict[str, str] = pkg["exports"]
+    exports_map: dict[str, tuple[str, ...]] = pkg["exports"]
     sub = module_path[len(best_name) :].lstrip("/")
 
     # 1) ``exports`` field — the package's authoritative subpath map.
     if exports_map:
-        target = _match_export_key(sub, exports_map)
-        if target is not None:
+        targets = _match_export_key(sub, exports_map)
+        for target in targets or ():
             # Targets are package-relative ("./src/lib/foo.ts"). Strip the
             # leading "./" and join with the package dir to get a repo path.
             stripped = target.lstrip("./")
@@ -477,7 +490,12 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
                 return resolved
 
     # 2) Bare-package fallback — no ``exports[.]`` entry: try index.*,
-    #    then ``main``/``module`` from package.json.
+    #    then ``main``/``module`` from package.json, then the source entry
+    #    by convention. The convention probe is last and only ever runs
+    #    where the alternative is no binding at all: a package that
+    #    publishes only from a build directory names nothing a source
+    #    checkout contains, so every manifest field misses and the import
+    #    would otherwise become an external node.
     if not sub:
         cand = _probe_path(f"{dir_posix}/index", ctx.path_set)
         if cand is not None:
@@ -485,6 +503,10 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         main = pkg.get("main")
         if isinstance(main, str):
             cand = _probe_path(f"{dir_posix}/{main.lstrip('./')}", ctx.path_set)
+            if cand is not None:
+                return cand
+        for source_root in ("src", "lib"):
+            cand = _probe_path(f"{dir_posix}/{source_root}/index", ctx.path_set)
             if cand is not None:
                 return cand
         return None
@@ -580,9 +602,15 @@ def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     path_set = ctx.path_set
     for _name, pkg in packages.items():
         dir_posix: str = pkg["dir"]
-        exports_map: dict[str, str] = pkg.get("exports") or {}
-        for pattern, target in exports_map.items():
-            entries.update(_expand_exports_wildcard(target, pattern, dir_posix, path_set))
+        exports_map: dict[str, tuple[str, ...]] = pkg.get("exports") or {}
+        for pattern, targets in exports_map.items():
+            # First candidate that names anything in the repo wins, so a key
+            # whose ranked target exists contributes exactly what it did before.
+            for target in targets:
+                matches = _expand_exports_wildcard(target, pattern, dir_posix, path_set)
+                if matches:
+                    entries.update(matches)
+                    break
         # ``main``/``module`` shorthand — package's primary entry.
         main = pkg.get("main")
         if isinstance(main, str):

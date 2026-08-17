@@ -477,6 +477,74 @@ class TestWorkspaceExportsField:
             == "packages/ui/src/util.ts"
         )
 
+    def test_exports_condition_naming_absent_build_output_is_passed_over(
+        self, tmp_path: Path
+    ) -> None:
+        # Every condition this module ranks names a built artefact a source
+        # checkout does not contain, and the package publishes its TypeScript
+        # under a condition no fixed list can name. Collapsing to one ranked
+        # target left the whole package unresolvable.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {
+                        "@org/source": "./src/index.ts",
+                        "types": "./index.d.cts",
+                        "import": "./index.js",
+                        "require": "./index.cjs",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
+
+    def test_ranked_condition_still_wins_when_both_targets_exist(
+        self, tmp_path: Path
+    ) -> None:
+        # The guard on the guard: continuing past an absent target must not
+        # become a preference for source, or every package shipping both a
+        # build and its sources would change which file it binds.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {
+                        "@org/source": "./src/index.ts",
+                        "import": "./dist/index.js",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/index.ts", "packages/ui/dist/index.js"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/dist/index.js"
+
+    def test_bare_package_falls_back_to_source_entry(self, tmp_path: Path) -> None:
+        # No ``exports`` at all and every manifest field names a build
+        # directory the repository does not contain, so the import became an
+        # external node while the sources sat beside it.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "main": "./dist/ui.cjs",
+                "module": "./dist/ui.js",
+                "types": "./types/index.d.ts",
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
+
+    def test_source_entry_fallback_does_not_displace_a_resolving_main(
+        self, tmp_path: Path
+    ) -> None:
+        _setup_workspace(tmp_path, "@org/ui", {"main": "./entry.ts"})
+        ctx = _ctx(tmp_path, ["packages/ui/entry.ts", "packages/ui/src/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/entry.ts"
+
     def test_exports_bare_dot_root(self, tmp_path: Path) -> None:
         _setup_workspace(
             tmp_path,
