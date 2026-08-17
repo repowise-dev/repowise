@@ -554,6 +554,46 @@ class TestImportedTypeThroughAReExport:
             e for e in _edges(parsed, tmp_path) if str(e[3]).startswith("receiver_typed_")
         ]
 
+    def test_an_alias_does_not_read_the_bound_file_s_own_binding(
+        self, tmp_path: Path
+    ) -> None:
+        """The chain is keyed by each file's own local names, so an alias must
+        be translated back before it is used as a key.
+
+        Here ``consumer`` calls ``lib.Renderer`` under the name ``Engine``,
+        while ``lib`` itself binds that same name to an unrelated class. Asking
+        ``lib`` about ``Engine`` answers about the wrong one.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "consumer.py": (
+                    "python",
+                    "from lib import Renderer as Engine\n\n"
+                    "def run():\n"
+                    "    engine = Engine()\n"
+                    "    engine.render(1)\n",
+                ),
+                "lib.py": (
+                    "python",
+                    "from other import Engine\n\nclass Renderer:\n    pass\n",
+                ),
+                "other.py": (
+                    "python",
+                    "class Engine:\n    def render(self, obj):\n        return obj\n",
+                ),
+            },
+        )
+        _link_imports(
+            parsed,
+            {"consumer.py": {"lib": "lib.py"}, "lib.py": {"other": "other.py"}},
+        )
+        assert not [
+            e
+            for e in _edges(parsed, tmp_path)
+            if e[1] == "other.py::Engine::render" and str(e[3]).startswith("receiver_")
+        ]
+
     def test_an_origin_outside_the_repo_is_never_recorded(self, tmp_path: Path) -> None:
         """A re-export map holding an unreadable path makes a reader look safe."""
         parsed = _parse_all(
