@@ -1,9 +1,7 @@
 """A test function is linked to the fixture it asks for by parameter name.
 
-The refusals matter more than the happy path here: a parameter name is an
-ordinary identifier, so anything that claims one without evidence mints a wrong
-edge, and every test below that asserts *absence* was written for a shape the
-corpus actually contains.
+The refusals matter more than the happy path: a parameter name is an ordinary
+identifier, so anything claiming one without evidence mints a wrong edge.
 """
 
 from __future__ import annotations
@@ -135,8 +133,8 @@ class TestFixtureInjection:
         assert ("test_api.py::test_other", "conftest.py::fixture_app") not in bound
 
     def test_a_parametrize_argument_is_not_a_fixture_request(self, tmp_path: Path) -> None:
-        # The test supplies `value` itself. Without this refusal a parametrize
-        # argument that happens to share a fixture's name mints a wrong edge.
+        # A parametrize argument that happens to share a fixture's name would
+        # otherwise mint a wrong edge.
         (tmp_path / "conftest.py").write_text(
             "import pytest\n\n\n@pytest.fixture\ndef value():\n    return 1\n"
         )
@@ -181,8 +179,6 @@ class TestFixtureInjection:
         assert _bound(_build(tmp_path)) == set()
 
     def test_the_edge_carries_a_confidence(self, tmp_path: Path) -> None:
-        # An unlabelled arrow is what the origin vocabulary exists to stop; a
-        # framework binding is an inference and has to say so.
         (tmp_path / "conftest.py").write_text(
             "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
         )
@@ -194,12 +190,132 @@ class TestFixtureInjection:
         assert data["confidence"] == 0.90
 
 
+class TestRefusals:
+    """Each of these mints a wrong edge without the rule it names."""
+
+    def test_a_module_level_assignment_asks_for_nothing(self, tmp_path: Path) -> None:
+        # `test_client = TestClient(app)` is a variable, and its recorded
+        # signature is the assignment line — so a parameter-list read finds
+        # `app` in it and calls a data constant a caller of the fixture.
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef app():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "from client import TestClient\n\ntest_client = TestClient(app)\n"
+        )
+
+        assert _bound(_build(tmp_path)) == set()
+
+    def test_a_defaulted_parameter_is_not_injected(self, tmp_path: Path) -> None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "def test_get(client=None):\n    assert client is None\n"
+        )
+
+        assert _bound(_build(tmp_path)) == set()
+
+    def test_a_class_scoped_fixture_does_not_serve_a_sibling_class(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "test_api.py").write_text(
+            "import pytest\n\n\n"
+            "class TestA:\n"
+            "    @pytest.fixture\n"
+            "    def client(self):\n        return 1\n\n"
+            "    def test_a(self, client):\n        assert client\n\n\n"
+            "class TestB:\n"
+            "    def test_b(self, client):\n        assert client\n"
+        )
+
+        bound = _bound(_build(tmp_path))
+        assert ("test_api.py::TestA::test_a", "test_api.py::TestA::client") in bound
+        assert ("test_api.py::TestB::test_b", "test_api.py::TestA::client") not in bound
+
+    def test_a_method_of_a_class_pytest_never_collects_asks_for_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        # pytest collects methods only from `Test*` classes.
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "class Harness:\n    def test_connection(self, client):\n        return client\n"
+        )
+
+        assert _bound(_build(tmp_path)) == set()
+
+    def test_name_is_read_as_a_top_level_keyword_only(self, tmp_path: Path) -> None:
+        # A `name=` nested in a params list is not the fixture's name.
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n"
+            '@pytest.fixture(params=[dict(name="alice")])\n'
+            "def user(request):\n    return request.param\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "def test_u(user):\n    assert user\n\n\n"
+            "def test_v(alice):\n    assert alice\n"
+        )
+
+        bound = _bound(_build(tmp_path))
+        assert ("test_api.py::test_u", "conftest.py::user") in bound
+        assert ("test_api.py::test_v", "conftest.py::user") not in bound
+
+    def test_a_parametrize_value_does_not_refuse_a_real_request(
+        self, tmp_path: Path
+    ) -> None:
+        # Only the first argument names parameters. Reading the whole decorator
+        # made every parametrize *value* look like a supplied name, so a fixture
+        # called `client` became unreachable in any test parametrized over the
+        # string "client".
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "import pytest\n\n\n"
+            '@pytest.mark.parametrize("method", ["client", "server"])\n'
+            "def test_dispatch(method, client):\n    assert client\n"
+        )
+
+        bound = _bound(_build(tmp_path))
+        assert ("test_api.py::test_dispatch", "conftest.py::client") in bound
+
+    def test_an_annotation_containing_a_bracket_does_not_truncate_the_list(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n\n\n"
+            "@pytest.fixture\ndef later():\n    return 2\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "from typing import Any, Callable\n\n\n"
+            "def test_get(cb: Callable[[int], str], client, later):\n"
+            "    assert client and later and cb\n"
+        )
+
+        bound = _bound(_build(tmp_path))
+        assert ("test_api.py::test_get", "conftest.py::client") in bound
+        assert ("test_api.py::test_get", "conftest.py::later") in bound
+
+    def test_a_nested_default_call_does_not_leak_a_keyword_as_a_request(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "def test_get(tmp_path, opts=dict(a=1, client=2)):\n    assert opts\n"
+        )
+
+        assert _bound(_build(tmp_path)) == set()
+
+
 class TestFixtureIsNotDeadCode:
     def test_a_fixture_used_only_by_injection_has_an_incoming_use_edge(
         self, tmp_path: Path
     ) -> None:
-        # The point of putting the type in SYMBOL_USE_EDGE_TYPES: before this,
-        # nothing in the graph pointed at a fixture at all.
+        # Before this, nothing in the graph pointed at a fixture at all.
         (tmp_path / "conftest.py").write_text(
             "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
         )

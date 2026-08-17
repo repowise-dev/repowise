@@ -129,7 +129,29 @@ def _is_spring_data_repo(parsed: Any) -> bool:
     return False
 
 
-def _scan_lombok_ctor_params(text: str) -> list[str]:
+def _owner_at_offset(parsed: Any, text: str, offset: int) -> str | None:
+    """The innermost declared type whose body contains *offset*.
+
+    The injection regexes scan whole-file text with no scope awareness, so the
+    owner has to come from the match position. Taking the type the file is
+    named for instead attributes a nested ``@Configuration``'s injections to the
+    outer class -- and finds nothing at all in a file whose stem names no type.
+    """
+    line = text.count("\n", 0, offset) + 1
+    best: str | None = None
+    best_span = None
+    for sym in parsed.symbols:
+        if sym.kind not in ("class", "interface", "record", "enum"):
+            continue
+        if not (sym.start_line <= line <= sym.end_line):
+            continue
+        span = sym.end_line - sym.start_line
+        if best_span is None or span < best_span:
+            best, best_span = sym.id, span
+    return best
+
+
+def _scan_lombok_ctor_params(text: str) -> list[tuple[str, int]]:
     """Return Lombok-synthesized constructor param types (head identifiers).
 
     For a class annotated ``@RequiredArgsConstructor`` (or ``@Data``), this
@@ -143,7 +165,7 @@ def _scan_lombok_ctor_params(text: str) -> list[str]:
     if not (is_rac or is_aac):
         return []
 
-    params: list[str] = []
+    params: list[tuple[str, int]] = []
     for m in _JAVA_FINAL_FIELD_RE.finditer(text):
         is_final = bool(m.group(1))
         type_head = m.group(2)
@@ -152,28 +174,13 @@ def _scan_lombok_ctor_params(text: str) -> list[str]:
                          "List", "Map", "Set", "Collection"):
             continue
         if is_aac or (is_rac and is_final):
-            params.append(type_head)
+            params.append((type_head, m.start()))
     return params
-
-
-def _declaring_type_symbol(parsed: Any, path: str) -> str | None:
-    """The symbol id of the type *path* is named for.
-
-    Java and Kotlin both put the public type in a file of its own name, so the
-    stem is the reliable discriminator when a file also declares helper types.
-    A file whose stem names no type is skipped rather than guessed at.
-    """
-    stem = Path(path).stem
-    for sym in parsed.symbols:
-        if sym.name == stem and sym.kind in ("class", "interface", "record", "enum"):
-            return sym.id
-    return None
 
 
 def _bind_injected_symbol(
     graph: nx.DiGraph, type_to_symbol: dict[str, str], owner: str | None, type_name: str
 ) -> int:
-    """Link an injecting class's declaration to the injected type's declaration."""
     if owner is None:
         return 0
     target = type_to_symbol.get(type_name.split("<")[0].strip())
@@ -190,10 +197,6 @@ def _add_spring_edges(
 ) -> int:
     count = 0
     class_to_file = _build_class_to_file(parsed_files, ("java", "kotlin"))
-    # Injection names a type, and a type is a symbol. The file-level edges below
-    # say the two files are related; these say which two declarations, which is
-    # what makes an injected-only collaborator stop reading as constructed by
-    # nobody.
     type_to_symbol = build_type_to_symbol(parsed_files, ("java", "kotlin"))
 
     # Build interface → list of impl files map from heritage
@@ -248,12 +251,12 @@ def _add_spring_edges(
             node["framework_role"] = node.get("framework_role") or "spring_stereotype"
             node["is_entry_point"] = True
 
-        owner_symbol = _declaring_type_symbol(parsed, path)
-
         # 2a. Field injection (@Autowired / @Inject / @Resource)
         for m in _SPRING_INJECT_FIELD_RE.finditer(text):
             type_name = m.group(1).split("<")[0].strip()
-            count += _bind_injected_symbol(graph, type_to_symbol, owner_symbol, type_name)
+            count += _bind_injected_symbol(
+                graph, type_to_symbol, _owner_at_offset(parsed, text, m.start()), type_name
+            )
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
@@ -272,14 +275,21 @@ def _add_spring_edges(
                 type_name = pm.group(1)
                 if type_name in ("String", "Integer", "Long", "Boolean", "Double", "Float"):
                     continue
-                count += _bind_injected_symbol(graph, type_to_symbol, owner_symbol, type_name)
+                count += _bind_injected_symbol(
+                    graph,
+                    type_to_symbol,
+                    _owner_at_offset(parsed, text, ctor_match.start()),
+                    type_name,
+                )
                 for target in _resolve_type(type_name):
                     if target in path_set and _add_edge_if_new(graph, path, target):
                         count += 1
 
         # 2c. Lombok @RequiredArgsConstructor / @AllArgsConstructor / @Data
-        for type_name in _scan_lombok_ctor_params(text):
-            count += _bind_injected_symbol(graph, type_to_symbol, owner_symbol, type_name)
+        for type_name, offset in _scan_lombok_ctor_params(text):
+            count += _bind_injected_symbol(
+                graph, type_to_symbol, _owner_at_offset(parsed, text, offset), type_name
+            )
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1

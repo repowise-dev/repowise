@@ -61,26 +61,20 @@ def _add_edge_if_new(graph: nx.DiGraph, source: str, target: str) -> bool:
     return True
 
 
-# A symbol edge asserts more than the file edge above it, so it is worth more
-# than "somewhere in that file". Below `same_file` (0.95) because the framework
-# can rebind at runtime and we are reading a convention, at the level of the
-# heritage-walk origins because, like them, the binding follows a documented
-# rule and checks no signature.
+# Below `same_file` (0.95) because the framework can rebind at run time, level
+# with the heritage-walk origins because the binding follows a documented rule
+# and checks no signature.
 FRAMEWORK_BIND_CONFIDENCE = 0.90
 
 
 def add_symbol_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
     """Link two *symbol* nodes the framework wires together.
 
-    Separate from ``_add_edge_if_new`` rather than a flag on it, because the
-    two disagree about what "already there" means. That one is first-wins over
-    the whole graph, which is right for a file pair; here it would let
-    containment win silently — a networkx ``DiGraph`` holds one edge per
-    ordered pair, and ``defines`` already occupies (file, symbol), so a handler
-    reaching from a file to a symbol it declares would be dropped without a
-    trace. Both ends are required to be existing symbol nodes for the same
-    reason: a typo'd id would otherwise mint a bare node with no attributes
-    that every later consumer has to defend against.
+    Not a flag on ``_add_edge_if_new``: a ``DiGraph`` holds one edge per ordered
+    pair and ``defines`` already occupies (file, symbol), so that helper's
+    first-wins guard would let containment silently swallow a symbol edge.
+    Both ends must already be symbol nodes, so a wrong id cannot mint a bare
+    node with no attributes for every later consumer to defend against.
     """
     if source == target:
         return False
@@ -131,12 +125,9 @@ def build_type_to_symbol(
 ) -> dict[str, str]:
     """Map a declared type name → its symbol id, for names declared exactly once.
 
-    The symbol-level twin of :func:`_build_class_to_file`, and deliberately
-    stricter than it: that one keeps the first file to declare a name, which is
-    tolerable when the answer is "somewhere in this file" and is not when the
-    answer names a symbol. A name two files declare is dropped, so an ambiguous
-    injection stays unclaimed rather than being bound to whichever file was
-    walked first.
+    Stricter than :func:`_build_class_to_file`, which keeps the first declarer:
+    an ambiguous name must stay unclaimed rather than bind to whichever file the
+    walk reached first.
     """
     seen: dict[str, str | None] = {}
     for _path, parsed in parsed_files.items():

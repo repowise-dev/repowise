@@ -291,17 +291,15 @@ EdgeType = Literal[
     "dispatches_to",
     "co_changes",
     "framework",
-    # The symbol-level sibling of `framework`, which is file → file and always
-    # will be. A framework handler emits this when it can name *both* ends as
-    # symbols — a test function and the fixture it asks for by parameter name,
-    # a class and the collaborator injected into it. Deliberately not `calls`:
-    # nothing here is a call the parser could have seen, and letting it read as
-    # one would put an inferred wiring hop into execution flows as if it were
-    # source.
+    # The symbol-level sibling of `framework`, emitted when a handler can name
+    # both ends as symbols. Deliberately not `calls`: nothing here is a call the
+    # parser could have seen, and letting it read as one would put an inferred
+    # wiring hop into an execution flow as if it were source.
     "framework_binds",
-    # A data reference rather than a call. Two `_add_reads_edge` helpers emit
-    # it at different layers: C# member access file → file, Express
-    # route/middleware wiring symbol → symbol.
+    # A data reference rather than a call: C# member access, file → file. It
+    # used to name two unrelated things — the Express route wiring emitted it
+    # symbol → symbol — which is why one consumer set could not say which layer
+    # it meant. That producer now emits `framework_binds`.
     "reads",
     # Dynamic-dispatch hints. `dynamic_hints` extractors emit a `DynamicKind`
     # sub-type and `EdgesMixin.add_dynamic_edges` prefixes it, so `url_route`
@@ -475,9 +473,7 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         # implementation side of an interface reads as called by nobody.
         "dispatches_to",
         # A fixture nobody calls and a collaborator nobody constructs are both
-        # used — by the container, which no parser sees. Without this they read
-        # as reached by nobody, which is the same mistake `references` fixed for
-        # dispatch tables.
+        # used — by the container, which no parser sees.
         "framework_binds",
         "reads",
         # Naming a function is using it. A handler sitting in a dispatch table

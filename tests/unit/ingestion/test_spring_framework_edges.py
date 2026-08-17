@@ -150,3 +150,91 @@ class TestSpringGate:
         ctx = _ctx(tmp_path, parsed)
         count = add_framework_edges(graph, parsed, ctx, tech_stack=[])
         assert count == 0
+
+
+def _build_graph(repo: Path):
+    """A real graph, so the symbol-level edges have symbol nodes to land on."""
+    from repowise.core.ingestion import GraphBuilder
+
+    parsed = _build_parsed(repo)
+    builder = GraphBuilder(repo)
+    for pf in parsed.values():
+        builder.add_file(pf)
+    graph = builder.build()
+    add_framework_edges(graph, parsed, _ctx(repo, parsed), tech_stack=["spring"])
+    return graph
+
+
+def _bound(graph) -> set[tuple[str, str]]:
+    return {
+        (s, t)
+        for s, t, d in graph.edges(data=True)
+        if d.get("edge_type") == "framework_binds"
+    }
+
+
+class TestSpringSymbolEdges:
+    def test_injection_links_the_two_declarations(self, tmp_path: Path) -> None:
+        (tmp_path / "UserService.java").write_text(
+            "import org.springframework.stereotype.Service;\n"
+            "@Service\npublic class UserService {}\n"
+        )
+        (tmp_path / "UserController.java").write_text(
+            "import org.springframework.beans.factory.annotation.Autowired;\n"
+            "import org.springframework.web.bind.annotation.RestController;\n"
+            "@RestController\npublic class UserController {\n"
+            "  @Autowired private UserService userService;\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        assert (
+            "UserController.java::UserController",
+            "UserService.java::UserService",
+        ) in bound
+
+    def test_a_nested_configuration_owns_its_own_injection(self, tmp_path: Path) -> None:
+        # The injection regexes read whole-file text. Attributing every hit to
+        # the type the file is named for gives the outer class an injection it
+        # does not declare, and nested @Configuration classes are a standard
+        # idiom.
+        (tmp_path / "PaymentGateway.java").write_text(
+            "import org.springframework.stereotype.Service;\n"
+            "@Service\npublic class PaymentGateway {}\n"
+        )
+        (tmp_path / "AppConfig.java").write_text(
+            "import org.springframework.context.annotation.Configuration;\n"
+            "import org.springframework.beans.factory.annotation.Autowired;\n"
+            "@Configuration\npublic class AppConfig {\n"
+            "  @Configuration\n"
+            "  static class Inner {\n"
+            "    @Autowired private PaymentGateway gateway;\n"
+            "  }\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        target = "PaymentGateway.java::PaymentGateway"
+        assert ("AppConfig.java::AppConfig", target) not in bound
+        assert any(src.startswith("AppConfig.java::") for src, dst in bound if dst == target)
+
+    def test_an_ambiguous_type_name_stays_unclaimed(self, tmp_path: Path) -> None:
+        # Two files declaring `UserService` cannot settle which one is injected,
+        # and picking whichever was walked first is a coin flip.
+        for sub in ("a", "b"):
+            d = tmp_path / sub
+            d.mkdir()
+            (d / "UserService.java").write_text(
+                "import org.springframework.stereotype.Service;\n"
+                "@Service\npublic class UserService {}\n"
+            )
+        (tmp_path / "UserController.java").write_text(
+            "import org.springframework.beans.factory.annotation.Autowired;\n"
+            "import org.springframework.web.bind.annotation.RestController;\n"
+            "@RestController\npublic class UserController {\n"
+            "  @Autowired private UserService userService;\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        assert not [d for _s, d in bound if d.endswith("::UserService")]

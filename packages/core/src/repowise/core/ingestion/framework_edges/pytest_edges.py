@@ -1,6 +1,8 @@
 """pytest conftest convention edges.
 
-Split out of ``framework_edges.py`` (PR 3.5) — behaviour-preserving move.
+Two conventions, both invisible to a static import graph: a ``conftest.py`` is
+imported by collection rather than by any statement, and a test's parameter
+names are fixture requests resolved at run time.
 """
 
 from __future__ import annotations
@@ -20,11 +22,9 @@ from .base import (
 if TYPE_CHECKING:
     import networkx as nx
 
-# `@fixture`, `@pytest.fixture`, `@pytest.fixture(scope="module")`, and the
-# aliased `@pytest_asyncio.fixture`. Anchored at the attribute tail so a
-# user-defined `@my.fixture` is accepted too — pytest resolves the decorator by
-# identity, not by module, and a name that ends in `fixture` and is used as one
-# is one far more often than not.
+# Matched at the attribute tail rather than on `pytest.`, so `@my.fixture` and
+# `@pytest_asyncio.fixture` are both accepted: pytest resolves the decorator by
+# identity, not by module path.
 _FIXTURE_DECORATOR_RE = re.compile(r"^@(?:[\w.]+\.)?fixture\b")
 # `@pytest.fixture(name="app")` renames the fixture: the function stays
 # `fixture_app` and tests ask for `app`. Matching the function name here would
@@ -34,10 +34,59 @@ _FIXTURE_NAME_KWARG_RE = re.compile(r"""\bname\s*=\s*["']([^"']+)["']""")
 # they are not fixture requests — and a parametrize argument that happens to
 # share a fixture's name would otherwise mint a wrong edge.
 _PARAMETRIZE_RE = re.compile(r"^@(?:[\w.]+\.)?parametrize\b")
-_PARAM_NAMES_RE = re.compile(r"""["']([^"']+)["']""")
-_SIGNATURE_PARAMS_RE = re.compile(r"\(([^)]*)\)")
+_QUOTED_RE = re.compile(r"""["']([^"']*)["']""")
+_NAME_KWARG_ARG_RE = re.compile(r"""^name\s*=\s*["']([^"']+)["']$""")
 
 _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]*|[^/]*_test)\.py$")
+
+# pytest collects methods only from classes named `Test*`. A `class Harness`
+# with a `test_connection` method is never run, so its parameters are ordinary
+# arguments its own callers pass.
+_TEST_CLASS_PREFIX = "Test"
+
+
+def _call_arguments(text: str) -> list[str]:
+    """Top-level arguments of the first call in *text*, unsplit by nesting.
+
+    A plain `split(",")` cannot do this and neither can one regex: a default
+    value, a subscripted annotation and a nested `dict(...)` all contain the
+    characters the split keys on. Depth counting with string awareness is the
+    smallest thing that reads `def t(a, cb: Callable[[int], str], o=(1, 2))`
+    correctly.
+    """
+    start = text.find("(")
+    if start == -1:
+        return []
+    depth = 0
+    quote: str | None = None
+    args: list[str] = []
+    current: list[str] = []
+    for ch in text[start:]:
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+            current.append(ch)
+            continue
+        if ch in "([{":
+            depth += 1
+            if depth == 1:
+                continue
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(current))
+                return [a.strip() for a in args if a.strip()]
+        elif ch == "," and depth == 1:
+            args.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    # Unbalanced — a truncated signature. Return nothing rather than a guess.
+    return []
 
 
 def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
@@ -61,17 +110,37 @@ def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
     return count
 
 
-def _declared_fixtures(parsed: Any) -> dict[str, str]:
-    """``{fixture name: symbol id}`` for every fixture *parsed* declares."""
-    out: dict[str, str] = {}
+def _registered_name(sym: Any, decorator: str) -> str:
+    """The name pytest registers the fixture under.
+
+    ``name=`` must be read as a top-level keyword, not found anywhere in the
+    text: ``@pytest.fixture(params=[dict(name="alice")])`` otherwise registers
+    the fixture as ``alice``, which both loses the real request and mints a
+    fabricated one.
+    """
+    for arg in _call_arguments(decorator):
+        match = _NAME_KWARG_ARG_RE.match(arg)
+        if match:
+            return match.group(1)
+    return sym.name
+
+
+def _declared_fixtures(parsed: Any) -> dict[tuple[str | None, str], str]:
+    """``{(owning class or None, fixture name): symbol id}``.
+
+    Keyed by scope rather than by name alone. A fixture declared inside a test
+    class serves that class only, and flattening the two makes every sibling
+    class share it — which is a wrong edge whichever way the collision is
+    resolved.
+    """
+    out: dict[tuple[str | None, str], str] = {}
     for sym in parsed.symbols:
         if sym.kind not in ("function", "method"):
             continue
         for dec in sym.decorators:
             if not _FIXTURE_DECORATOR_RE.match(dec.strip()):
                 continue
-            named = _FIXTURE_NAME_KWARG_RE.search(dec)
-            out.setdefault(named.group(1) if named else sym.name, sym.id)
+            out.setdefault((sym.parent_name, _registered_name(sym, dec)), sym.id)
             break
     return out
 
@@ -79,24 +148,32 @@ def _declared_fixtures(parsed: Any) -> dict[str, str]:
 def _requested_fixtures(sym: Any) -> list[str]:
     """The parameter names *sym* asks pytest to inject.
 
-    Reads the recorded signature rather than re-parsing the file: the parse the
-    pipeline already did is the same one, and a second `ast.parse` of every test
-    file is the cost this pass exists inside a build to avoid.
+    Reads the recorded signature rather than re-parsing: a second pass over
+    every test file is the cost of running inside the build rather than beside
+    it.
     """
-    match = _SIGNATURE_PARAMS_RE.search(sym.signature or "")
-    if not match:
-        return []
     supplied: set[str] = set()
     for dec in sym.decorators:
-        if _PARAMETRIZE_RE.match(dec.strip()):
-            # First string group is the argnames spec; pytest also accepts a
-            # comma-joined single string.
-            for token in _PARAM_NAMES_RE.findall(dec):
+        if not _PARAMETRIZE_RE.match(dec.strip()):
+            continue
+        # Only the first argument is the argnames spec. Reading the whole
+        # decorator instead makes every parametrize *value* look like a name
+        # the test supplies, so a real fixture request whose name is also a
+        # common literal is silently refused.
+        args = _call_arguments(dec)
+        if args:
+            for token in _QUOTED_RE.findall(args[0]):
                 supplied.update(p.strip() for p in token.split(","))
+
     names = []
-    for raw in match.group(1).split(","):
-        name = raw.split(":")[0].split("=")[0].strip()
-        if not name or name.startswith("*") or name in ("self", "cls"):
+    for raw in _call_arguments(sym.signature or ""):
+        # A defaulted parameter is never injected: pytest skips any argument
+        # whose default is not empty. The arguments are already split at top
+        # level, so an `=` here is a default and not part of an annotation.
+        if "=" in raw or raw.startswith("*"):
+            continue
+        name = raw.split(":")[0].strip()
+        if not name or name in ("self", "cls", "/"):
             continue
         if name in supplied:
             continue
@@ -107,22 +184,21 @@ def _requested_fixtures(sym: Any) -> list[str]:
 def _add_fixture_injection_edges(graph: nx.DiGraph, parsed_files: dict[str, Any]) -> int:
     """Link each test function to the fixture it asks for by name.
 
-    The pairing is the whole point. The conftest hint above already computes
-    both halves — which fixtures a conftest declares, which parameter names a
-    test asks for — and then keeps only the file pair, so "this fixture is used
-    by nobody" and "editing this fixture touches these tests" are both
-    unanswerable today.
-
-    Scope follows pytest's own rule: a fixture declared in the test's own module
-    wins, then the nearest ``conftest.py`` at or above it. Nothing else is
+    Scope follows pytest's own rule, innermost first: the test's own class, then
+    its module, then the nearest ``conftest.py`` at or above it. Nothing else is
     searched, so a plugin-provided fixture stays unclaimed rather than being
     bound to a same-named local one.
     """
+    # Only a conftest's module-level fixtures are visible to other files; one
+    # declared inside a class there serves that class alone.
     conftests: dict[str, dict[str, str]] = {}
     for path, parsed in parsed_files.items():
         if Path(path).name != "conftest.py":
             continue
-        declared = _declared_fixtures(parsed)
+        declared = {
+            name: sid for (owner, name), sid in _declared_fixtures(parsed).items()
+            if owner is None
+        }
         if declared:
             conftests[Path(path).parent.as_posix()] = declared
 
@@ -141,14 +217,18 @@ def _add_fixture_injection_edges(graph: nx.DiGraph, parsed_files: dict[str, Any]
         )
 
         for sym in parsed.symbols:
-            if not sym.name.startswith("test_"):
+            if sym.kind not in ("function", "method") or not sym.name.startswith("test_"):
+                continue
+            if sym.parent_name and not sym.parent_name.startswith(_TEST_CLASS_PREFIX):
                 continue
             for name in _requested_fixtures(sym):
-                target = own.get(name)
-                if target is None:
-                    target = next(
+                target = (
+                    own.get((sym.parent_name, name))
+                    or own.get((None, name))
+                    or next(
                         (conftests[d][name] for d in chain if name in conftests[d]), None
                     )
+                )
                 if target and add_symbol_edge(graph, sym.id, target):
                     count += 1
     return count
