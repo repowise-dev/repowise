@@ -3,8 +3,11 @@
 ``user.save()`` names no type, so member resolution has nothing to look up.
 The declaration that gives ``user`` its type is either inside the same function
 — a parameter, a local, a catch or loop binding — or, when the receiver is a
-field, at the enclosing class's own scope. Both are written ``T name``, so one
-scan finds both and only the span they are read back over differs.
+field, at the enclosing class's own scope. In the C family both are written
+``T name``, so one scan finds both and only the span they are read back over
+differs. A language may order them the other way round: Go writes ``name T``
+and declares a method's receiver in the signature, which the body span already
+covers.
 
 The scan is allowed to be wrong. Nothing it returns becomes an edge until the
 resolver has checked that the type actually declares the method, so a
@@ -88,10 +91,68 @@ _PY_CONSTRUCTED = re.compile(
     r"(?m)^[ \t]*(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\("
 )
 
+# Go writes the name before the type, so none of the C-family shapes above
+# match a line of it. Two further differences decide these patterns.
+#
+# A type name may be lowercase, because that is how Go spells an unexported
+# one, and a private method hangs off exactly those. Admitting lowercase is
+# only safe because the language spec carries every predeclared identifier in
+# ``builtin_types``, so ``string`` and ``error`` are refused downstream rather
+# than looked up.
+#
+# The receiver a method is declared on — ``func (s *Server) handle()`` — is
+# written in the signature rather than the body, and it is the largest shape
+# by some way: 50.2% of the reachable population over five Go repos, against
+# 24.1% for parameters and 21.5% for composite literals. It needs no scope of
+# its own, because a function symbol's span starts at its ``func`` line, so
+# the body scan already reads it.
+_GO_NAME = r"[a-z_]\w*"
+_GO_TYPE = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
+
+# A parameter, a named return, or a method's own receiver: ``name Type``
+# juxtaposed before a comma or the end of the list. Juxtaposition is a
+# declaration nearly everywhere it is legal in Go, which is why this needs
+# less guarding than the C family's did.
+#
+# ``func (s *Server) handle()`` needs no pattern of its own — the receiver
+# group presents as ``s *Server)`` and is matched here. A separate anchored
+# pattern for it was measured and removed: it added a whole-file scan and
+# changed no edge on any of the five Go repos.
+#
+# ``a * b`` is not matched because gofmt spaces a binary operator on both
+# sides while a pointer type binds tight, and Go source is gofmt'd.
+_GO_PARAM = re.compile(
+    rf"(?<![\w.])(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})\s*(?=[,)])"
+)
+
+# ``x := Foo{}``, ``x := &Foo{}``, ``x := y.(Foo)`` and ``x, ok := y.(Foo)``.
+# One scan rather than two: both shapes are a short declaration whose type is
+# written outright, and they differ only in what brackets it. The closing
+# ``{`` or ``)`` is what tells them from ``x := f()``, whose type is a return
+# value this phase deliberately does not chase.
+#
+# ``x := []Foo{}`` and ``x := map[k]Foo{}`` match nothing on purpose: the
+# value is a slice or a map, and typing ``x`` as ``Foo`` would be wrong rather
+# than merely unhelpful.
+_GO_SHORT_DECL = re.compile(
+    rf"(?<![\w.])(?P<name>{_GO_NAME})\s*(?:,\s*{_GO_NAME}\s*)?:="
+    rf"\s*(?:&|[\w.]+\.\(\*?)?(?P<type>{_GO_TYPE})\s*(?:\{{|\))"
+)
+
+# ``var x Foo`` / ``var x *Foo``. The smallest shape in every Go repo
+# measured — 2.5% of the reachable population — and kept only because it is
+# the one shape neither pattern above reaches.
+_GO_VAR_DECL = re.compile(rf"(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})")
+
 _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
+# No Go shape captures a closer, so every Go declaration carries ``""`` and
+# class scope would drop all of them. That is the intended reading: Go is not
+# in IMPLICIT_FIELD_LANGUAGES and must not be.
+_GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL)
 
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "csharp": _C_FAMILY,
+    "go": _GO_FAMILY,
     "java": _C_FAMILY,
     "python": (_PY_ANNOTATED, _PY_CONSTRUCTED),
 }
@@ -107,6 +168,7 @@ IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "java"})
 
 _LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
     "csharp": _LINE_COMMENT,
+    "go": _LINE_COMMENT,
     "java": _LINE_COMMENT,
     "python": _HASH_COMMENT,
 }

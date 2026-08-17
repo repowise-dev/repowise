@@ -224,8 +224,83 @@ class TestRefusals:
         assert declared_types("void run() { // a Node node; once lived here\n }", "java") == {}
 
     def test_an_unregistered_language_yields_nothing(self) -> None:
-        body = "func run(w *TimerWheel) { }"
-        assert declared_types(body, "go") == {}
+        # Kotlin rather than Go: Go registered its shapes and now types this
+        # exact line. Kotlin is still one of the languages P8 left unattempted.
+        body = "fun run(w: TimerWheel) { }"
+        assert declared_types(body, "kotlin") == {}
+
+
+class TestGoShapes:
+    """Go writes ``name T``, which is the reverse of every other shape here.
+
+    The receiver a method is declared on is the largest share of the reachable
+    population — 56.5% over five Go repos — and it needs no scope of its own,
+    because a function symbol's span starts at its ``func`` line.
+    """
+
+    def test_a_methods_own_receiver(self) -> None:
+        body = "func (s *Server) handle() { s.route() }"
+        assert declared_types(body, "go")["s"] == "Server"
+
+    def test_a_value_receiver(self) -> None:
+        body = "func (c Config) apply() { c.merge() }"
+        assert declared_types(body, "go")["c"] == "Config"
+
+    def test_a_parameter(self) -> None:
+        body = "func run(d *Detector, n int) { d.Detect() }"
+        assert declared_types(body, "go")["d"] == "Detector"
+
+    def test_a_named_return(self) -> None:
+        body = "func build() (out *Report, err error) { out.Write() }"
+        assert declared_types(body, "go")["out"] == "Report"
+
+    def test_a_composite_literal(self) -> None:
+        assert declared_types("func f() { r := Rule{} ; r.Match() }", "go")["r"] == "Rule"
+
+    def test_an_addressed_composite_literal(self) -> None:
+        assert declared_types("func f() { r := &Rule{} }", "go")["r"] == "Rule"
+
+    def test_a_qualified_composite_literal_keeps_the_bare_name(self) -> None:
+        assert declared_types("func f() { a := config.Allowlist{} }", "go")["a"] == "Allowlist"
+
+    def test_a_type_assertion(self) -> None:
+        assert declared_types("func f() { w, ok := r.(*Writer) }", "go")["w"] == "Writer"
+
+    def test_a_var_declaration(self) -> None:
+        assert declared_types("func f() { var vc ViperConfig }", "go")["vc"] == "ViperConfig"
+
+    def test_an_unexported_type_is_admitted(self) -> None:
+        """A private method hangs off an unexported type, so refusing one on
+        case would refuse most of what this mechanism exists to reach."""
+        assert declared_types("func (s *startEnd) add() { }", "go")["s"] == "startEnd"
+
+    def test_a_predeclared_type_is_refused(self) -> None:
+        """Admitting a lowercase type is only safe because these are dropped."""
+        assert declared_types("func f(name string, n int) { }", "go") == {}
+
+    def test_a_constructor_call_names_no_type(self) -> None:
+        """``x := NewFoo()`` types ``x`` only via the callee's return type,
+        which is a second lookup this mechanism does not do."""
+        assert declared_types("func f() { d := NewDetector() }", "go") == {}
+
+    def test_a_slice_literal_does_not_type_its_element(self) -> None:
+        """``x`` is a slice of Rule, not a Rule, so typing it would be wrong."""
+        assert declared_types("func f() { rs := []Rule{} }", "go") == {}
+
+    def test_a_map_literal_does_not_type_its_value(self) -> None:
+        assert declared_types("func f() { m := map[string]Rule{} }", "go") == {}
+
+    def test_a_multiplication_is_not_a_pointer_declaration(self) -> None:
+        """gofmt spaces a binary operator on both sides and binds a pointer
+        type tight, which is the whole of what separates these two."""
+        assert declared_types("func f() { n := total(count * size) }", "go") == {}
+
+    def test_a_declaration_in_a_line_comment_is_ignored(self) -> None:
+        assert declared_types("func f() { // a *Rule rule once lived here\n }", "go") == {}
+
+    def test_two_types_for_one_name_yields_neither(self) -> None:
+        body = "func f(r *Rule) { r := Config{} }"
+        assert declared_types(body, "go")["r"] is None
 
 
 class TestClassScope:
@@ -282,9 +357,19 @@ class TestClassScope:
 
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
-    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "java", "python"}
+    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "go", "java", "python"}
 
 
-@pytest.mark.parametrize("language", ["java", "csharp", "python"])
+def test_go_is_not_a_field_language() -> None:
+    """Go declares no field this mechanism can read, and must not claim to.
+
+    Its shapes capture no closer, so class scope would drop every one of them
+    anyway — but the set is the contract, and a package-level ``var`` is a
+    wider scope than a field rather than the same one.
+    """
+    assert "go" not in IMPLICIT_FIELD_LANGUAGES
+
+
+@pytest.mark.parametrize("language", ["java", "csharp", "python", "go"])
 def test_an_empty_body_is_not_an_error(language: str) -> None:
     assert declared_types("", language) == {}

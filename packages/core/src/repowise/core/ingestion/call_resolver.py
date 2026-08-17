@@ -113,9 +113,14 @@ _CPP_STRATEGIES = _LanguageCallStrategies(free=("_resolve_cpp_same_target",))
 # Rust's crate-root strategy is deliberately absent: it runs for every language
 # today, and gating it here would drop crate-name receivers in mixed repos.
 _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
+    # Go's package tier runs first and claims ``pkg.Func()`` outright, so a
+    # package qualifier never reaches the typed fallback — 41% of gitleaks'
+    # lowercase-receiver misses are package names, and this is what keeps them
+    # out of it.
     "go": _LanguageCallStrategies(
         free=("_resolve_go_same_package",),
         member=("_resolve_go_package_call",),
+        member_fallback=_TYPED_RECEIVER,
     ),
     # Kotlin shares the JVM tiers but not the typed-receiver fallback: it has
     # no declaration shapes yet, so registering it would promise a resolution
