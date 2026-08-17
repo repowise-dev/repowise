@@ -1,9 +1,10 @@
-"""What type is the local a call is made on.
+"""What type is the receiver a call is made on.
 
 ``user.save()`` names no type, so member resolution has nothing to look up.
-The declaration that gives ``user`` its type is almost always inside the same
-function — a parameter, a local, a catch or loop binding — and the languages
-here write it as ``T name``.
+The declaration that gives ``user`` its type is either inside the same function
+— a parameter, a local, a catch or loop binding — or, when the receiver is a
+field, at the enclosing class's own scope. Both are written ``T name``, so one
+scan finds both and only the span they are read back over differs.
 
 The scan is allowed to be wrong. Nothing it returns becomes an edge until the
 resolver has checked that the type actually declares the method, so a
@@ -11,8 +12,8 @@ mis-inference costs a missing edge and never a wrong one. That check is what
 licenses matching declarations with a regex instead of a type checker.
 
 Split in two on purpose. ``scan_declarations`` reads a whole file once and is
-the expensive half; ``types_in_span`` narrows the result to one function body
-and is nearly free. Scanning per body instead would re-read every line that
+the expensive half; ``types_in_span`` and ``types_by_class`` narrow the result
+and are nearly free. Scanning per body instead would re-read every line that
 two spans share, and a class body contains all of its methods'.
 
 Adding a language means adding its shapes to ``_LANGUAGE_PATTERNS`` and
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left, bisect_right
+from collections.abc import Iterable, Mapping
 from typing import NamedTuple
 
 from ..language_data import get_builtin_types
@@ -39,8 +41,12 @@ _TYPE = r"[A-Z]\w*(?:\.\w+)*(?:<(?:[^<>]|<[^<>]*>)*>)?(?:\[\])*"
 # list, or an enhanced-for colon. Requiring one of those is what keeps the
 # pattern off ``(Foo) bar`` and ``foo(Bar.BAZ, qux)``, which have no space in
 # the same place.
+# The closer is captured because it is the only thing separating a field from
+# a parameter at class scope — `T name;` against `T name,`. Some constructors
+# and static methods are extracted as no symbol at all, so their parameter
+# lists sit at class scope with nothing else to tell them apart.
 _TYPED_DECLARATION = re.compile(
-    rf"(?<![\w.])(?P<type>{_TYPE})\s+(?P<name>[a-z_]\w*)\s*(?=[=;,):])"
+    rf"(?<![\w.])(?P<type>{_TYPE})\s+(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,):]))"
 )
 
 _INFERRED_FROM_NEW = re.compile(
@@ -64,11 +70,21 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 
 
 class Declaration(NamedTuple):
-    """One name given one type, at one line."""
+    """One name given one type, at one line.
+
+    ``closer`` is the punctuation that ended the declaration, or empty where
+    the shape has none. Only class scope reads it.
+    """
 
     line: int
     name: str
     type_name: str
+    closer: str = ""
+
+
+# What can end a field. `var` has no place here at all: it is a local-only
+# shape in both languages, so it carries no closer and class scope drops it.
+_FIELD_CLOSERS = frozenset({";", "="})
 
 
 def _nests_in_a_builtin(raw: str, language: str) -> bool:
@@ -117,21 +133,39 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
             if type_name is None:
                 continue
             found.append(
-                Declaration(bisect_right(starts, match.start()), match.group("name"), type_name)
+                Declaration(
+                    bisect_right(starts, match.start()),
+                    match.group("name"),
+                    type_name,
+                    match.groupdict().get("closer") or "",
+                )
             )
 
     found.sort()
     return tuple(found)
 
 
+def _record(types: dict[str, str | None], declaration: Declaration) -> None:
+    """Add one declaration to a scope, or mark the name unanswerable.
+
+    A name declared twice with two types maps to ``None`` rather than being
+    dropped. A caller has to tell "this scope says nothing about the name"
+    from "this scope says something unusable about it", because only the first
+    of those may fall through to a wider scope.
+    """
+    if declaration.name not in types:
+        types[declaration.name] = declaration.type_name
+    elif types[declaration.name] != declaration.type_name:
+        types[declaration.name] = None
+
+
 def types_in_span(
     declarations: tuple[Declaration, ...],
     start_line: int,
     end_line: int,
-) -> dict[str, str]:
+) -> dict[str, str | None]:
     """``{name: type}`` for the declarations inside one function body."""
-    types: dict[str, str] = {}
-    ambiguous: set[str] = set()
+    types: dict[str, str | None] = {}
 
     # Bisected rather than skipped over: a file's bodies each ask once, so
     # walking from the front every time is quadratic in a large file, and that
@@ -140,15 +174,52 @@ def types_in_span(
     for declaration in declarations[first:]:
         if declaration.line > end_line:
             break
-        if declaration.name in ambiguous:
-            continue
-        previous = types.get(declaration.name)
-        if previous is None:
-            types[declaration.name] = declaration.type_name
-        elif previous != declaration.type_name:
-            # One name declared twice with two types — a shadowing inner
-            # scope, or a line the scan misread. Neither has an answer.
-            del types[declaration.name]
-            ambiguous.add(declaration.name)
+        _record(types, declaration)
 
     return types
+
+
+def _merged(spans: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    """The spans as non-overlapping, ascending intervals."""
+    merged: list[list[int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return tuple((start, end) for start, end in merged)
+
+
+def types_by_class(
+    declarations: tuple[Declaration, ...],
+    class_spans: Mapping[str, tuple[int, int]],
+    function_spans: Iterable[tuple[int, int]],
+) -> dict[str, dict[str, str | None]]:
+    """``{class_id: {name: type}}`` for the fields each class declares.
+
+    A class span contains every method body inside it, so a declaration is a
+    field only if it lies inside the class and inside none of the file's
+    functions. Nested classes go to the innermost class containing them, so an
+    inner class's fields never answer for the outer one.
+    """
+    if not class_spans:
+        return {}
+
+    bodies = _merged(function_spans)
+    body_starts = [start for start, _ in bodies]
+    # Innermost first, so the first containing span is the owner.
+    ordered = sorted(class_spans.items(), key=lambda item: item[1][1] - item[1][0])
+
+    by_class: dict[str, dict[str, str | None]] = {}
+    for declaration in declarations:
+        if declaration.closer not in _FIELD_CLOSERS:
+            continue
+        index = bisect_right(body_starts, declaration.line) - 1
+        if index >= 0 and declaration.line <= bodies[index][1]:
+            continue
+        for class_id, (start, end) in ordered:
+            if start <= declaration.line <= end:
+                _record(by_class.setdefault(class_id, {}), declaration)
+                break
+
+    return by_class

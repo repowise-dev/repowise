@@ -11,13 +11,22 @@ import pytest
 from repowise.core.ingestion.languages.receiver_types import (
     RECEIVER_TYPE_LANGUAGES,
     scan_declarations,
+    types_by_class,
     types_in_span,
 )
 
 
-def declared_types(body: str, language: str) -> dict[str, str]:
+def declared_types(body: str, language: str) -> dict[str, str | None]:
     """The two halves composed over a whole body, which is what a caller sees."""
     return types_in_span(scan_declarations(body, language), 1, 10_000)
+
+
+def fields(source: str, language: str, methods: list[tuple[int, int]]) -> dict[str, str | None]:
+    """One class spanning the whole text, with *methods* as its bodies."""
+    lines = source.count("\n") + 1
+    return types_by_class(
+        scan_declarations(source, language), {"f.cs::C": (1, lines)}, methods
+    ).get("f.cs::C", {})
 
 
 class TestJavaShapes:
@@ -110,8 +119,15 @@ class TestRefusals:
         assert "item" not in declared_types(body, "java")
 
     def test_two_types_for_one_name_yields_neither(self) -> None:
-        body = "void run() { Reader source = a(); if (x) { Writer source = b(); } }"
-        assert "source" not in declared_types(body, "java")
+        """And the name stays in the scope, mapped to nothing.
+
+        A caller has to tell "this scope never mentions the name" from "this
+        scope mentions it and has no answer", because only the first may fall
+        through to a wider scope. Both types here are deliberately repo-shaped:
+        with builtins this case never reaches the conflict at all.
+        """
+        body = "void run() { CacheLoader source = a(); if (x) { NodeFactory source = b(); } }"
+        assert declared_types(body, "java") == {"source": None}
 
     def test_a_cast_is_not_a_declaration(self) -> None:
         assert declared_types("void run() { var n = (Node) raw; }", "java") == {}
@@ -125,6 +141,58 @@ class TestRefusals:
     def test_an_unregistered_language_yields_nothing(self) -> None:
         body = "func run(w *TimerWheel) { }"
         assert declared_types(body, "go") == {}
+
+
+class TestClassScope:
+    """What counts as a field, given that a class span contains every method.
+
+    The refusals are again the load-bearing half: a local read as a field
+    answers for every call in the class rather than for one body.
+    """
+
+    def test_a_private_field(self) -> None:
+        source = "class C {\nprivate readonly IRouteCreator _creator;\n}"
+        assert fields(source, "csharp", [])["_creator"] == "IRouteCreator"
+
+    def test_a_java_field_without_the_underscore_convention(self) -> None:
+        source = "class C {\nprivate final CacheLoader loader;\n}"
+        assert fields(source, "java", [])["loader"] == "CacheLoader"
+
+    def test_a_local_inside_a_method_is_not_a_field(self) -> None:
+        source = "class C {\nvoid run() {\nCacheLoader loader = a();\n}\n}"
+        assert fields(source, "java", [(2, 4)]) == {}
+
+    def test_a_parameter_at_class_scope_is_not_a_field(self) -> None:
+        """Some constructors and static methods are extracted as no symbol at
+        all, so their parameter lists sit at class scope with only the closing
+        punctuation to tell them apart from a field."""
+        source = "class C {\npublic C(ITestOutputHelper output, IRouteCreator maker) { }\n}"
+        assert fields(source, "csharp", []) == {}
+
+    def test_a_field_with_an_initialiser(self) -> None:
+        source = "class C {\nstatic final NodeFactory factory = build();\n}"
+        assert fields(source, "java", [])["factory"] == "NodeFactory"
+
+    def test_an_inner_class_field_answers_for_the_inner_class(self) -> None:
+        source = "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        by_class = types_by_class(
+            scan_declarations(source, "java"),
+            {"f.java::C": (1, 6), "f.java::C::D": (3, 5)},
+            [],
+        )
+        assert by_class["f.java::C"] == {"outer": "CacheLoader"}
+        assert by_class["f.java::C::D"] == {"inner": "NodeFactory"}
+
+    def test_a_var_local_is_never_a_field(self) -> None:
+        source = "class C {\nvar maker = new RouteCreator();\n}"
+        assert fields(source, "csharp", []) == {}
+
+    def test_two_types_for_one_field_name_yields_neither(self) -> None:
+        source = "class C {\nprivate CacheLoader thing;\nprivate NodeFactory thing;\n}"
+        assert fields(source, "java", []) == {"thing": None}
+
+    def test_a_file_with_no_class_yields_nothing(self) -> None:
+        assert types_by_class(scan_declarations("int x;", "java"), {}, []) == {}
 
 
 def test_the_language_set_is_what_the_patterns_declare() -> None:

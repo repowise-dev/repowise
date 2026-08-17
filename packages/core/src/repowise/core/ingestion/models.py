@@ -356,6 +356,14 @@ ResolutionOrigin = Literal[
     "receiver_typed_same_package",  # 0.90 (JVM)
     "receiver_typed_import",  # 0.88
     "receiver_typed_global",  # 0.75
+    # The same four scopes again, for a receiver typed from the enclosing
+    # class's fields rather than from the calling body. Kept apart from the
+    # four above because they are a different scan over a different scope, and
+    # an origin that cannot separate them cannot be audited.
+    "receiver_field_same_file",  # 0.93
+    "receiver_field_same_package",  # 0.90 (JVM)
+    "receiver_field_import",  # 0.88
+    "receiver_field_global",  # 0.75
 ]
 
 RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))

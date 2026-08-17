@@ -334,3 +334,85 @@ class TestLanguageDispatch:
             "same_package",
         ) in edges
         assert order == ["_resolve_go_same_package"]
+
+
+class TestFieldTypedReceiver:
+    """A receiver typed from the enclosing class rather than the calling body.
+
+    The ordering is the contract: a local of the same name shadows the field,
+    so the body's answer has to win outright.
+    """
+
+    def test_a_private_field_types_its_receiver(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Api.cs": (
+                    "csharp",
+                    "public class Api\n{\n"
+                    "    private readonly RouteFinder _finder;\n"
+                    "    public int Run() { return _finder.Find(); }\n"
+                    "}\n",
+                ),
+                "RouteFinder.cs": (
+                    "csharp",
+                    "public class RouteFinder\n{\n    public int Find() { return 1; }\n}\n",
+                ),
+            },
+        )
+        assert (
+            "Api.cs::Api::Run",
+            "RouteFinder.cs::RouteFinder::Find",
+            0.75,
+            "receiver_field_global",
+        ) in _edges(parsed, tmp_path)
+
+    def test_a_local_shadowing_a_field_wins(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Api.cs": (
+                    "csharp",
+                    "public class Api\n{\n"
+                    "    private readonly RouteFinder _thing;\n"
+                    "    public int Run() { OtherFinder _thing = Make(); return _thing.Find(); }\n"
+                    "}\n",
+                ),
+                "RouteFinder.cs": (
+                    "csharp",
+                    "public class RouteFinder\n{\n    public int Find() { return 1; }\n}\n",
+                ),
+                "OtherFinder.cs": (
+                    "csharp",
+                    "public class OtherFinder\n{\n    public int Find() { return 2; }\n}\n",
+                ),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert (
+            "Api.cs::Api::Run",
+            "OtherFinder.cs::OtherFinder::Find",
+            0.75,
+            "receiver_typed_global",
+        ) in edges
+        assert not [e for e in edges if e[3].startswith("receiver_field_")]
+
+    def test_a_field_whose_type_lacks_the_method_yields_no_edge(self, tmp_path: Path) -> None:
+        """The validator is the whole safety argument for a text scan."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "Api.cs": (
+                    "csharp",
+                    "public class Api\n{\n"
+                    "    private readonly RouteFinder _finder;\n"
+                    "    public int Run() { return _finder.Missing(); }\n"
+                    "}\n",
+                ),
+                "RouteFinder.cs": (
+                    "csharp",
+                    "public class RouteFinder\n{\n    public int Find() { return 1; }\n}\n",
+                ),
+            },
+        )
+        assert not [e for e in _edges(parsed, tmp_path) if e[3].startswith("receiver_field_")]

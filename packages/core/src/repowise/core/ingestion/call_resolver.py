@@ -35,6 +35,7 @@ from .languages.receiver_types import (
     RECEIVER_TYPE_LANGUAGES,
     Declaration,
     scan_declarations,
+    types_by_class,
     types_in_span,
 )
 from .models import (
@@ -72,6 +73,12 @@ class _LanguageCallStrategies:
 _NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
 
 _TYPED_RECEIVER = ("_resolve_typed_receiver",)
+
+# Which symbols own a class scope, and which of them swallow one. A class span
+# contains every method body inside it, so both sets are needed to tell a field
+# from a local.
+_TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"})
+_FUNCTION_KINDS = frozenset({"function", "method"})
 
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
@@ -188,7 +195,8 @@ class CallResolver:
         self._source_text: dict[str, str] = {}
         self._declarations: dict[str, tuple[Declaration, ...]] = {}
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
-        self._body_types: dict[tuple[str, str], dict[str, str]] = {}
+        self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
+        self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
         self._method_name_set: frozenset[str] | None = None
 
@@ -914,23 +922,18 @@ class CallResolver:
 
         return None
 
-    def _resolve_typed_receiver(
-        self,
-        file_path: str,
-        call: CallSite,
-        caller_id: str,
-    ) -> ResolvedCall | None:
-        """Resolve ``local.method()`` by typing the local from its declaration.
+    def _typed_receiver_language(self, file_path: str, call: CallSite) -> str | None:
+        """The language receiver typing may run in here, or None to decline.
 
-        Emits nothing unless the inferred type declares the method, which is
-        what makes a text scan safe: a mis-inference reaches no index and
-        yields no edge.
+        Shared by both typed strategies so the cheap refusals happen once and
+        in the same order: a receiver that names no local, a language with no
+        declaration shapes, and a method name no class in the repo declares.
         """
         receiver_name = call.receiver_name or ""
-        # Lowercase-initial only. A capitalised receiver already names a type
-        # and every tier above has tried it; an underscore one is a field,
-        # whose declaration is not in this body.
-        if not receiver_name[:1].islower() or receiver_name in ("self", "this"):
+        # A capitalised receiver already names a type and every tier above has
+        # tried it. An underscore one cannot be anything but a name.
+        head = receiver_name[:1]
+        if not (head.islower() or head == "_") or receiver_name in ("self", "this"):
             return None
 
         parsed = self._parsed_files.get(file_path)
@@ -938,16 +941,27 @@ class CallResolver:
         if language not in RECEIVER_TYPE_LANGUAGES:
             return None
 
-        # Scanning a body is the expensive half, so refuse before it rather
-        # than after. Nothing here can resolve unless some class declares a
-        # method of this name; the gate above only proves some *symbol* does,
-        # which a free function satisfies.
+        # Reading a file is the expensive half, so refuse before it rather than
+        # after. Nothing here can resolve unless some class declares a method of
+        # this name; the gate above only proves some *symbol* does, which a free
+        # function satisfies.
         if call.target_name not in self._method_names():
             return None
+        return language
 
-        type_name = self._declared_types_in(file_path, caller_id, language).get(receiver_name)
-        if type_name is None:
-            return None
+    def _typed_receiver_target(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        type_name: str,
+    ) -> tuple[str, str] | None:
+        """The symbol ``type_name.method()`` names, and the scope that held it.
+
+        The scope is returned rather than an edge so that each caller stamps
+        its own origin literal, which is what keeps a field-typed edge separable
+        from a body-typed one after the build.
+        """
         key = (type_name, call.target_name)
 
         # An import statement binds the name outright, so it settles which type
@@ -955,9 +969,7 @@ class CallResolver:
         bound = self._import_names.get(file_path, {}).get(type_name)
         if bound is not None and not bound.startswith("external:"):
             sym_id = self._file_methods.get(bound, {}).get(key)
-            if sym_id is None:
-                return None
-            return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_typed_import")
+            return None if sym_id is None else (sym_id, "import")
 
         # Bound to something outside the repo and there is no edge to find,
         # however many local classes share the simple name. A compatibility
@@ -971,30 +983,87 @@ class CallResolver:
         # a repo that keeps near-duplicate implementations side by side.
         sym_id = self._file_methods.get(file_path, {}).get(key)
         if sym_id is not None:
-            return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_typed_same_file")
+            return sym_id, "same_file"
 
-        # Only the JVM registers both a member strategy and this fallback, so
+        # Only the JVM registers both a member strategy and these fallbacks, so
         # the scope that answers here is its same-package one. A second
         # language pairing the two needs an origin word of its own.
         typed_call = replace(call, receiver_name=type_name)
         for strategy in self._strategies_for(file_path).member:
             hit = getattr(self, strategy)(file_path, typed_call, caller_id)
             if hit is not None:
-                return ResolvedCall(
-                    caller_id,
-                    hit.callee_id,
-                    0.90,
-                    call.line,
-                    "receiver_typed_same_package",
-                )
+                return hit.callee_id, "same_package"
 
-        match = self._receiver_pair_match(file_path, key)
-        if match is None:
+        return self._receiver_pair_match(file_path, key)
+
+    def _resolve_typed_receiver(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve ``x.method()`` by typing ``x`` from its declaration.
+
+        The declaration is in the calling body when ``x`` is a local or a
+        parameter, and at the enclosing class's own scope when it is a field —
+        the dependency-injection shape, held on a field and called throughout
+        the class.
+
+        Emits nothing unless the inferred type declares the method, which is
+        what makes a text scan safe: a mis-inference reaches no index and
+        yields no edge.
+        """
+        language = self._typed_receiver_language(file_path, call)
+        if language is None:
             return None
-        sym_id, tier = match
+
+        receiver_name = call.receiver_name or ""
+        # A local shadows a field, so the body answers first and its answer
+        # stands — including when that answer is "declared twice, no usable
+        # type". Only a name the body never mentions reaches class scope.
+        body_types = self._declared_types_in(file_path, caller_id, language)
+        from_field = receiver_name not in body_types
+        if from_field:
+            class_id = caller_id.rpartition("::")[0]
+            type_name = (
+                self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
+            )
+        else:
+            type_name = body_types[receiver_name]
+        if type_name is None:
+            return None
+
+        found = self._typed_receiver_target(file_path, call, caller_id, type_name)
+        if found is None:
+            return None
+        sym_id, tier = found
+        if from_field:
+            return self._field_typed_call(caller_id, sym_id, tier, call.line)
+        return self._body_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _body_typed_call(
+        self, caller_id: str, sym_id: str, tier: str, line: int
+    ) -> ResolvedCall:
+        """Stamp an edge whose receiver was typed from the calling body."""
+        if tier == "same_file":
+            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_typed_same_file")
+        if tier == "same_package":
+            return ResolvedCall(caller_id, sym_id, 0.90, line, "receiver_typed_same_package")
         if tier == "import":
-            return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_typed_import")
-        return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_typed_global")
+            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_typed_import")
+        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_typed_global")
+
+    def _field_typed_call(
+        self, caller_id: str, sym_id: str, tier: str, line: int
+    ) -> ResolvedCall:
+        """Stamp an edge whose receiver was typed from the enclosing class."""
+        if tier == "same_file":
+            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_field_same_file")
+        if tier == "same_package":
+            return ResolvedCall(caller_id, sym_id, 0.90, line, "receiver_field_same_package")
+        if tier == "import":
+            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_field_import")
+        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_field_global")
 
     def _method_names(self) -> frozenset[str]:
         """Every name declared as a method of some class, built once."""
@@ -1032,7 +1101,7 @@ class CallResolver:
         file_path: str,
         caller_id: str,
         language: str,
-    ) -> dict[str, str]:
+    ) -> dict[str, str | None]:
         """``{name: type}`` for the body of one function."""
         key = (file_path, caller_id)
         types = self._body_types.get(key)
@@ -1049,6 +1118,31 @@ class CallResolver:
             self._body_types.clear()
         self._body_types[key] = types
         return types
+
+    def _field_types_in(
+        self,
+        file_path: str,
+        language: str,
+    ) -> dict[str, dict[str, str | None]]:
+        """``{class_id: {name: type}}`` for the fields one file's classes declare."""
+        by_class = self._field_types.get(file_path)
+        if by_class is not None:
+            return by_class
+
+        parsed = self._parsed_files.get(file_path)
+        symbols = parsed.symbols if parsed else ()
+        class_spans = {
+            s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS
+        }
+        by_class = types_by_class(
+            self._declarations_for(file_path, language),
+            class_spans,
+            [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
+        )
+        if len(self._field_types) >= _SOURCE_CACHE_FILES:
+            self._field_types.clear()
+        self._field_types[file_path] = by_class
+        return by_class
 
     def _declarations_for(self, file_path: str, language: str) -> tuple[Declaration, ...]:
         """Every declaration in one file, scanned once however many bodies ask."""
