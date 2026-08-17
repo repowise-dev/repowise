@@ -75,6 +75,10 @@ async def _seed(session_factory, repo_id: str) -> None:
 
         for i in range(60):
             edge(f"app/sub{i}.py::Sub{i}", "extends", 0.99)
+        # 0.5 on purpose: this surface applies no confidence floor, while the
+        # MCP one filters below 0.7. So these 30 are 30 callers here and zero
+        # to an agent — a real remaining divergence (backlog B8), pinned here
+        # rather than left to be discovered as a bug.
         for i in range(30):
             edge(f"app/call{i}.py::call_{i}", "calls", 0.5)
         edge("app/wire.py::container", "framework_binds", 0.9)

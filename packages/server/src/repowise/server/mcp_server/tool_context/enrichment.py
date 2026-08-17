@@ -205,7 +205,7 @@ async def _resolve_call_graph(
         else {}
     )
 
-    def _entry(edge: GraphEdge, other_id: str) -> dict[str, Any]:
+    def _entry(edge: GraphEdge, other_id: str, *, with_edge_type: bool) -> dict[str, Any]:
         other_node = node_map.get(other_id)
         entry: dict[str, Any] = {
             "symbol_id": other_id,
@@ -221,8 +221,12 @@ async def _resolve_call_graph(
             # for it (the S1 dogfood's most common follow-up).
             "line": other_node.start_line if other_node else None,
             "confidence": edge.confidence,
-            "edge_type": edge.edge_type,
         }
+        # Omitted on a relation row: the group above it names the edge type
+        # once, so repeating it per row is `"method_implements"` five times for
+        # nothing. Kept on callers/callees, which have no group to carry it.
+        if with_edge_type:
+            entry["edge_type"] = edge.edge_type
         # Which resolution strategy produced the edge. Absent on an index built
         # before origins were stamped, so it is added only when present.
         if edge.resolution_origin:
@@ -278,10 +282,11 @@ async def _resolve_call_graph(
             # resolution, and the totals above exclude them too.
             if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
                 continue
+            is_call = edge_type == "calls"
             if e.target_node_id == node.node_id:
-                inbound.append(_entry(e, e.source_node_id))
+                inbound.append(_entry(e, e.source_node_id, with_edge_type=is_call))
             if e.source_node_id == node.node_id:
-                outbound.append(_entry(e, e.target_node_id))
+                outbound.append(_entry(e, e.target_node_id, with_edge_type=is_call))
 
         for direction, rows, totals in (
             ("in", inbound, totals_in),
@@ -346,8 +351,12 @@ async def _resolve_call_graph(
         # case on our own index: the old code answered it with 50 rows of
         # framework wiring under "callers" and a note saying to grep for a
         # call site that does not exist.
+        # Keyed on the *count*, not on `callers` being empty: an exclusion spec
+        # can filter every row while callers still exist, and then "Nothing
+        # calls X" would contradict the `_callers_note` telling the agent to go
+        # and grep for them.
         inbound_kinds = [r for r in relations if r["direction"] == "in"]
-        if want_callers and not result_data["callers"] and inbound_kinds:
+        if want_callers and not totals_in.get("calls") and inbound_kinds:
             reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
             result_data["_call_graph_note"] = (
                 f"Nothing calls '{node.name}'; it is reached by {reached}. See `relations`."

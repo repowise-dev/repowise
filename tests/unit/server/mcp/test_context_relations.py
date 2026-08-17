@@ -115,7 +115,11 @@ async def test_relations_name_each_kind_with_its_true_total(setup_mcp, session):
     assert extends["group"] == "heritage"
     assert extends["total"] == 60, "the total must be the count, not the row cap"
     assert 0 < len(extends["rows"]) <= 5
-    assert {r["edge_type"] for r in extends["rows"]} == {"extends"}
+    # The group names the edge type once. Repeating it per row was
+    # "method_implements" five times for nothing, on a token-budgeted payload.
+    assert all("edge_type" not in r for r in extends["rows"])
+    # Callers keep it: they have no group above them to carry it.
+    assert all(c["edge_type"] == "calls" for c in (await _ctx(BASE))["callers"])
 
 
 @pytest.mark.asyncio
