@@ -33,9 +33,13 @@ from .heritage_resolver import heritage_ancestors
 log = structlog.get_logger(__name__)
 
 # Languages whose dispatch edges passed a precision audit. A language absent
-# here is not excluded; most were never attempted.
+# here is mostly one that was never attempted — except C++, which was
+# attempted and failed at 21/30: a qualified external parent binds to a
+# same-named local type, so unrelated siblings land in one hierarchy, and a
+# class-scoped boilerplate macro is extracted as a method every subtype
+# "overrides".
 DISPATCH_LANGUAGES: frozenset[str] = frozenset(
-    {"java", "csharp", "kotlin", "swift", "python", "cpp"}
+    {"java", "csharp", "kotlin", "swift", "python"}
 )
 
 _HERITAGE_EDGE_TYPES = frozenset({"extends", "implements"})
@@ -132,8 +136,11 @@ def resolve_override_dispatch(
         child_methods = methods_of(child)
         if not child_methods:
             continue
+        # Sorted, because the walk stops expanding an anchor after its first
+        # visit: which branch reaches it first decides how much of its own
+        # chain is expanded, and a set's order is not stable across processes.
         for ancestor in heritage_ancestors(
-            child, lambda t: parents.get(t, ()), max_expand_depth=_MAX_EXPAND_DEPTH
+            child, lambda t: sorted(parents.get(t, ())), max_expand_depth=_MAX_EXPAND_DEPTH
         ):
             if ancestor == child:
                 continue

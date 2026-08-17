@@ -262,43 +262,58 @@ def test_a_self_call_the_caller_own_class_declares_keeps_its_own_origin(
     )
 
 
-def test_a_bare_call_reaches_an_inherited_method_in_an_implicit_receiver_language(
+def test_a_recursive_self_call_does_not_fall_through_to_an_ancestor(
     tmp_path: Path,
 ) -> None:
-    # A decoy declares the same name, so the global-unique guess cannot answer
-    # first. That is the condition under which the real population misses at
-    # all — where an earlier tier answers, this one is never reached.
+    """Strategy 3 refuses to point a call at its own symbol. Without this
+    guard that refusal reached the base's declaration of the same name, which
+    the call never runs."""
     graph = _build(
         tmp_path,
         {
-            "Base.cs": (
-                "namespace App.Core;\n\n"
-                "public class Base\n{\n"
-                "    protected int Helper() { return 1; }\n"
-                "}\n"
-            ),
-            # Two hops, so the file declaring Helper is not one this file
-            # imports — where it is, the merged-import tier answers first.
-            "Mid.cs": (
-                "using App.Core;\n\nnamespace App.Mid;\n\npublic class Mid : Base\n{\n}\n"
-            ),
-            "Child.cs": (
-                "using App.Mid;\n\n"
-                "namespace App.Web;\n\n"
-                "public class Child : Mid\n{\n"
-                "    public int Run() { return Helper(); }\n"
-                "}\n"
-            ),
-            "Decoy.cs": (
-                "namespace App.Other;\n\n"
-                "public class Decoy\n{\n"
-                "    private int Helper() { return 9; }\n"
-                "}\n"
+            "base.py": "class Base:\n    def run(self):\n        return 0\n",
+            "impl.py": (
+                "from base import Base\n\n\n"
+                "class Child(Base):\n"
+                "    def run(self, n):\n"
+                "        return self.run(n - 1) if n else 0\n"
             ),
         },
-        "csharp",
+        "python",
     )
-    assert ("Child.cs::Child::Run", "Base.cs::Base::Helper") in _calls_by_origin(
+    assert not _calls_by_origin(graph, "self_inherited")
+
+
+def test_a_bare_call_reaches_an_inherited_method_in_an_implicit_receiver_language(
+    tmp_path: Path,
+) -> None:
+    # Two hops, so the file declaring helper is not one the caller imports —
+    # where it is, the merged-import tier answers first. A decoy declares the
+    # same name so the global-unique guess cannot answer either. Those are the
+    # conditions under which the real population misses at all.
+    graph = _build(
+        tmp_path,
+        {
+            "base/Base.kt": (
+                "package app.base\n\nopen class Base {\n    fun helper(): Int = 1\n}\n"
+            ),
+            "mid/Mid.kt": (
+                "package app.mid\n\nimport app.base.Base\n\nopen class Mid : Base()\n"
+            ),
+            "web/Child.kt": (
+                "package app.web\n\n"
+                "import app.mid.Mid\n\n"
+                "class Child : Mid() {\n"
+                "    fun run(): Int = helper()\n"
+                "}\n"
+            ),
+            "other/Decoy.kt": (
+                "package app.other\n\nclass Decoy {\n    fun helper(): Int = 9\n}\n"
+            ),
+        },
+        "kotlin",
+    )
+    assert ("web/Child.kt::Child::run", "base/Base.kt::Base::helper") in _calls_by_origin(
         graph, "enclosing_inherited"
     )
 
