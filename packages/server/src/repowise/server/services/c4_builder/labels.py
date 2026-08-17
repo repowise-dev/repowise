@@ -67,9 +67,6 @@ _VERB_PRIORITY: tuple[str, ...] = (
     # the types line up.
     "dispatches to",
     "inherits from",
-    # Ranked beside "implements": both describe a base and the code that
-    # answers for it, and where a pair carries both, either reads correctly.
-    "dispatches to",
     "implements",
     "imports",
     # Below "imports": where a pair has both, the static import is the more
