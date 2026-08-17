@@ -367,7 +367,11 @@ def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
 
     repo_path = ctx.repo_path.resolve()
     path_set = set(ctx.path_set)
-    source_map = ctx.source_map
+    # ``getattr``, not attribute access: the call resolver builds these
+    # indexes from a minimal stand-in context that carries neither field
+    # (``call_resolver._Ctx``). A miss means disk and a live walk, which
+    # is what that path did before.
+    source_map = getattr(ctx, "source_map", None)
 
     cmake_files = discover_cmake_reactor(repo_path)
     file_api_targets = parse_cmake_file_api_reply(repo_path)

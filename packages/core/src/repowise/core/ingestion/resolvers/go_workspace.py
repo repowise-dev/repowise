@@ -134,7 +134,10 @@ def _scan_go_file(text: str) -> tuple[str, bool, bool, bool, bool]:
 def _read_text(ctx: ResolverContext, rel_path: str) -> str:
     if ctx.repo_path is None:
         return ""
-    return source_text(rel_path, ctx.repo_path / rel_path, ctx.source_map) or ""
+    # ``getattr``: the call resolver builds this index from a stand-in
+    # context with no source map (``call_resolver._Ctx``).
+    source_map = getattr(ctx, "source_map", None)
+    return source_text(rel_path, ctx.repo_path / rel_path, source_map) or ""
 
 
 def _import_path_for_dir(

@@ -406,8 +406,8 @@ def get_or_build_jvm_gradle_index(ctx: ResolverContext) -> JvmGradleIndex:
     index = build_jvm_gradle_index(
         ctx.repo_path,
         prune_nested_git=ctx.prune_nested_git,
-        snapshot=ctx.walk_snapshot,
-        source_map=ctx.source_map,
+        snapshot=getattr(ctx, "walk_snapshot", None),
+        source_map=getattr(ctx, "source_map", None),
     )
     ctx._jvm_gradle_index = index  # type: ignore[attr-defined]
     return index

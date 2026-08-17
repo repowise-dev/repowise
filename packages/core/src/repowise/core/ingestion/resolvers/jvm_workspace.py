@@ -395,8 +395,12 @@ def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
         return index
 
     repo_path = ctx.repo_path.resolve()
-    source_map = ctx.source_map
-    snapshot = ctx.walk_snapshot
+    # ``getattr``, not attribute access: the call resolver builds these
+    # indexes from a minimal stand-in context that carries neither field
+    # (``call_resolver._Ctx``). A miss means disk and a live walk, which
+    # is what that path did before.
+    source_map = getattr(ctx, "source_map", None)
+    snapshot = getattr(ctx, "walk_snapshot", None)
 
     # Group files by package
     pkg_files: dict[str, list[str]] = {}
