@@ -144,25 +144,53 @@ _CONDITION_PRIORITY: tuple[str, ...] = (
 )
 
 
+def _flatten_export_value(value: Any) -> str | None:
+    """Collapse a Node ``exports`` entry to a single relative target string.
+
+    Returns ``None`` for blocked entries (``null``) or shapes we can't
+    handle. Recursively unwraps nested condition objects and arrays.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for cond in _CONDITION_PRIORITY:
+            inner = value.get(cond)
+            if inner is None:
+                continue
+            flat = _flatten_export_value(inner)
+            if flat:
+                return flat
+        return None
+    if isinstance(value, list):
+        for item in value:
+            flat = _flatten_export_value(item)
+            if flat:
+                return flat
+    return None
+
+
 def _ordered_export_targets(value: Any) -> tuple[str, ...]:
     """Every target a Node ``exports`` entry can mean, best first.
 
-    Conditions this module ranks come first, in that order; conditions it does
-    not know follow, in manifest order. Callers probe the list and take the
-    first target the repository actually contains.
+    The head is exactly what :func:`_flatten_export_value` chose, so a package
+    whose ranked condition names a file the repository contains binds the file
+    it always bound. The tail is every other leaf, ranked conditions before
+    unranked ones, and is reached only when the head names nothing indexed.
 
-    A single collapsed target is not enough, because a package may publish its
-    sources under a condition no fixed list can name — zod uses ``@zod/source``
-    — while every condition we do rank names build output that a source
-    checkout does not contain. Ranking still decides among targets that all
-    exist, so an entry that resolves today keeps resolving to the same file.
+    The tail has to exist because a package may publish its sources under a
+    condition no fixed list can name — zod uses ``@zod/source`` — while every
+    condition this module ranks names build output a source checkout does not
+    contain, leaving the whole package unresolvable.
     """
-    out: list[str] = []
+    ordered: list[str] = []
+    head = _flatten_export_value(value)
+    if head:
+        ordered.append(head)
 
     def walk(node: Any) -> None:
         if isinstance(node, str):
-            if node not in out:
-                out.append(node)
+            if node not in ordered:
+                ordered.append(node)
         elif isinstance(node, list):
             for item in node:
                 walk(item)
@@ -175,7 +203,7 @@ def _ordered_export_targets(value: Any) -> tuple[str, ...]:
                     walk(inner)
 
     walk(value)
-    return tuple(out)
+    return tuple(ordered)
 
 
 def _build_exports_map(pkg_data: dict) -> dict[str, tuple[str, ...]]:

@@ -522,6 +522,28 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/src/index.ts", "packages/ui/dist/index.js"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/dist/index.js"
 
+    def test_nested_unranked_condition_does_not_outrank_a_later_ranked_one(
+        self, tmp_path: Path
+    ) -> None:
+        # ``import`` outranks ``require``, but its subtree holds only conditions
+        # this module does not rank, so the old collapse skipped the whole
+        # branch and chose ``require``. Enumerating candidates must not promote
+        # the development build to the head of the list.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {
+                        "import": {"development": "./dev.js"},
+                        "require": "./index.cjs",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/dev.js", "packages/ui/index.cjs"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.cjs"
+
     def test_bare_package_falls_back_to_source_entry(self, tmp_path: Path) -> None:
         # No ``exports`` at all and every manifest field names a build
         # directory the repository does not contain, so the import became an
