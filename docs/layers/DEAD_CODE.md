@@ -43,7 +43,7 @@ get_dead_code(kind="unused_export", group_by="owner")
 | Kind | What it means | How it is computed | Base confidence |
 |------|---------------|--------------------|-----------------|
 | `unreachable_file` | No file in the repo imports this one. | File-node in-degree of 0 on the dependency graph, after entry points and the never-flag allowlist are removed. | Scored from git age (below) |
-| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `method_implements` / `reads` / `extends` / `implements` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when the containing file *does* have importers (so the file is alive and only this symbol is not), `0.70` when it does not, `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` |
+| `unused_export` | A public symbol nothing imports. | No `imports` edge names the symbol (or `*`, or a TypeScript `export { local as alias }` rename), and no `calls` / `method_implements` / `reads` / `extends` / `implements` / `type_use` edge reaches it. Member kinds (`method`, `field`, `property`, `enum_member`) are excluded from this pass across all languages since they are accessed through their container, not imported by name. Top-level `export const` primitives, objects, and arrays in TypeScript and JavaScript are fully evaluated (they are always importable by name). | `1.00` when the containing file *does* have importers (so the file is alive and only this symbol is not), `0.70` when it does not, `0.30` when the name ends in `_DEPRECATED` / `_LEGACY` / `_COMPAT` — then capped as described below |
 | `unused_internal` | A private or underscore-prefixed symbol nothing calls. | No `calls` edge, and no cross-file importer pulls the name (which would mean a dispatch-table lookup). Off by default. | `0.65` |
 | `zombie_package` | A whole top-level package no other package imports. | No inter-package import edges into it. Never marked safe to delete. | `0.50` |
 
@@ -51,6 +51,31 @@ get_dead_code(kind="unused_export", group_by="owner")
 default and can be turned off with `--no-include-zombie-packages`. Passing
 `--kind` overrides both toggles, so `--kind unused_internal` enables internals on
 its own.
+
+### An unused export must survive a search for its own name
+
+The base confidences above score how strong the evidence for deadness is. They
+do not ask whether a use would have been visible at all — and "no import edge"
+only means "unused" in a language where using a symbol requires importing it.
+That holds in Python and TypeScript. It is false for a same-package Kotlin or
+Go reference, a same-translation-unit C++ type, an intra-crate Rust path, and a
+C# or Swift member of the same module, where a use needs no import. The same
+blind spot swallows a use written through an aliased import, an attribute call
+on an imported module, or a handler named by string from infrastructure config.
+
+So before an `unused_export` keeps a confidence above `0.40`, the repository is
+searched for the symbol's name. If the name is written anywhere other than the
+declaration itself — in any indexed file, including non-code ones such as
+Terraform or YAML — the finding is capped at `0.40`, loses `safe_to_delete`,
+and its reason names where the name was found. The same cap applies when the
+search could not be run at all, because not looking and looking without finding
+are different results.
+
+The check only ever suppresses. A name written solely in a comment counts as a
+use, so this costs recall and buys precision, which is the trade the top tier
+exists for. Nothing is removed from the report: the cap lands exactly on the
+default `min_confidence`, so a capped finding still appears as a review
+candidate and only stops claiming to be deletion-ready.
 
 Two caveats on the numbers. `unused_internal` is disabled entirely for Rust,
 where the graph does not yet emit intra-file call edges, so a private Rust helper

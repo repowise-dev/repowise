@@ -43,6 +43,7 @@ from .file_reachability import (
     is_file_reachable,
 )
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
+from .name_occurrences import IDENTIFIER_RE, clamp_unverified_absence
 from .risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
@@ -50,11 +51,10 @@ from .risk_factors import (
     risk_evidence,
 )
 
-#: Identifier shape, matched over raw bytes so an unindexed file never has to
-#: be decoded (these files are large by definition, and a decode would double
-#: the peak). ASCII-only is deliberate: a non-ASCII identifier that fails to
-#: match can only under-suppress.
-_IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
+#: The unindexed scan below and the repo-wide absence check ask the same
+#: question of different file sets, so they share one identifier shape rather
+#: than each carrying a copy. See :mod:`name_occurrences`, which owns it.
+_IDENTIFIER_RE = IDENTIFIER_RE
 
 #: The confidence ceiling for a finding an unread file could explain is
 #: ``RISK_CAP_CONFIDENCE``, imported above rather than redefined: it already
@@ -623,6 +623,11 @@ class DeadCodeAnalyzer:
         self._unindexed_source_files = list(unindexed_source_files or [])
         self._repo_root = repo_root
         self._unindexed_tokens: frozenset[str] | None = None
+        # Kept for the absence check below, which is the one pass that needs
+        # the raw text of *every* indexed file rather than of a suffix-filtered
+        # subset. Empty when a caller has no source access, which is what makes
+        # that check skip rather than guess.
+        self._source_map: dict[str, bytes] = source_map or {}
         # Four prepasses below each scan every indexed file for text markers.
         # ``source_map`` is ingestion's ``{repo_relative_path: raw bytes}`` for
         # the same file set, so passing it turns four full-repo disk passes
@@ -724,6 +729,10 @@ class DeadCodeAnalyzer:
         # out entirely, rather than being reported at a number it no longer
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
+        # Same position and for the same reason. This one asks the wider
+        # version of the same question — not "could an unread file explain
+        # this" but "did we look anywhere except the import graph".
+        findings = clamp_unverified_absence(findings, self._source_map)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
