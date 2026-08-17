@@ -317,6 +317,10 @@ export function mapHostedDeadCodeFinding(raw: Record<string, unknown>): DeadCode
     primary_owner: partial.primary_owner ?? null,
     status: partial.status ?? "open",
     note: partial.note ?? null,
+    // Artifacts written before these were surfaced carry neither; a missing
+    // date must not read as "never touched", so it stays null.
+    last_commit_at: partial.last_commit_at ?? null,
+    commit_count_90d: partial.commit_count_90d ?? 0,
   };
 }
 

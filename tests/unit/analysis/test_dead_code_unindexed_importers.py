@@ -38,7 +38,6 @@ def _finding(
         last_commit_at=None,
         commit_count_90d=0,
         lines=10,
-        package=None,
         evidence=[],
         safe_to_delete=True,
         primary_owner=None,

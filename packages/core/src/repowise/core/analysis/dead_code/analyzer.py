@@ -951,7 +951,6 @@ class DeadCodeAnalyzer:
             last_commit_at=last_commit if isinstance(last_commit, datetime) else None,
             commit_count_90d=commit_90d,
             lines=node_data.get("symbol_count", 0) * 10,  # rough estimate
-            package=self._get_package(node),
             evidence=evidence,
             safe_to_delete=safe,
             primary_owner=primary_owner,
@@ -1324,7 +1323,6 @@ class DeadCodeAnalyzer:
                         # Both-or-neither: a half-known span is worse than none.
                         start_line=(sym.get("start_line") or None) if sym.get("end_line") else None,
                         end_line=(sym.get("end_line") or None) if sym.get("start_line") else None,
-                        package=self._get_package(str(node)),
                         evidence=evidence,
                         safe_to_delete=safe,
                         primary_owner=git_meta.get("primary_owner_name"),
@@ -1483,7 +1481,6 @@ class DeadCodeAnalyzer:
                     end_line=(node_data.get("end_line") or None)
                     if node_data.get("start_line")
                     else None,
-                    package=self._get_package(file_path),
                     evidence=[f"No call, reference or override reaches '{sym_name}'"],
                     safe_to_delete=False,
                     primary_owner=git_meta.get("primary_owner_name"),
@@ -1590,7 +1587,6 @@ class DeadCodeAnalyzer:
                         last_commit_at=pkg_last_commit,
                         commit_count_90d=pkg_total_commits_90d,
                         lines=total_lines,
-                        package=pkg,
                         evidence=[f"No inter-package imports into '{pkg}'"],
                         safe_to_delete=False,
                         primary_owner=pkg_owner,
@@ -1676,6 +1672,3 @@ class DeadCodeAnalyzer:
             return (now - dt).days > days
         return False
 
-    def _get_package(self, path: str) -> str | None:
-        parts = Path(path).parts
-        return parts[0] if len(parts) > 1 else None

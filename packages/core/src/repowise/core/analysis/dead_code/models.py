@@ -25,7 +25,6 @@ class DeadCodeFindingData:
     last_commit_at: datetime | None
     commit_count_90d: int
     lines: int
-    package: str | None
     evidence: list[str]
     safe_to_delete: bool
     primary_owner: str | None

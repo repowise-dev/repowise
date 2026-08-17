@@ -419,7 +419,13 @@ def _serialize_finding(f: Any, git_meta_map: dict | None = None) -> dict:
         "risk_factors": list(path_risk_factors(f.file_path)),
         "lines": f.lines,
         "last_commit_at": f.last_commit_at.isoformat() if f.last_commit_at else None,
+        # Recent churn is the top rung of the confidence ladder, so the agent
+        # gets the same reason for a low score that the web page now shows.
+        "commit_count_90d": f.commit_count_90d,
         "primary_owner": f.primary_owner,
+        # NB: age_days runs from the file's *first* commit, so it is the file's
+        # age, not how long this has been dead — the two disagree on 75% of
+        # findings. last_commit_at above is the staleness signal.
         "age_days": f.age_days,
     }
     # Phase 4: add last meaningful change date

@@ -47,7 +47,6 @@ def _finding(
         lines=3,
         start_line=start_line,
         end_line=end_line,
-        package=None,
         evidence=[],
         safe_to_delete=True,
         primary_owner=None,

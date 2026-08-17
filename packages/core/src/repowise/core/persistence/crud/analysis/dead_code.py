@@ -36,7 +36,6 @@ def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
             "lines": finding.lines,
             "start_line": finding.start_line,
             "end_line": finding.end_line,
-            "package": finding.package,
             "evidence_json": json.dumps(finding.evidence if hasattr(finding, "evidence") else []),
             "safe_to_delete": finding.safe_to_delete,
             "primary_owner": finding.primary_owner,
