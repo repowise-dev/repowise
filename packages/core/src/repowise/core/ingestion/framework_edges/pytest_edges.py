@@ -35,6 +35,17 @@ _QUOTED_RE = re.compile(r"""["']([^"']*)["']""")
 # fixture's name.
 _NAME_KWARG_ARG_RE = re.compile(r"""^name\s*=\s*["']([^"']+)["']$""")
 
+# pytest's own `python_files` default, and deliberately not the shared
+# `is_test_path`. A fixture is injected only into a file pytest actually
+# collects, so this has to answer "does pytest run this?" — a narrower question
+# than "is this test-related code", which also claims `conftest.py`, a
+# `tests/helpers.py` and every non-Python spec layout. Widening it would inject
+# fixture parameters into files that are never collected.
+#
+# Ceiling: `python_files` is configurable and this assumes the default, unlike
+# `_DEFAULT_TEST_CLASS_GLOBS` below, which reads the setting because assuming it
+# cost 346 of celery's 359 bindings. No corpus repo overrides `python_files`, so
+# the same mistake is not yet demonstrable here.
 _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]*|[^/]*_test)\.py$")
 
 # pytest collects methods only from classes matching `python_classes`, so a
