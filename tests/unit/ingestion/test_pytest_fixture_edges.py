@@ -233,6 +233,72 @@ class TestRefusals:
         assert ("test_api.py::TestA::test_a", "test_api.py::TestA::client") in bound
         assert ("test_api.py::TestB::test_b", "test_api.py::TestA::client") not in bound
 
+    def test_a_base_test_class_serves_its_subclass(self, tmp_path: Path) -> None:
+        # Scoping the lookup to the declaring class alone fixes a rare wrong
+        # edge by introducing a frequent missing one: a base class holding the
+        # shared fixtures is the commonest class-scoped arrangement there is.
+        (tmp_path / "test_api.py").write_text(
+            "import pytest\n\n\n"
+            "class TestBase:\n"
+            "    @pytest.fixture\n"
+            "    def client(self):\n        return 1\n\n\n"
+            "class TestChild(TestBase):\n"
+            "    def test_a(self, client):\n        assert client\n"
+        )
+
+        assert (
+            "test_api.py::TestChild::test_a",
+            "test_api.py::TestBase::client",
+        ) in _bound(_build(tmp_path))
+
+    def test_an_annotation_containing_an_equals_is_not_a_default(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "from typing import Annotated, Literal\n\n\n"
+            "def test_get(client: Annotated[int, Field(ge=0)]):\n    assert client\n\n\n"
+            "def test_two(client: Literal['a=b']):\n    assert client\n"
+        )
+
+        bound = _bound(_build(tmp_path))
+        assert ("test_api.py::test_get", "conftest.py::client") in bound
+        assert ("test_api.py::test_two", "conftest.py::client") in bound
+
+    def test_a_comment_in_a_multiline_signature_does_not_swallow_it(
+        self, tmp_path: Path
+    ) -> None:
+        # An apostrophe or a stray bracket in a per-parameter comment used to
+        # take the whole list with it.
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "def test_get(\n    client,  # don't drop me, see foo(\n):\n    assert client\n"
+        )
+
+        assert (
+            "test_api.py::test_get",
+            "conftest.py::client",
+        ) in _bound(_build(tmp_path))
+
+    def test_an_escaped_quote_in_a_default_does_not_swallow_the_list(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            'def test_get(client, label="it\\"s"):\n    assert client and label\n'
+        )
+
+        assert (
+            "test_api.py::test_get",
+            "conftest.py::client",
+        ) in _bound(_build(tmp_path))
+
     def test_a_method_of_a_class_pytest_never_collects_asks_for_nothing(
         self, tmp_path: Path
     ) -> None:

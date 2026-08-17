@@ -79,13 +79,29 @@ def _call_arguments(text: str) -> list[str]:
         return []
     depth = 0
     quote: str | None = None
+    escaped = False
+    comment = False
     args: list[str] = []
     current: list[str] = []
     for ch in text[start:]:
+        if comment:
+            # A signature spanning several lines carries its comments, and an
+            # apostrophe or a stray bracket in one used to swallow the rest of
+            # the parameter list.
+            if ch == "\n":
+                comment = False
+            continue
         if quote:
             current.append(ch)
-            if ch == quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
                 quote = None
+            continue
+        if ch == "#":
+            comment = True
             continue
         if ch in "\"'":
             quote = ch
@@ -107,6 +123,66 @@ def _call_arguments(text: str) -> list[str]:
         current.append(ch)
     # Unbalanced — a truncated signature. Return nothing rather than a guess.
     return []
+
+
+def _has_default(param: str) -> bool:
+    """Whether a single parameter carries a default value."""
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for i, ch in enumerate(param):
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif (
+            ch == "="
+            and depth == 0
+            # A comparison or walrus is not a default.
+            and param[i - 1 : i] not in ("=", "<", ">", "!", ":")
+            and param[i + 1 : i + 2] != "="
+        ):
+            return True
+    return False
+
+
+def _fixture_scopes(parsed: Any, class_name: str | None) -> list[str | None]:
+    """The class scopes a test in *class_name* can see a fixture through.
+
+    A subclass sees its base's fixtures, which is the commonest class-scoped
+    arrangement there is -- scoping the lookup to the declaring class alone
+    fixes a rare wrong edge by introducing a frequent missing one. Walked from
+    the file's own heritage, so a base in another module is out of reach and
+    stays unclaimed.
+    """
+    if class_name is None:
+        return [None]
+    parents: dict[str, list[str]] = {}
+    for rel in parsed.heritage:
+        parents.setdefault(rel.child_name, []).append(rel.parent_name.split("<")[0].strip())
+
+    scopes: list[str | None] = []
+    seen: set[str] = set()
+    queue = [class_name]
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        scopes.append(current)
+        queue.extend(parents.get(current, ()))
+    scopes.append(None)
+    return scopes
 
 
 def _add_conftest_edges(graph: nx.DiGraph, path_set: set[str]) -> int:
@@ -187,10 +263,10 @@ def _requested_fixtures(sym: Any) -> list[str]:
 
     names = []
     for raw in _call_arguments(sym.signature or ""):
-        # A defaulted parameter is never injected: pytest skips any argument
-        # whose default is not empty. The arguments are already split at top
-        # level, so an `=` here is a default and not part of an annotation.
-        if "=" in raw or raw.startswith("*"):
+        # A defaulted parameter is never injected -- pytest skips any argument
+        # whose default is not empty. The `=` has to be found at depth zero:
+        # `client: Annotated[int, Field(ge=0)]` has no default and is injected.
+        if raw.startswith("*") or _has_default(raw):
             continue
         name = raw.split(":")[0].strip()
         if not name or name in ("self", "cls", "/"):
@@ -247,13 +323,12 @@ def _add_fixture_injection_edges(
                 fnmatch(sym.parent_name, g) for g in class_globs
             ):
                 continue
+            scopes = _fixture_scopes(parsed, sym.parent_name)
             for name in _requested_fixtures(sym):
-                target = (
-                    own.get((sym.parent_name, name))
-                    or own.get((None, name))
-                    or next(
-                        (conftests[d][name] for d in chain if name in conftests[d]), None
-                    )
+                target = next(
+                    (own[(s, name)] for s in scopes if (s, name) in own), None
+                ) or next(
+                    (conftests[d][name] for d in chain if name in conftests[d]), None
                 )
                 if target and add_symbol_edge(graph, sym.id, target):
                     count += 1
