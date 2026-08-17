@@ -206,6 +206,9 @@ def _ordered_export_targets(value: Any) -> tuple[str, ...]:
     return tuple(ordered)
 
 
+_DECLARATION_SUFFIXES: tuple[str, ...] = (".d.ts", ".d.mts", ".d.cts")
+
+
 def _build_exports_map(pkg_data: dict) -> dict[str, tuple[str, ...]]:
     """Return ``{exports_key: (target, ...)}`` for a workspace package.
 
@@ -261,8 +264,12 @@ def _match_export_key(
             else key[len(prefix) :]
         )
         if len(prefix) > best_prefix_len:
+            # Beyond the head, a candidate carrying no ``*`` is dropped: the
+            # same fixed file would otherwise answer every distinct subpath
+            # under this key, quietly collapsing them onto one another.
+            kept = targets[:1] + tuple(t for t in targets[1:] if "*" in t)
             best_targets = tuple(
-                t.replace("*", captured, 1) if "*" in t else t for t in targets
+                t.replace("*", captured, 1) if "*" in t else t for t in kept
             )
             best_prefix_len = len(prefix)
     return best_targets
@@ -509,7 +516,13 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
     # 1) ``exports`` field — the package's authoritative subpath map.
     if exports_map:
         targets = _match_export_key(sub, exports_map)
-        for target in targets or ():
+        for position, target in enumerate(targets or ()):
+            # A declaration file carries no bodies, so binding one as the entry
+            # resolves every call through it to a signature — worse than the
+            # external node it replaces, which at least claims nothing. Only
+            # the head may be one, because that is what already shipped.
+            if position and target.endswith(_DECLARATION_SUFFIXES):
+                continue
             # Targets are package-relative ("./src/lib/foo.ts"). Strip the
             # leading "./" and join with the package dir to get a repo path.
             stripped = target.lstrip("./")

@@ -544,6 +544,44 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/dev.js", "packages/ui/index.cjs"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.cjs"
 
+    def test_declaration_file_is_not_taken_as_a_fallback_entry(
+        self, tmp_path: Path
+    ) -> None:
+        # The built entry is absent and the committed type declarations are
+        # not. Binding them would resolve every call through this package to a
+        # signature with no body.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {"import": "./dist/index.js", "types": "./types/index.d.ts"}
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/types/index.d.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) is None
+
+    def test_wildcard_key_does_not_fall_back_to_a_fixed_target(
+        self, tmp_path: Path
+    ) -> None:
+        # The fixed target would answer for every subpath under the key, so
+        # two distinct imports would collapse onto one unrelated file.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    "./features/*": {
+                        "import": "./src/features/*.mjs",
+                        "custom": "./src/shared.ts",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/shared.ts", "packages/ui/src/features/a.ts"])
+        assert resolve_via_workspaces("@org/ui/features/a", ctx) != "packages/ui/src/shared.ts"
+
     def test_bare_package_falls_back_to_source_entry(self, tmp_path: Path) -> None:
         # No ``exports`` at all and every manifest field names a build
         # directory the repository does not contain, so the import became an
