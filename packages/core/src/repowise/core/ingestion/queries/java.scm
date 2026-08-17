@@ -80,6 +80,29 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Method call on the caller's own field: this.field.method(args).
+; The pattern above constrains ``object`` to a bare identifier and the bare
+; pattern constrains nothing, so without this a field receiver arrives with no
+; receiver at all — which the resolver reads as an implicit receiver on the
+; caller's own class.
+;
+; ``this``/``super`` only, which is the rule every sibling grammar keeps: a
+; captured receiver must name something in the *caller's* scope, because the
+; receiver strategies type a field against the caller's class. Lifting the
+; nearest name out of ``a.b.method()`` would offer ``b`` — which belongs to
+; ``a``'s type — to be typed as a field of the caller, and bind a same-named
+; one. ``Outer.this.method()`` declines on its own, since a qualified ``this``
+; is a ``this`` node and not an ``identifier``, and that is right: it is an
+; implicit receiver.
+(method_invocation
+  object: (field_access
+    object: [(this) (super)]
+    field: (identifier) @call.receiver
+  )
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Chained method call: obj.method1().method2(args)
 (method_invocation
   object: (method_invocation)
