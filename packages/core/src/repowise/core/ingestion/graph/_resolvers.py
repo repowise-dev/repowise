@@ -22,6 +22,11 @@ log = structlog.get_logger(__name__)
 #: files. See ``_add_reference_edges``.
 _MIN_REFERENCE_CONFIDENCE = 0.85
 
+#: Symbol kinds a resolved reference may land on, by how the name was spelled.
+#: See ``_add_reference_edges`` for why a bare name is restricted to functions.
+_BARE_REFERENCE_KINDS = frozenset({"function"})
+_QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method"})
+
 
 class ResolveMixin:
     """Symbol-level edge resolution passes run during ``build()``."""
@@ -599,14 +604,19 @@ class ResolveMixin:
         building a second index over every parsed file would double that cost
         for nothing.
 
-        Only free functions produce an edge, never methods. A bare identifier
-        cannot name a member function in C++ — that needs ``&Class::method`` —
-        so a plain name resolving to a method is always a collision rather
-        than a reference, and C++ names its getters exactly like the locals
-        that feed them. Measured on leveldb, admitting methods turned
-        ``value``, ``status``, ``level``, ``key`` and ``offset`` into fifteen
-        edges, every one of them wrong. Every shape the issue reports is a
-        free function, so nothing real is lost.
+        **What may be named depends on how it was written, not on the
+        language.** A receiver-less name produces an edge only to a free
+        function: a bare identifier cannot name a member in the languages that
+        spell a reference that way, so a plain name resolving to a method is a
+        collision rather than a reference, and C++ names its getters exactly
+        like the locals that feed them. Measured on leveldb, admitting methods
+        there turned ``value``, ``status``, ``level``, ``key`` and ``offset``
+        into fifteen edges, every one of them wrong.
+
+        A name that arrived with a receiver went through an operator only a
+        callable accepts — ``Foo::bar``, ``pkg.Handler`` in argument position —
+        so a method is the expected target and refusing one would discard the
+        whole idiom.
 
         A ``calls`` edge already covering the same pair wins and is left alone:
         it is the stronger claim, and downgrading it here would lose the fact
@@ -623,21 +633,30 @@ class ResolveMixin:
         for path, parsed in self._parsed_files.items():
             if not parsed.references:
                 continue
-            for rc in resolver.resolve_file(path, parsed.references):
-                if rc.confidence < _MIN_REFERENCE_CONFIDENCE:
+            bare = [r for r in parsed.references if not r.receiver_name]
+            qualified = [r for r in parsed.references if r.receiver_name]
+            batches = (
+                (bare, _BARE_REFERENCE_KINDS),
+                (qualified, _QUALIFIED_REFERENCE_KINDS),
+            )
+            for sites, allowed_kinds in batches:
+                if not sites:
                     continue
-                if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
-                    continue
-                if self._graph.nodes[rc.callee_id].get("kind") != "function":
-                    continue
-                if self._graph.has_edge(rc.caller_id, rc.callee_id):
-                    continue
-                self._graph.add_edge(
-                    rc.caller_id,
-                    rc.callee_id,
-                    edge_type="references",
-                    confidence=rc.confidence,
-                    resolution_origin=rc.origin,
-                )
-                total += 1
+                for rc in resolver.resolve_file(path, sites):
+                    if rc.confidence < _MIN_REFERENCE_CONFIDENCE:
+                        continue
+                    if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
+                        continue
+                    if self._graph.nodes[rc.callee_id].get("kind") not in allowed_kinds:
+                        continue
+                    if self._graph.has_edge(rc.caller_id, rc.callee_id):
+                        continue
+                    self._graph.add_edge(
+                        rc.caller_id,
+                        rc.callee_id,
+                        edge_type="references",
+                        confidence=rc.confidence,
+                        resolution_origin=rc.origin,
+                    )
+                    total += 1
         log.info("Reference edges resolved", total=total)

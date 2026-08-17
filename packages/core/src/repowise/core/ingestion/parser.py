@@ -110,7 +110,7 @@ _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 # Languages whose query defines the ``@reference.*`` captures. Every other
 # language would only scan the whole match list to find nothing, so the check
 # is here rather than inside ``_extract_references``.
-_REFERENCE_LANGUAGES = ("cpp", "c")
+_REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
 
 
 @cache
@@ -1160,15 +1160,20 @@ class ASTParser:
     ) -> list[CallSite]:
         """Extract sites that name a function without calling it.
 
-        Three C/C++ shapes carry a function by name and never call it where a
-        parser can see: a dispatch-table entry, a callback field, and an
-        argument to a registration macro. Each leaves the named function with
-        no inbound edge, which read as a ``safe_to_delete`` unused export and
-        took out whole handler and interop layers (#1602).
+        Six shapes carry a function by name and never call it where a parser
+        can see: a dispatch-table entry, a callback field, an argument to a
+        registration macro, a func value in argument position, a struct-field
+        initialiser, and a ``::`` callable reference. Each leaves the named
+        function with no inbound edge, which read as a ``safe_to_delete``
+        unused export and took out whole handler and interop layers (#1602).
+
+        ``@reference.receiver`` is optional; capturing it is what lets
+        ``_add_reference_edges`` restrict a bare name to free functions and
+        allow a qualified name to reach a method.
 
         Self-gating on the reference captures, so a language whose query
         defines none produces nothing and pays two dict lookups. Two guards
-        keep these broad syntactic positions from claiming ordinary code:
+        keep the broad syntactic positions from claiming ordinary code:
 
         * A macro argument requires a SCREAMING_CASE callee and must be that
           macro's only argument. Uppercase alone is not enough: assertion
@@ -1197,13 +1202,18 @@ class ASTParser:
         callable_ids = {s.id for s in symbols if s.kind in ("function", "method")}
 
         references: list[CallSite] = []
-        seen: set[tuple[int, str]] = set()
+        seen: set[tuple[int, str, str | None]] = set()
 
         for capture_dict in matches:
             plain_nodes = capture_dict.get("reference.name", [])
             table_nodes = capture_dict.get("reference.table", [])
             if not plain_nodes and not table_nodes:
                 continue
+
+            receiver_nodes = capture_dict.get("reference.receiver", [])
+            receiver = (
+                _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+            ) or None
 
             via_nodes = capture_dict.get("reference.via", [])
             if via_nodes:
@@ -1224,13 +1234,13 @@ class ASTParser:
                 enclosing = _find_enclosing_symbol(line, symbol_ranges)
                 if is_table and enclosing in callable_ids:
                     continue
-                if (line, name) in seen:
+                if (line, name, receiver) in seen:
                     continue
-                seen.add((line, name))
+                seen.add((line, name, receiver))
                 references.append(
                     CallSite(
                         target_name=name,
-                        receiver_name=None,
+                        receiver_name=receiver,
                         caller_symbol_id=enclosing,
                         line=line,
                         argument_count=None,
