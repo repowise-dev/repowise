@@ -393,6 +393,39 @@ class TestPascalHeritage:
         # IInterface is also a builtin_parent for Pascal.
         assert not any(child == "ICalcTarget" for child, _kind, _parent in rels)
 
+    def test_class_helper_extends_both_ancestor_and_extended_type(
+        self, parser: ASTParser
+    ) -> None:
+        # `class helper(TBaseHelper) for TFoo` carries two distinct
+        # relationships: the helper's own ancestor helper (`parent`, same
+        # list as a plain class) and the type it extends (`for TFoo`,
+        # positional -- no field name in the grammar). Both must surface.
+        src = b"""\
+unit HelperUnit;
+
+interface
+
+type
+  TBaseHelper = class helper for TObject
+  end;
+
+  TFooHelper = class helper(TBaseHelper) for TFoo
+    procedure Bar;
+  end;
+
+implementation
+
+procedure TFooHelper.Bar;
+begin
+end;
+
+end.
+"""
+        result = parser.parse_file(_pas("HelperUnit.pas"), src)
+        rels = {(r.child_name, r.kind, r.parent_name) for r in result.heritage}
+        assert ("TFooHelper", "extends", "TBaseHelper") in rels
+        assert ("TFooHelper", "extends", "TFoo") in rels
+
 
 class TestPascalEncoding:
     """Non-ASCII (Cyrillic) content -- see PR #1353 review follow-up on
