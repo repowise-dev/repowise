@@ -58,8 +58,6 @@ def _match_paren(text: str, open_idx: int) -> int:
     return -1
 
 
-
-
 def _has_express_imports(parsed_files: dict[str, Any]) -> bool:
     for parsed in parsed_files.values():
         if parsed.file_info.language not in ("typescript", "javascript"):

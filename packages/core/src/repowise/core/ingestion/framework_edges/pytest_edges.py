@@ -8,6 +8,7 @@ names are fixture requests resolved at run time.
 from __future__ import annotations
 
 import re
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,23 +27,42 @@ if TYPE_CHECKING:
 # `@pytest_asyncio.fixture` are both accepted: pytest resolves the decorator by
 # identity, not by module path.
 _FIXTURE_DECORATOR_RE = re.compile(r"^@(?:[\w.]+\.)?fixture\b")
-# `@pytest.fixture(name="app")` renames the fixture: the function stays
-# `fixture_app` and tests ask for `app`. Matching the function name here would
-# both miss the real name and claim a wrong one.
-_FIXTURE_NAME_KWARG_RE = re.compile(r"""\bname\s*=\s*["']([^"']+)["']""")
-# The parameter names a test declares itself. `parametrize` supplies them, so
-# they are not fixture requests — and a parametrize argument that happens to
-# share a fixture's name would otherwise mint a wrong edge.
 _PARAMETRIZE_RE = re.compile(r"^@(?:[\w.]+\.)?parametrize\b")
 _QUOTED_RE = re.compile(r"""["']([^"']*)["']""")
+# `@pytest.fixture(name="app")` registers `fixture_app` as `app`. Read as a
+# top-level keyword only: a `name=` nested in a params list is not the
+# fixture's name.
 _NAME_KWARG_ARG_RE = re.compile(r"""^name\s*=\s*["']([^"']+)["']$""")
 
 _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]*|[^/]*_test)\.py$")
 
-# pytest collects methods only from classes named `Test*`. A `class Harness`
-# with a `test_connection` method is never run, so its parameters are ordinary
-# arguments its own callers pass.
-_TEST_CLASS_PREFIX = "Test"
+# pytest collects methods only from classes matching `python_classes`, so a
+# `class Harness` with a `test_connection` method is never run and its
+# parameters are ordinary arguments its callers pass. The setting is read
+# rather than assumed: celery configures `test_*`, and assuming the default
+# refused 346 of its 359 bindings.
+_DEFAULT_TEST_CLASS_GLOBS = ("Test*",)
+_PYTHON_CLASSES_RE = re.compile(
+    r"^\s*python_classes\s*=\s*(.+?)\s*$", re.MULTILINE
+)
+
+
+def _test_class_globs(repo_path: Path | None) -> tuple[str, ...]:
+    """The ``python_classes`` globs this project collects test classes by."""
+    if repo_path is None:
+        return _DEFAULT_TEST_CLASS_GLOBS
+    for name in ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg"):
+        try:
+            text = (repo_path / name).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        match = _PYTHON_CLASSES_RE.search(text)
+        if not match:
+            continue
+        globs = tuple(match.group(1).strip().strip("\"'").split())
+        if globs:
+            return globs
+    return _DEFAULT_TEST_CLASS_GLOBS
 
 
 def _call_arguments(text: str) -> list[str]:
@@ -181,7 +201,9 @@ def _requested_fixtures(sym: Any) -> list[str]:
     return names
 
 
-def _add_fixture_injection_edges(graph: nx.DiGraph, parsed_files: dict[str, Any]) -> int:
+def _add_fixture_injection_edges(
+    graph: nx.DiGraph, parsed_files: dict[str, Any], repo_path: Path | None = None
+) -> int:
     """Link each test function to the fixture it asks for by name.
 
     Scope follows pytest's own rule, innermost first: the test's own class, then
@@ -202,6 +224,8 @@ def _add_fixture_injection_edges(graph: nx.DiGraph, parsed_files: dict[str, Any]
         if declared:
             conftests[Path(path).parent.as_posix()] = declared
 
+    class_globs = _test_class_globs(repo_path)
+
     count = 0
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "python" or not _TEST_FILE_RE.search(path):
@@ -219,7 +243,9 @@ def _add_fixture_injection_edges(graph: nx.DiGraph, parsed_files: dict[str, Any]
         for sym in parsed.symbols:
             if sym.kind not in ("function", "method") or not sym.name.startswith("test_"):
                 continue
-            if sym.parent_name and not sym.parent_name.startswith(_TEST_CLASS_PREFIX):
+            if sym.parent_name and not any(
+                fnmatch(sym.parent_name, g) for g in class_globs
+            ):
                 continue
             for name in _requested_fixtures(sym):
                 target = (
@@ -247,7 +273,7 @@ class _FixtureInjectionHandler:
         ctx: ResolverContext,
         path_set: set[str],
     ) -> int:
-        return _add_fixture_injection_edges(graph, parsed_files)
+        return _add_fixture_injection_edges(graph, parsed_files, ctx.repo_path)
 
 
 class _ConftestHandler:

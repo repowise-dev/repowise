@@ -246,6 +246,26 @@ class TestRefusals:
 
         assert _bound(_build(tmp_path)) == set()
 
+    def test_the_projects_own_python_classes_setting_is_honoured(
+        self, tmp_path: Path
+    ) -> None:
+        # celery collects `test_*` classes, not pytest's default `Test*`.
+        # Assuming the default refuses almost every binding such a repo has.
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\npython_classes = "test_*"\n'
+        )
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef client():\n    return 1\n"
+        )
+        (tmp_path / "test_api.py").write_text(
+            "class test_api:\n    def test_get(self, client):\n        assert client\n"
+        )
+
+        assert (
+            "test_api.py::test_api::test_get",
+            "conftest.py::client",
+        ) in _bound(_build(tmp_path))
+
     def test_name_is_read_as_a_top_level_keyword_only(self, tmp_path: Path) -> None:
         # A `name=` nested in a params list is not the fixture's name.
         (tmp_path / "conftest.py").write_text(
