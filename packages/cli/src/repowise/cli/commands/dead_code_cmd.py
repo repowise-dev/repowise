@@ -183,8 +183,14 @@ def dead_code_command(
 
         tech_items = detect_tech_stack(repo_path)
         graph_builder.add_framework_edges([item.name for item in tech_items])
-    except Exception:
-        pass
+    except Exception as fw_exc:
+        # Silence here is the worst of the three sites: the comment above says
+        # these edges exist to stop false positives, so a swallowed failure
+        # hands the user a longer report and calls it the answer.
+        notices.print(
+            f"[yellow]Framework edge detection skipped: {fw_exc}; "
+            "convention-loaded files may report as unreachable.[/yellow]"
+        )
 
     # Git metadata (best effort)
     git_meta_map: dict = {}

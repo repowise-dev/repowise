@@ -609,15 +609,34 @@ async def _run_ingestion(
         )
     await asyncio.to_thread(graph_builder.build, progress)
 
-    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
+    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
+    # Two failures with two different costs, reported separately rather than as
+    # one silent pass: the stack also feeds the persisted tech list and the
+    # editor files, so losing it costs more than losing the edges. Keeping the
+    # edge call outside its try is deliberate — the handlers that read no stack
+    # (conftest, gtest, Flutter, Android) still run when detection failed.
     tech_items: list = []
     try:
         from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
 
         tech_items = detect_tech_stack(repo_path)
+    except Exception as tech_exc:
+        logger.warning("tech_stack_detection_failed", error=str(tech_exc))
+        emit_warning(
+            progress,
+            f"Tech stack detection skipped ({tech_exc}); the repo's frameworks will be "
+            "missing from the index, along with every edge that depends on them.",
+        )
+
+    try:
         graph_builder.add_framework_edges([item.name for item in tech_items])
-    except Exception:
-        pass  # framework edge detection is best-effort
+    except Exception as fw_exc:
+        logger.warning("framework_edges_failed", error=str(fw_exc))
+        emit_warning(
+            progress,
+            f"Framework edge detection skipped ({fw_exc}); framework-invoked "
+            "symbols will have no callers in the graph and may read as dead.",
+        )
 
     # ---- Dynamic hints wiring (after static graph is fully built) ----------
     if progress:
@@ -827,7 +846,12 @@ async def reparse_for_resume(
         from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
 
         tech_items = detect_tech_stack(repo_path)
-    except Exception:
-        pass
+    except Exception as tech_exc:
+        logger.warning("tech_stack_detection_failed", error=str(tech_exc))
+        emit_warning(
+            progress,
+            f"Tech stack detection skipped ({tech_exc}); the repo's frameworks will be "
+            "missing from the index.",
+        )
 
     return parsed_files, file_infos, repo_structure, source_map, tech_items
