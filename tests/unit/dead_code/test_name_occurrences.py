@@ -96,6 +96,36 @@ class TestUsedElsewhere:
         assert finding.safe_to_delete is True
         assert finding.evidence == []
 
+    def test_a_modules_own_generated_type_sibling_is_not_a_use(self):
+        # A .d.ts beside runtime.js restates that module's exports as types. It
+        # declares the names a second time and calls none of them, so counting
+        # it would make every symbol in a generated binding module look alive.
+        source = _src(
+            **{
+                "runtime__runtime_js": "export function WindowHide() {}\n",
+                "runtime__runtime_d.ts": "export function WindowHide(): void;\n",
+            }
+        )
+        finding = _finding("WindowHide", file_path="runtime/runtime.js")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == 1.0
+        assert finding.safe_to_delete is True
+
+    def test_a_declaration_file_elsewhere_is_still_a_use(self):
+        # The narrowing is same-directory, same-stem only. A .d.ts naming a
+        # symbol from another module really is referring to it.
+        source = _src(
+            **{
+                "runtime__runtime_js": "export function WindowHide() {}\n",
+                "types__api_d.ts": "import { WindowHide } from '../runtime/runtime'\n",
+            }
+        )
+        finding = _finding("WindowHide", file_path="runtime/runtime.js")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == RISK_CAP_CONFIDENCE
+
     def test_a_non_code_file_counts_as_a_use(self):
         # The handler is named by string from infrastructure config, which is
         # the only place in the repository that knows it is an entry point.
@@ -194,6 +224,38 @@ class TestOwnFile:
         assert first.confidence == 1.0
         assert second.confidence == 1.0
 
+    def test_a_use_inside_a_same_named_symbols_body_still_counts(self):
+        # Only a sibling's declaration header is discounted, never its body. A
+        # span that encloses an unrelated same-named symbol's real call site
+        # would otherwise swallow that use and leave a live symbol at the top
+        # of the scale, which is the one outcome this module must not produce.
+        source = _src(
+            src__util_cpp=(
+                "class process {\n"
+                "  void run() {\n"
+                "    other(process());\n"
+                "  }\n"
+                "};\n"
+                "\n"
+                "int process() { return 1; }\n"
+            )
+        )
+        klass = _finding("process", file_path="src/util.cpp", start_line=1, end_line=5)
+        func = _finding("process", file_path="src/util.cpp", start_line=7, end_line=7)
+        clamp_unverified_absence([klass, func], source)
+
+        assert func.confidence == RISK_CAP_CONFIDENCE
+        assert "src/util.cpp:3" in func.evidence[-1]
+
+    def test_one_object_listed_twice_collects_one_evidence_line(self):
+        source = _src(
+            src__lib_kt="class Registry\n", src__b_kt="fun f() = Registry()\n"
+        )
+        finding = _finding("Registry")
+        clamp_unverified_absence([finding, finding], source)
+
+        assert len(finding.evidence) == 1
+
 
 class TestScopeAndSafety:
     """What the clamp must refuse to touch."""
@@ -277,6 +339,19 @@ class TestScopeAndSafety:
 
         assert "could not be searched" in finding.evidence[-1]
         assert "other.py" not in finding.evidence[-1]
+
+    def test_a_name_the_identifier_scan_cannot_match_is_not_an_absence(self):
+        # A JVM or JavaScript synthetic name carries a character the identifier
+        # shape does not admit, so the scan would only ever see two shorter
+        # tokens and would miss the declaration itself.
+        source = _src(
+            src__lib_kt="class Foo$Companion\n",
+            src__b_kt="val x = Foo$Companion\n",
+        )
+        finding = _finding("Foo$Companion")
+        clamp_unverified_absence([finding], source)
+
+        assert "could not be searched" in finding.evidence[-1]
 
     def test_a_file_outside_the_indexed_set_is_not_an_absence(self):
         # The scan cannot see the declaration it is standing on, so nothing

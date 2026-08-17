@@ -134,9 +134,12 @@ def _uses_in_own_file(
       not — so a lone ``\\r`` inside a string literal (a progress-bar ``print``
       is the common one) would shift every line after it and make a symbol's
       own recursive call land outside its recorded span.
-    * A span is excluded for *every* candidate sharing the name in this file,
-      not only for the one being judged. Overloads share a name and each
-      declaration would otherwise read as a use of its sibling.
+    * A sibling declaration's *header line* is excluded as well as the judged
+      symbol's own span. Overloads share a name, so each declaration would
+      otherwise read as a use of the other. Only the header, never the sibling's
+      whole body: a span can enclose an unrelated same-named symbol's real call
+      site, and excluding the body would drop that use and leave a live symbol
+      claiming the top tier.
     """
     spanned = [
         f for f in findings if f.start_line is not None and f.end_line is not None
@@ -149,40 +152,67 @@ def _uses_in_own_file(
         return out
 
     wanted: dict[bytes, list[DeadCodeFindingData]] = {}
-    declarations: dict[bytes, list[tuple[int, int]]] = {}
+    headers: dict[bytes, set[int]] = {}
     for finding in spanned:
         token = _token(finding.symbol_name)
         wanted.setdefault(token, []).append(finding)
-        declarations.setdefault(token, []).append(
-            (finding.start_line, finding.end_line)
-        )
+        headers.setdefault(token, set()).add(finding.start_line)
 
     for lineno, line in enumerate(blob.split(b"\n"), start=1):
         for match in IDENTIFIER_RE.finditer(line):
             token = match.group()
-            if any(start <= lineno <= end for start, end in declarations.get(token, ())):
-                continue
             for finding in wanted.get(token, ()):
                 if out[id(finding)].answer is _Answer.USED:
                     continue
+                if finding.start_line <= lineno <= finding.end_line:
+                    continue
+                if lineno in headers[token]:
+                    continue  # a sibling declaration of the same name
                 out[id(finding)] = _Verdict(_Answer.USED, f"{path}:{lineno}")
     return out
 
 
 def _token(name: str) -> bytes:
-    """The searchable form of *name*, or empty when there is not one.
+    """The searchable form of *name*, or empty when the scan cannot find it.
 
-    ``encode(errors="ignore")`` drops non-ASCII characters rather than
-    failing, which would turn ``café`` into a search for ``caf`` and let an
-    unrelated ``caf`` elsewhere read as a use. A name that does not survive
-    the round trip has no searchable form at all and is refused here, so the
-    length rule below is applied to what will actually be searched for rather
-    than to what the symbol is called.
+    The one rule is that the result must be something :data:`IDENTIFIER_RE`
+    would actually match, because a token the scan cannot produce is absent
+    from every file including the one that declares it — and reading that as
+    "the name appears nowhere" would turn the strongest verdict into the least
+    reliable one. Two shapes fail it, for different reasons:
+
+    * a non-ASCII name, since ``encode(errors="ignore")`` drops characters
+      rather than failing and would search for ``caf`` on behalf of ``café``,
+      letting an unrelated ``caf`` elsewhere read as a use;
+    * a name carrying a character the identifier shape does not admit, such as
+      the ``$`` in a JVM or JavaScript synthetic name, which the scan would
+      only ever see as two shorter tokens.
     """
     encoded = name.encode("ascii", "ignore")
-    if encoded.decode("ascii") != name or len(encoded) < MIN_ANSWERABLE_NAME_LEN:
+    if encoded.decode("ascii") != name:
+        return b""
+    if len(encoded) < MIN_ANSWERABLE_NAME_LEN or not IDENTIFIER_RE.fullmatch(encoded):
         return b""
     return encoded
+
+
+def _is_own_type_sibling(occurrence: str, declaring: str) -> bool:
+    """True when *occurrence* is *declaring*'s own generated declaration file.
+
+    A ``.d.ts`` beside ``runtime.js`` restates that module's exports as types.
+    It declares the same names a second time and calls none of them, so
+    counting it as a use makes every symbol in a generated binding module look
+    alive — measured as the single largest source of lost true positives on
+    this corpus.
+
+    Deliberately narrow: only the same directory and the same stem. A ``.d.ts``
+    naming a symbol from *elsewhere* really is referring to it, and stays a use.
+    """
+    if not occurrence.endswith(".d.ts"):
+        return False
+    stem = occurrence[: -len(".d.ts")]
+    base = declaring.rsplit(".", 1)[0]
+    return stem == base
 
 
 def _verdicts(
@@ -207,7 +237,11 @@ def _verdicts(
             out[id(finding)] = _NOT_SEARCHABLE
             continue
         files = occurrences.get(token, set())
-        elsewhere = sorted(files - {finding.file_path})
+        elsewhere = sorted(
+            f
+            for f in files - {finding.file_path}
+            if not _is_own_type_sibling(f, finding.file_path)
+        )
         if elsewhere:
             out[id(finding)] = _Verdict(_Answer.USED, elsewhere[0])
         elif finding.file_path in files:
@@ -255,7 +289,9 @@ def clamp_unverified_absence(
         return findings
 
     verdicts = _verdicts(source_map, candidates)
-    for finding in candidates:
+    # Keyed by identity, so a findings list that happens to hold one object
+    # twice does not collect the same evidence line twice.
+    for finding in {id(f): f for f in candidates}.values():
         verdict = verdicts.get(id(finding), _NOT_SEARCHABLE)
         if verdict.answer is _Answer.ABSENT:
             continue
@@ -268,12 +304,16 @@ def clamp_unverified_absence(
         if verdict.answer is _Answer.USED:
             finding.reason = f"'{name}' is not imported, but is named elsewhere in the repo"
             detail = f"is written at {verdict.used_at}"
-        elif verdict.answer is _Answer.SPAN_UNKNOWN:
-            finding.reason = f"'{name}' is not imported, and its own file could not be checked"
-            detail = "is named in its own file, whose declaration could not be bounded"
         else:
-            finding.reason = f"'{name}' is not imported, and its use could not be checked"
-            detail = "could not be searched for across the repository"
+            # Both remaining answers mean the same thing to a reader — we did
+            # not establish an absence — so they share a reason and differ only
+            # in the evidence line, which is where the distinction is useful.
+            finding.reason = f"'{name}' is not imported, and its use could not be verified"
+            detail = (
+                "is named in its own file, whose declaration could not be bounded"
+                if verdict.answer is _Answer.SPAN_UNKNOWN
+                else "could not be searched for across the repository"
+            )
         finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
         finding.safe_to_delete = False
         finding.evidence.append(
