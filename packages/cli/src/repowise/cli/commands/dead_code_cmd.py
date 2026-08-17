@@ -228,7 +228,11 @@ def dead_code_command(
         source_map=source_map,
         repo_root=repo_path,
         unindexed_source_files=[
-            (skipped.path, skipped.reason) for skipped in traverser.stats.skipped_source_files
+            (skipped.path, skipped.reason)
+            for skipped in (
+                *traverser.stats.skipped_source_files,
+                *traverser.stats.unknown_language_files,
+            )
         ],
     )
     report = analyzer.analyze(config)

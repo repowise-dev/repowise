@@ -840,10 +840,12 @@ class DeadCodeAnalyzer:
         once and asking "is this symbol even mentioned there" keeps the
         suppression to the findings an unread importer could actually explain.
 
-        Bounded on purpose: these files are skipped *because* they are large,
-        and one corpus repo ships a 104 MB generated parser. A partial read can
-        only under-suppress (a missed mention leaves the finding as it was),
-        which is the safe direction to be wrong in.
+        Bounded on purpose. Files skipped on size are skipped *because* they
+        are large, and one corpus repo ships a 104 MB generated parser; files
+        skipped for having no language spec are individually small but arrive
+        in the hundreds. A partial read can only under-suppress (a missed
+        mention leaves the finding as it was), which is the safe direction to
+        be wrong in.
         """
         if self._unindexed_tokens is not None:
             return self._unindexed_tokens
@@ -899,14 +901,22 @@ class DeadCodeAnalyzer:
             # "main", "utils", "app") that ``risk_factors`` deliberately keeps
             # out of its own token map because they cap ordinary modules. An
             # unread importer imports symbols, so match on symbols.
+            #
+            # Exported symbols only, for the same reason stated the other way:
+            # an importer can only reach what a file exports, so a match on an
+            # internal one is a name collision rather than evidence. That is
+            # not hypothetical — a published API dump lists a public `add`, and
+            # every unrelated private `add` in the repo would clamp with it.
+            if finding.kind is DeadCodeKind.UNUSED_INTERNAL:
+                continue
             name = finding.symbol_name
             if not name or name not in tokens:
                 continue
             finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
             finding.safe_to_delete = False
             finding.evidence.append(
-                f"'{name}' appears in a source file that was not indexed "
-                f"({skipped_names}), so its importers could not be checked"
+                f"'{name}' appears in a file that was not indexed "
+                f"({skipped_names}), so its references could not be checked"
             )
         return findings
 

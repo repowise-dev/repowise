@@ -144,3 +144,33 @@ class TestUnindexedImporterClamp:
         )._unindexed_identifier_tokens()
         assert "FirstIdentifier" in tokens
         assert "SecondIdentifier" not in tokens, "total budget did not stop the scan"
+
+    def test_a_doc_include_reaches_the_symbol_it_embeds(self, repo: Path) -> None:
+        # The reference a docs build writes names a *path*, but the identifier
+        # split treats `/`, `-` and `.` as boundaries, so the sample's type
+        # name falls out of the attribute on its own and the existing
+        # name-keyed clamp reaches it with no path matching anywhere.
+        (repo / "Array-types.topic").write_text(
+            '<code-block src="exposed-data-types/src/main/kotlin/ArrayExamples.kt"/>\n',
+            encoding="utf-8",
+        )
+        finding = _finding(symbol_name="ArrayExamples", file_path="ArrayExamples.kt")
+        _analyzer(repo, [("Array-types.topic", "unknown_language")])._clamp_for_unindexed_importers(
+            [finding]
+        )
+        assert finding.safe_to_delete is False
+        assert finding.confidence == RISK_CAP_CONFIDENCE
+
+    def test_internal_findings_are_never_clamped_on_a_name_collision(self, repo: Path) -> None:
+        # An importer can only reach what a file exports, so a match on an
+        # internal symbol is a collision rather than evidence. Measured, not
+        # hypothetical: a published API dump names a public `add`, and without
+        # this guard every unrelated private `add` in the repo clamped with it.
+        (repo / "surface.api").write_text("public final fun add (I)V\n", encoding="utf-8")
+        finding = _finding(symbol_name="add", kind=DeadCodeKind.UNUSED_INTERNAL)
+        _analyzer(repo, [("surface.api", "unknown_language")])._clamp_for_unindexed_importers(
+            [finding]
+        )
+        assert finding.safe_to_delete is True
+        assert finding.confidence == 0.9
+        assert finding.evidence == []

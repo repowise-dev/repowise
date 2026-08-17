@@ -15,14 +15,20 @@ def node_text(node: Node | None, src: str) -> str:
 
 
 def extract_go_receiver_type(receiver_text: str) -> str | None:
-    """Extract 'Calculator' from '(c *Calculator)' or '(c Calculator)'."""
+    """Extract 'Calculator' from '(c *Calculator)' or '(c Calculator)'.
+
+    A Go receiver is ``name Type`` or a bare ``Type``, so the type is always
+    the last part. Selecting it by position rather than by an uppercase first
+    letter is what lets an unexported receiver — ``func (s *startEnd) add()`` —
+    carry a parent at all; the export convention says nothing about whether a
+    name is a type.
+    """
     text = receiver_text.strip("() ")
     parts = text.split()
-    for part in reversed(parts):
-        clean = part.lstrip("*")
-        if clean and clean[0].isupper():
-            return clean
-    return None
+    if not parts:
+        return None
+    clean = parts[-1].lstrip("*")
+    return clean or None
 
 
 def refine_go_type_kind(type_spec_node: Node, src: str) -> str:
