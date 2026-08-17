@@ -71,9 +71,15 @@ _KNOWN: dict[str, int] = {
     # Splits our own `path::Class::method` symbol IDs, which we mint. The
     # separator is ours rather than the language's, so the shared helper would
     # be answering about a type where these ask about an ID. `models.py` holds
-    # the one both resolvers used to duplicate.
-    _PREFIX + "call_resolver.py": 2,
+    # the one both resolvers used to duplicate. `call_resolver.py`'s third is
+    # the tail of an import's module path — a module name, not a type.
+    _PREFIX + "call_resolver.py": 3,
     _PREFIX + "models.py": 1,
+    # Reads the head to decide whether taking a bare name is safe at all: a
+    # qualifier that is a type rather than a package must not be discarded.
+    # It guards the shared helper and then calls it, so it asks the opposite
+    # question.
+    _PREFIX + "languages/receiver_types.py": 1,
     # Normalises the method name out of `#selector(Type.method)`. The last
     # segment here is a member, not a type.
     _PREFIX + "dynamic_hints/swift.py": 1,
