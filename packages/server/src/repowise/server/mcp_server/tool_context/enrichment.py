@@ -39,11 +39,12 @@ from repowise.core.persistence.models import (
     Repository,
 )
 from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path_list
+from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
 # Minimum confidence for call edges to filter false positives
 _MIN_CALL_CONFIDENCE = 0.7
 
-# Edge types that count as a "caller"/"callee" relationship. Sorted so the
+# Every edge type meaning "something reaches this symbol". Sorted so the
 # generated SQL is stable; the shared view is the source of truth.
 #
 # The private copy this replaced omitted `method_implements`, so a Go type
@@ -57,7 +58,29 @@ _MIN_CALL_CONFIDENCE = 0.7
 # exactly one edge across all 42 indexes, and what it admits is a `__module__`
 # entry in an Express handler's caller list. Taking the shared view whole is
 # still right: hand-trimming a member here is how the private sets started.
-_CALL_EDGE_TYPES = sorted(SYMBOL_USE_EDGE_TYPES)
+#
+# It is the right set for *degree* and the wrong one for `callers`: a subclass
+# reaches its base without ever calling it. Only `calls` populates
+# callers/callees now; `_RELATION_EDGE_TYPES` carries the rest, named.
+_SYMBOL_USE_EDGE_TYPES = sorted(SYMBOL_USE_EDGE_TYPES)
+
+#: The one edge type that is literally a call. Everything else that reaches a
+#: symbol is reported by kind under `relations` instead of being poured into
+#: `callers`. Measured on this repo's own index: 9.1% of rows served under
+#: `callers` were not calls, and on 705 symbols *every* row was not a call — a
+#: pytest fixture was reported as having 388 callers, with a note telling the
+#: agent to grep for a call site that does not exist.
+#:
+#: `tool_symbol._expand_callees` imports this for its `callee_bodies` walk, so
+#: widening it again would serve base-class and framework-wiring *source* as
+#: callees for three hops. Keep it meaning what it is named.
+_CALL_EDGE_TYPES = ["calls"]
+
+#: Rows carried per relation kind. Deliberately far below the call cap: the
+#: agent question these answer is "what else reaches this, and how", which the
+#: kind and the honest total answer. Naming them costs less than the
+#: mislabelled rows it removes — measured net −27% on the affected symbols.
+_RELATION_ROW_CAP = 5
 
 # Degree reported for a FILE. `file_signals` states it as "N files depend on
 # this", so it is counted over file dependencies rather than every adjacent
@@ -82,25 +105,36 @@ def _unique_by_symbol(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-async def _count_call_neighbors(
+async def _count_neighbors_by_edge_type(
     session: AsyncSession, repo_id: str, node_id: str, *, inbound: bool
-) -> int:
-    """Count distinct caller (inbound) / callee (outbound) symbols above the
-    confidence floor — the TRUE total, independent of the display limit.
+) -> dict[str, int]:
+    """Count distinct inbound (or outbound) symbols per edge type, above the
+    confidence floor — the TRUE totals, independent of the display limit.
 
     Without this the callers list capped silently at the limit and reported
     ``truncated: false``, which misled an agent doing a find-all-callers sweep
     on a high-fan-in symbol into thinking 20 was the whole set (S2 dogfood).
+
+    `crud.get_node_degree_by_edge_type` answers the same shape for the REST
+    symbol page and is deliberately **not** reused: it counts edges with no
+    confidence floor, while this surface counts distinct symbols above 0.7. Two
+    symbols can be joined by more than one edge, so borrowing it would make the
+    total exceed what the rows can ever show and re-arm the bug above. The
+    rows and the totals have to be cut by the same rule.
     """
     matched = GraphEdge.target_node_id if inbound else GraphEdge.source_node_id
     other = GraphEdge.source_node_id if inbound else GraphEdge.target_node_id
-    stmt = select(func.count(distinct(other))).where(
-        GraphEdge.repository_id == repo_id,
-        matched == node_id,
-        GraphEdge.edge_type.in_(_CALL_EDGE_TYPES),
-        GraphEdge.confidence >= _MIN_CALL_CONFIDENCE,
+    stmt = (
+        select(GraphEdge.edge_type, func.count(distinct(other)))
+        .where(
+            GraphEdge.repository_id == repo_id,
+            matched == node_id,
+            GraphEdge.edge_type.in_(_SYMBOL_USE_EDGE_TYPES),
+            GraphEdge.confidence >= _MIN_CALL_CONFIDENCE,
+        )
+        .group_by(GraphEdge.edge_type)
     )
-    return int((await session.execute(stmt)).scalar() or 0)
+    return {edge_type: int(n or 0) for edge_type, n in await session.execute(stmt)}
 
 
 async def _resolve_call_graph(
@@ -157,39 +191,22 @@ async def _resolve_call_graph(
             )
         return
 
-    direction = "both"
-    if want_callers and not want_callees:
-        direction = "callers"
-    elif want_callees and not want_callers:
-        direction = "callees"
-
-    edges = await get_graph_edges_for_node(
-        session,
-        repo_id,
-        node.node_id,
-        direction=direction,
-        edge_types=_CALL_EDGE_TYPES,
-        limit=limit,
+    # Totals per edge type, per direction, before any rows. They say which
+    # relation kinds exist at all, so nothing is fetched speculatively, and
+    # they are the numbers reported — the rows are cut from the same rule.
+    totals_in = (
+        await _count_neighbors_by_edge_type(session, repo_id, node.node_id, inbound=True)
+        if want_callers
+        else {}
+    )
+    totals_out = (
+        await _count_neighbors_by_edge_type(session, repo_id, node.node_id, inbound=False)
+        if want_callees
+        else {}
     )
 
-    # Hydrate other nodes
-    other_ids = list(
-        {e.source_node_id if e.target_node_id == node.node_id else e.target_node_id for e in edges}
-    )
-    node_map = await get_graph_nodes_by_ids(session, repo_id, other_ids)
-
-    callers: list[dict[str, Any]] = []
-    callees: list[dict[str, Any]] = []
-
-    for e in edges:
-        # Filter out low-confidence edges (false positives from Tier 3 global resolution)
-        if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
-            continue
-
-        is_caller = e.target_node_id == node.node_id
-        other_id = e.source_node_id if is_caller else e.target_node_id
+    def _entry(edge: GraphEdge, other_id: str) -> dict[str, Any]:
         other_node = node_map.get(other_id)
-
         entry: dict[str, Any] = {
             "symbol_id": other_id,
             "name": other_node.name
@@ -203,52 +220,138 @@ async def _resolve_call_graph(
             # straight to the call-site neighbourhood instead of grepping
             # for it (the S1 dogfood's most common follow-up).
             "line": other_node.start_line if other_node else None,
-            "confidence": e.confidence,
-            "edge_type": e.edge_type,
+            "confidence": edge.confidence,
+            "edge_type": edge.edge_type,
         }
         # Which resolution strategy produced the edge. Absent on an index built
         # before origins were stamped, so it is added only when present.
-        if e.resolution_origin:
-            entry["via"] = e.resolution_origin
-        if is_caller:
-            callers.append(entry)
-        else:
-            callees.append(entry)
+        if edge.resolution_origin:
+            entry["via"] = edge.resolution_origin
+        return entry
 
-    callers = filter_dicts_by_key(callers, "file", exclude_spec)
-    callees = filter_dicts_by_key(callees, "file", exclude_spec)
+    # One fetch per edge type present, each capped on its own. A single fetch
+    # over every use edge type shared one confidence-ranked cap, so the
+    # commonest kind could evict the rest — the failure #1660 measured on
+    # django, where `Model` served 39 subclasses and 1 of its 8 callers. It is
+    # mild on this repo (6 rows lost, all where `extends` ties `calls` at 0.9)
+    # but it is the same mechanism and it is repo-dependent.
+    present = sorted(set(totals_in) | set(totals_out))
+    edges_by_type: dict[str, list[GraphEdge]] = {}
+    for edge_type in present:
+        want_in = want_callers and edge_type in totals_in
+        want_out = want_callees and edge_type in totals_out
+        if not (want_in or want_out):
+            continue
+        edges_by_type[edge_type] = await get_graph_edges_for_node(
+            session,
+            repo_id,
+            node.node_id,
+            direction=("both" if want_in and want_out else ("callers" if want_in else "callees")),
+            edge_types=[edge_type],
+            limit=limit if edge_type == "calls" else _RELATION_ROW_CAP,
+        )
 
-    # Sort by confidence DESC
-    callers.sort(key=lambda x: -(x.get("confidence") or 0))
-    callees.sort(key=lambda x: -(x.get("confidence") or 0))
+    # Hydrated once for every edge type at once: the neighbour lookup is the
+    # expensive half and it does not care which relation asked.
+    node_map = await get_graph_nodes_by_ids(
+        session,
+        repo_id,
+        list(
+            {
+                e.source_node_id if e.target_node_id == node.node_id else e.target_node_id
+                for edges in edges_by_type.values()
+                for e in edges
+            }
+        ),
+    )
 
-    # One entry per neighbouring symbol, highest-confidence edge kept. Two
-    # symbols can be joined by more than one edge — in Go a struct routinely
-    # both `calls` an interface's methods and `method_implements` it — and the
-    # truncation check below compares this length against a COUNT(DISTINCT),
-    # so counting edges here reports "not truncated" while real callers are
-    # missing. That is the S2 dogfood failure `_count_call_neighbors` exists
-    # to prevent, so the two sides have to count the same thing.
-    callers = _unique_by_symbol(callers)
-    callees = _unique_by_symbol(callees)
+    relations: list[dict[str, Any]] = []
+    for edge_type, edges in edges_by_type.items():
+        inbound: list[dict[str, Any]] = []
+        outbound: list[dict[str, Any]] = []
+        # A self-edge — a recursive call — matches both direction queries, so
+        # it comes back twice. Dedupe on the edge, then place it on every side
+        # it touches: it used to be appended to `callers` twice and to
+        # `callees` never, and only `_unique_by_symbol` hid the duplicate.
+        for e in {edge.id: edge for edge in edges}.values():
+            # Low-confidence edges are false positives from Tier 3 global
+            # resolution, and the totals above exclude them too.
+            if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
+                continue
+            if e.target_node_id == node.node_id:
+                inbound.append(_entry(e, e.source_node_id))
+            if e.source_node_id == node.node_id:
+                outbound.append(_entry(e, e.target_node_id))
 
-    if want_callers:
-        result_data["callers"] = callers
-        total = await _count_call_neighbors(session, repo_id, node.node_id, inbound=True)
-        if total > len(callers):
-            result_data["callers_total"] = total
-            result_data["callers_truncated"] = True
-            result_data["_callers_note"] = (
-                f"Showing top {len(callers)} of {total} callers by confidence. The "
-                f"graph view caps here; for the complete set (e.g. a signature change) "
-                f"grep '{node.name}('."
+        for direction, rows, totals in (
+            ("in", inbound, totals_in),
+            ("out", outbound, totals_out),
+        ):
+            rows = filter_dicts_by_key(rows, "file", exclude_spec)
+            rows.sort(key=lambda x: -(x.get("confidence") or 0))
+            # One entry per neighbouring symbol, highest-confidence edge kept.
+            # The truncation check compares this length against a
+            # COUNT(DISTINCT), so counting edges here would report "not
+            # truncated" while real callers are missing (the S2 dogfood).
+            rows = _unique_by_symbol(rows)
+            total = totals.get(edge_type, 0)
+
+            if edge_type == "calls":
+                key = "callers" if direction == "in" else "callees"
+                if (direction == "in" and not want_callers) or (
+                    direction == "out" and not want_callees
+                ):
+                    continue
+                result_data[key] = rows
+                if total > len(rows):
+                    result_data[f"{key}_total"] = total
+                    result_data[f"{key}_truncated"] = True
+                    if direction == "in":
+                        result_data["_callers_note"] = (
+                            f"Showing top {len(rows)} of {total} callers by confidence. "
+                            f"The graph view caps here; for the complete set (e.g. a "
+                            f"signature change) grep '{node.name}('."
+                        )
+                continue
+
+            if not total:
+                continue
+            # Keyed per edge type, not per group: "extends" and "implements"
+            # are different sentences and an agent needs to know which it is
+            # in. `group` is the shared vocabulary #1660 pinned, imported
+            # rather than re-listed so a new edge type cannot land unnamed.
+            relations.append(
+                {
+                    "edge_type": edge_type,
+                    "group": SYMBOL_RELATION_GROUP_OF[edge_type],
+                    "direction": direction,
+                    "total": total,
+                    "rows": rows,
+                }
             )
+
+    # `calls` may be absent entirely, and an omitted key reads as "not asked
+    # for" rather than "none" — the distinction an agent needs before deciding
+    # nothing calls this.
+    if want_callers:
+        result_data.setdefault("callers", [])
     if want_callees:
-        result_data["callees"] = callees
-        total = await _count_call_neighbors(session, repo_id, node.node_id, inbound=False)
-        if total > len(callees):
-            result_data["callees_total"] = total
-            result_data["callees_truncated"] = True
+        result_data.setdefault("callees", [])
+
+    if relations:
+        relations.sort(key=lambda r: (r["direction"], -r["total"], r["edge_type"]))
+        result_data["relations"] = relations
+        # Without this an empty `callers` beside a populated `relations` reads
+        # as a graph failure rather than the answer. This is the 705-symbol
+        # case on our own index: the old code answered it with 50 rows of
+        # framework wiring under "callers" and a note saying to grep for a
+        # call site that does not exist.
+        inbound_kinds = [r for r in relations if r["direction"] == "in"]
+        if want_callers and not result_data["callers"] and inbound_kinds:
+            reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
+            result_data["_call_graph_note"] = (
+                f"Nothing calls '{node.name}'; it is reached by {reached}. See `relations`."
+            )
 
 
 async def _resolve_file_level_callers(
@@ -353,7 +456,12 @@ async def _resolve_metrics(
         repo_id,
         node.node_id,
         edge_types=(
-            _CALL_EDGE_TYPES if node.node_type == "symbol" else _FILE_DEPENDENCY_EDGE_TYPES
+            # Degree is "how connected is this symbol", so it stays over every
+            # use edge type even though `callers` narrowed to calls. Matching
+            # `routers/graph/intelligence.py`, which reports the same number.
+            _SYMBOL_USE_EDGE_TYPES
+            if node.node_type == "symbol"
+            else _FILE_DEPENDENCY_EDGE_TYPES
         ),
     )
 

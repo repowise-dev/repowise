@@ -73,16 +73,6 @@ class CallerCalleeEntry(BaseModel):
         )
 
 
-class CallersCalleesResponse(BaseModel):
-    symbol_id: str
-    symbol: SymbolNodeSummary
-    callers: list[CallerCalleeEntry]
-    callees: list[CallerCalleeEntry]
-    caller_count: int
-    callee_count: int
-    truncated: bool
-
-
 # ---------------------------------------------------------------------------
 # Symbol relation vocabulary
 # ---------------------------------------------------------------------------
@@ -124,6 +114,24 @@ class SymbolRelationGroup(BaseModel):
     group: str
     total: int
     rows: list[CallerCalleeEntry]
+
+
+class CallersCalleesResponse(BaseModel):
+    symbol_id: str
+    symbol: SymbolNodeSummary
+    #: `calls` edges only. Every other relation kind is in `relations`, so a
+    #: subclass is never served as a caller.
+    callers: list[CallerCalleeEntry]
+    callees: list[CallerCalleeEntry]
+    #: True totals, not the number of rows served. `symbol-drawer-wrapper.tsx`
+    #: renders these as `caller_total`, and they used to be `len(callers)`
+    #: capped at the request limit.
+    caller_count: int
+    callee_count: int
+    truncated: bool
+    #: Defaulted so a client reading an older server sees an absent group list
+    #: rather than a validation error.
+    relations: list[SymbolRelationGroup] = []
 
 
 class CommunityMember(BaseModel):

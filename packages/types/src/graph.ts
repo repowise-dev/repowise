@@ -11,6 +11,10 @@
  * `GraphExport` below before passing data to components.
  */
 
+// The relation vocabulary lives beside the symbol types that define it, so
+// `CallersCallees` below borrows it rather than restating the group union.
+import type { SymbolRelationGroup } from "./symbols";
+
 // ---------------------------------------------------------------------------
 // Core node + link
 // ---------------------------------------------------------------------------
@@ -306,11 +310,16 @@ export interface CallerCalleeEntry {
 export interface CallersCallees {
   symbol_id: string;
   symbol: SymbolNodeSummary;
+  /** `calls` edges only. Every other relation kind is in `relations`. */
   callers: CallerCalleeEntry[];
   callees: CallerCalleeEntry[];
+  /** True totals, not the number of rows served. */
   caller_count: number;
   callee_count: number;
   truncated: boolean;
+  /** Heritage, framework wiring and references, each named and counted.
+   *  Absent on a backend that predates the split. */
+  relations?: SymbolRelationGroup<CallerCalleeEntry>[];
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,10 @@ import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { SymbolDrawer } from "@repowise-dev/ui/symbols/symbol-drawer";
-import { toSymbolBodyCall } from "@repowise-dev/ui/symbols/normalize-calls";
+import {
+  toSymbolBodyCall,
+  toSymbolBodyRelations,
+} from "@repowise-dev/ui/symbols/normalize-calls";
 import {
   fileEntityPath,
   symbolEntityPath,
@@ -74,13 +77,17 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
   // boundary entirely — the rows are what that boundary exists to protect.
   const calls = useMemo(
     () => ({
-      // `/callers-callees` defaults to `edge_types=calls`, so these rows are
-      // calls already. The counts are the endpoint's unbounded totals rather
-      // than the row arrays, which are cut at the request limit.
+      // `/callers-callees` serves `calls` edges only, so these rows are calls
+      // already. The counts are the endpoint's unbounded totals rather than
+      // the row arrays, which are cut at the request limit.
       callers: (callData?.callers ?? []).map(toSymbolBodyCall),
       callees: (callData?.callees ?? []).map(toSymbolBodyCall),
       caller_total: callData?.caller_count ?? 0,
       callee_total: callData?.callee_count ?? 0,
+      // Heritage and framework wiring. The drawer had honest call counts but
+      // no relations while the routed page had both, so the same symbol read
+      // differently depending on which surface you opened it from.
+      relations: toSymbolBodyRelations(callData?.relations),
     }),
     [callData],
   );

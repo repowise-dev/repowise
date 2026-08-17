@@ -27,13 +27,13 @@ from repowise.server.mcp_server._graph_utils import (
 )
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
-    CallerCalleeEntry,
     CallersCalleesResponse,
     ExecutionFlowEntry,
     ExecutionFlowsResponse,
     GraphMetricsResponse,
     SymbolNodeSummary,
 )
+from repowise.server.services.symbol_relations import load_symbol_relations
 
 router = APIRouter()
 
@@ -94,18 +94,35 @@ async def get_callers_callees(
     repo_id: str,
     symbol_id: str = Query(..., description="Symbol node ID (path::Name)"),
     direction: str = Query("both", description="callers, callees, or both"),
-    edge_types: str = Query("calls", description="Comma-separated edge types"),
+    edge_types: str = Query(
+        "", description="Optional comma-separated filter on `relations` kinds; empty means all"
+    ),
     limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> CallersCalleesResponse:
-    """Find who calls a symbol and what it calls. Also works for class hierarchy."""
+    """Who calls a symbol, what it calls, and every other relation it has.
+
+    Shares `load_symbol_relations` with `/api/symbols/detail`, so the drawer
+    this feeds and the routed symbol page cannot disagree about what reaches a
+    symbol. Two things changed when they were joined:
+
+    - `callers`/`callees` are `calls` edges only. They used to be whatever
+      `edge_types` asked for, under one heading, so a subclass could be served
+      as a caller. Heritage and framework wiring are in `relations`, named.
+    - `caller_count`/`callee_count` are the true totals, not the number of
+      rows served. They were `len(callers)`, capped at `limit`, and
+      `symbol-drawer-wrapper.tsx` renders them as `caller_total` — so a symbol
+      with 275 callers reported 20.
+
+    `edge_types` now filters `relations` rather than deciding what counts as a
+    caller. No client in this repo passes it; both `useCallersCallees` call
+    sites omit it.
+    """
     if direction not in ("callers", "callees", "both"):
         direction = "both"
 
-    et_list = [t.strip() for t in edge_types.split(",") if t.strip()]
-    if not et_list:
-        et_list = ["calls"]
+    et_filter = {t.strip() for t in edge_types.split(",") if t.strip()}
 
     # Resolve symbol: exact then fuzzy
     node = await crud.get_graph_node(session, repo_id, symbol_id)
@@ -132,38 +149,18 @@ async def get_callers_callees(
             rows.sort(key=lambda r: r.node_id)
             node = rows[0]
 
-    edges = await crud.get_graph_edges_for_node(
-        session,
-        repo_id,
-        node.node_id,
-        direction=direction,
-        edge_types=et_list,
-        limit=limit,
+    relations = await load_symbol_relations(
+        session, repo_id, node.node_id, present=True, call_row_cap=limit
     )
+    groups = [
+        g
+        for g in relations.groups
+        if (not et_filter or g.edge_type in et_filter)
+        and (direction == "both" or (direction == "callers") == (g.direction == "in"))
+    ]
 
-    # Hydrate connected nodes
-    other_ids: set[str] = set()
-    for e in edges:
-        if e.source_node_id != node.node_id:
-            other_ids.add(e.source_node_id)
-        if e.target_node_id != node.node_id:
-            other_ids.add(e.target_node_id)
-
-    node_map = await crud.get_graph_nodes_by_ids(session, repo_id, list(other_ids))
-
-    callers: list[CallerCalleeEntry] = []
-    callees: list[CallerCalleeEntry] = []
-
-    for e in edges:
-        entry = CallerCalleeEntry.from_edge(e, node_id=node.node_id, node_map=node_map)
-        if e.target_node_id == node.node_id:
-            callers.append(entry)
-        else:
-            callees.append(entry)
-
-    callers.sort(key=lambda x: (-x.confidence, x.name))
-    callees.sort(key=lambda x: (-x.confidence, x.name))
-
+    wants_in = direction in ("callers", "both")
+    wants_out = direction in ("callees", "both")
     return CallersCalleesResponse(
         symbol_id=node.node_id,
         symbol=SymbolNodeSummary(
@@ -174,11 +171,15 @@ async def get_callers_callees(
             start_line=node.start_line,
             signature=node.signature,
         ),
-        callers=callers if direction in ("callers", "both") else [],
-        callees=callees if direction in ("callees", "both") else [],
-        caller_count=len(callers),
-        callee_count=len(callees),
-        truncated=(len(callers) >= limit or len(callees) >= limit),
+        callers=relations.callers if wants_in else [],
+        callees=relations.callees if wants_out else [],
+        caller_count=relations.caller_total if wants_in else 0,
+        callee_count=relations.callee_total if wants_out else 0,
+        relations=groups,
+        truncated=(
+            (wants_in and len(relations.callers) < relations.caller_total)
+            or (wants_out and len(relations.callees) < relations.callee_total)
+        ),
     )
 
 
