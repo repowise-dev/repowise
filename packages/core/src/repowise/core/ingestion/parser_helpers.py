@@ -830,9 +830,19 @@ TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
 
 
 def _count_arguments(arg_node: Node) -> int:
-    """Count the number of arguments in an argument/argument_list node."""
+    """Count the number of arguments in an argument/argument_list node.
+
+    Comments are children of the argument list, so an argument annotated with
+    a trailing ``// name`` counted twice. Grammars spell the node type several
+    ways (``comment``, ``line_comment``, ``block_comment``), hence the
+    substring test rather than a fixed set.
+    """
     skip_types = frozenset({"(", ")", ",", "[", "]"})
-    return sum(1 for child in arg_node.children if child.type not in skip_types)
+    return sum(
+        1
+        for child in arg_node.children
+        if child.type not in skip_types and "comment" not in child.type
+    )
 
 
 def _find_enclosing_symbol(
