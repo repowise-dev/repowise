@@ -59,6 +59,11 @@ _EDGE_VERB: dict[str, str] = {
 # surface the single highest-priority verb rather than concatenating tokens.
 _VERB_PRIORITY: tuple[str, ...] = (
     "calls",
+    # Below "calls": a pair with both holds a direct invocation, which is the
+    # more precise claim. Above the heritage verbs, because where a pair has
+    # both, the dispatch says what actually runs and "implements" only says
+    # the types line up.
+    "dispatches to",
     "inherits from",
     "implements",
     "imports",
