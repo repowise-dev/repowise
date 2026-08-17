@@ -35,6 +35,7 @@ _EDGE_VERB: dict[str, str] = {
     "extends": "inherits from",
     "implements": "implements",
     "method_implements": "implements",
+    "dispatches_to": "dispatches to",
     # A lazy/registry import and a framework-convention link (a test file to its
     # conftest) are both real dependencies that no static import expresses.
     "dynamic_uses": "uses",

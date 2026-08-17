@@ -282,6 +282,13 @@ EdgeType = Literal[
     "extends",
     "implements",
     "method_implements",
+    # Base method → an implementation that can answer for it. Named for what
+    # it asserts rather than for a heritage relation: the pass matches by
+    # method name and compares no signature, so it is a possible dispatch
+    # target, not a proven override. `method_implements` could not be reused —
+    # it runs implementor → interface, and this edge has to point the other
+    # way for a traversal starting at the base to reach the implementation.
+    "dispatches_to",
     "co_changes",
     "framework",
     # A data reference rather than a call. Two `_add_reads_edge` helpers emit
@@ -364,6 +371,12 @@ ResolutionOrigin = Literal[
     "receiver_field_same_package",  # 0.90 (JVM)
     "receiver_field_import",  # 0.88
     "receiver_field_global",  # 0.75
+    # 0.90 — the caller's own class does not declare the method but exactly one
+    # of its ancestors does. Below the two same-class origins because the walk
+    # compares no signature and reads no visibility, so it can reach a method
+    # the language would not actually dispatch to.
+    "self_inherited",  # 0.90 — explicit self/this receiver
+    "enclosing_inherited",  # 0.90 — implicit receiver, bare call
 ]
 
 RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))
@@ -449,6 +462,10 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         "extends",
         "implements",
         "method_implements",
+        # An implementation is used by every call written against the base it
+        # answers for, and that call lands on the base. Without this the whole
+        # implementation side of an interface reads as called by nobody.
+        "dispatches_to",
         "reads",
         # Naming a function is using it. A handler sitting in a dispatch table
         # is never called anywhere a parser can see, and treating that as "no

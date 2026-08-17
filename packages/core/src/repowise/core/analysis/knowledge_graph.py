@@ -241,6 +241,7 @@ _EDGE_TYPE_MAP: dict[str, str] = {
     "extends": "depends_on",
     "implements": "depends_on",
     "method_implements": "depends_on",
+    "dispatches_to": "depends_on",
     "reads": "depends_on",
     "references": "depends_on",
 }

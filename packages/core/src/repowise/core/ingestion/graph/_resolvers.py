@@ -6,6 +6,7 @@ emitting EXTENDS/IMPLEMENTS, ``reads``, and ``calls`` edges respectively.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 import structlog
@@ -488,6 +489,45 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_override_dispatch(self, progress: Any | None = None) -> None:
+        """Emit ``dispatches_to`` edges from base methods to implementations.
+
+        Runs last: it reads the heritage edges Phase 2 resolved and the
+        ``has_method`` edges ``add_file`` laid down, and nothing else.
+        """
+        from ..dispatch_edges import resolve_override_dispatch
+
+        phase = "graph.dispatch"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            resolve_override_dispatch(self._graph)
+        except Exception as exc:
+            log.warning("override_dispatch_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _heritage_parents(self) -> dict[str, set[str]]:
+        """``{type symbol id: parent type symbol ids}`` from the built graph.
+
+        Symbol ids, not type names: a name-keyed map unions the parents of
+        every same-named class in the repo and reaches ancestors that are not
+        this class's.
+        """
+        parents: dict[str, set[str]] = defaultdict(set)
+        for child, parent, data in self._graph.edges(data=True):
+            if data.get("edge_type") not in ("extends", "implements"):
+                continue
+            if (
+                self._graph.nodes[child].get("node_type") == "symbol"
+                and self._graph.nodes[parent].get("node_type") == "symbol"
+            ):
+                parents[child].add(parent)
+        return parents
+
     def _resolve_calls(
         self,
         import_targets: dict[str, set[str]],
@@ -501,6 +541,7 @@ class ResolveMixin:
             import_targets,
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
+            heritage_parents=self._heritage_parents(),
         )
 
         # Record which C/C++ declarations were paired with a definition. The

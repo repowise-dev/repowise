@@ -510,6 +510,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress)
 
+        # --- Phase 4: Base method → the implementations that answer for it ---
+        # Post-pass: needs heritage resolved and reads only the graph.
+        self._resolve_override_dispatch(progress=progress)
+
         self._built = True
 
         # Keep the resolver-built DotNetProjectIndex reachable after the

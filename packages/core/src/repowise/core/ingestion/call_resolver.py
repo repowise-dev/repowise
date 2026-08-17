@@ -54,6 +54,17 @@ log = structlog.get_logger(__name__)
 # bare call there is a free function and this tier would resolve it wrongly.
 _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 
+# Languages where a call the caller's own class cannot answer is looked for on
+# its ancestors. Both shapes — an explicit ``self``/``this`` receiver and an
+# implicit one — end in the same walk.
+_INHERITED_LANGUAGES = frozenset(
+    {"java", "csharp", "cpp", "kotlin", "python", "typescript", "swift"}
+)
+
+# Ancestors within four hops: ``heritage_ancestors`` bounds expansion, not
+# reach, so 3 reaches 4.
+_MAX_ANCESTOR_EXPAND_DEPTH = 3
+
 
 @dataclass(frozen=True, slots=True)
 class _LanguageCallStrategies:
@@ -141,7 +152,13 @@ class CallResolver:
         *,
         repo_path: str | None = None,
         import_maps: Any | None = None,
+        heritage_parents: dict[str, set[str]] | None = None,
     ) -> None:
+        # {type symbol id: parent type symbol ids}, from the caller's already
+        # resolved heritage. Absent when the resolver is built standalone, in
+        # which case the inherited tier simply never fires.
+        self._heritage_parents: dict[str, set[str]] = heritage_parents or {}
+        self._ancestors: dict[str, tuple[str, ...]] = {}
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
 
@@ -805,6 +822,22 @@ class CallResolver:
                 return None  # reject cross-language Tier 3 match
             return ResolvedCall(caller_id, candidates[0], 0.50, call.line, "global_unique")
 
+        # Last, so it can only add an edge. The member-shaped refusal is the
+        # one ``_enclosing_class_method`` already applies: several grammars
+        # mint a receiver-less site for ``obj.m()`` too, and reading one as an
+        # implicit receiver would bind the wrong class's hierarchy to the call.
+        lang = self._language_of(file_path)
+        if (
+            lang in _IMPLICIT_RECEIVER_LANGUAGES
+            and lang in _INHERITED_LANGUAGES
+            and (call.line, target_name) not in self._member_shaped_sites(file_path)
+        ):
+            sym_id = self._inherited_method(caller_id, target_name)
+            if sym_id is not None:
+                return ResolvedCall(
+                    caller_id, sym_id, 0.90, call.line, "enclosing_inherited"
+                )
+
         return None
 
     def _resolve_member_call(
@@ -891,7 +924,57 @@ class CallResolver:
             if hit is not None:
                 return hit
 
+        # Strategy 3, continued: the method may be inherited, and Strategy 3
+        # can only see the caller's own class in the caller's own file. Asked
+        # last so it can add an edge and never displace one.
+        if receiver_name in ("self", "this") and self._language_of(file_path) in (
+            _INHERITED_LANGUAGES
+        ):
+            sym_id = self._inherited_method(caller_id, method_name)
+            if sym_id is not None:
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "self_inherited")
+
         return None
+
+    def _language_of(self, file_path: str) -> str | None:
+        parsed = self._parsed_files.get(file_path)
+        return parsed.file_info.language if parsed else None
+
+    def _inherited_method(self, caller_id: str, method_name: str) -> str | None:
+        """The method of this name an ancestor of the caller's class declares.
+
+        Ambiguity is terminal: when two ancestors on different branches declare
+        the name there is no way to tell which one the call means, and picking
+        either mints an edge to a class the call may never reach. Refusing
+        costs an edge; guessing costs correctness.
+        """
+        if not self._heritage_parents:
+            return None
+        class_id = _extract_class_id(caller_id)
+        if class_id is None:
+            return None
+        hits = set()
+        for ancestor in self._ancestors_of(class_id):
+            anc_file, _, anc_class = ancestor.rpartition("::")
+            sym_id = self._file_methods.get(anc_file, {}).get((anc_class, method_name))
+            if sym_id is not None and sym_id != caller_id:
+                hits.add(sym_id)
+        return next(iter(hits)) if len(hits) == 1 else None
+
+    def _ancestors_of(self, class_id: str) -> tuple[str, ...]:
+        got = self._ancestors.get(class_id)
+        if got is None:
+            from .heritage_resolver import heritage_ancestors
+
+            reached = heritage_ancestors(
+                class_id,
+                lambda t: self._heritage_parents.get(t, ()),
+                max_expand_depth=_MAX_ANCESTOR_EXPAND_DEPTH,
+            )
+            reached.discard(class_id)
+            got = tuple(sorted(reached))
+            self._ancestors[class_id] = got
+        return got
 
     def _receiver_pair_match(
         self,
@@ -1200,6 +1283,17 @@ def _rivals_a_class_method(symbol_id: str) -> bool:
     """
     parts = symbol_id.split("::")
     return len(parts) >= 3 and parts[-1] != parts[-2]
+
+
+def _extract_class_id(symbol_id: str) -> str | None:
+    """``path::Cls::meth`` -> ``path::Cls``; None when no class encloses it.
+
+    The heritage graph is keyed on the class's own symbol id, so the class
+    *name* alone cannot be looked up in it — that is the name-keyed shortcut
+    the walk exists to avoid.
+    """
+    parts = symbol_id.split("::")
+    return "::".join(parts[:-1]) if len(parts) >= 3 else None
 
 
 def _extract_class_from_symbol_id(symbol_id: str) -> str | None:
