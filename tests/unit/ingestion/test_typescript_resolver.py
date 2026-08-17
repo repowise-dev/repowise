@@ -544,6 +544,32 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/dev.js", "packages/ui/index.cjs"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.cjs"
 
+    def test_spare_export_target_never_displaces_the_index_probe(
+        self, tmp_path: Path
+    ) -> None:
+        # vue's shape: the ranked condition names an absent build artefact, a
+        # lower condition names a committed ``index.mjs``, and the package root
+        # also holds the ``index.js`` the probe below already bound. The spare
+        # candidate must stay behind that probe, or the change stops being an
+        # addition and starts moving imports that already resolve.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "main": "index.js",
+                "exports": {
+                    ".": {
+                        "import": {
+                            "default": "./dist/ui.esm-bundler.js",
+                            "node": "./index.mjs",
+                        }
+                    }
+                },
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/index.js", "packages/ui/index.mjs"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.js"
+
     def test_declaration_file_is_not_taken_as_a_fallback_entry(
         self, tmp_path: Path
     ) -> None:

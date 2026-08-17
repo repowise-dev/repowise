@@ -513,30 +513,42 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
     exports_map: dict[str, tuple[str, ...]] = pkg["exports"]
     sub = module_path[len(best_name) :].lstrip("/")
 
-    # 1) ``exports`` field — the package's authoritative subpath map.
-    if exports_map:
-        targets = _match_export_key(sub, exports_map)
-        for position, target in enumerate(targets or ()):
-            # A declaration file carries no bodies, so binding one as the entry
-            # resolves every call through it to a signature — worse than the
-            # external node it replaces, which at least claims nothing. Only
-            # the head may be one, because that is what already shipped.
-            if position and target.endswith(_DECLARATION_SUFFIXES):
+    targets = _match_export_key(sub, exports_map) if exports_map else None
+
+    def probe_target(target: str) -> str | None:
+        # Targets are package-relative ("./src/lib/foo.ts"). Strip the
+        # leading "./" and join with the package dir to get a repo path.
+        return _probe_path(f"{dir_posix}/{target.lstrip('./')}", ctx.path_set)
+
+    def spare_export_target() -> str | None:
+        """A candidate past the ranked one, for when nothing else answered.
+
+        Kept behind every pre-existing probe so this can only fill a specifier
+        that resolved to nothing: a package naming its sources under a
+        condition no fixed list ranks is unreachable otherwise, but reordering
+        would move imports that already bind, which is a different change.
+
+        A declaration file is never taken here. It carries no bodies, so
+        binding one as an entry resolves every call through it to a signature
+        — worse than the external node it would replace, which claims nothing.
+        """
+        for target in (targets or ())[1:]:
+            if target.endswith(_DECLARATION_SUFFIXES):
                 continue
-            # Targets are package-relative ("./src/lib/foo.ts"). Strip the
-            # leading "./" and join with the package dir to get a repo path.
-            stripped = target.lstrip("./")
-            resolved = _probe_path(f"{dir_posix}/{stripped}", ctx.path_set)
+            resolved = probe_target(target)
             if resolved is not None:
                 return resolved
+        return None
+
+    # 1) ``exports`` field — the package's authoritative subpath map.
+    if targets:
+        resolved = probe_target(targets[0])
+        if resolved is not None:
+            return resolved
 
     # 2) Bare-package fallback — no ``exports[.]`` entry: try index.*,
-    #    then ``main``/``module`` from package.json, then the source entry
-    #    by convention. The convention probe is last and only ever runs
-    #    where the alternative is no binding at all: a package that
-    #    publishes only from a build directory names nothing a source
-    #    checkout contains, so every manifest field misses and the import
-    #    would otherwise become an external node.
+    #    then ``main``/``module`` from package.json, then the entries a
+    #    package publishing only from a build directory leaves reachable.
     if not sub:
         cand = _probe_path(f"{dir_posix}/index", ctx.path_set)
         if cand is not None:
@@ -546,6 +558,9 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
             cand = _probe_path(f"{dir_posix}/{main.lstrip('./')}", ctx.path_set)
             if cand is not None:
                 return cand
+        cand = spare_export_target()
+        if cand is not None:
+            return cand
         for source_root in ("src", "lib"):
             cand = _probe_path(f"{dir_posix}/{source_root}/index", ctx.path_set)
             if cand is not None:
@@ -563,7 +578,7 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         cand = _probe_path(f"{dir_posix}/{src_root}/{sub}", ctx.path_set)
         if cand is not None:
             return cand
-    return None
+    return spare_export_target()
 
 
 # ---------------------------------------------------------------------------
