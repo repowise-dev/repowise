@@ -1412,11 +1412,17 @@ class DeadCodeAnalyzer:
                 ):
                     continue
 
-            has_callers = any(
-                self.graph.get_edge_data(pred, node, {}).get("edge_type") == "calls"
+            # Any inbound use, not only a call. An override reached through the
+            # base it answers for, a collaborator the container constructs, and
+            # a handler named in a dispatch table each carry a symbol-level edge
+            # of their own; reading only ``calls`` here reported all three as
+            # unused.
+            is_used = any(
+                self.graph.get_edge_data(pred, node, {}).get("edge_type")
+                in REACHABILITY_USE_EDGE_TYPES
                 for pred in self.graph.predecessors(node)
             )
-            if has_callers:
+            if is_used:
                 continue
 
             # Dispatch-table pattern: a private helper imported by name
@@ -1453,7 +1459,7 @@ class DeadCodeAnalyzer:
                     symbol_name=sym_name,
                     symbol_kind=node_data.get("kind"),
                     confidence=0.65,
-                    reason=f"Private symbol '{sym_name}' has no callers",
+                    reason=f"Private symbol '{sym_name}' is not used anywhere",
                     last_commit_at=git_meta.get("last_commit_at")
                     if isinstance(git_meta.get("last_commit_at"), datetime)
                     else None,
@@ -1467,7 +1473,7 @@ class DeadCodeAnalyzer:
                     if node_data.get("start_line")
                     else None,
                     package=self._get_package(file_path),
-                    evidence=[f"No CALL edges to '{sym_name}'"],
+                    evidence=[f"No call, reference or override reaches '{sym_name}'"],
                     safe_to_delete=False,
                     primary_owner=git_meta.get("primary_owner_name"),
                     age_days=git_meta.get("age_days"),
