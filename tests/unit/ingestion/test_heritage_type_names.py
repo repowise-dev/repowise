@@ -58,6 +58,23 @@ CASES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "Gen[Arg]", [("Gen", "mixin")]),
     ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "ns.Qual", [("Qual", "mixin")]),
     ("go", "go", "type Child struct {{\n\t{p}\n}}\n", "ns.Both[Arg]", [("Both", "mixin")]),
+    # --- go: interface embedding -------------------------------------------
+    # The same relation through a different node — the grammar wraps each
+    # embed in a `type_elem`.
+    ("go", "go", "type Child interface {{\n\t{p}\n}}\n", "Bare", [("Bare", "extends")]),
+    ("go", "go", "type Child interface {{\n\t{p}\n}}\n", "Gen[Arg]", [("Gen", "extends")]),
+    ("go", "go", "type Child interface {{\n\t{p}\n}}\n", "ns.Qual", [("Qual", "extends")]),
+    ("go", "go", "type Child interface {{\n\t{p}\n}}\n", "ns.Both[Arg]", [("Both", "extends")]),
+    # A type set is a generic bound, not an embed: it carries no methods.
+    ("go", "go", "type Child interface {{\n\t{p}\n}}\n", "~int | string", []),
+    # ...and skipping one must not cost the embed sitting beside it.
+    (
+        "go",
+        "go",
+        "type Child interface {{\n\t~int | string\n\t{p}\n}}\n",
+        "Bare",
+        [("Bare", "extends")],
+    ),
     # --- rust --------------------------------------------------------------
     ("rust", "rs", "struct Child;\nimpl {p} for Child {{}}\n", "Bare", [("Bare", "trait_impl")]),
     (

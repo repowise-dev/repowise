@@ -46,16 +46,20 @@ def _extract_go_heritage(
 
     elif type_node.type == "interface_type":
         for child in type_node.children:
-            if child.type in ("{", "}", "\n"):
+            if child.type != "type_elem":
                 continue
-            if child.type in ("type_identifier", "qualified_type"):
-                bare = bare_type_name(node_text(child, src))
-                if bare:
-                    out.append(
-                        HeritageRelation(
-                            child_name=name,
-                            parent_name=bare,
-                            kind="extends",
-                            line=line,
-                        )
+            text = node_text(child, src).strip()
+            # A type set (`~int | string`) wears the same node as an embed but
+            # is a generic bound, carrying no methods to inherit.
+            if "|" in text or "~" in text:
+                continue
+            bare = bare_type_name(text)
+            if bare:
+                out.append(
+                    HeritageRelation(
+                        child_name=name,
+                        parent_name=bare,
+                        kind="extends",
+                        line=line,
                     )
+                )
