@@ -67,8 +67,12 @@ _SPRING_BEAN_METHOD_KOTLIN_RE = re.compile(
 
 # Lombok constructor-synthesis annotations. RAC = constructor over every
 # ``final`` (and ``@NonNull``) field; AAC = constructor over every field.
-_LOMBOK_RAC_ANNOT = ("@RequiredArgsConstructor", "@AllArgsConstructor")
-_LOMBOK_DATA_VALUE = ("@Data", "@Value")
+_LOMBOK_RAC_ANNOT = ("@RequiredArgsConstructor", "@AllArgsConstructor", "@Data")
+# Lombok's `@Value` makes a class immutable and takes no argument; Spring's
+# takes a property expression and sits on a field. Matching the bare spelling
+# is what separates them — reading `@Value("${app.name}")` as Lombok turns
+# every field in the class into a constructor parameter.
+_LOMBOK_VALUE_RE = re.compile(r"@Value\s*(?![(\w])")
 
 # Spring Data repository base interfaces — any interface extending one of
 # these has Spring-generated impls at runtime and must be treated as an
@@ -158,10 +162,8 @@ def _scan_lombok_ctor_params(text: str) -> list[tuple[str, int]]:
     is every ``final`` field's head type; for ``@AllArgsConstructor`` (or
     ``@Value``), every field's head type. Builtin types are filtered.
     """
-    is_rac = any(a in text for a in _LOMBOK_RAC_ANNOT) or any(
-        a in text for a in _LOMBOK_DATA_VALUE if a == "@Data"
-    )
-    is_aac = "@AllArgsConstructor" in text or "@Value" in text
+    is_rac = any(a in text for a in _LOMBOK_RAC_ANNOT)
+    is_aac = "@AllArgsConstructor" in text or bool(_LOMBOK_VALUE_RE.search(text))
     if not (is_rac or is_aac):
         return []
 

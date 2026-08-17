@@ -238,3 +238,27 @@ class TestSpringSymbolEdges:
 
         bound = _bound(_build_graph(tmp_path))
         assert not [d for _s, d in bound if d.endswith("::UserService")]
+
+    def test_springs_value_annotation_is_not_lomboks(self, tmp_path: Path) -> None:
+        # Lombok's @Value makes a class immutable and takes no argument;
+        # Spring's takes a property expression. Reading one as the other turns
+        # every field in the class into a constructor parameter.
+        (tmp_path / "MailService.java").write_text(
+            "import org.springframework.stereotype.Service;\n"
+            "@Service\npublic class MailService {}\n"
+        )
+        (tmp_path / "User.java").write_text("public class User {}\n")
+        (tmp_path / "UserResource.java").write_text(
+            "import org.springframework.web.bind.annotation.RestController;\n"
+            "import org.springframework.beans.factory.annotation.Value;\n"
+            "@RestController\npublic class UserResource {\n"
+            '  @Value("${app.name}")\n'
+            "  private String applicationName;\n"
+            "  private final User cachedUser = null;\n"
+            "  public UserResource(MailService mailService) {}\n"
+            "}\n"
+        )
+
+        bound = _bound(_build_graph(tmp_path))
+        assert ("UserResource.java::UserResource", "MailService.java::MailService") in bound
+        assert ("UserResource.java::UserResource", "User.java::User") not in bound
