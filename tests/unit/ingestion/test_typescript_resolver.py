@@ -544,6 +544,21 @@ class TestWorkspaceExportsField:
         ctx = _ctx(tmp_path, ["packages/ui/dev.js", "packages/ui/index.cjs"])
         assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.cjs"
 
+    def test_entry_with_no_ranked_condition_still_falls_through(
+        self, tmp_path: Path
+    ) -> None:
+        # No condition here is one the module ranks, so the key was dropped
+        # outright and the subpath probe below answered. Keeping the key on the
+        # strength of a spare candidate would let ``./internal.ts`` answer from
+        # the exports step instead — a moved binding, not a new one.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {"exports": {".": {"bespoke": "./internal.ts"}}},
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/internal.ts", "packages/ui/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.ts"
+
     def test_spare_export_target_never_displaces_the_index_probe(
         self, tmp_path: Path
     ) -> None:

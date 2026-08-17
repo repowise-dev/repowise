@@ -184,7 +184,7 @@ def _ordered_export_targets(value: Any) -> tuple[str, ...]:
     """
     ordered: list[str] = []
     head = _flatten_export_value(value)
-    if head:
+    if head is not None:
         ordered.append(head)
 
     def walk(node: Any) -> None:
@@ -227,10 +227,13 @@ def _build_exports_map(pkg_data: dict) -> dict[str, tuple[str, ...]]:
     for key, value in raw.items():
         if not isinstance(key, str) or not key.startswith("."):
             continue
-        targets = _ordered_export_targets(value)
-        if not targets:
+        # A key whose ranked walk yields nothing is dropped, exactly as before.
+        # Keeping it on the strength of a spare candidate alone would let that
+        # candidate answer in the exports step, ahead of the fallbacks that
+        # answer for such a key today — a moved binding rather than a new one.
+        if _flatten_export_value(value) is None:
             continue
-        out[key] = targets
+        out[key] = _ordered_export_targets(value)
     return out
 
 
@@ -660,13 +663,13 @@ def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
         dir_posix: str = pkg["dir"]
         exports_map: dict[str, tuple[str, ...]] = pkg.get("exports") or {}
         for pattern, targets in exports_map.items():
-            # First candidate that names anything in the repo wins, so a key
-            # whose ranked target exists contributes exactly what it did before.
-            for target in targets:
-                matches = _expand_exports_wildcard(target, pattern, dir_posix, path_set)
-                if matches:
-                    entries.update(matches)
-                    break
+            # The ranked target only. The spare candidates exist to bind an
+            # import the resolver would otherwise drop; letting them widen the
+            # published-entry set would suppress dead-code findings instead,
+            # which is a different change and is not what was measured here.
+            entries.update(
+                _expand_exports_wildcard(targets[0], pattern, dir_posix, path_set)
+            )
         # ``main``/``module`` shorthand — package's primary entry.
         main = pkg.get("main")
         if isinstance(main, str):
