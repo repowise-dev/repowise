@@ -335,3 +335,56 @@ def test_a_python_bare_call_is_not_read_as_an_implicit_receiver(tmp_path: Path) 
         "python",
     )
     assert not _calls_by_origin(graph, "enclosing_inherited")
+
+
+def test_a_csharp_bare_call_reaches_an_inherited_method(tmp_path: Path) -> None:
+    """C# resolves a bare call by neither package nor imported name, so an
+    inherited member is only reachable through the ancestor walk. A decoy
+    declares the name too, so a global-name guess cannot answer instead."""
+    graph = _build(
+        tmp_path,
+        {
+            "Base.cs": (
+                "namespace App.Base;\n\npublic class Base\n{\n"
+                "    protected int Helper() => 1;\n}\n"
+            ),
+            "Mid.cs": "namespace App.Mid;\n\npublic class Mid : Base\n{\n}\n",
+            "Child.cs": (
+                "namespace App.Web;\n\npublic class Child : Mid\n{\n"
+                "    public int Run() => Helper();\n}\n"
+            ),
+            "Decoy.cs": (
+                "namespace App.Other;\n\npublic class Decoy\n{\n"
+                "    public int Helper() => 9;\n}\n"
+            ),
+        },
+        "csharp",
+    )
+    assert ("Child.cs::Child::Run", "Base.cs::Base::Helper") in _calls_by_origin(
+        graph, "enclosing_inherited"
+    )
+
+
+def test_a_csharp_overload_set_resolves_to_the_one_id_it_shares(tmp_path: Path) -> None:
+    """Overloads of one name in one class carry one symbol id, so a call
+    reaching any of them lands on the same node. Pins the property the
+    inherited tier relies on: there is nothing to choose between."""
+    graph = _build(
+        tmp_path,
+        {
+            "Steps.cs": (
+                "namespace App;\n\npublic class Steps\n{\n"
+                "    protected int Given() => 0;\n"
+                "    protected int Given(int a) => a;\n"
+                "    protected int Given(int a, int b) => a + b;\n}\n"
+            ),
+            "Test.cs": (
+                "namespace App;\n\npublic class Test : Steps\n{\n"
+                "    public int Run() => Given(1, 2);\n}\n"
+            ),
+        },
+        "csharp",
+    )
+    assert ("Test.cs::Test::Run", "Steps.cs::Steps::Given") in _calls_by_origin(
+        graph, "enclosing_inherited"
+    )

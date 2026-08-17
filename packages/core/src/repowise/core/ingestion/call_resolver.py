@@ -58,18 +58,19 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 # its ancestors. Both shapes — an explicit ``self``/``this`` receiver and an
 # implicit one — end in the same walk.
 #
-# C# is absent, and it is an exclusion rather than an omission: the method
-# indexes are keyed ``(class, method)`` with no parameter list, so a class
-# declaring several overloads of one name keeps whichever the index kept. Its
-# precision audit came back 7/30, every failure the same wrong-overload
-# pairing. C++ is absent because its heritage binds a qualified external
+# C++ is absent because its heritage binds a qualified external
 # parent to a same-named local type, which puts unrelated siblings in one
 # hierarchy before this walk even runs. Java is absent because `java.scm`'s
 # bare-call pattern also matches `this.field.m()`, which no receiver-carrying
 # pattern claims, so such a call arrives here indistinguishable from a real
 # implicit receiver — and its measured population on two Java repos was zero,
 # so the tier could only cost.
-_INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift"})
+#
+# C# is present, and was once wrongly removed: a name's overloads all share one
+# symbol id, so a declaration line read back out of the graph names an
+# arbitrary overload. That reads as a wrong target and is not one — the id
+# these calls resolve to is the id C# binds.
+_INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
 
 # Ancestors within four hops: ``heritage_ancestors`` bounds expansion, not
 # reach, so 3 reaches 4.
