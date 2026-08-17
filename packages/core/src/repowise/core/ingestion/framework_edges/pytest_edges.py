@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..resolvers import ResolverContext
+from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -169,7 +170,9 @@ def _fixture_scopes(parsed: Any, class_name: str | None) -> list[str | None]:
         return [None]
     parents: dict[str, list[str]] = {}
     for rel in parsed.heritage:
-        parents.setdefault(rel.child_name, []).append(rel.parent_name.split("<")[0].strip())
+        parents.setdefault(rel.child_name, []).append(
+            strip_type_arguments(rel.parent_name).strip()
+        )
 
     scopes: list[str | None] = []
     seen: set[str] = set()

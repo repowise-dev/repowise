@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..resolvers import ResolverContext
+from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -185,7 +186,7 @@ def _bind_injected_symbol(
 ) -> int:
     if owner is None:
         return 0
-    target = type_to_symbol.get(type_name.split("<")[0].strip())
+    target = type_to_symbol.get(strip_type_arguments(type_name).strip())
     if target is None:
         return 0
     return 1 if add_symbol_edge(graph, owner, target) else 0
