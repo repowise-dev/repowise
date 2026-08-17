@@ -51,6 +51,7 @@ from .extractors.bindings.ts_js import (
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     refine_cpp_visibility,
+    refine_csharp_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
 )
@@ -698,6 +699,10 @@ class ASTParser:
             # modifier text. Refine after the generic fn ran.
             if file_info.language in ("cpp", "c"):
                 visibility, is_exported_symbol = refine_cpp_visibility(def_node, visibility, src)
+            # C#: an unmodified declaration's default depends on what encloses
+            # it, which the modifier-text fn cannot see.
+            elif file_info.language == "csharp":
+                visibility = refine_csharp_visibility(def_node, visibility)
             # TS/JS: a top-level declaration is only public when exported —
             # inline, via ``export { x }`` lists, or ``export default x``.
             elif file_info.language in _TS_JS_LANGUAGES:
