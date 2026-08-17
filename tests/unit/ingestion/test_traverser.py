@@ -1007,3 +1007,65 @@ def test_production_paths_that_merely_contain_the_word_are_not_tests(rel_path):
     from repowise.core.test_paths import is_test_related_path
 
     assert not is_test_related_path(rel_path)
+
+
+class TestUnknownLanguageFileRecording:
+    """Paths kept when language detection fails, for the dead-code clamp.
+
+    The clamp reads files ingestion never parsed and refuses to call a symbol
+    deletion-ready when an unread file names it. It could never be offered a
+    file without a language spec, because the walk bumped a counter and threw
+    the path away.
+    """
+
+    def test_records_a_reference_bearing_file(self, tmp_path: Path) -> None:
+        (tmp_path / "guide.rst").write_text("literalinclude:: ../src/widget.py\n")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        # Still not indexed — recording a path registers no language.
+        assert not any("guide.rst" in p for p in paths)
+        assert traverser.stats.skipped_unknown_language == 1
+        assert [s.path for s in traverser.stats.unknown_language_files] == ["guide.rst"]
+        assert traverser.stats.unknown_language_files[0].reason == "unknown_language"
+
+    def test_ignores_formats_that_name_no_code(self, tmp_path: Path) -> None:
+        # The tail is dominated by these, and a name-matching clamp fed prose
+        # suppresses findings on coincidence rather than on evidence.
+        (tmp_path / "django.po").write_text('msgid "Widget"\nmsgstr ""\n')
+        (tmp_path / "LICENSE.txt").write_text("Redistribution of Widget is permitted.\n")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        assert traverser.stats.skipped_unknown_language == 2
+        assert traverser.stats.unknown_language_files == []
+
+    def test_does_not_consume_the_size_skip_budget(self, tmp_path: Path) -> None:
+        # The two lists are separate so hundreds of unparsed docs cannot
+        # truncate the oversized-source records, which are shown to the user.
+        for i in range(traverser_mod._MAX_SKIPPED_SOURCE_PATHS + 5):
+            (tmp_path / f"doc{i}.rst").write_text("text\n")
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # over the source ceiling
+
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        list(traverser.traverse())
+
+        assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
+        assert traverser.stats.skipped_source_files_truncated is False
+        assert len(traverser.stats.unknown_language_files) == 55
+
+    def test_caps_the_list_and_flags_truncation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(traverser_mod, "_MAX_UNKNOWN_LANGUAGE_PATHS", 3)
+        for i in range(6):
+            (tmp_path / f"doc{i}.rst").write_text("text\n")
+
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        assert len(traverser.stats.unknown_language_files) == 3
+        assert traverser.stats.unknown_language_files_truncated is True
+        # The count stays exact whatever the cap does to the names.
+        assert traverser.stats.skipped_unknown_language == 6

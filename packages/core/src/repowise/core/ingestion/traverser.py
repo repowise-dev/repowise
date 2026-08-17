@@ -112,6 +112,20 @@ class TraversalStats:
     """
     skipped_source_files_truncated: bool = False
     """True once the cap above dropped a name, so a reader can say "at least"."""
+    unknown_language_files: list[SkippedSourceFile] = field(default_factory=list)
+    """Reference-bearing files dropped for having no language spec.
+
+    Kept apart from :attr:`skipped_source_files` rather than folded into it,
+    for two reasons that both cut the same way. That list is capped at 50 and
+    these run to hundreds per repo, so sharing it would truncate the size-skip
+    records instantly and destroy the signal they exist for; and it is rendered
+    to the user file by file during ingestion, where naming every unparsed
+    `.rst` would bury the one dropped entry point it was built to surface.
+    So this list is fed to the dead-code analyzer and deliberately not to that
+    report.
+    """
+    unknown_language_files_truncated: bool = False
+    """True once the cap above dropped a name, so a reader can say "at least"."""
 
 
 log = structlog.get_logger(__name__)
@@ -121,6 +135,38 @@ _MAX_NESTED_REPO_PATHS = 50
 
 #: Cap on the skipped-source records retained in :class:`TraversalStats`.
 _MAX_SKIPPED_SOURCE_PATHS = 50
+
+#: Cap on the unknown-language records retained in :class:`TraversalStats`.
+#: Ten times the one above because this list is machine-read rather than
+#: printed, and the widest repo measured contributes 275. The cost of reading
+#: them is bounded separately, by the analyzer's own scan budget.
+_MAX_UNKNOWN_LANGUAGE_PATHS = 500
+
+#: Extensions worth remembering when language detection fails: formats whose
+#: job is to name code, so a symbol appearing in one is evidence the symbol is
+#: reached from somewhere the index cannot see. Doc-include formats carry
+#: ``literalinclude``/``<code-block src=…>`` directives; ``.api`` files are
+#: binary-compatibility dumps listing every symbol a downstream consumer may
+#: bind to; the markup formats bind handlers and types by name.
+#:
+#: An allowlist rather than a blocklist because the unknown-language tail is
+#: dominated by formats that mention no code at all — translation catalogues,
+#: licence text, vector art and dotfiles are 3,335 of the 4,277 files across
+#: the measurement corpus, and feeding those to a name-matching clamp would
+#: suppress findings on coincidence.
+#: Only extensions with no language spec belong here — one that has a spec is
+#: parsed and indexed already, so listing it would be dead weight.
+_REFERENCE_BEARING_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".api",  # also matches Kotlin's .klib.api
+        ".cshtml",
+        ".properties",
+        ".razor",
+        ".rst",
+        ".topic",
+        ".xml",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Blocklists
@@ -576,14 +622,23 @@ class FileTraverser:
         """This traverser's size verdict for one file. See :func:`size_verdict`."""
         return size_verdict(abs_path, size_bytes, max_file_size_bytes=self.max_file_size_bytes)
 
-    def _record_skipped_source(self, rel_str: str, size_bytes: int, reason: str) -> None:
-        """Note a skipped source file by name. Caller holds ``_count_lock``."""
-        if len(self.stats.skipped_source_files) < _MAX_SKIPPED_SOURCE_PATHS:
-            self.stats.skipped_source_files.append(
-                SkippedSourceFile(rel_str, size_bytes // 1024, reason)
-            )
-        else:
-            self.stats.skipped_source_files_truncated = True
+    def _record_skipped_source(
+        self,
+        records: list[SkippedSourceFile],
+        cap: int,
+        rel_str: str,
+        size_bytes: int,
+        reason: str,
+    ) -> bool:
+        """Note a skipped file by name. Caller holds ``_count_lock``.
+
+        Returns False once ``cap`` is reached, so each caller can raise its own
+        truncation flag.
+        """
+        if len(records) >= cap:
+            return False
+        records.append(SkippedSourceFile(rel_str, size_bytes // 1024, reason))
+        return True
 
     def _build_file_info(self, abs_path: Path) -> FileInfo | None:
         try:
@@ -604,8 +659,14 @@ class FileTraverser:
         if (reason := self._oversize_skip_reason(abs_path, size_bytes)) is not None:
             with self._count_lock:
                 self.stats.skipped_oversized += 1
-                if reason.is_source:
-                    self._record_skipped_source(rel_str, size_bytes, reason.reason)
+                if reason.is_source and not self._record_skipped_source(
+                    self.stats.skipped_source_files,
+                    _MAX_SKIPPED_SOURCE_PATHS,
+                    rel_str,
+                    size_bytes,
+                    reason.reason,
+                ):
+                    self.stats.skipped_source_files_truncated = True
             log.debug(
                 "Skipping oversized file",
                 path=rel_str,
@@ -659,6 +720,23 @@ class FileTraverser:
             if language == "unknown":
                 with self._count_lock:
                     self.stats.skipped_unknown_language += 1
+                    # Keep the path even though nothing here can parse it. A
+                    # later pass reads these off disk to ask whether a symbol
+                    # it is about to call dead is named in one; discarding the
+                    # path made that question unanswerable for every format
+                    # without a parser, which is where a docs tree that embeds
+                    # its samples by path lives. Records no language and builds
+                    # no FileInfo, so the graph is untouched either way.
+                    if abs_path.suffix.lower() in _REFERENCE_BEARING_EXTENSIONS and (
+                        not self._record_skipped_source(
+                            self.stats.unknown_language_files,
+                            _MAX_UNKNOWN_LANGUAGE_PATHS,
+                            rel_str,
+                            size_bytes,
+                            "unknown_language",
+                        )
+                    ):
+                        self.stats.unknown_language_files_truncated = True
                 return None
 
         # Generated file detection: only meaningful for code files.  Skipping

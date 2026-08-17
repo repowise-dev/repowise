@@ -54,12 +54,16 @@ async def _run_dead_code_analysis(
         if progress:
             progress.on_phase_start("dead_code", dead_code_steps)
 
-        # Source files the traverser dropped on size. Without them the
-        # analyzer cannot tell "nothing imports this" from "the importer was
-        # never read", which is the cascade in #1237.
+        # Files the traverser dropped on size, plus those it dropped for having
+        # no language spec. Without them the analyzer cannot tell "nothing
+        # imports this" from "the importer was never read", which is the
+        # cascade in #1237.
         unindexed_source_files = [
             (skipped.path, skipped.reason)
-            for skipped in getattr(traversal_stats, "skipped_source_files", [])
+            for skipped in (
+                *getattr(traversal_stats, "skipped_source_files", []),
+                *getattr(traversal_stats, "unknown_language_files", []),
+            )
         ]
 
         analyzer = DeadCodeAnalyzer(

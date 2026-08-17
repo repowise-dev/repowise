@@ -522,10 +522,12 @@ def run_partial_analysis(
         # files they cover; the stored rows carry every other file, which is
         # what init's analyzer had and this path did not.
         _dead_code_git_meta = {**(stored_git_meta or {}), **git_meta_map}
-        # Source files the walk dropped on size. This report is persisted
-        # repo-wide (see below), so without them an update would re-derive the
-        # verdicts init had clamped and write them back unclamped — the #1237
-        # cascade would return, looking like the fix had regressed.
+        # Files the walk dropped on size or for having no language spec. This
+        # report is persisted repo-wide (see below), so without them an update
+        # would re-derive the verdicts init had clamped and write them back
+        # unclamped — the #1237 cascade would return, looking like the fix had
+        # regressed.
+        _traversal_stats = getattr(graph_builder, "traversal_stats", None)
         _dead_code_analyzer = DeadCodeAnalyzer(
             graph_builder.graph(),
             _dead_code_git_meta,
@@ -534,8 +536,9 @@ def run_partial_analysis(
             repo_root=repo_path,
             unindexed_source_files=[
                 (skipped.path, skipped.reason)
-                for skipped in getattr(
-                    getattr(graph_builder, "traversal_stats", None), "skipped_source_files", []
+                for skipped in (
+                    *getattr(_traversal_stats, "skipped_source_files", []),
+                    *getattr(_traversal_stats, "unknown_language_files", []),
                 )
             ],
         )
