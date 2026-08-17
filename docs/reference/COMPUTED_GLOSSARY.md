@@ -190,7 +190,7 @@ workspace overlays, MCP responses, and CLI output.
 | Dead-code finding | A graph/git finding persisted to `dead_code_findings`. | `DeadCodeAnalyzer` | `{kind: "unused_export", file_path: "src/api.py", confidence: 0.7}` |
 | Unreachable file | File with no incoming imports, not an entry point/test/config/contract/whitelisted file. | `_detect_unreachable_files()` | `src/legacy_adapter.py` |
 | Unused export | Public symbol in an imported file that no importer names. | `_detect_unused_exports()` | `symbol_name: "OldClient"` |
-| Unused internal | Private/internal symbol with no incoming `calls` edges. | `_detect_unused_internals()` | `_parse_legacy_token` |
+| Unused internal | Private symbol with no incoming `calls` edges. | `_detect_unused_internals()` | `_parse_legacy_token` |
 | Zombie package | Monorepo top-level package with no external package importers. | `_detect_zombie_packages()` | `packages/old-sdk` |
 | Dead-code confidence | Heuristic certainty based on age, recent commits, importers, dynamic imports, and deprecation hints. | `DeadCodeAnalyzer` | `1.0` for year-old unreachable file |
 | Safe-to-delete flag | Whether confidence passes delete threshold and dynamic patterns do not block deletion. | `_make_unreachable_finding()` and other passes | `safe_to_delete: true` |

@@ -46,7 +46,7 @@ from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
 @click.option(
     "--include-internals/--no-include-internals",
     default=False,
-    help="Detect unused private/internal symbols (higher false-positive rate, off by default).",
+    help="Detect unused private symbols (higher false-positive rate, off by default).",
 )
 @click.option(
     "--include-zombie-packages/--no-include-zombie-packages",

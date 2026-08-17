@@ -1331,7 +1331,7 @@ class DeadCodeAnalyzer:
         dynamic_patterns: tuple[str, ...],
         whitelist: set[str],
     ) -> list[DeadCodeFindingData]:
-        """Detect private/internal symbols with zero incoming call edges.
+        """Detect private symbols with zero incoming call edges.
 
         On by default. These carry a higher false-positive rate than the other
         detectors, which is why they land at a lower confidence. Disable with
@@ -1352,7 +1352,12 @@ class DeadCodeAnalyzer:
             # private symbols used across a package's files carry real
             # ``calls`` edges and no longer read as universally uncalled. The
             # blanket exemption that Phase 2 added has been lifted.
-            if node_data.get("visibility") not in ("private", "internal"):
+            # ``internal`` is not narrow: assembly-wide in C#, module-wide in
+            # Swift and Kotlin, crate-wide in Rust. A legitimate user can sit
+            # anywhere in the module, so a missing inbound call edge is not
+            # evidence of deadness. Nothing else observes ``internal`` either,
+            # which drops an unmodified C# top-level type out of both passes.
+            if node_data.get("visibility") != "private":
                 continue
             file_path = node_data.get("file_path", "")
             if not file_path:
