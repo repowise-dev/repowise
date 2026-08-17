@@ -63,3 +63,20 @@ class TestGoMethodReceiver:
         greet = [s for s in result.symbols if s.name == "Greet"]
         assert greet
         assert greet[0].parent_name == "User"
+
+    def test_unexported_receiver_type_still_parents_the_method(
+        self, parser: ASTParser
+    ) -> None:
+        """Export status says nothing about whether a name is a type."""
+        src = b"package x\n\ntype startEnd struct{}\n\nfunc (s *startEnd) add() {}\n"
+        result = parser.parse_file(_file(), src)
+        add = [s for s in result.symbols if s.name == "add"]
+        assert add
+        assert add[0].parent_name == "startEnd"
+
+    def test_unnamed_receiver(self, parser: ASTParser) -> None:
+        src = b"package x\n\ntype cache struct{}\n\nfunc (*cache) reset() {}\n"
+        result = parser.parse_file(_file(), src)
+        reset = [s for s in result.symbols if s.name == "reset"]
+        assert reset
+        assert reset[0].parent_name == "cache"
