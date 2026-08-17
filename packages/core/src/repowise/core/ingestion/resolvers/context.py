@@ -71,14 +71,24 @@ class ResolverContext:
 
     @property
     def walk_snapshot(self) -> Any | None:
-        """Shared :class:`~repowise.core.fs_walk.WalkSnapshot`, or None."""
+        """Shared :class:`~repowise.core.fs_walk.WalkSnapshot`, or None.
+
+        Rooted at the *resolved* repo path, because every scan that asks for
+        this resolves its own root first; rooting it anywhere else would leave
+        the snapshot correct but unused — a query it cannot place falls back to
+        a live walk, which is exactly the cost this removes.
+        """
         if self._walk_snapshot_cache is None:
             if self.repo_path is None:
                 return None
             from repowise.core.fs_walk import WalkSnapshot
 
+            try:
+                root = self.repo_path.resolve()
+            except OSError:
+                root = self.repo_path
             self._walk_snapshot_cache = WalkSnapshot(
-                self.repo_path, prune_nested_git=self.prune_nested_git
+                root, prune_nested_git=self.prune_nested_git
             )
         return self._walk_snapshot_cache
 
