@@ -60,6 +60,28 @@ class ResolverContext:
         default=None, init=False, repr=False, compare=False
     )
 
+    # One pruned walk of the repo, replayed for every resolver glob that asks
+    # for it. Built on first use and never from ``path_set``: these scans look
+    # for files the traverser does not index — ``META-INF/services`` entries,
+    # ``spring.factories``, ``*.sln`` — so a snapshot of the indexed set would
+    # answer "absent" for exactly the files they exist to find.
+    _walk_snapshot_cache: Any | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    @property
+    def walk_snapshot(self) -> Any | None:
+        """Shared :class:`~repowise.core.fs_walk.WalkSnapshot`, or None."""
+        if self._walk_snapshot_cache is None:
+            if self.repo_path is None:
+                return None
+            from repowise.core.fs_walk import WalkSnapshot
+
+            self._walk_snapshot_cache = WalkSnapshot(
+                self.repo_path, prune_nested_git=self.prune_nested_git
+            )
+        return self._walk_snapshot_cache
+
     @property
     def sorted_paths(self) -> tuple[str, ...]:
         """Deterministically ordered view of ``path_set`` (cached)."""

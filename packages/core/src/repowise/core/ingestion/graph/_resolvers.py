@@ -102,7 +102,7 @@ class ResolveMixin:
         if progress:
             progress.on_phase_start(phase, None)
         try:
-            cs_texts = collect_csharp_source_texts(self._parsed_files)
+            cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
             type_to_file = build_csharp_type_to_file(self._parsed_files)
             added = resolve_csharp_member_reads(self._graph, cs_texts, type_to_file)
             log.info("member_read_edges", language="csharp", added=added)
@@ -141,7 +141,7 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             jvm_index = get_or_build_jvm_index(ctx)
-            texts = collect_jvm_source_texts(self._parsed_files)
+            texts = collect_jvm_source_texts(self._parsed_files, self._source_map)
             added = resolve_jvm_same_package_refs(self._graph, jvm_index, texts)
             log.info("same_package_edges", added=added)
         except Exception as exc:
@@ -178,7 +178,7 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             index = get_or_build_index(ctx)
-            cs_texts = collect_csharp_source_texts(self._parsed_files)
+            cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
             repo = getattr(index, "repo_path", None) if index is not None else None
             added = resolve_csharp_same_namespace_refs(
                 self._graph, index, cs_texts, repo
@@ -410,7 +410,7 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             swift_targets = get_or_build_swift_targets(ctx)
-            texts = collect_swift_source_texts(self._parsed_files)
+            texts = collect_swift_source_texts(self._parsed_files, self._source_map)
             added = resolve_swift_same_module_refs(self._graph, swift_targets, texts)
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:

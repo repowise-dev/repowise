@@ -21,6 +21,7 @@ import posixpath
 import re
 from typing import TYPE_CHECKING
 
+from ..source_text import source_text
 from .module_name_index import get_or_build_module_index, lookup_module
 
 if TYPE_CHECKING:
@@ -42,9 +43,8 @@ def _pubspec_map(ctx: ResolverContext) -> dict[str, str]:
             continue
         if repo is None:
             continue
-        try:
-            text = (repo / path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        text = source_text(path, repo / path, ctx.source_map, errors="replace")
+        if text is None:
             continue
         m = _PUBSPEC_NAME_RE.search(text)
         if m:

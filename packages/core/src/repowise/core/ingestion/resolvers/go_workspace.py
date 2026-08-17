@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from ..source_text import source_text
 from .go import read_go_modules
 
 if TYPE_CHECKING:
@@ -133,10 +134,7 @@ def _scan_go_file(text: str) -> tuple[str, bool, bool, bool, bool]:
 def _read_text(ctx: ResolverContext, rel_path: str) -> str:
     if ctx.repo_path is None:
         return ""
-    try:
-        return (ctx.repo_path / rel_path).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return ""
+    return source_text(rel_path, ctx.repo_path / rel_path, ctx.source_map) or ""
 
 
 def _import_path_for_dir(

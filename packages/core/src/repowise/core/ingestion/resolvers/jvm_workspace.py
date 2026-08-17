@@ -18,11 +18,12 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from repowise.core.fs_walk import iter_glob
+from repowise.core.fs_walk import glob_via
+from repowise.core.ingestion.source_text import decode_source
 
 if TYPE_CHECKING:
     from .context import ResolverContext
@@ -206,30 +207,28 @@ class JvmWorkspaceIndex:
         return bool(len(parts) == 1 and parts[0] in _JAVA_LANG_TYPES)
 
 
-@lru_cache(maxsize=16384)
-def _scan_jvm_file(abs_path: str) -> tuple[str, tuple[str, ...]]:
-    """Return (package_fqn, top_level_type_names) for a JVM source file.
+def _scan_jvm_text(abs_path: str, text: str) -> tuple[str, tuple[str, ...]]:
+    """Return (package_fqn, top_level_type_names) from already-read text.
 
-    Reads the file once and caches the result. Cheap line scan — no AST.
+    Cheap line scan — no AST.
     """
-    try:
-        text = Path(abs_path).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return "", ()
-
-    package = ""
     if abs_path.endswith(".scala"):
         package = _scala_package(text)
     else:
         pkg_match = _PACKAGE_RE.search(text)
-        if pkg_match:
-            package = pkg_match.group(1)
+        package = pkg_match.group(1) if pkg_match else ""
 
-    types: list[str] = []
-    for m in _TOP_LEVEL_TYPE_RE.finditer(text):
-        types.append(m.group(1))
+    return package, tuple(m.group(1) for m in _TOP_LEVEL_TYPE_RE.finditer(text))
 
-    return package, tuple(types)
+
+@lru_cache(maxsize=16384)
+def _scan_jvm_file(abs_path: str) -> tuple[str, tuple[str, ...]]:
+    """:func:`_scan_jvm_text` for a file the source map did not have."""
+    try:
+        text = Path(abs_path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return "", ()
+    return _scan_jvm_text(abs_path, text)
 
 
 def _scala_package(text: str) -> str:
@@ -260,7 +259,7 @@ _JPMS_PROVIDES_RE = re.compile(
 
 
 def _scan_jpms_provides(
-    repo_path: Path, *, prune_nested_git: bool = True
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
 ) -> dict[str, tuple[str, ...]]:
     """Scan ``module-info.java`` files for ``provides X with Y, Z`` directives.
 
@@ -271,7 +270,9 @@ def _scan_jpms_provides(
     the warmup fast.
     """
     out: dict[str, list[str]] = {}
-    for mi in iter_glob(repo_path, "module-info.java", prune_nested_git=prune_nested_git):
+    for mi in glob_via(
+        snapshot, repo_path, "module-info.java", prune_nested_git=prune_nested_git
+    ):
         if not mi.is_file():
             continue
         try:
@@ -287,12 +288,12 @@ def _scan_jpms_provides(
 
 
 def _scan_meta_inf_services(
-    repo_path: Path, *, prune_nested_git: bool = True
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
 ) -> dict[str, tuple[str, ...]]:
     """Scan META-INF/services/ directories for SPI declarations."""
     services: dict[str, list[str]] = {}
-    for services_dir in iter_glob(
-        repo_path, "META-INF/services", prune_nested_git=prune_nested_git
+    for services_dir in glob_via(
+        snapshot, repo_path, "META-INF/services", prune_nested_git=prune_nested_git
     ):
         if not services_dir.is_dir():
             continue
@@ -321,14 +322,14 @@ def _scan_meta_inf_services(
 
 
 def _scan_spring_autoconfig(
-    repo_path: Path, *, prune_nested_git: bool = True
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
 ) -> dict[str, tuple[str, ...]]:
     """Scan spring.factories and Boot 3 AutoConfiguration.imports."""
     result: dict[str, list[str]] = {}
 
     # spring.factories (Boot 2 style)
-    for factories in iter_glob(
-        repo_path, "META-INF/spring.factories", prune_nested_git=prune_nested_git
+    for factories in glob_via(
+        snapshot, repo_path, "META-INF/spring.factories", prune_nested_git=prune_nested_git
     ):
         if not factories.is_file():
             continue
@@ -358,8 +359,8 @@ def _scan_spring_autoconfig(
             result.setdefault(rel, []).extend(current_values)
 
     # Boot 3 style: META-INF/spring/*.imports
-    for imports_file in iter_glob(
-        repo_path, "META-INF/spring/*.imports", prune_nested_git=prune_nested_git
+    for imports_file in glob_via(
+        snapshot, repo_path, "META-INF/spring/*.imports", prune_nested_git=prune_nested_git
     ):
         if not imports_file.is_file():
             continue
@@ -382,9 +383,11 @@ def _scan_spring_autoconfig(
 def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     """Build the JVM workspace index from all ``.java`` and ``.kt`` files in the path set.
 
-    One walk over the path set; each file read at most once (via
-    ``_scan_jvm_file`` LRU cache). The index groups files by package
-    and builds FQN → file mappings.
+    One pass over the path set, taking each file's text from the source map
+    the pipeline already filled and falling back to disk per file. The three
+    resource scans below share the context's single walk rather than each
+    walking the tree again — on a large JVM repo those walks, not the file
+    scan, were the bulk of this function.
     """
     index = JvmWorkspaceIndex()
 
@@ -392,6 +395,8 @@ def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
         return index
 
     repo_path = ctx.repo_path.resolve()
+    source_map = ctx.source_map
+    snapshot = ctx.walk_snapshot
 
     # Group files by package
     pkg_files: dict[str, list[str]] = {}
@@ -402,7 +407,13 @@ def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
             continue
 
         abs_path = str((repo_path / path).resolve())
-        package, top_types = _scan_jvm_file(abs_path)
+        # The map lookup is here, not inside the cached scan: an lru_cache
+        # cannot take a dict, and the fallback still wants its cache.
+        data = source_map.get(path) if source_map is not None else None
+        if data is not None:
+            package, top_types = _scan_jvm_text(abs_path, decode_source(data))
+        else:
+            package, top_types = _scan_jvm_file(abs_path)
         if not package:
             continue
 
@@ -432,8 +443,12 @@ def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
     # (cheap glob, O(matching files)). Both populate ``services``; later
     # phases treat any FQN listed there as reachable.
     try:
-        services = _scan_meta_inf_services(repo_path, prune_nested_git=ctx.prune_nested_git)
-        jpms = _scan_jpms_provides(repo_path, prune_nested_git=ctx.prune_nested_git)
+        services = _scan_meta_inf_services(
+            repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=snapshot
+        )
+        jpms = _scan_jpms_provides(
+            repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=snapshot
+        )
         merged: dict[str, list[str]] = {k: list(v) for k, v in services.items()}
         for iface, impls in jpms.items():
             merged.setdefault(iface, []).extend(impls)
@@ -442,7 +457,7 @@ def build_jvm_workspace_index(ctx: ResolverContext) -> JvmWorkspaceIndex:
         pass
     with contextlib.suppress(Exception):
         index.autoconfig_imports = _scan_spring_autoconfig(
-            repo_path, prune_nested_git=ctx.prune_nested_git
+            repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=snapshot
         )
 
     _scan_jvm_file.cache_clear()

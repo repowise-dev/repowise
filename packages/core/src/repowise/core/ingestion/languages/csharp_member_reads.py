@@ -38,9 +38,9 @@ behind a feature flag if it ever proves noisy.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..source_text import source_text
 from ..type_names import bare_type_name
 
 if TYPE_CHECKING:
@@ -180,16 +180,22 @@ def build_csharp_type_to_file(parsed_files: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def collect_csharp_source_texts(parsed_files: dict[str, Any]) -> dict[str, str]:
-    """Read each parsed C# file's source from disk, keyed by repo path."""
+def collect_csharp_source_texts(
+    parsed_files: dict[str, Any], source_map: dict[str, bytes] | None = None
+) -> dict[str, str]:
+    """Text of each parsed C# file, keyed by repo path.
+
+    ``utf-8-sig``, unlike the JVM and Swift collectors: C# files are routinely
+    written with a BOM, and the scans below must not see it inside the first
+    identifier of the file.
+    """
     out: dict[str, str] = {}
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "csharp":
             continue
-        try:
-            out[path] = Path(parsed.file_info.abs_path).read_text(
-                encoding="utf-8-sig", errors="ignore"
-            )
-        except OSError:
-            continue
+        text = source_text(
+            path, parsed.file_info.abs_path, source_map, encoding="utf-8-sig"
+        )
+        if text is not None:
+            out[path] = text
     return out

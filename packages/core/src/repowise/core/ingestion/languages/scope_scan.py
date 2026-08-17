@@ -12,8 +12,9 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from repowise.core.ingestion.source_text import source_text
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -112,17 +113,16 @@ def emit_scope_edges(
 
 
 def collect_source_texts(
-    parsed_files: dict[str, Any], languages: Collection[str]
+    parsed_files: dict[str, Any],
+    languages: Collection[str],
+    source_map: dict[str, bytes] | None = None,
 ) -> dict[str, str]:
-    """Read each parsed file of *languages* from disk, keyed by repo path."""
+    """Text of each parsed file of *languages*, keyed by repo path."""
     out: dict[str, str] = {}
     for path, parsed in parsed_files.items():
         if parsed.file_info.language not in languages:
             continue
-        try:
-            out[path] = Path(parsed.file_info.abs_path).read_text(
-                encoding="utf-8", errors="ignore"
-            )
-        except OSError:
-            continue
+        text = source_text(path, parsed.file_info.abs_path, source_map)
+        if text is not None:
+            out[path] = text
     return out

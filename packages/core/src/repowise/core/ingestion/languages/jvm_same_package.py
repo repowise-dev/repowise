@@ -157,6 +157,8 @@ def resolve_jvm_same_package_refs(
     )
 
 
-def collect_jvm_source_texts(parsed_files: dict[str, Any]) -> dict[str, str]:
-    """Read each parsed JVM file's source from disk, keyed by repo path."""
-    return collect_source_texts(parsed_files, _JVM_LANGUAGES)
+def collect_jvm_source_texts(
+    parsed_files: dict[str, Any], source_map: dict[str, bytes] | None = None
+) -> dict[str, str]:
+    """Text of each parsed JVM file, keyed by repo path."""
+    return collect_source_texts(parsed_files, _JVM_LANGUAGES, source_map)

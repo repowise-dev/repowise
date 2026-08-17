@@ -144,6 +144,8 @@ def resolve_swift_same_module_refs(
     )
 
 
-def collect_swift_source_texts(parsed_files: dict[str, Any]) -> dict[str, str]:
-    """Read each parsed Swift file's source from disk, keyed by repo path."""
-    return collect_source_texts(parsed_files, ("swift",))
+def collect_swift_source_texts(
+    parsed_files: dict[str, Any], source_map: dict[str, bytes] | None = None
+) -> dict[str, str]:
+    """Text of each parsed Swift file, keyed by repo path."""
+    return collect_source_texts(parsed_files, ("swift",), source_map)

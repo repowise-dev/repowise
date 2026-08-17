@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from repowise.core.fs_walk import iter_glob
+from repowise.core.fs_walk import glob_via
+from repowise.core.ingestion.source_text import source_text
 
 from .global_usings import collect_project_global_usings
 from .msbuild import (
@@ -156,7 +157,9 @@ class DotNetProjectIndex:
         return package_id in self.package_refs.get(csproj, set())
 
 
-def _walk_repo_cs_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
+def _walk_repo_cs_files(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> list[Path]:
     """Single repo-wide rglob for ``*.cs`` files, dedup by resolved path.
 
     Lives at module scope (not nested inside ``build_index``) so it's
@@ -165,7 +168,7 @@ def _walk_repo_cs_files(repo_path: Path, *, prune_nested_git: bool = True) -> li
     """
     seen: set[Path] = set()
     out: list[Path] = []
-    for cs in iter_glob(repo_path, "*.cs", prune_nested_git=prune_nested_git):
+    for cs in glob_via(snapshot, repo_path, "*.cs", prune_nested_git=prune_nested_git):
         if path_has_dotnet_scan_skip_dir(cs, repo_path):
             continue
         try:
@@ -214,7 +217,13 @@ def _bucket_files_by_project(
     return out
 
 
-def build_index(repo_path: Path, *, prune_nested_git: bool = True) -> DotNetProjectIndex:
+def build_index(
+    repo_path: Path,
+    *,
+    prune_nested_git: bool = True,
+    snapshot: Any | None = None,
+    source_map: dict[str, bytes] | None = None,
+) -> DotNetProjectIndex:
     """Walk *repo_path* and construct a fully-populated DotNetProjectIndex.
 
     Performance note: a previous version of this function walked the
@@ -227,12 +236,20 @@ def build_index(repo_path: Path, *, prune_nested_git: bool = True) -> DotNetProj
     ONE master walk, reads each file ONCE, and dispatches the cached
     texts to both the namespace-map pass and per-project global-usings
     collection. No data-quality loss — same regexes, same outputs.
+
+    That master read is now itself avoidable: ingestion already read every
+    indexed ``.cs`` file, so *source_map* answers most of it and only the
+    files the traverser skipped reach the disk. *snapshot* does the same for
+    the three walks — .csproj, .sln, .cs — which become dict replays of the
+    context's single walk.
     """
     repo_path = repo_path.resolve()
     index = DotNetProjectIndex(repo_path=repo_path)
 
     # ---- 1. Parse every .csproj ----
-    for csproj_path in find_csproj_files(repo_path, prune_nested_git=prune_nested_git):
+    for csproj_path in find_csproj_files(
+        repo_path, prune_nested_git=prune_nested_git, snapshot=snapshot
+    ):
         proj = parse_csproj(csproj_path)
         if proj is None:
             continue
@@ -241,7 +258,9 @@ def build_index(repo_path: Path, *, prune_nested_git: bool = True) -> DotNetProj
         index.package_refs[proj.path] = set(proj.package_references)
 
     # ---- 2. Walk .sln files (informational; surfaces orphaned .csprojs) ----
-    index.sln_paths = find_sln_files(repo_path, prune_nested_git=prune_nested_git)
+    index.sln_paths = find_sln_files(
+        repo_path, prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
     for sln in index.sln_paths:
         for entry in parse_sln(sln):
             if entry.csproj not in index.projects:
@@ -255,13 +274,21 @@ def build_index(repo_path: Path, *, prune_nested_git: bool = True) -> DotNetProj
                     index.package_refs.setdefault(proj.path, set()).update(proj.package_references)
 
     # ---- 3. Single master walk: enumerate .cs files & read each once ----
-    all_cs_files = _walk_repo_cs_files(repo_path, prune_nested_git=prune_nested_git)
+    all_cs_files = _walk_repo_cs_files(
+        repo_path, prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
     cs_texts: dict[Path, str] = {}
     for f in all_cs_files:
+        # ``_walk_repo_cs_files`` resolves every path and *repo_path* is
+        # resolved too, so a file the traverser indexed keys the map exactly.
+        # Files it skipped — and anything outside the root — miss and read.
         try:
-            cs_texts[f] = f.read_text(encoding="utf-8-sig", errors="replace")
-        except OSError:
-            continue
+            rel: str | None = f.relative_to(repo_path).as_posix()
+        except ValueError:
+            rel = None
+        text = source_text(rel, f, source_map, encoding="utf-8-sig", errors="replace")
+        if text is not None:
+            cs_texts[f] = text
 
     # Build the file → project map by longest-prefix match. The bucketer
     # walks each file's parent chain (deepest-first) against a dict of
@@ -326,6 +353,11 @@ def get_or_build_index(ctx: ResolverContext) -> DotNetProjectIndex | None:
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:
         return cached
-    index = build_index(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
+    index = build_index(
+        ctx.repo_path,
+        prune_nested_git=ctx.prune_nested_git,
+        snapshot=ctx.walk_snapshot,
+        source_map=ctx.source_map,
+    )
     setattr(ctx, _INDEX_KEY, index)
     return index
