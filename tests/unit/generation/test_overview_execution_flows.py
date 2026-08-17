@@ -52,6 +52,7 @@ def _flow(entry_point_id: str, score: float, trace: list[str]) -> ExecutionFlow:
         depth=len(trace) - 1,
         crosses_community=False,
         communities_visited=[0],
+        termination="no_callees",
     )
 
 

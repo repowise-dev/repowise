@@ -112,13 +112,28 @@ async def get_execution_flows(
 
         for ep_node, ep_score in entry_nodes:
             hop_origins: dict[tuple[str, str], str] = {}
+            termination: dict[str, Any] = {}
             trace = await bfs_trace(
-                session, repo_id, ep_node.node_id, max_depth, node_cache, hop_origins
+                session,
+                repo_id,
+                ep_node.node_id,
+                max_depth,
+                node_cache,
+                hop_origins,
+                termination,
             )
             # Drop excluded files reached downstream so they don't leak via the
             # trace (entry-point filtering above doesn't cover BFS descendants).
             if exclude_spec:
-                trace = filter_embedded_path_ids(trace, exclude_spec)
+                filtered = filter_embedded_path_ids(trace, exclude_spec)
+                # The walk classified the node it actually stopped at. When
+                # filtering drops that node, the trace we publish ends earlier
+                # and it ends there because of the exclude spec — reporting the
+                # walk's reason would assert the new last node calls nothing.
+                if filtered and filtered[-1] != trace[-1]:
+                    termination["reason"] = "excluded_target"
+                    termination["detail"] = {}
+                trace = filtered
 
             communities_visited, crosses = await resolve_trace_communities(
                 session, repo_id, trace, node_cache
@@ -132,7 +147,10 @@ async def get_execution_flows(
                 "depth": len(trace) - 1,
                 "crosses_community": crosses,
                 "communities_visited": communities_visited,
+                "termination": termination.get("reason"),
             }
+            if termination.get("detail"):
+                flow["termination_detail"] = termination["detail"]
             # Which strategy produced each hop, aligned to `trace` pairwise.
             # Omitted when no hop has one, so an older index shows no field
             # rather than a list of nulls.

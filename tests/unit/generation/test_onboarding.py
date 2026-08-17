@@ -485,6 +485,7 @@ async def test_how_it_works_without_usable_exact_source_preserves_generic_fallba
         depth=2,
         crosses_community=False,
         communities_visited=[0],
+        termination="no_callees",
     )
     signals = _signals(files=files, source_map=source_map, flows=(flow,))
     config = GenerationConfig(
@@ -566,6 +567,7 @@ async def test_how_it_works_balances_configured_and_distinct_exact_flow_evidence
         depth=2,
         crosses_community=True,
         communities_visited=[0, 1],
+        termination="no_callees",
     )
     signals = _signals(
         files=files,
@@ -671,6 +673,7 @@ async def test_how_it_works_grounds_identifiers_found_only_in_exact_evidence() -
         depth=2,
         crosses_community=False,
         communities_visited=[0],
+        termination="no_callees",
     )
     signals = _signals(
         files=[parsed],
