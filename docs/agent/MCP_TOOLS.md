@@ -43,7 +43,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 [generate_refactoring_code](#generate_refactoring_code) &middot;
 [get_conformance](#get_conformance)
 
-Also see [Configuring the tool surface](#configuring-the-tool-surface) and [Reversible truncation](#reversible-truncation-_metaomitted).
+Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversible truncation](#reversible-truncation-_metaomitted) and [Unrecognised arguments](#unrecognised-arguments-ignored_arguments).
 
 ---
 
@@ -150,6 +150,38 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
 
 Silence on `stale_warning` means the index is current; don't infer staleness from its absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all.
+
+---
+
+## Unrecognised arguments: `ignored_arguments`
+
+A tool never answers a bad argument with a filter that matches nothing. A value
+outside a closed vocabulary is **dropped, not applied** — so the response is the
+one you would have got without it — and the tool names what it dropped, at the
+top level:
+
+```jsonc
+"ignored_arguments": [
+  { "argument": "kind",
+    "values": ["unused_exports"],
+    "valid": ["unreachable_file", "unused_export", "unused_internal", "zombie_package"] }
+]
+```
+
+The key is absent when every argument was understood, so its presence is the
+whole signal. One entry per argument, however many of its values missed.
+
+This exists because the alternative is a lie: `get_dead_code(kind="unused_exports")`
+used to filter on the plural, match nothing, and recommend *"No dead code found
+matching your filters."* beside a summary counting hundreds of unused exports
+([#1496](https://github.com/repowise-dev/repowise/issues/1496)). It covers
+`get_dead_code` (`kind`, `tier`, `min_confidence`), `get_context` (`include`)
+and `search_codebase` (`kind`).
+
+`get_dead_code`'s `min_confidence` additionally accepts the tier names the
+response is organised by — `"high"` (0.8), `"medium"` (0.5), `"low"` (0.0) — as
+well as a float. `get_health` reports the same thing under its own older name,
+`unknown_only_keys`, for the `only` projection.
 
 ---
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import os.path
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -205,6 +206,46 @@ def _unsupported_repo_all(tool_name: str) -> dict:
             f"Specify a repo alias instead. Available: {available}"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Closed-vocabulary arguments (used by get_dead_code, get_context, search_codebase)
+# ---------------------------------------------------------------------------
+
+
+def resolve_enum_argument(
+    value: str | None,
+    valid: Collection[str],
+    *,
+    argument: str,
+    ignored: list[dict[str, Any]],
+) -> str | None:
+    """Return *value* if it is in *valid*, else drop it and record it in *ignored*.
+
+    Same rule as ``get_health``'s ``unknown_only_keys``: an argument the tool
+    does not recognise is named rather than applied. Applying it is what makes
+    a typo indistinguishable from a real negative — a misspelled filter matches
+    nothing and the tool reports the empty result as an answer (issue #1496).
+    Dropping it and saying so is recoverable; raising is not, because the caller
+    loses the answer it could still have had.
+
+    Repeated calls for one *argument* (``include`` takes a list) collect into a
+    single entry, so the vocabulary is spelled out once however many values miss.
+    """
+    if value is None or value in valid:
+        return value
+    for entry in ignored:
+        if entry["argument"] == argument:
+            entry["values"].append(value)
+            return None
+    ignored.append({"argument": argument, "values": [value], "valid": sorted(valid)})
+    return None
+
+
+def attach_ignored_arguments(result: dict[str, Any], ignored: list[dict[str, Any]]) -> None:
+    """Name the arguments the tool dropped, at the top level, or add nothing."""
+    if ignored:
+        result["ignored_arguments"] = ignored
 
 
 # ---------------------------------------------------------------------------
