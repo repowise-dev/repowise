@@ -1095,20 +1095,19 @@ class CallResolver:
                 # An import names the module it was written against, which in
                 # Python is usually a package ``__init__`` that re-exports the
                 # type rather than declaring it. Free calls already chase that
-                # chain; without it here the import settles which type this is
-                # and then refuses every method of it.
+                # chain; without it the import settles which type this is and
+                # then refuses every method of it.
                 #
-                # Keyed on the *exported* name, as the free-call chase is. The
-                # re-export map is keyed by each file's own local names, so an
-                # alias asks the bound file about a name that means something
-                # else there — ``from lib import Foo as Bar`` would look up
-                # whatever ``lib`` happens to call ``Bar``. ``!= bound`` because
-                # a mutual re-export can leave an entry naming its own file.
+                # Keyed on the *exported* name, as the free-call chase is: the
+                # map holds each file's own local names, so an alias would ask
+                # the bound file about a name that means something else there.
+                # ``!= bound`` because a mutual re-export can leave an entry
+                # naming its own file.
                 binding = self._import_bindings.get(file_path, {}).get(type_name)
                 exported = (binding.exported_name if binding else None) or type_name
-                origin = self._barrel_origins.get(bound, {}).get(exported)
-                if origin is not None and origin != bound:
-                    sym_id = self._file_methods.get(origin, {}).get(
+                declaring = self._barrel_origins.get(bound, {}).get(exported)
+                if declaring is not None and declaring != bound:
+                    sym_id = self._file_methods.get(declaring, {}).get(
                         (exported, call.target_name)
                     )
             return None if sym_id is None else (sym_id, "import")

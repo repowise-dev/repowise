@@ -532,6 +532,38 @@ class TestImportedTypeThroughAReExport:
             "receiver_typed_import",
         ) in _edges(parsed, tmp_path)
 
+    def test_a_bound_file_that_declares_the_pair_answers_directly(
+        self, tmp_path: Path
+    ) -> None:
+        """The chain is a fallback, not a first choice.
+
+        This is the shape the import tier always handled, and it had no test —
+        so nothing pinned that the chase runs only after a direct hit misses.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "app.py": (
+                    "python",
+                    "from pkg.engine import Engine\n\n"
+                    "def run():\n"
+                    "    engine = Engine()\n"
+                    "    engine.render(1)\n",
+                ),
+                "pkg/engine.py": (
+                    "python",
+                    "class Engine:\n    def render(self, obj):\n        return obj\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"app.py": {"pkg.engine": "pkg/engine.py"}})
+        assert (
+            "app.py::run",
+            "pkg/engine.py::Engine::render",
+            0.88,
+            "receiver_typed_import",
+        ) in _edges(parsed, tmp_path)
+
     def test_a_re_export_chain_does_not_invent_a_method(self, tmp_path: Path) -> None:
         """Following the chain must not weaken the validator above it."""
         files = self._repo()
