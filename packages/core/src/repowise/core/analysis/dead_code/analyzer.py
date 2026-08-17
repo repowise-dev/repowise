@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Iterable
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +23,9 @@ import structlog
 
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from .constants import (
+    _CONTAINER_USE_LANGUAGES,
     _DEFAULT_DYNAMIC_PATTERNS,
+    _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
     _NEVER_PACKAGE_DIRS,
@@ -108,6 +111,31 @@ _DEPRECATED_DECORATOR_BASES: frozenset[str] = frozenset(
 #: base is ``app.route`` (correct), but a hypothetical annotation whose
 #: *argument* contains ``@something`` would create a spurious token.
 _QUOTED_STR_RE: re.Pattern[str] = re.compile(r'"[^"]*"')
+
+
+def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
+    """True when the author has written that the symbol is deliberately uncalled.
+
+    Distinct from the framework lists, which infer a caller we cannot see. Here
+    there may be no caller at all and the annotation says so, which is a
+    stronger signal than any heuristic. Read from the raw token because the
+    base name is shared with every other use of the same annotation.
+    """
+    for blob in decorators:
+        # A Java/Kotlin modifiers node delivers every annotation concatenated,
+        # so the blob is split the way ``_is_symbol_deprecated`` splits it —
+        # without this, ``@Named("unused-legacy-bean")`` beside an unrelated
+        # ``@SuppressWarnings`` reads as the author's statement.
+        for token in str(blob).split("@"):
+            if not token.strip():
+                continue
+            base = _decorator_base(token)
+            if any(
+                base == name and argument in token
+                for name, argument in _DELIBERATELY_UNUSED_ANNOTATIONS
+            ):
+                return True
+    return False
 
 
 def _decorator_base(raw: str) -> str:
@@ -958,6 +986,42 @@ class DeadCodeAnalyzer:
             risk_factors=list(risk_factors),
         )
 
+    def _member_is_used(self, sym_id: str, language: str | None) -> bool:
+        """True when this container declares a method something else uses.
+
+        Reads the ``has_method`` edges the graph already holds, so this adds no
+        pass and no extraction.
+
+        Two narrowings, and both were forced by review rather than chosen:
+
+        **The use must come from outside the container.** A class's own methods
+        are predecessors of each other, so counting them would make any class
+        with two methods where one calls the other rescue itself — evidence
+        about the inside of a container is not evidence that anything reaches
+        it.
+
+        **Only a call counts, not the wider reachability set.** Transferring
+        member-level evidence to the container is only sound when something
+        actually invokes the member; an ``implements`` or ``method_implements``
+        edge says the member satisfies a contract, which is a fact about the
+        member's shape and not about anyone reaching the class.
+        """
+        if language not in _CONTAINER_USE_LANGUAGES or not self.graph.has_node(sym_id):
+            return False
+        members = {
+            method_id
+            for _, method_id, data in self.graph.out_edges(sym_id, data=True)
+            if data.get("edge_type") == "has_method"
+        }
+        within = members | {sym_id}
+        for method_id in members:
+            if any(
+                pred not in within and self.graph[pred][method_id].get("edge_type") == "calls"
+                for pred in self.graph.predecessors(method_id)
+            ):
+                return True
+        return False
+
     def _detect_unused_exports(
         self,
         dynamic_patterns: tuple[str, ...],
@@ -1182,6 +1246,8 @@ class DeadCodeAnalyzer:
                     for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
                 ):
                     continue
+                if _declared_deliberately_unused(decorators):
+                    continue
 
                 if self._name_matches_dynamic(sym_name, dynamic_patterns):
                     continue
@@ -1260,6 +1326,21 @@ class DeadCodeAnalyzer:
                     self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
                     for pred in self.graph.predecessors(sym_id)
                 ):
+                    continue
+
+                # A container whose member is used is itself used, and no
+                # search for the container's own name can see it. A C# static
+                # holder class is only ever named at its declaration --
+                # ``Guard.Against.EmptyBasket(...)`` writes the method, never
+                # ``BasketGuards`` -- so the name really is absent and the name
+                # is the wrong thing to look for. Asked after the direct check
+                # so it can only rescue, never displace.
+                #
+                # Gated to C# because that is where the idiom lives. The
+                # argument generalises -- deleting any class whose method has a
+                # caller breaks that caller -- but ungating it removes findings
+                # in every language at once, which is its own measured change.
+                if self._member_is_used(sym_id, sym.get("language")):
                     continue
 
                 if is_deprecated:
@@ -1417,6 +1498,8 @@ class DeadCodeAnalyzer:
                     for d in decorators
                     for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
                 ):
+                    continue
+                if _declared_deliberately_unused(decorators):
                     continue
 
             # Any inbound use, not only a call. A base class that is subclassed
