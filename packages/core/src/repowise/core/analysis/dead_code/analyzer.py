@@ -1412,11 +1412,13 @@ class DeadCodeAnalyzer:
                 ):
                     continue
 
-            # Any inbound use, not only a call. An override reached through the
-            # base it answers for, a collaborator the container constructs, and
-            # a handler named in a dispatch table each carry a symbol-level edge
-            # of their own; reading only ``calls`` here reported all three as
-            # unused.
+            # Any inbound use, not only a call. A base class that is subclassed
+            # rather than instantiated, a collaborator the container constructs,
+            # and a handler named as a value rather than invoked each carry a
+            # symbol-level edge of their own; reading only ``calls`` here
+            # reported all three as unused. The set is shared with the
+            # unused-export pass, so it also carries types this population can
+            # never hold — a method or an interface is filtered out above.
             is_used = any(
                 self.graph.get_edge_data(pred, node, {}).get("edge_type")
                 in REACHABILITY_USE_EDGE_TYPES
