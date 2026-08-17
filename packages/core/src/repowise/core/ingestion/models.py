@@ -458,10 +458,11 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
 # Symbol → symbol references. "Something reaches this symbol", so containment
 # is excluded: a class containing a method is not the method being used.
 #
-# `reads` is the one type that spans both layers, which is why it is the one
-# member of both sets. Two extractors share the name: `csharp_member_reads`
-# emits it file → file (596 rows locally) and `framework_edges/express` emits
-# it symbol → symbol from a `path::__module__` node (1 row).
+# `reads` is a member here for a reason that no longer holds: its symbol-level
+# producer moved to `framework_binds`, so `csharp_member_reads` is the only one
+# left and it emits file → file. A file node can never be a symbol node's
+# predecessor, so membership is inert rather than wrong. Retiring it moves the
+# vocabulary and belongs to a diff that can measure that.
 SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
     {
         "calls",
