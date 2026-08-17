@@ -416,3 +416,77 @@ class TestFieldTypedReceiver:
             },
         )
         assert not [e for e in _edges(parsed, tmp_path) if e[3].startswith("receiver_field_")]
+
+
+class TestPythonTypedReceiver:
+    """Python reaches the same strategy through its own declaration shapes."""
+
+    def test_a_constructed_local_types_its_receiver(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "run.py": (
+                    "python",
+                    "def run():\n    graph = DependencyGraph()\n    graph.add_arc(1)\n",
+                ),
+                "graph.py": (
+                    "python",
+                    "class DependencyGraph:\n    def add_arc(self, obj):\n        return obj\n",
+                ),
+            },
+        )
+        assert (
+            "run.py::run",
+            "graph.py::DependencyGraph::add_arc",
+            0.75,
+            "receiver_typed_global",
+        ) in _edges(parsed, tmp_path)
+
+    def test_an_annotated_parameter_types_its_receiver(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "run.py": (
+                    "python",
+                    "def run(graph: DependencyGraph):\n    graph.add_arc(1)\n",
+                ),
+                "graph.py": (
+                    "python",
+                    "class DependencyGraph:\n    def add_arc(self, obj):\n        return obj\n",
+                ),
+            },
+        )
+        assert (
+            "run.py::run",
+            "graph.py::DependencyGraph::add_arc",
+            0.75,
+            "receiver_typed_global",
+        ) in _edges(parsed, tmp_path)
+
+    def test_a_python_class_attribute_never_types_a_bare_receiver(
+        self, tmp_path: Path
+    ) -> None:
+        """A Python field is reached as ``self.graph``, never as ``graph``.
+
+        So a bare receiver naming a class attribute is a different name, and
+        binding the two would be a wrong edge rather than a missed one.
+        """
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "api.py": (
+                    "python",
+                    "class Api:\n"
+                    "    graph: DependencyGraph\n"
+                    "    def run(self):\n"
+                    "        graph.add_arc(1)\n",
+                ),
+                "graph.py": (
+                    "python",
+                    "class DependencyGraph:\n    def add_arc(self, obj):\n        return obj\n",
+                ),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert not [e for e in edges if str(e[3]).startswith("receiver_field_")]
+        assert not [e for e in edges if str(e[3]).startswith("receiver_typed_")]

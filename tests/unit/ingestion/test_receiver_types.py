@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.ingestion.languages.receiver_types import (
+    IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     scan_declarations,
     types_by_class,
@@ -97,6 +98,90 @@ class TestCsharpShapes:
     def test_pattern_match_binding(self) -> None:
         body = "public void Go() { if (thing is Placeholder p) { p.Name(); } }"
         assert declared_types(body, "csharp")["p"] == "Placeholder"
+
+
+class TestPythonShapes:
+    """Python annotates after the name and constructs without a keyword.
+
+    Neither shape is ``T name``, so nothing the C family matches applies here.
+    """
+
+    def test_annotated_parameter(self) -> None:
+        body = "def run(self, crawler: Crawler):\n    crawler.stop()"
+        assert declared_types(body, "python")["crawler"] == "Crawler"
+
+    def test_annotated_assignment(self) -> None:
+        body = "def run():\n    record: LogRecord = caplog.records[0]"
+        assert declared_types(body, "python")["record"] == "LogRecord"
+
+    def test_construction(self) -> None:
+        body = "def run():\n    graph = DependencyGraph()\n    graph.add_arc(x)"
+        assert declared_types(body, "python")["graph"] == "DependencyGraph"
+
+    def test_a_parameter_in_a_multi_line_signature(self) -> None:
+        body = "def run(\n    self,\n    jar: CookieJar,\n): ..."
+        assert declared_types(body, "python")["jar"] == "CookieJar"
+
+
+class TestPythonRefusals:
+    """Prose is the false-positive source the C-family shape never had."""
+
+    def test_a_docstring_is_not_a_declaration(self) -> None:
+        """``context: The caller`` reads as an annotation until docstrings go."""
+        body = '''def run():
+    """Do the thing.
+
+    Args:
+        context: Crawler that owns this run.
+    """
+    context.stop()'''
+        assert "context" not in declared_types(body, "python")
+
+    def test_a_hash_comment_is_not_a_declaration(self) -> None:
+        body = "def run():\n    # loader: SpiderLoader once lived here\n    pass"
+        assert declared_types(body, "python") == {}
+
+    def test_a_generic_annotation_is_refused(self) -> None:
+        """``x: Optional[Crawler]`` is an Optional, not a Crawler.
+
+        Unwrapping the payload would type ``x`` as something it provably is
+        not, and the validator would happily accept the result.
+        """
+        body = "def run(a: Optional[Crawler], b: list[Spider]):\n    a.stop()"
+        types = declared_types(body, "python")
+        assert "a" not in types
+        assert "b" not in types
+
+    def test_a_factory_call_is_not_a_construction(self) -> None:
+        """``x = Foo.bar()`` calls a class; it does not build a ``Foo``."""
+        body = "def run():\n    result = GroupResult.restore(id)\n    result.get()"
+        assert "result" not in declared_types(body, "python")
+
+    def test_a_keyword_argument_is_not_a_construction(self) -> None:
+        """``f(logger=Emitter())`` binds a parameter of ``f``, not a local.
+
+        Read as a declaration it answers for a ``logger`` that came from
+        somewhere else, which is a wrong edge rather than a missed one. The C
+        family never had this shape because its equivalent needs ``var``.
+        """
+        body = "def run():\n    logger = get_logger()\n    dispatch(logger=Emitter())"
+        assert declared_types(body, "python") == {}
+
+    def test_a_lowercase_callee_is_not_a_construction(self) -> None:
+        body = "def run():\n    spider = build_spider()\n    spider.crawl()"
+        assert declared_types(body, "python") == {}
+
+    def test_two_types_for_one_name_yields_neither(self) -> None:
+        body = "def run():\n    thing = Crawler()\n    thing = SpiderLoader()"
+        assert declared_types(body, "python") == {"thing": None}
+
+    def test_python_never_reaches_class_scope(self) -> None:
+        """A Python field is written ``self.foo``, so no bare receiver names one.
+
+        The declaration is still found — it is the resolver that declines to
+        ask class scope for a language whose fields are always qualified.
+        """
+        assert "python" not in IMPLICIT_FIELD_LANGUAGES
 
 
 class TestRefusals:
@@ -197,9 +282,9 @@ class TestClassScope:
 
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
-    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "java"}
+    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "java", "python"}
 
 
-@pytest.mark.parametrize("language", ["java", "csharp"])
+@pytest.mark.parametrize("language", ["java", "csharp", "python"])
 def test_an_empty_body_is_not_an_error(language: str) -> None:
     assert declared_types("", language) == {}

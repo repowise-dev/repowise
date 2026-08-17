@@ -56,17 +56,60 @@ _INFERRED_FROM_NEW = re.compile(
 # Truncating at ``//`` also truncates a URL inside a string literal. That can
 # only ever lose a declaration, never invent one, which is the safe direction.
 _LINE_COMMENT = re.compile(r"//.*")
+_HASH_COMMENT = re.compile(r"#.*")
+
+# Python writes its documentation as a string literal in the body, which a
+# comment strip does not reach. Prose is the one false-positive source the
+# C-family shape never had — ``context: The caller`` reads as an annotation —
+# so triple-quoted runs are blanked, keeping their newlines so line numbers
+# survive.
+_DOCSTRING = re.compile(r"(\"\"\"|''')(?:.|\n)*?\1")
 
 _NEWLINE = re.compile(r"\n")
+
+# Python annotates after the name, not before it: ``x: T``, ``def f(x: T)``.
+# The closer is what keeps the pattern off prose, and it is the reason a
+# generic annotation is refused rather than mis-read — ``x: Optional[T]`` is
+# followed by ``[``, so it matches nothing, which is right, since the value is
+# an Optional and not a T.
+_PY_TYPE = r"[A-Z]\w*(?:\.\w+)*"
+_PY_ANNOTATED = re.compile(
+    rf"(?<![\w.])(?P<name>[a-z_]\w*)\s*:\s*(?P<type>{_PY_TYPE})\s*(?=(?P<closer>[=,)\]\n]))"
+)
+
+# ``x = T(...)``, the only shape unannotated Python offers. Bare-named on
+# purpose: ``x = Foo.bar(...)`` is a call on a class rather than a
+# construction, and typing ``x`` as ``Foo`` from it would simply be wrong.
+# Anchored to the start of a statement because ``dispatch(logger=Emitter())``
+# is otherwise read as declaring ``logger``, which then answers for a
+# ``logger`` that came from somewhere else entirely. The C family is safe from
+# that shape only because its equivalent needs the ``var`` keyword.
+_PY_CONSTRUCTED = re.compile(
+    r"(?m)^[ \t]*(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\("
+)
 
 _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
 
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "csharp": _C_FAMILY,
     "java": _C_FAMILY,
+    "python": (_PY_ANNOTATED, _PY_CONSTRUCTED),
 }
 
 RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
+
+# Languages where a field can be named with no qualifier, which is the only
+# thing that lets a class-scope declaration answer for a bare receiver. Python
+# writes ``self.foo.bar()``, whose receiver is dotted and which our grammar
+# queries mint no call site for at all — so class scope has nothing there to
+# answer, and consulting it could only bind a bare local name to a field.
+IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "java"})
+
+_LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
+    "csharp": _LINE_COMMENT,
+    "java": _LINE_COMMENT,
+    "python": _HASH_COMMENT,
+}
 
 
 class Declaration(NamedTuple):
@@ -115,7 +158,12 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     if not patterns:
         return ()
 
-    cleaned = _LINE_COMMENT.sub("", text)
+    cleaned = text
+    if language == "python":
+        cleaned = _DOCSTRING.sub(lambda m: "\n" * m.group(0).count("\n"), cleaned)
+    comment = _LANGUAGE_COMMENTS.get(language)
+    if comment is not None:
+        cleaned = comment.sub("", cleaned)
     # Scanned by the regex engine rather than a Python loop over characters:
     # the loop costs more than the declaration scan it exists to serve.
     starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]

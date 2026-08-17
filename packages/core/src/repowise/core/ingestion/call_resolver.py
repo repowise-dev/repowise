@@ -32,6 +32,7 @@ from typing import Any
 import structlog
 
 from .languages.receiver_types import (
+    IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     Declaration,
     scan_declarations,
@@ -100,6 +101,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     "java": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "kotlin": _JVM_STRATEGIES,
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
 }
@@ -1022,14 +1024,15 @@ class CallResolver:
         # stands — including when that answer is "declared twice, no usable
         # type". Only a name the body never mentions reaches class scope.
         body_types = self._declared_types_in(file_path, caller_id, language)
-        from_field = receiver_name not in body_types
+        type_name = body_types.get(receiver_name)
+        from_field = (
+            receiver_name not in body_types and language in IMPLICIT_FIELD_LANGUAGES
+        )
         if from_field:
             class_id = caller_id.rpartition("::")[0]
             type_name = (
                 self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
             )
-        else:
-            type_name = body_types[receiver_name]
         if type_name is None:
             return None
 
