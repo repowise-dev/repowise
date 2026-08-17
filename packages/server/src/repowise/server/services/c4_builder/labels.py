@@ -35,11 +35,14 @@ _EDGE_VERB: dict[str, str] = {
     "extends": "inherits from",
     "implements": "implements",
     "method_implements": "implements",
+    "dispatches_to": "dispatches to",
     # A lazy/registry import and a framework-convention link (a test file to its
     # conftest) are both real dependencies that no static import expresses.
     "dynamic_uses": "uses",
     "dynamic_url_route": "uses",
     "framework": "uses",
+    # Symbol-level wiring; same verb as its file-level sibling on purpose.
+    "framework_binds": "uses",
     "reads": "uses",
     # A type reference without an import: named, but not imported.
     "type_use": "references",
@@ -58,6 +61,11 @@ _EDGE_VERB: dict[str, str] = {
 # surface the single highest-priority verb rather than concatenating tokens.
 _VERB_PRIORITY: tuple[str, ...] = (
     "calls",
+    # Below "calls": a pair with both holds a direct invocation, which is the
+    # more precise claim. Above the heritage verbs, because where a pair has
+    # both, the dispatch says what actually runs and "implements" only says
+    # the types line up.
+    "dispatches to",
     "inherits from",
     "implements",
     "imports",

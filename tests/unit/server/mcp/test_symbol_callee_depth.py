@@ -246,3 +246,62 @@ async def test_excluded_callees_are_dropped(session, repository, chain) -> None:
     root = await _root(session, repository.id)
     block = await _expand_callees(session, repository.id, root, chain, 3, spec)
     assert block is None
+
+
+async def test_a_base_class_is_not_served_as_a_callee(
+    session, repository, chain
+) -> None:
+    """The walk follows `calls`, not everything that reaches a symbol.
+
+    `_expand_callees` imports `_CALL_EDGE_TYPES` from `tool_context.enrichment`,
+    which used to be the whole of `SYMBOL_USE_EDGE_TYPES`. So a base class an
+    implementation extends, and a framework-bound fixture, were served as
+    "callees" **with their source bodies**, for up to three hops, against a
+    24,000-char budget. Widening that constant again would silently regress
+    this, so it is pinned from this side too.
+    """
+    rid = repository.id
+    for i, (name, edge_type) in enumerate((("Base", "extends"), ("wire", "framework_binds"))):
+        sid = f"{_FILE}::{name}"
+        session.add(
+            WikiSymbol(
+                id=f"nc{i}",
+                repository_id=rid,
+                file_path=_FILE,
+                symbol_id=sid,
+                name=name,
+                qualified_name=f"chain.{name}",
+                kind="class",
+                signature=f"class {name}",
+                start_line=1,
+                end_line=2,
+                language="python",
+            )
+        )
+        session.add(
+            GraphNode(
+                id=f"nn{i}",
+                repository_id=rid,
+                node_id=sid,
+                node_type="symbol",
+                name=name,
+                file_path=_FILE,
+                language="python",
+            )
+        )
+        session.add(
+            GraphEdge(
+                id=f"ne{i}",
+                repository_id=rid,
+                source_node_id=f"{_FILE}::f0",
+                target_node_id=sid,
+                edge_type=edge_type,
+                confidence=0.99,
+            )
+        )
+    await session.flush()
+
+    root = await _root(session, rid)
+    block = await _expand_callees(session, rid, root, chain, 2, None)
+
+    assert [c["symbol_id"] for c in block["callees"]] == [f"{_FILE}::f1"]

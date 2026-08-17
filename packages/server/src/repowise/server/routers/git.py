@@ -209,7 +209,7 @@ def _commit_detail_from_row(
     drivers = [
         RiskDriverResponse(
             feature=d.feature,
-            value=None if d.value != d.value else d.value,  # drop NaN (unknown feature)
+            value=d.value,  # already None for an unknown feature
             contribution=d.contribution,
             label=d.label,
         )
@@ -751,7 +751,7 @@ def get_risk_range(
         drivers=[
             RiskDriverResponse(
                 feature=d.feature,
-                value=None if d.value != d.value else d.value,  # drop NaN (unknown feature)
+                value=d.value,  # already None for an unknown feature
                 contribution=d.contribution,
                 label=d.label,
             )

@@ -5,18 +5,11 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 # Auto-derived/auto-implemented marker traits carry no useful heritage signal.
 _SKIP_BOUNDS = ("Sized", "Send", "Sync", "Unpin")
-
-
-def _strip_generics(text: str) -> str:
-    """``Sides<T>`` -> ``Sides``; also strips a leading path (``a::B`` -> ``B``)."""
-    name = text.strip().rsplit("::", 1)[-1]
-    if "<" in name:
-        name = name[: name.index("<")]
-    return name
 
 
 def _impl_relation(def_node: Node, line: int, src: str, out: list[HeritageRelation]) -> None:
@@ -25,8 +18,8 @@ def _impl_relation(def_node: Node, line: int, src: str, out: list[HeritageRelati
     type_node = def_node.child_by_field_name("type")
     if not (trait_node and type_node):
         return
-    trait_name = _strip_generics(node_text(trait_node, src))
-    type_name = _strip_generics(node_text(type_node, src))
+    trait_name = bare_type_name(node_text(trait_node, src))
+    type_name = bare_type_name(node_text(type_node, src))
     if trait_name and type_name:
         out.append(
             HeritageRelation(
@@ -48,7 +41,7 @@ def _trait_supertraits(
     for child in bounds.children:
         if child.type in ("+", ":"):
             continue
-        parent = node_text(child, src).strip().rsplit("::", 1)[-1]
+        parent = bare_type_name(node_text(child, src))
         if parent:
             out.append(
                 HeritageRelation(
@@ -76,7 +69,7 @@ def _where_clause_bounds(
             for bound_child in bounds.children:
                 if bound_child.type in ("+", ":"):
                     continue
-                bound_name = _strip_generics(node_text(bound_child, src))
+                bound_name = bare_type_name(node_text(bound_child, src))
                 if bound_name and bound_name not in _SKIP_BOUNDS:
                     out.append(
                         HeritageRelation(

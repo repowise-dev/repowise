@@ -6,6 +6,7 @@ emitting EXTENDS/IMPLEMENTS, ``reads``, and ``calls`` edges respectively.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 import structlog
@@ -20,6 +21,11 @@ log = structlog.get_logger(__name__)
 #: even for a call; for a bare identifier it bound ordinary words to unrelated
 #: files. See ``_add_reference_edges``.
 _MIN_REFERENCE_CONFIDENCE = 0.85
+
+#: Symbol kinds a resolved reference may land on, by how the name was spelled.
+#: See ``_add_reference_edges`` for why a bare name is restricted to functions.
+_BARE_REFERENCE_KINDS = frozenset({"function"})
+_QUALIFIED_REFERENCE_KINDS = frozenset({"function", "method"})
 
 
 class ResolveMixin:
@@ -102,7 +108,7 @@ class ResolveMixin:
         if progress:
             progress.on_phase_start(phase, None)
         try:
-            cs_texts = collect_csharp_source_texts(self._parsed_files)
+            cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
             type_to_file = build_csharp_type_to_file(self._parsed_files)
             added = resolve_csharp_member_reads(self._graph, cs_texts, type_to_file)
             log.info("member_read_edges", language="csharp", added=added)
@@ -141,7 +147,7 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             jvm_index = get_or_build_jvm_index(ctx)
-            texts = collect_jvm_source_texts(self._parsed_files)
+            texts = collect_jvm_source_texts(self._parsed_files, self._source_map)
             added = resolve_jvm_same_package_refs(self._graph, jvm_index, texts)
             log.info("same_package_edges", added=added)
         except Exception as exc:
@@ -178,7 +184,7 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             index = get_or_build_index(ctx)
-            cs_texts = collect_csharp_source_texts(self._parsed_files)
+            cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
             repo = getattr(index, "repo_path", None) if index is not None else None
             added = resolve_csharp_same_namespace_refs(
                 self._graph, index, cs_texts, repo
@@ -410,7 +416,7 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             swift_targets = get_or_build_swift_targets(ctx)
-            texts = collect_swift_source_texts(self._parsed_files)
+            texts = collect_swift_source_texts(self._parsed_files, self._source_map)
             added = resolve_swift_same_module_refs(self._graph, swift_targets, texts)
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
@@ -488,6 +494,45 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_override_dispatch(self, progress: Any | None = None) -> None:
+        """Emit ``dispatches_to`` edges from base methods to implementations.
+
+        Runs last: it reads the heritage edges Phase 2 resolved and the
+        ``has_method`` edges ``add_file`` laid down, and nothing else.
+        """
+        from ..dispatch_edges import resolve_override_dispatch
+
+        phase = "graph.dispatch"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            resolve_override_dispatch(self._graph)
+        except Exception as exc:
+            log.warning("override_dispatch_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
+    def _heritage_parents(self) -> dict[str, set[str]]:
+        """``{type symbol id: parent type symbol ids}`` from the built graph.
+
+        Symbol ids, not type names: a name-keyed map unions the parents of
+        every same-named class in the repo and reaches ancestors that are not
+        this class's.
+        """
+        parents: dict[str, set[str]] = defaultdict(set)
+        for child, parent, data in self._graph.edges(data=True):
+            if data.get("edge_type") not in ("extends", "implements"):
+                continue
+            if (
+                self._graph.nodes[child].get("node_type") == "symbol"
+                and self._graph.nodes[parent].get("node_type") == "symbol"
+            ):
+                parents[child].add(parent)
+        return parents
+
     def _resolve_calls(
         self,
         import_targets: dict[str, set[str]],
@@ -501,6 +546,7 @@ class ResolveMixin:
             import_targets,
             repo_path=str(self._repo_path) if self._repo_path else None,
             import_maps=self._shared_import_maps(),
+            heritage_parents=self._heritage_parents(),
         )
 
         # Record which C/C++ declarations were paired with a definition. The
@@ -558,14 +604,19 @@ class ResolveMixin:
         building a second index over every parsed file would double that cost
         for nothing.
 
-        Only free functions produce an edge, never methods. A bare identifier
-        cannot name a member function in C++ — that needs ``&Class::method`` —
-        so a plain name resolving to a method is always a collision rather
-        than a reference, and C++ names its getters exactly like the locals
-        that feed them. Measured on leveldb, admitting methods turned
-        ``value``, ``status``, ``level``, ``key`` and ``offset`` into fifteen
-        edges, every one of them wrong. Every shape the issue reports is a
-        free function, so nothing real is lost.
+        **What may be named depends on how it was written, not on the
+        language.** A receiver-less name produces an edge only to a free
+        function: a bare identifier cannot name a member in the languages that
+        spell a reference that way, so a plain name resolving to a method is a
+        collision rather than a reference, and C++ names its getters exactly
+        like the locals that feed them. Measured on leveldb, admitting methods
+        there turned ``value``, ``status``, ``level``, ``key`` and ``offset``
+        into fifteen edges, every one of them wrong.
+
+        A name that arrived with a receiver went through an operator only a
+        callable accepts — ``Foo::bar``, ``pkg.Handler`` in argument position —
+        so a method is the expected target and refusing one would discard the
+        whole idiom.
 
         A ``calls`` edge already covering the same pair wins and is left alone:
         it is the stronger claim, and downgrading it here would lose the fact
@@ -582,21 +633,30 @@ class ResolveMixin:
         for path, parsed in self._parsed_files.items():
             if not parsed.references:
                 continue
-            for rc in resolver.resolve_file(path, parsed.references):
-                if rc.confidence < _MIN_REFERENCE_CONFIDENCE:
+            bare = [r for r in parsed.references if not r.receiver_name]
+            qualified = [r for r in parsed.references if r.receiver_name]
+            batches = (
+                (bare, _BARE_REFERENCE_KINDS),
+                (qualified, _QUALIFIED_REFERENCE_KINDS),
+            )
+            for sites, allowed_kinds in batches:
+                if not sites:
                     continue
-                if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
-                    continue
-                if self._graph.nodes[rc.callee_id].get("kind") != "function":
-                    continue
-                if self._graph.has_edge(rc.caller_id, rc.callee_id):
-                    continue
-                self._graph.add_edge(
-                    rc.caller_id,
-                    rc.callee_id,
-                    edge_type="references",
-                    confidence=rc.confidence,
-                    resolution_origin=rc.origin,
-                )
-                total += 1
+                for rc in resolver.resolve_file(path, sites):
+                    if rc.confidence < _MIN_REFERENCE_CONFIDENCE:
+                        continue
+                    if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
+                        continue
+                    if self._graph.nodes[rc.callee_id].get("kind") not in allowed_kinds:
+                        continue
+                    if self._graph.has_edge(rc.caller_id, rc.callee_id):
+                        continue
+                    self._graph.add_edge(
+                        rc.caller_id,
+                        rc.callee_id,
+                        edge_type="references",
+                        confidence=rc.confidence,
+                        resolution_origin=rc.origin,
+                    )
+                    total += 1
         log.info("Reference edges resolved", total=total)

@@ -63,6 +63,13 @@ _SYMBOL_KEYWORDS = re.compile(
 # trufflehog rather than a noisy replacement.
 SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secret"})
 
+# Kinds whose ``snippet`` is a symbol *name* rather than the text of the line
+# it sits on (see the symbol-name scan below). Serve-time line verification
+# must not treat these like pattern snippets: a bare identifier recurs all over
+# a file, so relocating on it lands somewhere arbitrary and failing to find it
+# does not mean the code is gone.
+SYMBOL_NAME_KINDS: frozenset[str] = frozenset({"security_sensitive_symbol"})
+
 
 class SecurityScanner:
     """Scan a single file for security signals and persist to the database."""

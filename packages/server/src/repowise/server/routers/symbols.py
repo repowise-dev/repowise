@@ -10,7 +10,6 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import iso_utc
-from repowise.core.ingestion.models import SYMBOL_USE_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -26,6 +25,7 @@ from repowise.server.services.symbol_ranking import (
     compute_components,
     rank_symbols,
 )
+from repowise.server.services.symbol_relations import load_symbol_relations
 
 router = APIRouter(
     prefix="/api/symbols",
@@ -396,53 +396,8 @@ async def symbol_detail(
     # comment true: unfiltered, a symbol's inbound containment edge — from its
     # own declaring file or class, which 34,570 of 34,808 symbols on this repo
     # have — was served as a caller.
-    callers: list[dict] = []
-    callees: list[dict] = []
     node = await crud.get_graph_node(session, repo_id, symbol_id)
-    if node is not None:
-        edges = await crud.get_graph_edges_for_node(
-            session,
-            repo_id,
-            symbol_id,
-            direction="both",
-            edge_types=sorted(SYMBOL_USE_EDGE_TYPES),
-            limit=40,
-        )
-        other_ids = {
-            e.source_node_id if e.source_node_id != symbol_id else e.target_node_id for e in edges
-        }
-        node_map = await crud.get_graph_nodes_by_ids(session, repo_id, list(other_ids))
-        for e in edges:
-            inbound = e.target_node_id == symbol_id
-            other_id = e.source_node_id if inbound else e.target_node_id
-            other = node_map.get(other_id)
-            entry = {
-                "symbol_id": other_id,
-                "name": other.name
-                if other and other.name
-                else (other_id.split("::")[-1] if "::" in other_id else other_id),
-                "kind": other.kind if other else "unknown",
-                "file": other.file_path
-                if other and other.file_path
-                else (other_id.split("::")[0] if "::" in other_id else other_id),
-                "start_line": other.start_line if other else None,
-                "edge_type": e.edge_type,
-                "confidence": round(e.confidence or 0.0, 3),
-            }
-            (callers if inbound else callees).append(entry)
-        callers.sort(key=lambda x: (-x["confidence"], x["name"]))
-        callees.sort(key=lambda x: (-x["confidence"], x["name"]))
-
-    # Scoped to the same edges as `callers`/`callees`, which sit beside these
-    # two in one `graph` object. Unscoped, every symbol's in-degree carried the
-    # containment edge from its own declaring file or class.
-    degrees = (
-        await crud.get_node_degree_counts(
-            session, repo_id, symbol_id, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
-        )
-        if node is not None
-        else {"in_degree": 0, "out_degree": 0}
-    )
+    relations = await load_symbol_relations(session, repo_id, symbol_id, present=node is not None)
 
     governing = [
         {"id": d.id, "title": d.title, "status": d.status}
@@ -464,10 +419,20 @@ async def symbol_detail(
         "symbol": symbol.model_dump(mode="json"),
         "graph": {
             "pagerank": round((node.pagerank if node else 0.0) or 0.0, 6),
-            "in_degree": degrees["in_degree"],
-            "out_degree": degrees["out_degree"],
-            "callers": callers,
-            "callees": callees,
+            # Degree across every use edge type, so it stays a graph metric
+            # rather than a second, disagreeing caller count. Summed from the
+            # counts the rows were cut from — it is NOT `caller_total`, which
+            # is calls only, and a surface wanting "N callers" wants that one.
+            "in_degree": relations.in_degree,
+            "out_degree": relations.out_degree,
+            # Calls only. Every other relation kind is carried by `relations`
+            # under its own name, so a subclass is no longer served as a caller.
+            "callers": [r.model_dump(mode="json") for r in relations.callers],
+            "callees": [r.model_dump(mode="json") for r in relations.callees],
+            # True counts. `len(callers)` is the cap, not the answer.
+            "caller_total": relations.caller_total,
+            "callee_total": relations.callee_total,
+            "relations": [g.model_dump(mode="json") for g in relations.groups],
         },
         "governing_decisions": governing,
         "file_context": file_context,

@@ -49,6 +49,7 @@ from ..external_systems.cmake import (
     discover_cmake_reactor,
     parse_cmake_file_api_reply,
 )
+from ..source_text import decode_source
 
 if TYPE_CHECKING:
     from .context import ResolverContext
@@ -238,15 +239,19 @@ _PROJECT_EXPORT_MACRO_RE = re.compile(
 _EXPORT_LIKE_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}_(?:EXPORT|API|PUBLIC|DLL|VISIBLE)$")
 
 
+def _export_macros_in(text: str) -> tuple[str, ...]:
+    # Limit to the first ~8KB — export macros are nearly always near the top.
+    return tuple({m.group(1) for m in _PROJECT_EXPORT_MACRO_RE.finditer(text[:8192])})
+
+
 @lru_cache(maxsize=8192)
 def _scan_header_for_export_macros(abs_path: str) -> tuple[str, ...]:
+    """:func:`_export_macros_in` for a header the source map did not have."""
     try:
         text = Path(abs_path).read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ()
-    # Limit to the first ~8KB — export macros are nearly always near the top.
-    head = text[:8192]
-    return tuple({m.group(1) for m in _PROJECT_EXPORT_MACRO_RE.finditer(head)})
+    return _export_macros_in(text)
 
 
 def _classify_dir(root_dir: str) -> dict[str, bool]:
@@ -362,6 +367,11 @@ def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
 
     repo_path = ctx.repo_path.resolve()
     path_set = set(ctx.path_set)
+    # ``getattr``, not attribute access: the call resolver builds these
+    # indexes from a minimal stand-in context that carries neither field
+    # (``call_resolver._Ctx``). A miss means disk and a live walk, which
+    # is what that path did before.
+    source_map = getattr(ctx, "source_map", None)
 
     cmake_files = discover_cmake_reactor(repo_path)
     file_api_targets = parse_cmake_file_api_reply(repo_path)
@@ -409,8 +419,11 @@ def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
                 if len(header_candidates) > 200:
                     break
     for rel in header_candidates:
-        abs_p = str((repo_path / rel).resolve())
-        macros.update(_scan_header_for_export_macros(abs_p))
+        data = source_map.get(rel) if source_map is not None else None
+        if data is not None:
+            macros.update(_export_macros_in(decode_source(data)))
+        else:
+            macros.update(_scan_header_for_export_macros(str((repo_path / rel).resolve())))
     _scan_header_for_export_macros.cache_clear()
 
     # Filter out anything that doesn't look like an export marker name.

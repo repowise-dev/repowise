@@ -87,6 +87,154 @@ def test_unused_internal_explicit_opt_out():
     assert internals == []
 
 
+def test_unused_internal_skipped_when_subclassed():
+    """A private base class reached only via ``extends`` is still used."""
+    g = _build_graph(
+        nodes={
+            "pkg/base.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "_BaseThing",
+                        "kind": "class",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 12,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+            "pkg/child.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "Thing",
+                        "kind": "class",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 8,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[
+            (
+                "pkg/child.py::Thing",
+                "pkg/base.py::_BaseThing",
+                {"edge_type": "extends"},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+    assert "_BaseThing" not in names
+
+
+def test_unused_internal_skipped_when_referenced_as_a_value():
+    """A private helper named in a dispatch table is used without being called."""
+    g = _build_graph(
+        nodes={
+            "pkg/handlers.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [
+                    {
+                        "name": "_handle",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 6,
+                        "complexity_estimate": 1,
+                    },
+                    {
+                        "name": "register",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 8,
+                        "end_line": 12,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[
+            (
+                "pkg/handlers.py::register",
+                "pkg/handlers.py::_handle",
+                {"edge_type": "references"},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+    assert "_handle" not in names
+
+
+def test_unused_internal_still_flagged_with_only_containment_edges():
+    """A ``defines`` / ``has_method`` containment edge alone must not count as use."""
+    g = _build_graph(
+        nodes={
+            "pkg/lonely.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "_orphan",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 6,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+    assert "_orphan" in names
+
+
 def test_unused_internal_skipped_when_imported_by_name():
     """A private helper imported by name into a sibling module (typical
     dispatch-table pattern: ``HANDLERS = {"python": _extract_py, ...}``)

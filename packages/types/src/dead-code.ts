@@ -2,9 +2,10 @@
  * Canonical dead-code finding types.
  *
  * Canonical source: engine `DeadCodeFindingResponse` + `DeadCodeSummaryResponse`.
- * Some downstream pipelines emit extra raw-shape fields (`evidence`, `package`,
- * `last_commit_at`, `commit_count_90d`, `age_days`) — preserved here as
- * optional so consumer adapters don't lose information when normalising.
+ * Some downstream pipelines emit extra raw-shape fields (`evidence`,
+ * `age_days`) — preserved here as optional so consumer adapters don't lose
+ * information when normalising. `package` was dropped: it duplicated the
+ * first segment of `file_path`.
  */
 
 export type DeadCodeStatus = "open" | "acknowledged" | "resolved" | "false_positive";
@@ -91,11 +92,17 @@ export interface DeadCodeFinding {
   primary_owner: string | null;
   status: DeadCodeStatus;
   note: string | null;
+  /**
+   * When the file was last touched. This is the staleness signal, and it is
+   * not `age_days`: that is measured from the *first* commit, so it answers
+   * "how old is this file" rather than "how long has this been dead". The two
+   * disagree on 75% of findings, so never label `age_days` as deadness.
+   */
+  last_commit_at?: string | null;
+  /** Commits to the file in the last 90 days; 0 is what earns a high confidence. */
+  commit_count_90d?: number;
   /** Raw engine artifact fields — present in some downstream pipelines, optional here. */
   evidence?: string[] | null;
-  package?: string | null;
-  last_commit_at?: string | null;
-  commit_count_90d?: number;
   age_days?: number | null;
 }
 

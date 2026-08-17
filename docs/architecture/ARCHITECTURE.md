@@ -858,7 +858,10 @@ tracked file, it computes:
   without an import relationship. Reveals hidden structural coupling.
 - **Derived signals** — `is_hotspot` (top-quartile decayed churn AND absolute
   activity floors: >= 3 commits in 90d with real line movement), `is_stable`
-  (>10 commits, 0 in 90 days), `churn_percentile` (0.0–1.0)
+  (>10 commits, 0 in 90 days), `churn_percentile` (0.0–1.0 **as stored**;
+  normalized to 0–100 at the HTTP and MCP boundaries — see
+  `code-health.md` §5.1. The one exception is `get_risk.hotspot_score`, which
+  deliberately passes the stored 0–1 through under its own name.)
 
 **Performance targets:**
 - 3,000 files, 10K commits → < 3 minutes

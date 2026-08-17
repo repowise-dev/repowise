@@ -43,7 +43,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 [generate_refactoring_code](#generate_refactoring_code) &middot;
 [get_conformance](#get_conformance)
 
-Also see [Configuring the tool surface](#configuring-the-tool-surface) and [Reversible truncation](#reversible-truncation-_metaomitted).
+Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversible truncation](#reversible-truncation-_metaomitted) and [Unrecognised arguments](#unrecognised-arguments-ignored_arguments).
 
 ---
 
@@ -150,6 +150,38 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
 
 Silence on `stale_warning` means the index is current; don't infer staleness from its absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all.
+
+---
+
+## Unrecognised arguments: `ignored_arguments`
+
+A tool never answers a bad argument with a filter that matches nothing. A value
+outside a closed vocabulary is **dropped, not applied** — so the response is the
+one you would have got without it — and the tool names what it dropped, at the
+top level:
+
+```jsonc
+"ignored_arguments": [
+  { "argument": "kind",
+    "values": ["unused_exports"],
+    "valid": ["unreachable_file", "unused_export", "unused_internal", "zombie_package"] }
+]
+```
+
+The key is absent when every argument was understood, so its presence is the
+whole signal. One entry per argument, however many of its values missed.
+
+This exists because the alternative is a lie: `get_dead_code(kind="unused_exports")`
+used to filter on the plural, match nothing, and recommend *"No dead code found
+matching your filters."* beside a summary counting hundreds of unused exports
+([#1496](https://github.com/repowise-dev/repowise/issues/1496)). It covers
+`get_dead_code` (`kind`, `tier`, `min_confidence`), `get_context` (`include`)
+and `search_codebase` (`kind`).
+
+`get_dead_code`'s `min_confidence` additionally accepts the tier names the
+response is organised by — `"high"` (0.8), `"medium"` (0.5), `"low"` (0.0) — as
+well as a float. `get_health` reports the same thing under its own older name,
+`unknown_only_keys`, for the `only` projection.
 
 ---
 
@@ -395,7 +427,9 @@ Modification risk assessment for files or a set of changed files.
 | `changed_files` | list[string] | No | Files in a PR/changeset for blast radius analysis; passing this switches the response into PR-directive mode |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** Per-file risk score (0-10), hotspot status, dependent count, co-change partners, blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
+**Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, dependent count, co-change partners (each with a recency-decayed `weight`, not an integer count), blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
+
+> **Scales.** Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
 
 When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests the per-test coverage map proves execute the changed files, as pytest-runnable ids to validate the change; empty until a coverage map is ingested with `repowise coverage add`). In workspace mode that directive also carries the cross-repo fallout of the changed repo:
 

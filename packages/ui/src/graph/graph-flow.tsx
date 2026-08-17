@@ -34,6 +34,7 @@ import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type Grap
 import { GraphLegend } from "./graph-legend";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
+import { GraphFlowPanel } from "./graph-flow-panel";
 import { GraphShortcutHelp } from "./graph-shortcut-help";
 import type {
   GraphExport,
@@ -252,6 +253,15 @@ export function GraphFlow(props: GraphFlowProps) {
   // Execution flows
   const [activeFlowIdx, setActiveFlowIdx] = useState<number | null>(null);
   const [showFlows, setShowFlows] = useState(false);
+  // Stable, so the memoised panel does not re-render with the canvas.
+  const handleFlowSelect = useCallback(
+    (idx: number) => setActiveFlowIdx((cur) => (cur === idx ? null : idx)),
+    [],
+  );
+  const handleFlowsClose = useCallback(() => {
+    setShowFlows(false);
+    setActiveFlowIdx(null);
+  }, []);
 
   // Community detail panel (the filter state itself lives in useCommunityFilter)
   const [communityPanelId, setCommunityPanelId] = useState<number | null>(null);
@@ -1136,59 +1146,13 @@ export function GraphFlow(props: GraphFlowProps) {
       {/* Execution Flows Panel */}
       {showFlows && executionFlows && executionFlows.flows.length > 0 && (
         <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
-          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm shadow-lg shadow-black/20 p-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-[var(--color-text-primary)]">
-                Execution Flows
-              </span>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                  {executionFlows.flows.length} entry points
-                </span>
-                {/* Same close affordance as the Path Finder panel above. */}
-                <button
-                  onClick={() => {
-                    setShowFlows(false);
-                    setActiveFlowIdx(null);
-                  }}
-                  aria-label="Close"
-                  title="Close"
-                  className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            </div>
-            <div className="space-y-1 max-h-60 overflow-y-auto">
-              {executionFlows.flows.map((flow, idx) => (
-                <button
-                  key={flow.entry_point}
-                  onClick={() => setActiveFlowIdx(activeFlowIdx === idx ? null : idx)}
-                  className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
-                    activeFlowIdx === idx
-                      ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
-                      : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"
-                  }`}
-                >
-                  <div className="font-mono truncate">{flow.entry_point_name}</div>
-                  <div className="flex items-center gap-2 mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
-                    <span>depth {flow.depth}</span>
-                    <span>{flow.trace.length} nodes</span>
-                    {flow.crosses_community && (
-                      <span className="text-yellow-500">cross-community</span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-            {activeFlowMissingCount > 0 && (
-              <p className="mt-2 text-[10px] leading-snug text-[var(--color-warning)]">
-                This flow includes {activeFlowMissingCount} node
-                {activeFlowMissingCount === 1 ? "" : "s"} not in the loaded
-                view — load more nodes to see the full trace.
-              </p>
-            )}
-          </div>
+          <GraphFlowPanel
+            flows={executionFlows}
+            activeFlowIdx={activeFlowIdx}
+            onSelect={handleFlowSelect}
+            onClose={handleFlowsClose}
+            missingCount={activeFlowMissingCount}
+          />
         </div>
       )}
 

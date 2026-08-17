@@ -30,11 +30,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..resolvers import ResolverContext
+from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
     FrameworkHandler,
     _add_edge_if_new,
     _build_class_to_file,
+    add_symbol_edge,
+    build_type_to_symbol,
     read_text,
 )
 
@@ -65,8 +68,12 @@ _SPRING_BEAN_METHOD_KOTLIN_RE = re.compile(
 
 # Lombok constructor-synthesis annotations. RAC = constructor over every
 # ``final`` (and ``@NonNull``) field; AAC = constructor over every field.
-_LOMBOK_RAC_ANNOT = ("@RequiredArgsConstructor", "@AllArgsConstructor")
-_LOMBOK_DATA_VALUE = ("@Data", "@Value")
+_LOMBOK_RAC_ANNOT = ("@RequiredArgsConstructor", "@AllArgsConstructor", "@Data")
+# Lombok's `@Value` makes a class immutable and takes no argument; Spring's
+# takes a property expression and sits on a field. Matching the bare spelling
+# is what separates them — reading `@Value("${app.name}")` as Lombok turns
+# every field in the class into a constructor parameter.
+_LOMBOK_VALUE_RE = re.compile(r"@Value\s*(?![(\w])")
 
 # Spring Data repository base interfaces — any interface extending one of
 # these has Spring-generated impls at runtime and must be treated as an
@@ -127,21 +134,41 @@ def _is_spring_data_repo(parsed: Any) -> bool:
     return False
 
 
-def _scan_lombok_ctor_params(text: str) -> list[str]:
+def _owner_at_offset(parsed: Any, text: str, offset: int) -> str | None:
+    """The innermost declared type whose body contains *offset*.
+
+    The injection regexes scan whole-file text with no scope awareness, so the
+    owner has to come from the match position. Taking the type the file is
+    named for instead attributes a nested ``@Configuration``'s injections to the
+    outer class -- and finds nothing at all in a file whose stem names no type.
+    """
+    line = text.count("\n", 0, offset) + 1
+    best: str | None = None
+    best_span = None
+    for sym in parsed.symbols:
+        if sym.kind not in ("class", "interface", "record", "enum"):
+            continue
+        if not (sym.start_line <= line <= sym.end_line):
+            continue
+        span = sym.end_line - sym.start_line
+        if best_span is None or span < best_span:
+            best, best_span = sym.id, span
+    return best
+
+
+def _scan_lombok_ctor_params(text: str) -> list[tuple[str, int]]:
     """Return Lombok-synthesized constructor param types (head identifiers).
 
     For a class annotated ``@RequiredArgsConstructor`` (or ``@Data``), this
     is every ``final`` field's head type; for ``@AllArgsConstructor`` (or
     ``@Value``), every field's head type. Builtin types are filtered.
     """
-    is_rac = any(a in text for a in _LOMBOK_RAC_ANNOT) or any(
-        a in text for a in _LOMBOK_DATA_VALUE if a == "@Data"
-    )
-    is_aac = "@AllArgsConstructor" in text or "@Value" in text
+    is_rac = any(a in text for a in _LOMBOK_RAC_ANNOT)
+    is_aac = "@AllArgsConstructor" in text or bool(_LOMBOK_VALUE_RE.search(text))
     if not (is_rac or is_aac):
         return []
 
-    params: list[str] = []
+    params: list[tuple[str, int]] = []
     for m in _JAVA_FINAL_FIELD_RE.finditer(text):
         is_final = bool(m.group(1))
         type_head = m.group(2)
@@ -150,8 +177,19 @@ def _scan_lombok_ctor_params(text: str) -> list[str]:
                          "List", "Map", "Set", "Collection"):
             continue
         if is_aac or (is_rac and is_final):
-            params.append(type_head)
+            params.append((type_head, m.start()))
     return params
+
+
+def _bind_injected_symbol(
+    graph: nx.DiGraph, type_to_symbol: dict[str, str], owner: str | None, type_name: str
+) -> int:
+    if owner is None:
+        return 0
+    target = type_to_symbol.get(strip_type_arguments(type_name).strip())
+    if target is None:
+        return 0
+    return 1 if add_symbol_edge(graph, owner, target) else 0
 
 
 def _add_spring_edges(
@@ -162,6 +200,7 @@ def _add_spring_edges(
 ) -> int:
     count = 0
     class_to_file = _build_class_to_file(parsed_files, ("java", "kotlin"))
+    type_to_symbol = build_type_to_symbol(parsed_files, ("java", "kotlin"))
 
     # Build interface → list of impl files map from heritage
     impl_map: dict[str, list[str]] = {}
@@ -218,6 +257,9 @@ def _add_spring_edges(
         # 2a. Field injection (@Autowired / @Inject / @Resource)
         for m in _SPRING_INJECT_FIELD_RE.finditer(text):
             type_name = m.group(1).split("<")[0].strip()
+            count += _bind_injected_symbol(
+                graph, type_to_symbol, _owner_at_offset(parsed, text, m.start()), type_name
+            )
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
@@ -236,12 +278,21 @@ def _add_spring_edges(
                 type_name = pm.group(1)
                 if type_name in ("String", "Integer", "Long", "Boolean", "Double", "Float"):
                     continue
+                count += _bind_injected_symbol(
+                    graph,
+                    type_to_symbol,
+                    _owner_at_offset(parsed, text, ctor_match.start()),
+                    type_name,
+                )
                 for target in _resolve_type(type_name):
                     if target in path_set and _add_edge_if_new(graph, path, target):
                         count += 1
 
         # 2c. Lombok @RequiredArgsConstructor / @AllArgsConstructor / @Data
-        for type_name in _scan_lombok_ctor_params(text):
+        for type_name, offset in _scan_lombok_ctor_params(text):
+            count += _bind_injected_symbol(
+                graph, type_to_symbol, _owner_at_offset(parsed, text, offset), type_name
+            )
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1

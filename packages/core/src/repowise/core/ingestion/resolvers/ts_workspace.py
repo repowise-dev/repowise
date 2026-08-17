@@ -169,8 +169,48 @@ def _flatten_export_value(value: Any) -> str | None:
     return None
 
 
-def _build_exports_map(pkg_data: dict) -> dict[str, str]:
-    """Return ``{exports_key: relative_target}`` for a workspace package.
+def _ordered_export_targets(value: Any) -> tuple[str, ...]:
+    """Every target a Node ``exports`` entry can mean, best first.
+
+    The head is exactly what :func:`_flatten_export_value` chose, so a package
+    whose ranked condition names a file the repository contains binds the file
+    it always bound. The tail is every other leaf, ranked conditions before
+    unranked ones, and is reached only when the head names nothing indexed.
+
+    The tail has to exist because a package may publish its sources under a
+    condition no fixed list can name — zod uses ``@zod/source`` — while every
+    condition this module ranks names build output a source checkout does not
+    contain, leaving the whole package unresolvable.
+    """
+    ordered: list[str] = []
+    head = _flatten_export_value(value)
+    if head is not None:
+        ordered.append(head)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str):
+            if node not in ordered:
+                ordered.append(node)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            for cond in _CONDITION_PRIORITY:
+                if cond in node:
+                    walk(node[cond])
+            for cond, inner in node.items():
+                if cond not in _CONDITION_PRIORITY:
+                    walk(inner)
+
+    walk(value)
+    return tuple(ordered)
+
+
+_DECLARATION_SUFFIXES: tuple[str, ...] = (".d.ts", ".d.mts", ".d.cts")
+
+
+def _build_exports_map(pkg_data: dict) -> dict[str, tuple[str, ...]]:
+    """Return ``{exports_key: (target, ...)}`` for a workspace package.
 
     ``exports`` may be a single string (shorthand for ``{".": <str>}``)
     or a subpath dict. Keys that don't start with ``.`` are dropped (the
@@ -180,34 +220,40 @@ def _build_exports_map(pkg_data: dict) -> dict[str, str]:
     if raw is None:
         return {}
     if isinstance(raw, str):
-        return {".": raw}
+        return {".": (raw,)}
     if not isinstance(raw, dict):
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, ...]] = {}
     for key, value in raw.items():
         if not isinstance(key, str) or not key.startswith("."):
             continue
-        flat = _flatten_export_value(value)
-        if flat is None:
+        # A key whose ranked walk yields nothing is dropped, exactly as before.
+        # Keeping it on the strength of a spare candidate alone would let that
+        # candidate answer in the exports step, ahead of the fallbacks that
+        # answer for such a key today — a moved binding rather than a new one.
+        if _flatten_export_value(value) is None:
             continue
-        out[key] = flat
+        out[key] = _ordered_export_targets(value)
     return out
 
 
-def _match_export_key(subpath: str, exports_map: dict[str, str]) -> str | None:
+def _match_export_key(
+    subpath: str, exports_map: dict[str, tuple[str, ...]]
+) -> tuple[str, ...] | None:
     """Resolve a subpath against an ``exports`` map.
 
     ``subpath`` is the part of the import specifier after the package
     name, with no leading slash (``""`` for the bare package, ``"lib/x"``
     for ``@org/pkg/lib/x``). Exact keys win over wildcard patterns; among
-    wildcards the longest static prefix wins (Node spec).
+    wildcards the longest static prefix wins (Node spec). Returns the
+    matched key's candidate targets in priority order.
     """
     key = "." if subpath == "" else "./" + subpath
     if key in exports_map:
         return exports_map[key]
-    best_target: str | None = None
+    best_targets: tuple[str, ...] | None = None
     best_prefix_len = -1
-    for pattern, target in exports_map.items():
+    for pattern, targets in exports_map.items():
         if "*" not in pattern:
             continue
         prefix, _, suffix = pattern.partition("*")
@@ -220,11 +266,16 @@ def _match_export_key(subpath: str, exports_map: dict[str, str]) -> str | None:
             if suffix
             else key[len(prefix) :]
         )
-        resolved = target.replace("*", captured, 1) if "*" in target else target
         if len(prefix) > best_prefix_len:
-            best_target = resolved
+            # Beyond the head, a candidate carrying no ``*`` is dropped: the
+            # same fixed file would otherwise answer every distinct subpath
+            # under this key, quietly collapsing them onto one another.
+            kept = targets[:1] + tuple(t for t in targets[1:] if "*" in t)
+            best_targets = tuple(
+                t.replace("*", captured, 1) if "*" in t else t for t in kept
+            )
             best_prefix_len = len(prefix)
-    return best_target
+    return best_targets
 
 
 def _read_workspaces_field(pkg_data: dict) -> list[str]:
@@ -462,22 +513,45 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
 
     pkg = info[best_name]
     dir_posix: str = pkg["dir"]
-    exports_map: dict[str, str] = pkg["exports"]
+    exports_map: dict[str, tuple[str, ...]] = pkg["exports"]
     sub = module_path[len(best_name) :].lstrip("/")
 
-    # 1) ``exports`` field — the package's authoritative subpath map.
-    if exports_map:
-        target = _match_export_key(sub, exports_map)
-        if target is not None:
-            # Targets are package-relative ("./src/lib/foo.ts"). Strip the
-            # leading "./" and join with the package dir to get a repo path.
-            stripped = target.lstrip("./")
-            resolved = _probe_path(f"{dir_posix}/{stripped}", ctx.path_set)
+    targets = _match_export_key(sub, exports_map) if exports_map else None
+
+    def probe_target(target: str) -> str | None:
+        # Targets are package-relative ("./src/lib/foo.ts"). Strip the
+        # leading "./" and join with the package dir to get a repo path.
+        return _probe_path(f"{dir_posix}/{target.lstrip('./')}", ctx.path_set)
+
+    def spare_export_target() -> str | None:
+        """A candidate past the ranked one, for when nothing else answered.
+
+        Kept behind every pre-existing probe so this can only fill a specifier
+        that resolved to nothing: a package naming its sources under a
+        condition no fixed list ranks is unreachable otherwise, but reordering
+        would move imports that already bind, which is a different change.
+
+        A declaration file is never taken here. It carries no bodies, so
+        binding one as an entry resolves every call through it to a signature
+        — worse than the external node it would replace, which claims nothing.
+        """
+        for target in (targets or ())[1:]:
+            if target.endswith(_DECLARATION_SUFFIXES):
+                continue
+            resolved = probe_target(target)
             if resolved is not None:
                 return resolved
+        return None
+
+    # 1) ``exports`` field — the package's authoritative subpath map.
+    if targets:
+        resolved = probe_target(targets[0])
+        if resolved is not None:
+            return resolved
 
     # 2) Bare-package fallback — no ``exports[.]`` entry: try index.*,
-    #    then ``main``/``module`` from package.json.
+    #    then ``main``/``module`` from package.json, then the entries a
+    #    package publishing only from a build directory leaves reachable.
     if not sub:
         cand = _probe_path(f"{dir_posix}/index", ctx.path_set)
         if cand is not None:
@@ -485,6 +559,13 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         main = pkg.get("main")
         if isinstance(main, str):
             cand = _probe_path(f"{dir_posix}/{main.lstrip('./')}", ctx.path_set)
+            if cand is not None:
+                return cand
+        cand = spare_export_target()
+        if cand is not None:
+            return cand
+        for source_root in ("src", "lib"):
+            cand = _probe_path(f"{dir_posix}/{source_root}/index", ctx.path_set)
             if cand is not None:
                 return cand
         return None
@@ -500,7 +581,7 @@ def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None
         cand = _probe_path(f"{dir_posix}/{src_root}/{sub}", ctx.path_set)
         if cand is not None:
             return cand
-    return None
+    return spare_export_target()
 
 
 # ---------------------------------------------------------------------------
@@ -580,9 +661,15 @@ def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     path_set = ctx.path_set
     for _name, pkg in packages.items():
         dir_posix: str = pkg["dir"]
-        exports_map: dict[str, str] = pkg.get("exports") or {}
-        for pattern, target in exports_map.items():
-            entries.update(_expand_exports_wildcard(target, pattern, dir_posix, path_set))
+        exports_map: dict[str, tuple[str, ...]] = pkg.get("exports") or {}
+        for pattern, targets in exports_map.items():
+            # The ranked target only. The spare candidates exist to bind an
+            # import the resolver would otherwise drop; letting them widen the
+            # published-entry set would suppress dead-code findings instead,
+            # which is a different change and is not what was measured here.
+            entries.update(
+                _expand_exports_wildcard(targets[0], pattern, dir_posix, path_set)
+            )
         # ``main``/``module`` shorthand — package's primary entry.
         main = pkg.get("main")
         if isinstance(main, str):

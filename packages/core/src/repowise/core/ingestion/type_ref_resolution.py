@@ -158,19 +158,6 @@ def _resolve_csharp_type_refs(
 # Strategy: Rust
 # ---------------------------------------------------------------------------
 
-_RUST_BUILTIN_TYPES = frozenset({
-    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize",
-    "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
-    "String", "Vec", "Option", "Result", "Box", "Arc", "Rc",
-    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Cow",
-    "Pin", "Future", "Send", "Sync", "Sized", "Copy", "Clone",
-    "Debug", "Display", "Default", "Iterator", "IntoIterator",
-    "From", "Into", "TryFrom", "TryInto", "AsRef", "AsMut",
-    "Fn", "FnMut", "FnOnce", "Drop", "Deref", "DerefMut",
-    "Self", "self",
-})
-
-
 def _resolve_rust_type_refs(
     parsed: ParsedFile,
     ctx: ResolverContext,
@@ -181,6 +168,10 @@ def _resolve_rust_type_refs(
     if not parsed.type_refs:
         return 0
 
+    from .language_data import get_builtin_types
+    from .type_names import bare_type_name
+
+    rust_builtin_types = get_builtin_types("rust")
     from_path = parsed.file_info.path
     emitted = 0
 
@@ -193,10 +184,12 @@ def _resolve_rust_type_refs(
 
     for ref in parsed.type_refs:
         type_name = ref.type_name
-        if not type_name or type_name in _RUST_BUILTIN_TYPES:
+        if not type_name:
             continue
-        bare = type_name.rsplit("::", 1)[-1]
-        if bare in _RUST_BUILTIN_TYPES:
+        # Tested after reduction, so a path ending in a prelude type is caught
+        # as well as one written bare.
+        bare = bare_type_name(type_name)
+        if bare in rust_builtin_types:
             continue
 
         target = _find_rust_type_file(
@@ -254,10 +247,11 @@ def _resolve_go_type_refs(
         return 0
 
     from .cohesion import SAME_PACKAGE_HINT
-    from .parser_helpers import _GO_BUILTIN_TYPES
+    from .language_data import get_builtin_types
     from .resolvers.go_workspace import get_or_build_go_index
 
     index = get_or_build_go_index(ctx)
+    go_builtin_types = get_builtin_types("go")
     from_path = parsed.file_info.path
 
     # Candidate defining files: same-package siblings (referenced with no
@@ -286,7 +280,7 @@ def _resolve_go_type_refs(
     same_file_refs: set[str] = set()
     for ref in parsed.type_refs:
         name = ref.type_name
-        if not name or name in _GO_BUILTIN_TYPES:
+        if not name or name in go_builtin_types:
             continue
         # Check cross-file candidates first.
         target = _find_go_type_file(name, sorted_candidates, defined_names)
@@ -394,10 +388,11 @@ def _resolve_c_type_refs(
     if not parsed.type_refs:
         return 0
 
-    from .parser_helpers import _C_BUILTIN_TYPES
+    from .language_data import get_builtin_types
 
     from_path = parsed.file_info.path
     is_cpp = parsed.file_info.language == "cpp"
+    c_builtin_types = get_builtin_types("c")
 
     import_targets: set[str] = set()
     for imp in parsed.imports:
@@ -422,7 +417,7 @@ def _resolve_c_type_refs(
     seen_targets: set[tuple[str, str]] = set()
     for ref in parsed.type_refs:
         name = ref.type_name
-        if not name or name in _C_BUILTIN_TYPES:
+        if not name or name in c_builtin_types:
             continue
         if is_cpp and name in _CPP_STL_HEAD_NAMES:
             continue

@@ -9,6 +9,7 @@ import type {
 } from "@repowise-dev/types/symbols";
 import { FixHistoryBadge, SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
 import { SymbolDetailBody } from "./symbol-detail-body";
+import { toSymbolBodyCall, toSymbolBodyRelations } from "./normalize-calls";
 
 export interface SymbolPageProps {
   data: SymbolDetailResponse;
@@ -68,20 +69,13 @@ export function normalizeSymbolDetailResponse(
     graph: {
       in_degree: data.graph.in_degree,
       out_degree: data.graph.out_degree,
-      callers: data.graph.callers.map((c) => ({
-        symbol_id: c.symbol_id,
-        name: c.name,
-        file: c.file,
-        edge_type: c.edge_type,
-        confidence: c.confidence,
-      })),
-      callees: data.graph.callees.map((c) => ({
-        symbol_id: c.symbol_id,
-        name: c.name,
-        file: c.file,
-        edge_type: c.edge_type,
-        confidence: c.confidence,
-      })),
+      callers: data.graph.callers.map(toSymbolBodyCall),
+      callees: data.graph.callees.map(toSymbolBodyCall),
+      caller_total: data.graph.caller_total ?? data.graph.callers.length,
+      callee_total: data.graph.callee_total ?? data.graph.callees.length,
+      ...(data.graph.relations
+        ? { relations: toSymbolBodyRelations(data.graph.relations) ?? [] }
+        : {}),
     },
     governing_decisions: data.governing_decisions,
     file_context: {

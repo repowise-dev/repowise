@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Iterable
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +23,9 @@ import structlog
 
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from .constants import (
+    _CONTAINER_USE_LANGUAGES,
     _DEFAULT_DYNAMIC_PATTERNS,
+    _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
     _NEVER_PACKAGE_DIRS,
@@ -43,6 +46,7 @@ from .file_reachability import (
     is_file_reachable,
 )
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
+from .name_occurrences import IDENTIFIER_RE, clamp_unverified_absence
 from .risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
@@ -50,11 +54,10 @@ from .risk_factors import (
     risk_evidence,
 )
 
-#: Identifier shape, matched over raw bytes so an unindexed file never has to
-#: be decoded (these files are large by definition, and a decode would double
-#: the peak). ASCII-only is deliberate: a non-ASCII identifier that fails to
-#: match can only under-suppress.
-_IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")
+#: The unindexed scan below and the repo-wide absence check ask the same
+#: question of different file sets, so they share one identifier shape rather
+#: than each carrying a copy. See :mod:`name_occurrences`, which owns it.
+_IDENTIFIER_RE = IDENTIFIER_RE
 
 #: The confidence ceiling for a finding an unread file could explain is
 #: ``RISK_CAP_CONFIDENCE``, imported above rather than redefined: it already
@@ -108,6 +111,31 @@ _DEPRECATED_DECORATOR_BASES: frozenset[str] = frozenset(
 #: base is ``app.route`` (correct), but a hypothetical annotation whose
 #: *argument* contains ``@something`` would create a spurious token.
 _QUOTED_STR_RE: re.Pattern[str] = re.compile(r'"[^"]*"')
+
+
+def _declared_deliberately_unused(decorators: Iterable[str]) -> bool:
+    """True when the author has written that the symbol is deliberately uncalled.
+
+    Distinct from the framework lists, which infer a caller we cannot see. Here
+    there may be no caller at all and the annotation says so, which is a
+    stronger signal than any heuristic. Read from the raw token because the
+    base name is shared with every other use of the same annotation.
+    """
+    for blob in decorators:
+        # A Java/Kotlin modifiers node delivers every annotation concatenated,
+        # so the blob is split the way ``_is_symbol_deprecated`` splits it —
+        # without this, ``@Named("unused-legacy-bean")`` beside an unrelated
+        # ``@SuppressWarnings`` reads as the author's statement.
+        for token in str(blob).split("@"):
+            if not token.strip():
+                continue
+            base = _decorator_base(token)
+            if any(
+                base == name and argument in token
+                for name, argument in _DELIBERATELY_UNUSED_ANNOTATIONS
+            ):
+                return True
+    return False
 
 
 def _decorator_base(raw: str) -> str:
@@ -623,6 +651,11 @@ class DeadCodeAnalyzer:
         self._unindexed_source_files = list(unindexed_source_files or [])
         self._repo_root = repo_root
         self._unindexed_tokens: frozenset[str] | None = None
+        # Kept for the absence check below, which is the one pass that needs
+        # the raw text of *every* indexed file rather than of a suffix-filtered
+        # subset. Empty when a caller has no source access, which is what makes
+        # that check skip rather than guess.
+        self._source_map: dict[str, bytes] = source_map or {}
         # Four prepasses below each scan every indexed file for text markers.
         # ``source_map`` is ingestion's ``{repo_relative_path: raw bytes}`` for
         # the same file set, so passing it turns four full-repo disk passes
@@ -724,6 +757,10 @@ class DeadCodeAnalyzer:
         # out entirely, rather than being reported at a number it no longer
         # deserves.
         findings = self._clamp_for_unindexed_importers(findings)
+        # Same position and for the same reason. This one asks the wider
+        # version of the same question — not "could an unread file explain
+        # this" but "did we look anywhere except the import graph".
+        findings = clamp_unverified_absence(findings, self._source_map)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
@@ -942,13 +979,48 @@ class DeadCodeAnalyzer:
             last_commit_at=last_commit if isinstance(last_commit, datetime) else None,
             commit_count_90d=commit_90d,
             lines=node_data.get("symbol_count", 0) * 10,  # rough estimate
-            package=self._get_package(node),
             evidence=evidence,
             safe_to_delete=safe,
             primary_owner=primary_owner,
             age_days=age_days,
             risk_factors=list(risk_factors),
         )
+
+    def _member_is_used(self, sym_id: str, language: str | None) -> bool:
+        """True when this container declares a method something else uses.
+
+        Reads the ``has_method`` edges the graph already holds, so this adds no
+        pass and no extraction.
+
+        Two narrowings, and both were forced by review rather than chosen:
+
+        **The use must come from outside the container.** A class's own methods
+        are predecessors of each other, so counting them would make any class
+        with two methods where one calls the other rescue itself — evidence
+        about the inside of a container is not evidence that anything reaches
+        it.
+
+        **Only a call counts, not the wider reachability set.** Transferring
+        member-level evidence to the container is only sound when something
+        actually invokes the member; an ``implements`` or ``method_implements``
+        edge says the member satisfies a contract, which is a fact about the
+        member's shape and not about anyone reaching the class.
+        """
+        if language not in _CONTAINER_USE_LANGUAGES or not self.graph.has_node(sym_id):
+            return False
+        members = {
+            method_id
+            for _, method_id, data in self.graph.out_edges(sym_id, data=True)
+            if data.get("edge_type") == "has_method"
+        }
+        within = members | {sym_id}
+        for method_id in members:
+            if any(
+                pred not in within and self.graph[pred][method_id].get("edge_type") == "calls"
+                for pred in self.graph.predecessors(method_id)
+            ):
+                return True
+        return False
 
     def _detect_unused_exports(
         self,
@@ -1174,6 +1246,8 @@ class DeadCodeAnalyzer:
                     for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
                 ):
                     continue
+                if _declared_deliberately_unused(decorators):
+                    continue
 
                 if self._name_matches_dynamic(sym_name, dynamic_patterns):
                     continue
@@ -1254,6 +1328,21 @@ class DeadCodeAnalyzer:
                 ):
                     continue
 
+                # A container whose member is used is itself used, and no
+                # search for the container's own name can see it. A C# static
+                # holder class is only ever named at its declaration --
+                # ``Guard.Against.EmptyBasket(...)`` writes the method, never
+                # ``BasketGuards`` -- so the name really is absent and the name
+                # is the wrong thing to look for. Asked after the direct check
+                # so it can only rescue, never displace.
+                #
+                # Gated to C# because that is where the idiom lives. The
+                # argument generalises -- deleting any class whose method has a
+                # caller breaks that caller -- but ungating it removes findings
+                # in every language at once, which is its own measured change.
+                if self._member_is_used(sym_id, sym.get("language")):
+                    continue
+
                 if is_deprecated:
                     confidence = 0.3
                 elif file_has_importers:
@@ -1315,7 +1404,6 @@ class DeadCodeAnalyzer:
                         # Both-or-neither: a half-known span is worse than none.
                         start_line=(sym.get("start_line") or None) if sym.get("end_line") else None,
                         end_line=(sym.get("end_line") or None) if sym.get("start_line") else None,
-                        package=self._get_package(str(node)),
                         evidence=evidence,
                         safe_to_delete=safe,
                         primary_owner=git_meta.get("primary_owner_name"),
@@ -1331,7 +1419,7 @@ class DeadCodeAnalyzer:
         dynamic_patterns: tuple[str, ...],
         whitelist: set[str],
     ) -> list[DeadCodeFindingData]:
-        """Detect private/internal symbols with zero incoming call edges.
+        """Detect private symbols with zero incoming call edges.
 
         On by default. These carry a higher false-positive rate than the other
         detectors, which is why they land at a lower confidence. Disable with
@@ -1352,7 +1440,12 @@ class DeadCodeAnalyzer:
             # private symbols used across a package's files carry real
             # ``calls`` edges and no longer read as universally uncalled. The
             # blanket exemption that Phase 2 added has been lifted.
-            if node_data.get("visibility") not in ("private", "internal"):
+            # ``internal`` is not narrow: assembly-wide in C#, module-wide in
+            # Swift and Kotlin, crate-wide in Rust. A legitimate user can sit
+            # anywhere in the module, so a missing inbound call edge is not
+            # evidence of deadness. Nothing else observes ``internal`` either,
+            # which drops an unmodified C# top-level type out of both passes.
+            if node_data.get("visibility") != "private":
                 continue
             file_path = node_data.get("file_path", "")
             if not file_path:
@@ -1406,12 +1499,22 @@ class DeadCodeAnalyzer:
                     for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
                 ):
                     continue
+                if _declared_deliberately_unused(decorators):
+                    continue
 
-            has_callers = any(
-                self.graph.get_edge_data(pred, node, {}).get("edge_type") == "calls"
+            # Any inbound use, not only a call. A base class that is subclassed
+            # rather than instantiated, a collaborator the container constructs,
+            # and a handler named as a value rather than invoked each carry a
+            # symbol-level edge of their own; reading only ``calls`` here
+            # reported all three as unused. The set is shared with the
+            # unused-export pass, so it also carries types this population can
+            # never hold — a method or an interface is filtered out above.
+            is_used = any(
+                self.graph.get_edge_data(pred, node, {}).get("edge_type")
+                in REACHABILITY_USE_EDGE_TYPES
                 for pred in self.graph.predecessors(node)
             )
-            if has_callers:
+            if is_used:
                 continue
 
             # Dispatch-table pattern: a private helper imported by name
@@ -1448,7 +1551,7 @@ class DeadCodeAnalyzer:
                     symbol_name=sym_name,
                     symbol_kind=node_data.get("kind"),
                     confidence=0.65,
-                    reason=f"Private symbol '{sym_name}' has no callers",
+                    reason=f"Private symbol '{sym_name}' is not used anywhere",
                     last_commit_at=git_meta.get("last_commit_at")
                     if isinstance(git_meta.get("last_commit_at"), datetime)
                     else None,
@@ -1461,8 +1564,7 @@ class DeadCodeAnalyzer:
                     end_line=(node_data.get("end_line") or None)
                     if node_data.get("start_line")
                     else None,
-                    package=self._get_package(file_path),
-                    evidence=[f"No CALL edges to '{sym_name}'"],
+                    evidence=[f"No call, reference or override reaches '{sym_name}'"],
                     safe_to_delete=False,
                     primary_owner=git_meta.get("primary_owner_name"),
                     age_days=git_meta.get("age_days"),
@@ -1568,7 +1670,6 @@ class DeadCodeAnalyzer:
                         last_commit_at=pkg_last_commit,
                         commit_count_90d=pkg_total_commits_90d,
                         lines=total_lines,
-                        package=pkg,
                         evidence=[f"No inter-package imports into '{pkg}'"],
                         safe_to_delete=False,
                         primary_owner=pkg_owner,
@@ -1654,6 +1755,3 @@ class DeadCodeAnalyzer:
             return (now - dt).days > days
         return False
 
-    def _get_package(self, path: str) -> str | None:
-        parts = Path(path).parts
-        return parts[0] if len(parts) > 1 else None

@@ -9,34 +9,72 @@ Resolution tiers (checked in order, first match wins):
     Tier 1 — Same-file exact match (confidence 0.95)
         The parent name matches a class/interface/trait in the same file.
 
-    Tier 2 — Import-scoped match (confidence 0.90)
-        The parent name matches a class/interface/trait in an imported file.
+    Tier 2a — Named import (confidence 0.90)
+        The file imports the parent name, and that file declares it.
+
+    Tier 2b — Any imported file (confidence 0.85)
+        Some imported file declares the name; sorted-path order, first wins.
 
     Tier 3 — Global unique match (confidence 0.50)
         The parent name matches exactly one class/interface/trait globally.
 
 Each resolved relation produces a (child_id, parent_id, edge_type, confidence)
 tuple that the GraphBuilder converts into graph edges.
+
+Chain-walking a resolved relation is :func:`heritage_ancestors`.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import structlog
 
-from .models import HeritageRelation, ParsedFile
+from .models import HeritageRelation, ParsedFile, symbol_id_language
 
 log = structlog.get_logger(__name__)
 
+_Anchor = TypeVar("_Anchor")
 
-def _file_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
-    """Extract language from a symbol ID's file via the parsed files map."""
-    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
-    parsed = parsed_files.get(file_path)
-    return parsed.file_info.language if parsed else None
+
+def heritage_ancestors(
+    root: _Anchor,
+    parents_of: Callable[[_Anchor], Iterable[_Anchor]],
+    *,
+    max_expand_depth: int,
+) -> set[_Anchor]:
+    """Every anchor reachable from *root* by following *parents_of*, plus *root*.
+
+    **The anchor must identify a declaration, never a bare type name.** A
+    name-keyed walk unions the parents of every same-named type in the repo and
+    mints edges between unrelated classes, which is precisely the error this
+    exists to make unavailable: pass a symbol id, or a key that is already
+    scoped to one declaration.
+
+    *max_expand_depth* bounds expansion, not reach: an anchor found deeper is
+    returned but not followed. So reach is ``max_expand_depth + 1`` — for
+    ancestors within distance N, pass ``N - 1``.
+
+    An anchor is expanded at most once, which ends cycles but also means a long
+    path reaching it first can truncate what a later short path would have
+    expanded.
+    """
+    reached: set[_Anchor] = set()
+    expanded: set[_Anchor] = set()
+
+    def visit(anchor: _Anchor, depth: int) -> None:
+        reached.add(anchor)
+        if anchor in expanded or depth > max_expand_depth:
+            return
+        expanded.add(anchor)
+        for parent in parents_of(anchor):
+            visit(parent, depth + 1)
+
+    visit(root, 0)
+    return reached
 
 
 # Symbol kinds that can be parents in heritage relationships
@@ -190,8 +228,8 @@ class HeritageResolver:
         # Tier 3: global unique match — only within the same language
         candidates = self._global_types.get(parent_name, [])
         if len(candidates) == 1:
-            caller_lang = _file_language(self._parsed_files, child_id)
-            callee_lang = _file_language(self._parsed_files, candidates[0])
+            caller_lang = symbol_id_language(self._parsed_files, child_id)
+            callee_lang = symbol_id_language(self._parsed_files, candidates[0])
             if caller_lang and callee_lang and caller_lang != callee_lang:
                 return None  # reject cross-language Tier 3 match
             return ResolvedHeritage(

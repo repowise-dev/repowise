@@ -2,6 +2,11 @@
 // Graph Intelligence
 // ---------------------------------------------------------------------------
 
+// Imported rather than re-declared: `group` is a closed vocabulary pinned to
+// the engine's edge-type set by a Python test, and a local copy here would be
+// its third.
+import type { SymbolRelationGroup } from "@repowise-dev/types/symbols";
+
 export interface SymbolNodeSummary {
   symbol_id: string;
   name: string;
@@ -19,16 +24,23 @@ export interface CallerCalleeEntry {
   start_line?: number | null;
   edge_type: string;
   confidence: number;
+  /** Which resolution strategy produced the edge. Absent on an older index. */
+  resolution_origin?: string | null;
 }
 
 export interface CallersCalleesResponse {
   symbol_id: string;
   symbol: SymbolNodeSummary;
+  /** `calls` edges only. Every other relation kind is in `relations`. */
   callers: CallerCalleeEntry[];
   callees: CallerCalleeEntry[];
+  /** True totals, not the number of rows served. */
   caller_count: number;
   callee_count: number;
   truncated: boolean;
+  /** Heritage, framework wiring and references, each named and counted.
+   *  Absent on a backend that predates the split. */
+  relations?: SymbolRelationGroup<CallerCalleeEntry>[];
 }
 
 export interface CommunityMember {
@@ -86,6 +98,11 @@ export interface ExecutionFlowEntry {
   depth: number;
   crosses_community: boolean;
   communities_visited: number[];
+  /** Why the walk stopped, and how each hop resolved. Absent on an older index.
+   *  `trace_via` is pairwise with `trace`, so it is one shorter. */
+  termination?: string | null;
+  termination_detail?: Record<string, number> | null;
+  trace_via?: (string | null)[] | null;
 }
 
 export interface ExecutionFlowsResponse {

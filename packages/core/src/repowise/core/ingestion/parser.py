@@ -51,6 +51,7 @@ from .extractors.bindings.ts_js import (
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     refine_cpp_visibility,
+    refine_csharp_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
 )
@@ -109,7 +110,7 @@ _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 # Languages whose query defines the ``@reference.*`` captures. Every other
 # language would only scan the whole match list to find nothing, so the check
 # is here rather than inside ``_extract_references``.
-_REFERENCE_LANGUAGES = ("cpp", "c")
+_REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
 
 
 @cache
@@ -273,6 +274,18 @@ def _get_language(tag: str) -> Language | None:
 
 # Private alias for internal use (kept for compatibility with _find_parent)
 _node_text = node_text
+
+
+def _normalize_php_receiver(text: str) -> str:
+    """Spell PHP's receiver the way the resolver's strategies expect.
+
+    `self::` and `static::` are the same dispatch as `$this`, and the self/this
+    strategy tests `in ("self", "this")` — so without this the whole implicit-
+    receiver population misses. `parent::` needs the heritage walk and is left
+    to miss rather than guessed at.
+    """
+    name = text.lstrip("$")
+    return "this" if name in ("self", "static") else name
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +699,10 @@ class ASTParser:
             # modifier text. Refine after the generic fn ran.
             if file_info.language in ("cpp", "c"):
                 visibility, is_exported_symbol = refine_cpp_visibility(def_node, visibility, src)
+            # C#: an unmodified declaration's default depends on what encloses
+            # it, which the modifier-text fn cannot see.
+            elif file_info.language == "csharp":
+                visibility = refine_csharp_visibility(def_node, visibility)
             # TS/JS: a top-level declaration is only public when exported —
             # inline, via ``export { x }`` lists, or ``export default x``.
             elif file_info.language in _TS_JS_LANGUAGES:
@@ -1107,6 +1124,8 @@ class ASTParser:
 
             line = site_node.start_point[0] + 1
             receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+            if receiver_name and file_info.language == "php":
+                receiver_name = _normalize_php_receiver(receiver_name)
 
             dedup_key = (line, target_name, receiver_name)
             if dedup_key in seen:
@@ -1141,15 +1160,20 @@ class ASTParser:
     ) -> list[CallSite]:
         """Extract sites that name a function without calling it.
 
-        Three C/C++ shapes carry a function by name and never call it where a
-        parser can see: a dispatch-table entry, a callback field, and an
-        argument to a registration macro. Each leaves the named function with
-        no inbound edge, which read as a ``safe_to_delete`` unused export and
-        took out whole handler and interop layers (#1602).
+        Six shapes carry a function by name and never call it where a parser
+        can see: a dispatch-table entry, a callback field, an argument to a
+        registration macro, a func value in argument position, a struct-field
+        initialiser, and a ``::`` callable reference. Each leaves the named
+        function with no inbound edge, which read as a ``safe_to_delete``
+        unused export and took out whole handler and interop layers (#1602).
+
+        ``@reference.receiver`` is optional; capturing it is what lets
+        ``_add_reference_edges`` restrict a bare name to free functions and
+        allow a qualified name to reach a method.
 
         Self-gating on the reference captures, so a language whose query
         defines none produces nothing and pays two dict lookups. Two guards
-        keep these broad syntactic positions from claiming ordinary code:
+        keep the broad syntactic positions from claiming ordinary code:
 
         * A macro argument requires a SCREAMING_CASE callee and must be that
           macro's only argument. Uppercase alone is not enough: assertion
@@ -1178,13 +1202,18 @@ class ASTParser:
         callable_ids = {s.id for s in symbols if s.kind in ("function", "method")}
 
         references: list[CallSite] = []
-        seen: set[tuple[int, str]] = set()
+        seen: set[tuple[int, str, str | None]] = set()
 
         for capture_dict in matches:
             plain_nodes = capture_dict.get("reference.name", [])
             table_nodes = capture_dict.get("reference.table", [])
             if not plain_nodes and not table_nodes:
                 continue
+
+            receiver_nodes = capture_dict.get("reference.receiver", [])
+            receiver = (
+                _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+            ) or None
 
             via_nodes = capture_dict.get("reference.via", [])
             if via_nodes:
@@ -1205,13 +1234,13 @@ class ASTParser:
                 enclosing = _find_enclosing_symbol(line, symbol_ranges)
                 if is_table and enclosing in callable_ids:
                     continue
-                if (line, name) in seen:
+                if (line, name, receiver) in seen:
                     continue
-                seen.add((line, name))
+                seen.add((line, name, receiver))
                 references.append(
                     CallSite(
                         target_name=name,
-                        receiver_name=None,
+                        receiver_name=receiver,
                         caller_symbol_id=enclosing,
                         line=line,
                         argument_count=None,

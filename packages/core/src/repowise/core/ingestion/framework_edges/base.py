@@ -61,6 +61,39 @@ def _add_edge_if_new(graph: nx.DiGraph, source: str, target: str) -> bool:
     return True
 
 
+# Below `same_file` (0.95) because the framework can rebind at run time, level
+# with the heritage-walk origins because the binding follows a documented rule
+# and checks no signature.
+FRAMEWORK_BIND_CONFIDENCE = 0.90
+
+
+def add_symbol_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
+    """Link two *symbol* nodes the framework wires together.
+
+    Not a flag on ``_add_edge_if_new``: a ``DiGraph`` holds one edge per ordered
+    pair and ``defines`` already occupies (file, symbol), so that helper's
+    first-wins guard would let containment silently swallow a symbol edge.
+    Both ends must already be symbol nodes, so a wrong id cannot mint a bare
+    node with no attributes for every later consumer to defend against.
+    """
+    if source == target:
+        return False
+    for node in (source, target):
+        data = graph.nodes.get(node)
+        if data is None or data.get("node_type") != "symbol":
+            return False
+    if graph.has_edge(source, target):
+        return False
+    graph.add_edge(
+        source,
+        target,
+        edge_type="framework_binds",
+        confidence=FRAMEWORK_BIND_CONFIDENCE,
+        imported_names=[],
+    )
+    return True
+
+
 def read_text(parsed: Any, encoding: str = "utf-8") -> str:
     """Read a parsed file's source text, returning ``""`` on read failure.
 
@@ -85,6 +118,25 @@ def _build_class_to_file(
             if sym.kind in ("class", "interface", "struct", "record", "enum", "trait"):
                 result.setdefault(sym.name, path)
     return result
+
+
+def build_type_to_symbol(
+    parsed_files: dict[str, Any], languages: tuple[str, ...]
+) -> dict[str, str]:
+    """Map a declared type name → its symbol id, for names declared exactly once.
+
+    Stricter than :func:`_build_class_to_file`, which keeps the first declarer:
+    an ambiguous name must stay unclaimed rather than bind to whichever file the
+    walk reached first.
+    """
+    seen: dict[str, str | None] = {}
+    for _path, parsed in parsed_files.items():
+        if parsed.file_info.language not in languages:
+            continue
+        for sym in parsed.symbols:
+            if sym.kind in ("class", "interface", "struct", "record", "enum", "trait"):
+                seen[sym.name] = None if sym.name in seen else sym.id
+    return {name: sid for name, sid in seen.items() if sid is not None}
 
 
 def _build_function_to_file(

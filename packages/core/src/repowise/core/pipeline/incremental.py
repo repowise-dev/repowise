@@ -178,6 +178,9 @@ def build_repo_graph(
         log(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
 
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
+    # Best-effort, but not silent: the update path has to report the failure the
+    # init path reports, or an index degrades differently depending on how it
+    # was built and nothing says which.
     try:
         from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
 
@@ -185,8 +188,12 @@ def build_repo_graph(
         fw_count = graph_builder.add_framework_edges([item.name for item in tech_items])
         if fw_count:
             log(f"Framework edges added: [cyan]{fw_count}[/cyan]")
-    except Exception:
-        pass  # framework edge detection is best-effort
+    except Exception as fw_exc:
+        logger.warning("framework_edges_failed", error=str(fw_exc))
+        log(
+            f"[yellow]Framework edge detection skipped: {fw_exc}; framework-invoked "
+            "symbols will have no callers in the graph and may read as dead.[/yellow]"
+        )
 
     # Add dynamic-hint edges, mirroring the init pipeline's ingestion phase.
     # Without this the update-built graph was missing every dynamic edge the

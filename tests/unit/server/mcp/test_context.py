@@ -598,9 +598,21 @@ async def test_one_caller_joined_by_two_edge_types_is_listed_once(setup_mcp, ses
     t = result["targets"][target_id]
     matching = [c for c in t.get("callers", []) if c["symbol_id"] == caller_id]
     assert len(matching) == 1, matching
-    # Highest-confidence edge survives the collapse.
-    assert matching[0]["edge_type"] == "method_implements"
+    # The two edges are different relations, so they are reported separately
+    # rather than collapsed onto whichever had the higher confidence: the call
+    # is a call, and satisfying the interface is heritage.
+    assert matching[0]["edge_type"] == "calls"
     assert not t.get("callers_truncated")
+
+    impl = [
+        r
+        for r in t.get("relations", [])
+        if r["edge_type"] == "method_implements" and r["direction"] == "in"
+    ]
+    assert len(impl) == 1, t.get("relations")
+    assert impl[0]["group"] == "heritage"
+    assert impl[0]["total"] == 1
+    assert [r["symbol_id"] for r in impl[0]["rows"]] == [caller_id]
 
 
 @pytest.mark.asyncio

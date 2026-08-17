@@ -255,6 +255,10 @@ def _build_co_changes(meta: Any, import_related: set[str], exclude_spec: Any) ->
 
     Larger lists make MCP responses verbose without adding signal: top-5 captures
     the bulk of the temporal-coupling mass and keeps tool output tight for agents.
+
+    The strength field is emitted as ``weight``, not ``count``: the stored value
+    is a recency-decayed sum (``exp(-age_days / tau)`` per shared commit), so it
+    is fractional. Named ``count`` it read as "5.52 co-changes" to every agent.
     """
     partners = json.loads(meta.co_change_partners_json)
     partners_sorted = sorted(
@@ -266,7 +270,7 @@ def _build_co_changes(meta: Any, import_related: set[str], exclude_spec: Any) ->
         [
             {
                 "file_path": p.get("file_path", p.get("path", "")),
-                "count": p.get("co_change_count", p.get("count", 0)),
+                "weight": p.get("co_change_count", p.get("count", 0)),
                 "last_co_change": p.get("last_co_change"),
                 "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
             }

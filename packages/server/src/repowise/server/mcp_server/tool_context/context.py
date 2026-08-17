@@ -19,6 +19,11 @@ Optional ``include`` parameter widens the response:
   - include=["community"] → community membership + neighbors
   - include=["decisions"] → full decision records (default returns titles only)
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
+  - include=["health"]    → code-health scores and biomarkers for the target
+
+An unrecognised key is dropped and named in ``ignored_arguments`` rather than
+silently ignored: an unknown key otherwise produces exactly the response the
+caller would have got without it, so a typo reads as a real answer (#1496).
 
 This module is the orchestrator; single-target resolution lives in
 ``targets`` and the budget cap in ``truncation``.
@@ -40,12 +45,36 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
+
+# Every value ``include_set`` is tested against downstream, in ``targets.py``.
+# ``docs`` and ``freshness`` are always on but remain legal to pass explicitly.
+# ``source`` is tested in ``_meta.context_hint`` and left out deliberately: both
+# branches there return None, so accepting it would promise a block that does
+# nothing.
+_INCLUDE_BLOCKS = frozenset(
+    {
+        "docs",
+        "freshness",
+        "full_doc",
+        "callers",
+        "callees",
+        "ownership",
+        "last_change",
+        "metrics",
+        "community",
+        "decisions",
+        "skeleton",
+        "health",
+    }
+)
 
 
 @mcp.tool()
@@ -71,7 +100,8 @@ async def get_context(
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton.
+            | callees | metrics | community | decisions | skeleton | health.
+            An unrecognised key is named in ignored_arguments.
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
     """
@@ -87,7 +117,16 @@ async def get_context(
     # want them must pass include explicitly. Building the set this way
     # also fixes include=["skeleton"] silently dropping the file summary
     # and freshness card that every other call shape carries.
-    include_set = {"docs", "freshness"} | (set(include) if include else set())
+    # An unknown key adds no block, so without this the response is identical
+    # to one that never asked — and for callers/callees a genuine empty list is
+    # a *present* key, which makes the typo the quieter of the two (#1496).
+    ignored: list[dict[str, Any]] = []
+    known = [
+        k
+        for k in (include or [])
+        if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    ]
+    include_set = {"docs", "freshness"} | set(known)
 
     exclude_spec = _get_exclude_spec(ctx.path)
 
@@ -199,4 +238,8 @@ async def get_context(
     # collector so a truncated response always carries expandable
     # ``[repowise#<ref>]`` markers instead of silently losing content.
     collector = OmissionCollector("get_context", repo_root=ctx.path)
-    return truncate_to_budget(response, collector=collector)
+    truncated = truncate_to_budget(response, collector=collector)
+    # After the cap, never before: a note about a dropped argument that the
+    # budget can itself drop is no note at all.
+    attach_ignored_arguments(truncated, ignored)
+    return truncated

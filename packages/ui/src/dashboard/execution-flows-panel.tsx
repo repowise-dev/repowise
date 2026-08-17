@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown, Workflow } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { EmptyState } from "../shared/empty-state";
+import { isNameMatch, originDescriptor, terminationCopy } from "../graph/edge-provenance";
 import type { ExecutionFlowEntry } from "@repowise-dev/types/graph";
 
 interface ExecutionFlowsPanelProps {
@@ -15,6 +16,10 @@ interface ExecutionFlowsPanelProps {
 
 function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
   const [expanded, setExpanded] = useState(false);
+  const stop = terminationCopy(flow.termination);
+  // Only the hops whose pills are actually drawn, so the key does not promise
+  // a dash that sits behind the "+N more" cut.
+  const shownVia = (flow.trace_via ?? []).slice(0, 11);
 
   const scoreStyle: CSSProperties =
     flow.entry_point_score >= 0.7
@@ -74,15 +79,35 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
           <div className="flex flex-wrap items-center gap-y-2">
             {flow.trace.slice(0, 12).map((sym, i) => {
               const name = sym.includes("::") ? sym.split("::").pop() : sym.split("/").pop();
+              // `trace_via` is pairwise, so the hop arriving at pill `i` is
+              // `trace_via[i - 1]`. Dotted marks the hop we would not assert;
+              // the title carries the reason, since a 12px rule cannot.
+              const hop = originDescriptor(flow.trace_via?.[i - 1]);
               return (
-                <span key={i} className="flex items-center">
-                  {i > 0 && (
-                    <span
-                      aria-hidden
-                      className="h-px w-3 shrink-0"
-                      style={{ background: "var(--color-border-hover)" }}
-                    />
-                  )}
+                <span
+                  key={i}
+                  className="flex items-center"
+                  {...(hop ? { title: `Reached because ${hop.because}` } : {})}
+                >
+                  {i > 0 &&
+                    (hop?.tier === "name_match" ? (
+                      <>
+                        {/* The dash is the only visual carrier, so the word has
+                            to exist for a reader who cannot see it. */}
+                        <span className="sr-only">resolved by name match: </span>
+                        <span
+                          aria-hidden
+                          className="w-3 shrink-0 border-t border-dashed"
+                          style={{ borderColor: "var(--color-text-tertiary)" }}
+                        />
+                      </>
+                    ) : (
+                      <span
+                        aria-hidden
+                        className="h-px w-3 shrink-0"
+                        style={{ background: "var(--color-border-hover)" }}
+                      />
+                    ))}
                   <span
                     className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-0.5 font-mono text-[10px] text-[var(--color-text-secondary)]"
                     title={sym}
@@ -98,6 +123,24 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
               </span>
             )}
           </div>
+          {/* A key, only when there is a dash to decode. The two sibling
+              surfaces spell the tier as a word; a chain has no room per link,
+              so the encoding is positional and needs naming once. */}
+          {shownVia.some(isNameMatch) && (
+            <p className="mt-2 flex items-center gap-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+              <span
+                aria-hidden
+                className="w-3 shrink-0 border-t border-dashed"
+                style={{ borderColor: "var(--color-text-tertiary)" }}
+              />
+              resolved by name match
+            </p>
+          )}
+          {stop && (
+            <p className="mt-2 text-[10px] leading-snug text-[var(--color-text-tertiary)]">
+              {stop.sentence}
+            </p>
+          )}
         </div>
       )}
     </div>

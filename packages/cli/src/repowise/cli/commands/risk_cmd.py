@@ -291,8 +291,8 @@ def _render_card(name: str, card: dict) -> None:
             link = " [dim](imports)[/dim]" if p.get("has_import_link") else ""
             # A recency-decayed weight rather than a raw tally, so it is not an
             # integer; ``:g`` keeps a whole number whole and trims the rest.
-            count = p.get("count", 0)
-            shown = f"{float(count):.1f}".rstrip("0").rstrip(".") if count else "0"
+            weight = p.get("weight", 0)
+            shown = f"{float(weight):.1f}".rstrip("0").rstrip(".") if weight else "0"
             console.print(
                 f"    {escape(str(p.get('file_path', '')))} [dim]x{shown}[/dim]{link}"
             )
@@ -565,7 +565,7 @@ def risk_command(
         sign = "+" if d.contribution >= 0 else ""
         table.add_row(
             d.label,
-            f"{d.value:g}",
+            "-" if d.value is None else f"{d.value:g}",
             f"[{push_color}]{sign}{d.contribution:.2f}[/{push_color}]",
         )
     console.print(table)

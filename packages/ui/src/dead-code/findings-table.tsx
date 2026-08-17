@@ -14,6 +14,7 @@ import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
+import { formatRelativeTimeOrNull } from "../lib/format";
 import {
   FindingIdentity,
   FindingConfidence,
@@ -53,7 +54,7 @@ function labelForKind(kind: string): string {
     .join(" ");
 }
 
-type SortKey = "path" | "confidence" | "owner" | "lines";
+type SortKey = "path" | "confidence" | "owner" | "lines" | "last_commit_at";
 
 /** Sort value per column; strings compare with localeCompare, numbers subtract. */
 function sortValue(f: DeadCodeFinding, key: SortKey): string | number {
@@ -66,6 +67,10 @@ function sortValue(f: DeadCodeFinding, key: SortKey): string | number {
       return f.lines;
     case "confidence":
       return f.confidence;
+    case "last_commit_at":
+      // Unknown sorts as "just touched", never as ancient: with no date we
+      // have no evidence of staleness and must not imply any.
+      return f.last_commit_at ? Date.parse(f.last_commit_at) : Date.now();
   }
 }
 
@@ -318,6 +323,32 @@ export function FindingsTable({
         render: (f) => (
           <span className="text-xs text-[var(--color-text-secondary)]">
             {f.primary_owner ?? "—"}
+          </span>
+        ),
+      },
+      {
+        // How long this has sat untouched — the signal behind the confidence
+        // score, and until now visible only to agents via get_dead_code.
+        // Deliberately last_commit_at, not age_days: age_days runs from the
+        // file's first commit, so it answers a different question.
+        key: "last_commit_at",
+        header: "Last touched",
+        sortable: true,
+        priority: 2,
+        headerClassName: "w-28",
+        render: (f) => (
+          <span
+            className="block text-xs tabular-nums text-[var(--color-text-tertiary)]"
+            title={f.last_commit_at ? new Date(f.last_commit_at).toLocaleString() : undefined}
+          >
+            {formatRelativeTimeOrNull(f.last_commit_at)}
+            {/* Recent churn is why a finding scores low; saying so makes the
+                confidence number legible instead of arbitrary. */}
+            {f.commit_count_90d ? (
+              <span className="block text-2xs text-[var(--color-text-tertiary)]">
+                {f.commit_count_90d} commit{f.commit_count_90d === 1 ? "" : "s"}/90d
+              </span>
+            ) : null}
           </span>
         ),
       },

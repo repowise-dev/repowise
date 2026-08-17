@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+from typing import Any
 
 from sqlalchemy import select
 
@@ -23,7 +24,9 @@ from repowise.server.mcp_server._helpers import (
     _is_path,
     _resolve_all_contexts,
     _resolve_repo_context,
+    attach_ignored_arguments,
     filter_dicts_by_key,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
@@ -447,6 +450,11 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     if is_test_related_path(target_path):
         return "test"
     return "implementation"
+
+
+# Every value :func:`_classify_hit_kind` can return; anything else can only ever
+# match nothing, which is why an unknown kind is dropped rather than filtered on.
+_VALID_KINDS = frozenset({"implementation", "test", "config", "doc"})
 
 
 def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
@@ -995,10 +1003,17 @@ async def search_codebase(
     grep_hint = _grep_hint_for(query)
     resolved_mode = _resolve_mode(query, mode)
 
+    # An unknown kind used to take the same ``return False`` as a kind that is
+    # simply inapplicable, so a typo and a real empty result looked identical.
+    ignored: list[dict[str, Any]] = []
+    kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)
+
     if resolved_mode in ("symbol", "path", "hybrid"):
-        return await _structured_search(
+        structured = await _structured_search(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint
         )
+        attach_ignored_arguments(structured, ignored)
+        return structured
 
     if repo == "all":
         # kind is filtered per-repo inside _search_single_repo, before each
@@ -1006,6 +1021,7 @@ async def search_codebase(
         federated = await _federated_search(query, limit, page_type, kind)
         if grep_hint and not federated.get("results"):
             federated["grep_hint"] = grep_hint
+        attach_ignored_arguments(federated, ignored)
         return federated
 
     ctx = await _resolve_repo_context(repo)
@@ -1075,6 +1091,7 @@ async def search_codebase(
         response["candidates"] = candidates
     if grep_hint and not output:
         response["grep_hint"] = grep_hint
+    attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(output)
     return response

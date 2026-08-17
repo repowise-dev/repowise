@@ -477,6 +477,175 @@ class TestWorkspaceExportsField:
             == "packages/ui/src/util.ts"
         )
 
+    def test_exports_condition_naming_absent_build_output_is_passed_over(
+        self, tmp_path: Path
+    ) -> None:
+        # Every condition this module ranks names a built artefact a source
+        # checkout does not contain, and the package publishes its TypeScript
+        # under a condition no fixed list can name. Collapsing to one ranked
+        # target left the whole package unresolvable.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {
+                        "@org/source": "./src/index.ts",
+                        "types": "./index.d.cts",
+                        "import": "./index.js",
+                        "require": "./index.cjs",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
+
+    def test_ranked_condition_still_wins_when_both_targets_exist(
+        self, tmp_path: Path
+    ) -> None:
+        # The guard on the guard: continuing past an absent target must not
+        # become a preference for source, or every package shipping both a
+        # build and its sources would change which file it binds.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {
+                        "@org/source": "./src/index.ts",
+                        "import": "./dist/index.js",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/index.ts", "packages/ui/dist/index.js"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/dist/index.js"
+
+    def test_nested_unranked_condition_does_not_outrank_a_later_ranked_one(
+        self, tmp_path: Path
+    ) -> None:
+        # ``import`` outranks ``require``, but its subtree holds only conditions
+        # this module does not rank, so the old collapse skipped the whole
+        # branch and chose ``require``. Enumerating candidates must not promote
+        # the development build to the head of the list.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {
+                        "import": {"development": "./dev.js"},
+                        "require": "./index.cjs",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/dev.js", "packages/ui/index.cjs"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.cjs"
+
+    def test_entry_with_no_ranked_condition_still_falls_through(
+        self, tmp_path: Path
+    ) -> None:
+        # No condition here is one the module ranks, so the key was dropped
+        # outright and the subpath probe below answered. Keeping the key on the
+        # strength of a spare candidate would let ``./internal.ts`` answer from
+        # the exports step instead — a moved binding, not a new one.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {"exports": {".": {"bespoke": "./internal.ts"}}},
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/internal.ts", "packages/ui/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.ts"
+
+    def test_spare_export_target_never_displaces_the_index_probe(
+        self, tmp_path: Path
+    ) -> None:
+        # vue's shape: the ranked condition names an absent build artefact, a
+        # lower condition names a committed ``index.mjs``, and the package root
+        # also holds the ``index.js`` the probe below already bound. The spare
+        # candidate must stay behind that probe, or the change stops being an
+        # addition and starts moving imports that already resolve.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "main": "index.js",
+                "exports": {
+                    ".": {
+                        "import": {
+                            "default": "./dist/ui.esm-bundler.js",
+                            "node": "./index.mjs",
+                        }
+                    }
+                },
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/index.js", "packages/ui/index.mjs"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/index.js"
+
+    def test_declaration_file_is_not_taken_as_a_fallback_entry(
+        self, tmp_path: Path
+    ) -> None:
+        # The built entry is absent and the committed type declarations are
+        # not. Binding them would resolve every call through this package to a
+        # signature with no body.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    ".": {"import": "./dist/index.js", "types": "./types/index.d.ts"}
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/types/index.d.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) is None
+
+    def test_wildcard_key_does_not_fall_back_to_a_fixed_target(
+        self, tmp_path: Path
+    ) -> None:
+        # The fixed target would answer for every subpath under the key, so
+        # two distinct imports would collapse onto one unrelated file.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "exports": {
+                    "./features/*": {
+                        "import": "./src/features/*.mjs",
+                        "custom": "./src/shared.ts",
+                    }
+                }
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/shared.ts", "packages/ui/src/features/a.ts"])
+        assert resolve_via_workspaces("@org/ui/features/a", ctx) != "packages/ui/src/shared.ts"
+
+    def test_bare_package_falls_back_to_source_entry(self, tmp_path: Path) -> None:
+        # No ``exports`` at all and every manifest field names a build
+        # directory the repository does not contain, so the import became an
+        # external node while the sources sat beside it.
+        _setup_workspace(
+            tmp_path,
+            "@org/ui",
+            {
+                "main": "./dist/ui.cjs",
+                "module": "./dist/ui.js",
+                "types": "./types/index.d.ts",
+            },
+        )
+        ctx = _ctx(tmp_path, ["packages/ui/src/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/src/index.ts"
+
+    def test_source_entry_fallback_does_not_displace_a_resolving_main(
+        self, tmp_path: Path
+    ) -> None:
+        _setup_workspace(tmp_path, "@org/ui", {"main": "./entry.ts"})
+        ctx = _ctx(tmp_path, ["packages/ui/entry.ts", "packages/ui/src/index.ts"])
+        assert resolve_via_workspaces("@org/ui", ctx) == "packages/ui/entry.ts"
+
     def test_exports_bare_dot_root(self, tmp_path: Path) -> None:
         _setup_workspace(
             tmp_path,

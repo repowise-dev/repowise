@@ -17,6 +17,7 @@ import re
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 # ``IFoo`` / ``IShellExtInit`` — COM / Microsoft interface naming
@@ -54,7 +55,7 @@ def _extract_cpp_heritage(
             # ``: boost::noncopyable`` and similar mixins — keep the
             # bare name; downstream callers don't currently distinguish
             # mixin bases from real ones.
-            bare = text.split("::")[-1].strip()
+            bare = bare_type_name(text)
             if not bare:
                 continue
             out.append(

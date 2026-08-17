@@ -278,9 +278,21 @@
 ; to prevent false-positive dead code flags on functions passed by name.
 (call_expression
   arguments: (arguments
-    (identifier) @call.target
+    (identifier) @reference.name
   )
-) @call.site
+)
+
+; Associated function or method as a callback argument: register(Foo::bar),
+; iter.map(Type::method). A separate pattern because the bare one above matches
+; only an (identifier), and this shape is the one that can name a method.
+(call_expression
+  arguments: (arguments
+    (scoped_identifier
+      path: (_) @reference.receiver
+      name: (identifier) @reference.name
+    )
+  )
+)
 
 ; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
 ; Creates a reference edge so MyType is not flagged as unused.
@@ -294,15 +306,15 @@
 ; Captures the final identifier as a reference to prevent false dead code flags.
 (field_initializer
   value: (scoped_identifier
-    path: (_) @call.receiver
-    name: (identifier) @call.target
+    path: (_) @reference.receiver
+    name: (identifier) @reference.name
   )
-) @call.site
+)
 
 ; Plain identifier in struct field initializer: Foo { field: my_func }
 (field_initializer
-  value: (identifier) @call.target
-) @call.site
+  value: (identifier) @reference.name
+)
 
 ; ---------------------------------------------------------------------------
 ; Type references — track types used in signatures to prevent false dead code

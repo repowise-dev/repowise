@@ -377,6 +377,25 @@ class WalkSnapshot:
                     yield dirpath / name
 
 
+def glob_via(
+    snapshot: WalkSnapshot | None,
+    root: Path | str,
+    patterns: str | Iterable[str],
+    *,
+    prune_nested_git: bool = True,
+) -> Iterator[Path]:
+    """:func:`iter_glob`, answered from *snapshot* when the caller has one.
+
+    The seam for scans that run several queries against one tree and are
+    reached from a context that can hold the walk. Yield order and matching
+    are identical either way, so a caller cannot behave differently for
+    having been given a snapshot.
+    """
+    if snapshot is not None:
+        return snapshot.iter_glob(root, patterns)
+    return iter_glob(root, patterns, prune_nested_git=prune_nested_git)
+
+
 def iter_glob(
     root: Path | str,
     patterns: str | Iterable[str],

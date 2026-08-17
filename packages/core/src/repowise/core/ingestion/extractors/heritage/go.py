@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 
@@ -32,7 +33,7 @@ def _extract_go_heritage(
             type_child = field_decl.child_by_field_name("type")
             if name_node is None and type_child is not None:
                 parent = node_text(type_child, src).strip().lstrip("*")
-                bare = parent.split(".")[-1]
+                bare = bare_type_name(parent)
                 if bare:
                     out.append(
                         HeritageRelation(
@@ -45,17 +46,20 @@ def _extract_go_heritage(
 
     elif type_node.type == "interface_type":
         for child in type_node.children:
-            if child.type in ("{", "}", "\n"):
+            if child.type != "type_elem":
                 continue
-            if child.type in ("type_identifier", "qualified_type"):
-                parent = node_text(child, src).strip()
-                bare = parent.split(".")[-1]
-                if bare:
-                    out.append(
-                        HeritageRelation(
-                            child_name=name,
-                            parent_name=bare,
-                            kind="extends",
-                            line=line,
-                        )
+            text = node_text(child, src).strip()
+            # A type set (`~int | string`) wears the same node as an embed but
+            # is a generic bound, carrying no methods to inherit.
+            if "|" in text or "~" in text:
+                continue
+            bare = bare_type_name(text)
+            if bare:
+                out.append(
+                    HeritageRelation(
+                        child_name=name,
+                        parent_name=bare,
+                        kind="extends",
+                        line=line,
                     )
+                )

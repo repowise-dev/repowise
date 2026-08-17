@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name, strip_call_arguments
 from ..helpers import node_text
 
 
@@ -16,7 +17,7 @@ def _extract_kotlin_heritage(
         if child.type == "delegation_specifier":
             for delegate in child.children:
                 text = node_text(delegate, src).strip()
-                bare = text.split("(")[0].split(".")[-1].strip()
+                bare = bare_type_name(strip_call_arguments(text))
                 if bare and bare != name:
                     out.append(
                         HeritageRelation(
@@ -31,7 +32,7 @@ def _extract_kotlin_heritage(
                 if delegate.type in (":", ","):
                     continue
                 text = node_text(delegate, src).strip()
-                bare = text.split("(")[0].split(".")[-1].strip()
+                bare = bare_type_name(strip_call_arguments(text))
                 if bare and bare != name:
                     out.append(
                         HeritageRelation(

@@ -38,8 +38,10 @@ behind a feature flag if it ever proves noisy.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from ..source_text import source_text
+from ..type_names import bare_type_name
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -74,12 +76,6 @@ _PRIMARY_TYPE_RE = re.compile(
 _READS_CONFIDENCE = 0.6
 
 
-def _head_type(raw: str) -> str:
-    """Strip generic parameters / namespace prefix to a bare identifier."""
-    head = raw.split("<", 1)[0]
-    return head.rsplit(".", 1)[-1]
-
-
 def resolve_csharp_member_reads(
     graph: nx.DiGraph,
     cs_texts: dict[str, str],
@@ -108,7 +104,7 @@ def resolve_csharp_member_reads(
             type_name = m.group("type2") or m.group("type1")
             if not type_name:
                 continue
-            local_type[m.group("name")] = _head_type(type_name)
+            local_type[m.group("name")] = bare_type_name(type_name)
 
         primary_match = _PRIMARY_TYPE_RE.search(text)
         primary_type = primary_match.group("name") if primary_match else None
@@ -184,16 +180,22 @@ def build_csharp_type_to_file(parsed_files: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def collect_csharp_source_texts(parsed_files: dict[str, Any]) -> dict[str, str]:
-    """Read each parsed C# file's source from disk, keyed by repo path."""
+def collect_csharp_source_texts(
+    parsed_files: dict[str, Any], source_map: dict[str, bytes] | None = None
+) -> dict[str, str]:
+    """Text of each parsed C# file, keyed by repo path.
+
+    ``utf-8-sig``, unlike the JVM and Swift collectors: C# files are routinely
+    written with a BOM, and the scans below must not see it inside the first
+    identifier of the file.
+    """
     out: dict[str, str] = {}
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "csharp":
             continue
-        try:
-            out[path] = Path(parsed.file_info.abs_path).read_text(
-                encoding="utf-8-sig", errors="ignore"
-            )
-        except OSError:
-            continue
+        text = source_text(
+            path, parsed.file_info.abs_path, source_map, encoding="utf-8-sig"
+        )
+        if text is not None:
+            out[path] = text
     return out

@@ -282,11 +282,24 @@ EdgeType = Literal[
     "extends",
     "implements",
     "method_implements",
+    # Base method → an implementation that can answer for it. Named for what
+    # it asserts rather than for a heritage relation: the pass matches by
+    # method name and compares no signature, so it is a possible dispatch
+    # target, not a proven override. `method_implements` could not be reused —
+    # it runs implementor → interface, and this edge has to point the other
+    # way for a traversal starting at the base to reach the implementation.
+    "dispatches_to",
     "co_changes",
     "framework",
-    # A data reference rather than a call. Two `_add_reads_edge` helpers emit
-    # it at different layers: C# member access file → file, Express
-    # route/middleware wiring symbol → symbol.
+    # The symbol-level sibling of `framework`, emitted when a handler can name
+    # both ends as symbols. Deliberately not `calls`: nothing here is a call the
+    # parser could have seen, and letting it read as one would put an inferred
+    # wiring hop into an execution flow as if it were source.
+    "framework_binds",
+    # A data reference rather than a call: C# member access, file → file. It
+    # used to name two unrelated things — the Express route wiring emitted it
+    # symbol → symbol — which is why one consumer set could not say which layer
+    # it meant. That producer now emits `framework_binds`.
     "reads",
     # Dynamic-dispatch hints. `dynamic_hints` extractors emit a `DynamicKind`
     # sub-type and `EdgesMixin.add_dynamic_edges` prefixes it, so `url_route`
@@ -330,6 +343,7 @@ EDGE_TYPE_VALUES: frozenset[str] = frozenset(get_args(EdgeType))
 ResolutionOrigin = Literal[
     "same_file",  # 0.95 — defined in the calling file
     "self_scope",  # 0.95 — self/this, method on the caller's own class
+    "enclosing_class",  # 0.95 — bare call, bound to the caller's own class
     "receiver_same_file",  # 0.93 — receiver names a class in this file
     "same_package",  # 0.90 — Go/JVM sibling file, no import needed
     "import_scoped",  # 0.90 — the name was imported from the defining file
@@ -345,6 +359,30 @@ ResolutionOrigin = Literal[
     # named for Rust trait impls but is gated on no language.
     "receiver_global",
     "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # The four below reach the same scopes as their untyped twins, but through
+    # a receiver whose type was read off its declaration rather than written at
+    # the call. They share their twin's confidence deliberately: the inferred
+    # type had to declare the method before an edge was emitted, so the
+    # evidence is no weaker — what differs is how the receiver was named, and
+    # that is precisely what an origin is for.
+    "receiver_typed_same_file",  # 0.93
+    "receiver_typed_same_package",  # 0.90 (JVM)
+    "receiver_typed_import",  # 0.88
+    "receiver_typed_global",  # 0.75
+    # The same four scopes again, for a receiver typed from the enclosing
+    # class's fields rather than from the calling body. Kept apart from the
+    # four above because they are a different scan over a different scope, and
+    # an origin that cannot separate them cannot be audited.
+    "receiver_field_same_file",  # 0.93
+    "receiver_field_same_package",  # 0.90 (JVM)
+    "receiver_field_import",  # 0.88
+    "receiver_field_global",  # 0.75
+    # 0.90 — the caller's own class does not declare the method but exactly one
+    # of its ancestors does. Below the two same-class origins because the walk
+    # compares no signature and reads no visibility, so it can reach a method
+    # the language would not actually dispatch to.
+    "self_inherited",  # 0.90 — explicit self/this receiver
+    "enclosing_inherited",  # 0.90 — implicit receiver, bare call
 ]
 
 RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))
@@ -420,16 +458,24 @@ FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
 # Symbol → symbol references. "Something reaches this symbol", so containment
 # is excluded: a class containing a method is not the method being used.
 #
-# `reads` is the one type that spans both layers, which is why it is the one
-# member of both sets. Two extractors share the name: `csharp_member_reads`
-# emits it file → file (596 rows locally) and `framework_edges/express` emits
-# it symbol → symbol from a `path::__module__` node (1 row).
+# `reads` is a member here for a reason that no longer holds: its symbol-level
+# producer moved to `framework_binds`, so `csharp_member_reads` is the only one
+# left and it emits file → file. A file node can never be a symbol node's
+# predecessor, so membership is inert rather than wrong. Retiring it moves the
+# vocabulary and belongs to a diff that can measure that.
 SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
     {
         "calls",
         "extends",
         "implements",
         "method_implements",
+        # An implementation is used by every call written against the base it
+        # answers for, and that call lands on the base. Without this the whole
+        # implementation side of an interface reads as called by nobody.
+        "dispatches_to",
+        # A fixture nobody calls and a collaborator nobody constructs are both
+        # used — by the container, which no parser sees.
+        "framework_binds",
         "reads",
         # Naming a function is using it. A handler sitting in a dispatch table
         # is never called anywhere a parser can see, and treating that as "no
@@ -512,6 +558,17 @@ class ParsedFile:
     # symbol enclosing it, and a line — and it lets these ride the same
     # resolution tiers. They become ``references`` edges, not ``calls``.
     references: list[CallSite] = field(default_factory=list)
+
+
+def symbol_id_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
+    """Language of the file a symbol ID belongs to, or ``None`` if unparsed.
+
+    Lives beside the ID vocabulary rather than in either resolver — both need
+    it for the same cross-language rejection.
+    """
+    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
+    parsed = parsed_files.get(file_path)
+    return parsed.file_info.language if parsed else None
 
 
 def compute_content_hash(source: bytes) -> str:

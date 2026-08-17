@@ -1146,7 +1146,12 @@ class DeadCodeFinding(Base):
     lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    package: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # ``package`` dropped: it was ``Path(file_path).parts[0]``, equal to the
+    # path's own first segment on 445/445 findings, so it carried nothing the
+    # row did not already show. Safe to remove because it was nullable —
+    # ``commit_count_90d`` is NOT NULL, and the local SQLite reconciler is
+    # additive-only, so removing that one would break inserts against every
+    # index already on disk. It is surfaced instead.
     evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     safe_to_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     primary_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)

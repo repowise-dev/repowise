@@ -13,10 +13,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
-from repowise.core.fs_walk import iter_glob
+from repowise.core.fs_walk import glob_via
 
 from .msbuild import path_has_dotnet_scan_skip_dir
 
@@ -60,9 +61,11 @@ def parse_sln(sln_path: Path) -> list[SolutionEntry]:
     return out
 
 
-def find_sln_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
+def find_sln_files(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> list[Path]:
     out: list[Path] = []
-    for sln in iter_glob(repo_path, "*.sln", prune_nested_git=prune_nested_git):
+    for sln in glob_via(snapshot, repo_path, "*.sln", prune_nested_git=prune_nested_git):
         if path_has_dotnet_scan_skip_dir(sln, repo_path):
             continue
         out.append(sln)

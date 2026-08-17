@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from repowise.core.analysis.history_scan import HistorySecurityScanner
@@ -253,3 +253,128 @@ async def test_history_progress_fires_for_clean_repo(session: AsyncSession) -> N
 def test_secret_kinds_are_the_two_secret_patterns() -> None:
     """Guard against the registry drifting away from the history gate."""
     assert {"hardcoded_password", "hardcoded_secret"} == SECRET_KINDS
+
+
+# ---------------------------------------------------------------------------
+# End-to-end against a real git repo.
+#
+# Every test above stubs `_is_source` to `lambda p: True` and `_blob_
+# introductions` to a literal, which is precisely why two bugs lived here
+# undetected for the feature's whole life: `_is_source` stripped the leading
+# dot off a suffix while EXTENSION_TO_LANGUAGE is keyed with it, so no blob was
+# ever scanned; and `_blob_introductions` keyed the *pre-image* blob from an
+# abbreviated `--raw` SHA, so no lookup could ever match and every history
+# finding was written with an empty commit. These run the real helpers.
+# ---------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
+
+
+@pytest.fixture
+def secret_repo() -> Path:
+    """A real one-commit git repo carrying a hardcoded secret in a .py file."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@example.com")
+        _git(repo, "config", "user.name", "T")
+        (repo / "leak.py").write_text('password = "hunter2-not-a-real-secret"\n')
+        (repo / "notes.md").write_text("# just prose\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "add leak")
+        yield repo
+
+
+def test_is_source_accepts_real_source_paths() -> None:
+    """The extension gate must match EXTENSION_TO_LANGUAGE's dotted keys."""
+    assert HistorySecurityScanner._is_source("pkg/mod.py")
+    assert HistorySecurityScanner._is_source("src/app.tsx")
+    assert not HistorySecurityScanner._is_source("docs")
+
+
+async def test_history_scan_on_real_repo_records_commit_provenance(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """A real scan finds the secret and dates it to the commit that introduced it."""
+    scanner = HistorySecurityScanner(session, "repo-1")
+    summary = await scanner.scan_history(secret_repo, secrets_only=True)
+
+    assert summary.files_scanned > 0, "the extension gate rejected every blob"
+    assert summary.findings_inserted > 0, "the secret in leak.py was not found"
+
+    rows = (
+        await session.execute(
+            text("SELECT file_path, line_number, commit_sha, commit_at FROM security_findings")
+        )
+    ).all()
+    assert rows
+    for row in rows:
+        m = row._mapping
+        assert m["file_path"] == "leak.py"
+        assert m["line_number"] == 1
+        assert m["commit_sha"], "no introducing commit recorded"
+        assert m["commit_at"] is not None, "introducing commit has no date"
+
+
+async def test_history_default_skips_test_fixtures_and_placeholders(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """Secrets mode reports credentials, not fixtures and docs.
+
+    Unfiltered, this repo's own history produced 832 hits of which 730 were
+    ``api_key="sk-test"`` in unit tests and the rest were ``api_key="sk-..."``
+    in docstrings. A report that is 100% noise is worse than no report.
+    """
+    _git(secret_repo, "config", "user.email", "t@example.com")
+    (secret_repo / "tests").mkdir(exist_ok=True)
+    (secret_repo / "tests" / "test_client.py").write_text('password = "fixture-value"\n')
+    (secret_repo / "docs.py").write_text('# example: password = "..."\n')
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "add fixture and docs")
+
+    scanner = HistorySecurityScanner(session, "repo-1")
+    await scanner.scan_history(secret_repo, secrets_only=True)
+
+    paths = {
+        r._mapping["file_path"]
+        for r in (await session.execute(text("SELECT file_path FROM security_findings"))).all()
+    }
+    assert "leak.py" in paths, "the real secret must still be reported"
+    assert "tests/test_client.py" not in paths, "test fixture leaked into a secrets report"
+    assert "docs.py" not in paths, "elided placeholder reported as a credential"
+
+
+async def test_all_patterns_lifts_the_noise_gate(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    """The filtering is the default's promise, not a hard exclusion."""
+    (secret_repo / "tests").mkdir(exist_ok=True)
+    (secret_repo / "tests" / "test_client.py").write_text('password = "fixture-value"\n')
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "add fixture")
+
+    scanner = HistorySecurityScanner(session, "repo-1")
+    await scanner.scan_history(secret_repo, secrets_only=False)
+
+    paths = {
+        r._mapping["file_path"]
+        for r in (await session.execute(text("SELECT file_path FROM security_findings"))).all()
+    }
+    assert "tests/test_client.py" in paths
+
+
+async def test_blob_introductions_resolves_real_blobs(secret_repo: Path) -> None:
+    """Every source blob rev-list reports must resolve to an introducing commit."""
+    scanner = HistorySecurityScanner.__new__(HistorySecurityScanner)
+    blobs = scanner._unique_blobs(secret_repo, None, None)
+    intro, dates = scanner._blob_introductions(secret_repo, None, None)
+
+    source = [sha for sha, path in blobs.items() if HistorySecurityScanner._is_source(path)]
+    assert source, "no source blobs found in the fixture repo"
+    for sha in source:
+        assert sha in intro, f"blob {sha} has no introducing commit (SHA width mismatch?)"
+        assert dates.get(intro[sha]), "introducing commit has no author date"

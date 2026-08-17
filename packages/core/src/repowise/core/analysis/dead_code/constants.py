@@ -897,6 +897,12 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "OnClose",
     "OnMessage",
     "OnError",
+    # OSGi declarative-services lifecycle. The container calls these by
+    # reflection off the component descriptor, so they are private and have no
+    # caller in source by design.
+    "Activate",
+    "Deactivate",
+    "Modified",
     "PactTestFor",
     "Pact",
     # ---- JVM: test method markers -----------------------------------
@@ -989,6 +995,30 @@ _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".exception_handler",
     # Celery apps under a non-``app``/``celery`` local name (``@worker.task``).
     ".task",
+    # Django template tags and filters. ``@register.tag(name="result_list")``
+    # registers the function under a string key; the template then invokes it
+    # as ``{% result_list cl %}``, so no Python source ever names it. The
+    # registry object is conventionally ``register`` but is file-local, which
+    # is why this matches the suffix rather than the receiver.
+    ".tag",
+    ".filter",
+    ".simple_tag",
+    ".inclusion_tag",
+)
+
+# Languages whose idiom is a static holder class: a container the source never
+# names at a call site, because the call names only the member. C# extension
+# methods are the shape (``Guard.Against.EmptyBasket(...)`` against a
+# ``static class BasketGuards``). Kept as a set rather than inlined so widening
+# it is a deliberate, measurable act.
+_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
+
+# Annotations whose *argument* is the signal, so the base name alone cannot be
+# matched: ``@SuppressWarnings`` says nothing on its own, and only the
+# ``"unused"`` argument is the author stating that the symbol is deliberately
+# uncalled. Matched against the raw decorator text rather than its base.
+_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
+    ("SuppressWarnings", "unused"),
 )
 
 

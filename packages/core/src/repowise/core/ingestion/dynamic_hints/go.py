@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {"vendor", "node_modules", ".git", "bin"}
@@ -64,7 +65,7 @@ class GoDynamicHints(DynamicHintExtractor):
                 # Drop any package qualifier (``pkg.Foo`` → ``Foo``); reflect
                 # arguments are values/types whose defining file we look up by
                 # bare name.
-                bare = match.group(1).split(".")[-1]
+                bare = bare_type_name(match.group(1))
                 target = type_to_file.get(bare) or func_to_file.get(bare)
                 if target and target != rel:
                     edges.append(DynamicEdge(

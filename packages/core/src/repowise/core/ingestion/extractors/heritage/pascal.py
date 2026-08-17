@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 _CLASS_LIKE_KINDS = {"declClass", "declIntf", "declHelper"}
@@ -22,7 +23,7 @@ def _extract_parents(type_node: Node, name: str, src: str) -> list[str]:
     implements" split is a best-effort heuristic, not a guarantee.
     """
     parent_nodes = type_node.children_by_field_name("parent")
-    parents = [node_text(p, src).strip() for p in parent_nodes if p.type == "typeref"]
+    parents = [bare_type_name(node_text(p, src)) for p in parent_nodes if p.type == "typeref"]
     return [p for p in parents if p and p != name]
 
 
@@ -40,7 +41,7 @@ def _extract_helper_extended_types(type_node: Node, name: str, src: str) -> list
     for child in type_node.named_children:
         if child.type != "typeref" or child.id in parent_ids:
             continue
-        text = node_text(child, src).strip()
+        text = bare_type_name(node_text(child, src))
         if text and text != name:
             extended.append(text)
     return extended

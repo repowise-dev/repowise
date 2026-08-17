@@ -177,9 +177,16 @@
 ; Calls
 ; ---------------------------------------------------------------------------
 
-; Simple call: Method(args)
+; Simple call: Method(args) and Method<T>(args).
+; A type argument list wraps the name in a `generic_name`, so matching only
+; `(identifier)` drops every generic call. The capture sits inside each branch
+; so the target is the bare name either way — capturing the alternation itself
+; would name the target `Method<T>`, which no index holds.
 (invocation_expression
-  function: (identifier) @call.target
+  function: [
+    (identifier) @call.target
+    (generic_name (identifier) @call.target)
+  ]
   arguments: (argument_list) @call.arguments
 ) @call.site
 
@@ -190,14 +197,20 @@
 (invocation_expression
   function: (member_access_expression
     expression: [(identifier) "this"] @call.receiver
-    name: (identifier) @call.target
+    name: [
+      (identifier) @call.target
+      (generic_name (identifier) @call.target)
+    ]
   )
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Constructor: new ClassName(args)
+; Constructor: new ClassName(args) and new ClassName<T>(args)
 (object_creation_expression
-  type: (identifier) @call.target
+  type: [
+    (identifier) @call.target
+    (generic_name (identifier) @call.target)
+  ]
   arguments: (argument_list) @call.arguments
 ) @call.site
 

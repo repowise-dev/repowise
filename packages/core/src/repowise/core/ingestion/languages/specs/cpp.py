@@ -1,6 +1,7 @@
 """LanguageSpec for cpp (extracted from the registry data table)."""
 
 from ..spec import LanguageSpec
+from .c import BUILTIN_TYPES as _C_BUILTIN_TYPES
 
 #: Include fragments: C++ source that is ``#include``d into a translation unit
 #: rather than compiled as one of its own. The convention carries inline and
@@ -79,5 +80,7 @@ SPEC = LanguageSpec(
             "weak_ptr",
         }
     ),
+    # Same C extractor and grammar as c.py, so the same builtin set applies.
+    builtin_types=_C_BUILTIN_TYPES,
     color_hex="#F34B7D",
 )

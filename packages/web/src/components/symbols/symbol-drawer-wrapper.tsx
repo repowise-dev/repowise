@@ -5,6 +5,10 @@ import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { SymbolDrawer } from "@repowise-dev/ui/symbols/symbol-drawer";
 import {
+  toSymbolBodyCall,
+  toSymbolBodyRelations,
+} from "@repowise-dev/ui/symbols/normalize-calls";
+import {
   fileEntityPath,
   symbolEntityPath,
 } from "@repowise-dev/ui/shared/entity";
@@ -67,6 +71,27 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
     );
   }, [deadFindings, symbol]);
 
+  // Keyed on `callData` alone so the row objects keep their identity when any
+  // of the other four feeds resolves. Folded into the `data` memo below they
+  // were re-minted on every one of them, which defeated `CallNode`'s memo
+  // boundary entirely — the rows are what that boundary exists to protect.
+  const calls = useMemo(
+    () => ({
+      // `/callers-callees` serves `calls` edges only, so these rows are calls
+      // already. The counts are the endpoint's unbounded totals rather than
+      // the row arrays, which are cut at the request limit.
+      callers: (callData?.callers ?? []).map(toSymbolBodyCall),
+      callees: (callData?.callees ?? []).map(toSymbolBodyCall),
+      caller_total: callData?.caller_count ?? 0,
+      callee_total: callData?.callee_count ?? 0,
+      // Heritage and framework wiring. The drawer had honest call counts but
+      // no relations while the routed page had both, so the same symbol read
+      // differently depending on which surface you opened it from.
+      relations: toSymbolBodyRelations(callData?.relations),
+    }),
+    [callData],
+  );
+
   const data: SymbolDetailData | null = useMemo(() => {
     if (!symbol) return null;
     return {
@@ -99,20 +124,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
       graph: {
         in_degree: metrics?.in_degree ?? callData?.caller_count ?? 0,
         out_degree: metrics?.out_degree ?? callData?.callee_count ?? 0,
-        callers: (callData?.callers ?? []).map((c) => ({
-          symbol_id: c.symbol_id,
-          name: c.name,
-          file: c.file,
-          edge_type: c.edge_type,
-          confidence: c.confidence,
-        })),
-        callees: (callData?.callees ?? []).map((c) => ({
-          symbol_id: c.symbol_id,
-          name: c.name,
-          file: c.file,
-          edge_type: c.edge_type,
-          confidence: c.confidence,
-        })),
+        ...calls,
         pagerank_percentile: metrics?.pagerank_percentile ?? null,
         betweenness_percentile: metrics?.betweenness_percentile ?? null,
         community_label: metrics?.community_label ?? null,
@@ -143,7 +155,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
       })),
       file_context: { language: symbol.language },
     };
-  }, [symbol, metrics, callData, git, coChangePayload, overlappingDead]);
+  }, [symbol, metrics, calls, callData, git, coChangePayload, overlappingDead]);
 
   return (
     <SymbolDrawer

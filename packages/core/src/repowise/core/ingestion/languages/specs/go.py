@@ -39,5 +39,17 @@ SPEC = LanguageSpec(
         }
     ),
     builtin_parents=frozenset({"error"}),
+    # Predeclared Go type names — never resolve to a user-defined type, so
+    # they are dropped before the resolver lookup. ``error``/``any``/
+    # ``comparable`` are predeclared identifiers, not keywords, but behave
+    # as builtins here.
+    builtin_types=frozenset(
+        {
+            "string", "bool", "byte", "rune", "error", "any", "comparable",
+            "int", "int8", "int16", "int32", "int64",
+            "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+            "float32", "float64", "complex64", "complex128",
+        }
+    ),
     color_hex="#00ADD8",
 )

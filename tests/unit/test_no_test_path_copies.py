@@ -88,6 +88,12 @@ _KNOWN: frozenset[str] = frozenset(
         # handler under an OpenAPI `spec/` is a real service contract, and
         # over-excluding drops it from the workspace contract map entirely.
         "packages/core/src/repowise/core/workspace/extractors/base.py",
+        # pytest's own `python_files` rule, not ours: a fixture is injected
+        # only into a file pytest collects, so this asks "does pytest run
+        # this?" rather than "is this test-related code". The shared rules also
+        # claim `conftest.py` and `tests/helpers.py`, and giving those fixture
+        # parameters would be wrong.
+        "packages/core/src/repowise/core/ingestion/framework_edges/pytest_edges.py",
     }
 )
 

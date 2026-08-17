@@ -65,7 +65,9 @@ def test_zombie_package_detected():
     )
 
     zombie = [f for f in report.findings if f.kind == DeadCodeKind.ZOMBIE_PACKAGE]
-    pkgs = [f.package for f in zombie]
+    # file_path *is* the package on a zombie finding; the separate `package`
+    # column duplicated it and was dropped.
+    pkgs = [f.file_path for f in zombie]
     # Both pkgA and pkgB are zombie since neither has inter-package importers
     assert "pkgA" in pkgs
     assert "pkgB" in pkgs
@@ -208,6 +210,7 @@ def test_zombie_package_commit_count_summed_from_git_meta():
         f"Expected commit_count_90d=12, got {finding.commit_count_90d}. "
         "Likely caused by getattr() being used instead of dict.get() on git_meta_map values."
     )
+
 
 
 def test_zombie_package_last_commit_at_from_git_meta():

@@ -591,8 +591,7 @@ def build_homonym_union_bodies(
       plus ``truncated`` / ``continuation`` when the body was line-capped)
       rendered greedily until ``char_budget`` is exhausted. The first def always
       renders even if it alone exceeds the budget (a homonym with one huge def
-      must still answer), matching the CodeGraph "first match always renders"
-      contract.
+      must still answer).
     * ``more_definitions``: the defs that did not fit, each ``{file, name,
       line, symbol_id, hint}`` with a "call get_symbol, do NOT Read" redirect so
       the agent never falls back to Read for the remainder.

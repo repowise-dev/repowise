@@ -45,3 +45,21 @@
   (identifier) @call.target
   (arguments) @call.arguments
 ) @call.site
+
+; Method call: obj:method(args) — the receiver sits one level below `name:`.
+(function_call
+  name: (method_index_expression
+    table: (_) @call.receiver
+    method: (identifier) @call.target
+  )
+  (arguments) @call.arguments
+) @call.site
+
+; Field call: obj.method(args)
+(function_call
+  name: (dot_index_expression
+    table: (_) @call.receiver
+    field: (identifier) @call.target
+  )
+  (arguments) @call.arguments
+) @call.site

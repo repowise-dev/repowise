@@ -96,5 +96,48 @@ SPEC = LanguageSpec(
             "IEquatable",
         }
     ),
+    # Type expressions that never resolve to a user-defined .NET type. Skipping
+    # these avoids polluting the resolver with hopeless lookups. Generic args
+    # inside `IList<T>` are stripped before this check is applied.
+    builtin_types=frozenset(
+        {
+            "void",
+            "bool",
+            "byte",
+            "sbyte",
+            "char",
+            "short",
+            "ushort",
+            "int",
+            "uint",
+            "long",
+            "ulong",
+            "float",
+            "double",
+            "decimal",
+            "string",
+            "object",
+            "nint",
+            "nuint",
+            "dynamic",
+            "var",
+            # Frequently appearing BCL types that are always external — listing
+            # them here is purely a performance optimisation (one dict miss
+            # avoided per occurrence).
+            "Task",
+            "ValueTask",
+            "CancellationToken",
+            "Action",
+            "Func",
+            "Type",
+            "Exception",
+            "DateTime",
+            "DateTimeOffset",
+            "TimeSpan",
+            "Guid",
+            "Uri",
+            "Stream",
+        }
+    ),
     color_hex="#178600",
 )

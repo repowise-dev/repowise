@@ -18,6 +18,7 @@ import structlog
 from tree_sitter import Node
 
 from .extractors import node_text
+from .type_names import is_resolvable_type_name
 
 if TYPE_CHECKING:
     from .models import Symbol
@@ -320,50 +321,6 @@ def _pascal_dedupe_key(parent_name: str | None, signature: str) -> tuple[str | N
 # Type reference helpers (used by _extract_type_refs)
 # ---------------------------------------------------------------------------
 
-# Type expressions that never resolve to a user-defined .NET type. Skipping
-# these here avoids polluting the resolver with hopeless lookups. Generic
-# args inside `IList<T>` are stripped before this check is applied.
-_BUILTIN_CSHARP_TYPES: frozenset[str] = frozenset(
-    {
-        "void",
-        "bool",
-        "byte",
-        "sbyte",
-        "char",
-        "short",
-        "ushort",
-        "int",
-        "uint",
-        "long",
-        "ulong",
-        "float",
-        "double",
-        "decimal",
-        "string",
-        "object",
-        "nint",
-        "nuint",
-        "dynamic",
-        "var",
-        # Frequently appearing BCL types that are always external — listing
-        # them here is purely a performance optimisation (one dict miss
-        # avoided per occurrence).
-        "Task",
-        "ValueTask",
-        "CancellationToken",
-        "Action",
-        "Func",
-        "Type",
-        "Exception",
-        "DateTime",
-        "DateTimeOffset",
-        "TimeSpan",
-        "Guid",
-        "Uri",
-        "Stream",
-    }
-)
-
 _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "type_argument_list": "generic_argument",
     "typeof_expression": "typeof",
@@ -478,16 +435,7 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
         ident = _first_descendant(head_node, "identifier")
         text = _node_text(ident, src) if ident else ""
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _BUILTIN_CSHARP_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic params (T, K, V).
-    # Skipping them avoids spurious lookups against a type-name index that
-    # would never contain them.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "csharp") else None
 
 
 def _first_descendant(node: Node, type_name: str) -> Node | None:
@@ -522,19 +470,6 @@ def _classify_param_origin(type_node: Node) -> str:
 # ---------------------------------------------------------------------------
 # Go type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Predeclared Go type names — never resolve to a user-defined type, so they
-# are dropped before the resolver lookup. ``error``/``any``/``comparable``
-# are predeclared identifiers, not keywords, but behave as builtins here.
-_GO_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        "string", "bool", "byte", "rune", "error", "any", "comparable",
-        "int", "int8", "int16", "int32", "int64",
-        "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-        "float32", "float64", "complex64", "complex128",
-    }
-)
-
 
 def _go_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head type name of a Go type expression, or None.
@@ -598,37 +533,12 @@ def _go_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _GO_BUILTIN_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic type params.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "go") else None
 
 
 # ---------------------------------------------------------------------------
 # C / C++ type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Predeclared / standard-library scalar types that never resolve to a
-# user-defined struct, so they're dropped before the resolver lookup.
-# ``primitive_type`` / ``sized_type_specifier`` nodes are filtered
-# structurally below; this set catches the ``<stdint.h>`` / ``<stddef.h>``
-# typedefs that the grammar surfaces as plain ``type_identifier`` nodes.
-_C_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        "void", "char", "short", "int", "long", "float", "double",
-        "signed", "unsigned", "bool", "_Bool", "_Complex",
-        "size_t", "ssize_t", "rsize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
-        "int8_t", "int16_t", "int32_t", "int64_t",
-        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
-        "intmax_t", "uintmax_t", "wchar_t", "wint_t", "char16_t", "char32_t",
-        "va_list", "FILE",
-    }
-)
-
 
 def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head type name of a C / C++ type expression, or None.
@@ -677,67 +587,13 @@ def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _C_BUILTIN_TYPES:
-        return None
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    # cpp shares this extractor; the builtin set is identical for both.
+    return text if is_resolvable_type_name(text, "c") else None
 
 
 # ---------------------------------------------------------------------------
 # TypeScript / JavaScript type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Predeclared / lib.dom / lib.es type names that never resolve to a user-
-# defined symbol in the workspace. Filtering them before the resolver
-# lookup avoids polluting the graph with edges for ubiquitous globals
-# (``string``, ``Promise``, ``Pick``) the dead-code analyzer does not
-# care about. The list intentionally errs on the side of inclusion: a
-# user type colliding with one of these names will fail to resolve via
-# the type-ref path, but cross-file usage still surfaces through the
-# value-import + call path.
-_TS_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        # Primitives + structural
-        "string", "number", "boolean", "bigint", "symbol",
-        "void", "null", "undefined", "never", "unknown", "any",
-        "object", "this", "Object",
-        # Built-in containers / wrappers. ``Map`` / ``Set`` / ``WeakMap``
-        # / ``WeakSet`` are intentionally **not** listed: they're routinely
-        # shadowed by user-defined types (Hono ``interface Set<E>`` /
-        # ``interface Get<E>`` is the canonical case) and filtering them
-        # at extraction time hides the same-file rescue.
-        "Array", "ReadonlyArray", "Promise", "Awaited", "WeakRef",
-        "Date", "RegExp", "Error", "TypeError", "RangeError",
-        "SyntaxError", "ReferenceError", "EvalError",
-        "Function", "CallableFunction", "NewableFunction",
-        "ArrayBuffer", "SharedArrayBuffer", "DataView",
-        "Int8Array", "Uint8Array", "Uint8ClampedArray",
-        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
-        "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
-        "Iterable", "AsyncIterable", "Iterator", "AsyncIterator",
-        "IterableIterator", "AsyncIterableIterator",
-        "Generator", "AsyncGenerator", "GeneratorFunction",
-        "Proxy", "Reflect", "JSON", "Math",
-        # Utility types
-        "Record", "Partial", "Required", "Readonly",
-        "Pick", "Omit", "Exclude", "Extract", "NonNullable",
-        "Parameters", "ConstructorParameters", "ReturnType",
-        "InstanceType", "ThisType", "ThisParameterType", "OmitThisParameter",
-        "Uppercase", "Lowercase", "Capitalize", "Uncapitalize",
-        # Common DOM / Node globals that show up everywhere as parameter
-        # types — listing here is a perf optimisation, not correctness.
-        "URL", "URLSearchParams", "Request", "Response", "Headers",
-        "Blob", "File", "FormData", "FileReader",
-        "AbortController", "AbortSignal", "AbortError",
-        "EventTarget", "Event", "CustomEvent", "MessageEvent",
-        "Element", "HTMLElement", "Node", "Document", "Window",
-        "Buffer", "NodeJS",
-    }
-)
-
 
 def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head identifier of a TypeScript/JavaScript type, or None.
@@ -825,74 +681,12 @@ def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    # JS/TS identifiers may start with `$` or `_` in addition to a
-    # letter — Zod's ``$ZSF`` interface family is the canonical case.
-    if not text or (not text[0].isalpha() and text[0] not in ("_", "$")):
-        return None
-    if text in _TS_BUILTIN_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic type params
-    # (T, K, V, U). Skipping them avoids spurious lookups.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "typescript") else None
 
 
 # ---------------------------------------------------------------------------
 # Java type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Primitives + ubiquitous JDK types that never resolve to a user-defined
-# Java/Kotlin class in the workspace. Stripping them at extraction time
-# avoids polluting the resolver with hopeless lookups. The list errs on
-# the side of inclusion: a user class colliding with one of these names
-# still surfaces through the value-import path, just not through the
-# type-ref path.
-_JAVA_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        # Java primitives + builtin type nodes
-        "boolean", "byte", "short", "int", "long", "float", "double",
-        "char", "void", "var",
-        # java.lang (auto-imported)
-        "Object", "String", "Class", "Enum", "Record",
-        "Integer", "Long", "Double", "Float", "Boolean", "Character",
-        "Byte", "Short", "Number", "Void",
-        "Thread", "Runnable", "Runtime", "Process", "ProcessBuilder",
-        "Throwable", "Exception", "RuntimeException", "Error",
-        "IllegalArgumentException", "IllegalStateException",
-        "NullPointerException", "UnsupportedOperationException",
-        "IndexOutOfBoundsException", "ClassCastException",
-        "ArithmeticException", "SecurityException", "ClassNotFoundException",
-        "InterruptedException", "CloneNotSupportedException",
-        "StringBuilder", "StringBuffer",
-        "Comparable", "Iterable", "AutoCloseable", "Cloneable",
-        "Override", "Deprecated", "SuppressWarnings",
-        "FunctionalInterface", "SafeVarargs",
-        "Math", "System",
-        # java.util ubiquitous containers (almost always external when used
-        # as a type position; the actual element type is captured separately
-        # by the same query via the type_arguments inner capture).
-        "List", "ArrayList", "LinkedList",
-        "Map", "HashMap", "LinkedHashMap", "TreeMap", "ConcurrentHashMap",
-        "Set", "HashSet", "LinkedHashSet", "TreeSet",
-        "Collection", "Collections", "Iterator", "Optional",
-        "Queue", "Deque", "ArrayDeque", "Stack",
-        # java.util.function
-        "Function", "BiFunction", "Consumer", "BiConsumer", "Supplier",
-        "Predicate", "BiPredicate", "UnaryOperator", "BinaryOperator",
-        # java.util.concurrent ubiquitous
-        "Future", "CompletableFuture", "Executor", "ExecutorService",
-        "CountDownLatch", "Semaphore", "AtomicBoolean", "AtomicInteger",
-        "AtomicLong", "AtomicReference",
-        # java.time
-        "Instant", "Duration", "LocalDate", "LocalTime", "LocalDateTime",
-        "ZonedDateTime", "OffsetDateTime", "Period", "ZoneId",
-        # java.io
-        "File", "InputStream", "OutputStream", "Reader", "Writer",
-        "IOException", "Serializable",
-    }
-)
-
 
 def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head type identifier of a Java type expression, or None.
@@ -955,47 +749,12 @@ def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _JAVA_BUILTIN_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic type params.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "java") else None
 
 
 # ---------------------------------------------------------------------------
 # Kotlin type-reference head extraction
 # ---------------------------------------------------------------------------
-
-_KOTLIN_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        # Kotlin primitives (kotlin package, auto-imported)
-        "Boolean", "Byte", "Short", "Int", "Long", "Float", "Double", "Char",
-        "String", "Unit", "Nothing", "Any", "Number",
-        "Array", "IntArray", "LongArray", "ByteArray", "ShortArray",
-        "FloatArray", "DoubleArray", "CharArray", "BooleanArray",
-        "List", "MutableList", "ArrayList",
-        "Map", "MutableMap", "HashMap", "LinkedHashMap",
-        "Set", "MutableSet", "HashSet", "LinkedHashSet",
-        "Collection", "MutableCollection",
-        "Iterable", "MutableIterable", "Iterator", "MutableIterator",
-        "Sequence", "Pair", "Triple", "Result",
-        "Comparable", "Comparator",
-        "Throwable", "Exception", "RuntimeException", "Error",
-        "IllegalArgumentException", "IllegalStateException",
-        "NullPointerException", "UnsupportedOperationException",
-        "IndexOutOfBoundsException", "ClassCastException",
-        "Lazy", "Regex", "Range", "IntRange", "LongRange", "CharRange",
-        "Enum", "Annotation",
-        # kotlin.io / kotlin.text / kotlin.collections ubiquitous
-        "Reader", "Writer", "BufferedReader", "BufferedWriter",
-        # Coroutines + JVM common
-        "Object", "Function", "Runnable", "Class", "Void",
-    }
-)
-
 
 def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head identifier of a Kotlin type expression, or None.
@@ -1048,13 +807,7 @@ def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _KOTLIN_BUILTIN_TYPES:
-        return None
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "kotlin") else None
 
 
 # Per-language head-identifier extractor for ``@param.type`` captures.
@@ -1077,9 +830,19 @@ TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
 
 
 def _count_arguments(arg_node: Node) -> int:
-    """Count the number of arguments in an argument/argument_list node."""
+    """Count the number of arguments in an argument/argument_list node.
+
+    Comments are children of the argument list, so an argument annotated with
+    a trailing ``// name`` counted twice. Grammars spell the node type several
+    ways (``comment``, ``line_comment``, ``block_comment``), hence the
+    substring test rather than a fixed set.
+    """
     skip_types = frozenset({"(", ")", ",", "[", "]"})
-    return sum(1 for child in arg_node.children if child.type not in skip_types)
+    return sum(
+        1
+        for child in arg_node.children
+        if child.type not in skip_types and "comment" not in child.type
+    )
 
 
 def _find_enclosing_symbol(

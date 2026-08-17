@@ -182,9 +182,20 @@ describe("SecurityFinding canonical shape", () => {
       severity: "high",
       snippet: null,
       detected_at: "2026-05-02T00:00:00Z",
+      line_number: 42,
+      line_verified: true,
+      commit_at: null,
     };
     expectTypeOf(f.snippet).toEqualTypeOf<string | null>();
     expectTypeOf(f.detected_at).toEqualTypeOf<string>();
+  });
+
+  it("a line is nullable and always paired with its verification flag", () => {
+    // Both required: an optional line_verified would let a consumer read a
+    // drifted line as confirmed by omitting the flag.
+    expectTypeOf<SecurityFinding["line_number"]>().toEqualTypeOf<number | null>();
+    expectTypeOf<SecurityFinding["line_verified"]>().toEqualTypeOf<boolean>();
+    expectTypeOf<SecurityFinding["commit_at"]>().toEqualTypeOf<string | null>();
   });
 });
 

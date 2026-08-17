@@ -80,7 +80,7 @@ workspace overlays, MCP responses, and CLI output.
 | Call confidence | Confidence that a call edge points to the right callee. | `CallResolver` | `0.95` same-file, `0.90` import binding, `0.50` global unique |
 | `extends` edge | Class/struct inheritance edge. | `HeritageResolver` | `UserView -> BaseView` |
 | `implements` edge | Interface/trait implementation edge. | `HeritageResolver` | `UserRepository -> Repository` |
-| Heritage confidence | Confidence that inheritance/implementation resolved correctly. | `HeritageResolver` | `0.95` same-file, `0.90` imported, `0.50` global unique |
+| Heritage confidence | Confidence that inheritance/implementation resolved correctly. | `HeritageResolver` | `0.95` same-file, `0.90` named import, `0.85` any imported file, `0.50` global unique |
 | `framework` edge | Synthetic edge from framework conventions. | `framework_edges.py` | `urls.py -> views.py`, `app.py -> routers/users.py` |
 | Dynamic edge | Edge inferred from runtime/dynamic patterns. | `dynamic_hints/*` and `GraphBuilder.add_dynamic_edges()` | `{edge_type: "dynamic_imports", hint_source: "django", weight: 1.0}` |
 | `co_changes` edge | File-to-file historical coupling edge. | `GraphBuilder.add_co_change_edges()` from git metadata | `src/a.py -> src/b.py` with `weight: 4.2` |
@@ -190,7 +190,7 @@ workspace overlays, MCP responses, and CLI output.
 | Dead-code finding | A graph/git finding persisted to `dead_code_findings`. | `DeadCodeAnalyzer` | `{kind: "unused_export", file_path: "src/api.py", confidence: 0.7}` |
 | Unreachable file | File with no incoming imports, not an entry point/test/config/contract/whitelisted file. | `_detect_unreachable_files()` | `src/legacy_adapter.py` |
 | Unused export | Public symbol in an imported file that no importer names. | `_detect_unused_exports()` | `symbol_name: "OldClient"` |
-| Unused internal | Private/internal symbol with no incoming `calls` edges. | `_detect_unused_internals()` | `_parse_legacy_token` |
+| Unused internal | Private symbol with no incoming `calls` edges. | `_detect_unused_internals()` | `_parse_legacy_token` |
 | Zombie package | Monorepo top-level package with no external package importers. | `_detect_zombie_packages()` | `packages/old-sdk` |
 | Dead-code confidence | Heuristic certainty based on age, recent commits, importers, dynamic imports, and deprecation hints. | `DeadCodeAnalyzer` | `1.0` for year-old unreachable file |
 | Safe-to-delete flag | Whether confidence passes delete threshold and dynamic patterns do not block deletion. | `_make_unreachable_finding()` and other passes | `safe_to_delete: true` |

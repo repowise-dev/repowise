@@ -1,12 +1,13 @@
 """Per-language visibility determination functions.
 
 Most languages can determine visibility from a symbol's name + modifier
-text alone (the ``visibility_fn`` shape). C/C++ is the exception: its
-visibility comes from surrounding AST context — ``public:`` / ``private:``
-access specifier siblings inside a class body, ``static`` storage class
-at file scope, or ``__declspec(dllexport)`` / GCC visibility attributes.
-``refine_cpp_visibility`` handles that node-aware refinement; the
-parser calls it after the generic ``visibility_fn`` for C/C++ files.
+text alone (the ``visibility_fn`` shape). Some cannot, because the answer
+depends on surrounding AST context — C/C++ ``public:`` / ``private:``
+access specifier siblings, ``static`` storage class at file scope and
+``__declspec(dllexport)`` attributes; C#'s no-modifier default, which
+differs by enclosing declaration; TS/JS export position. Each has a
+``refine_*_visibility`` the parser calls after the generic
+``visibility_fn``.
 """
 
 from __future__ import annotations
@@ -78,7 +79,13 @@ def kotlin_visibility(_name: str, modifier_texts: list[str]) -> str:
 
 
 def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
-    """C# visibility — public/private/protected/internal, default internal."""
+    """C# visibility — public/private/protected/internal.
+
+    The no-modifier default returned here is the *top-level type* one;
+    every other declaration site has a different default that depends on
+    what encloses it, which this signature cannot see.
+    ``refine_csharp_visibility`` corrects it from the AST.
+    """
     combined = " ".join(modifier_texts).lower()
     if "private" in combined:
         return "private"
@@ -88,7 +95,7 @@ def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
         return "internal"
     if "public" in combined:
         return "public"
-    return "internal"  # C# default is internal
+    return "internal"
 
 
 def swift_visibility(_name: str, modifier_texts: list[str]) -> str:
@@ -201,6 +208,84 @@ def refine_ts_visibility(
     if name in deferred_exports:
         return "public"
     return "private"
+
+
+# ---------------------------------------------------------------------------
+# C# node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+_CS_ACCESS_KEYWORDS = frozenset({"public", "private", "protected", "internal"})
+
+# What a declaration with no accessibility modifier defaults to, keyed by the
+# declaration that encloses it. Anything not listed (a namespace, or the
+# compilation unit) leaves the top-level-type default of ``internal`` standing.
+# ``record struct`` is a ``record_declaration`` carrying a ``struct`` token,
+# not a node type of its own, so it needs no entry.
+_CS_DEFAULT_BY_ENCLOSING: dict[str, str] = {
+    "interface_declaration": "public",
+    "class_declaration": "private",
+    "struct_declaration": "private",
+    "record_declaration": "private",
+    "enum_declaration": "public",
+}
+
+
+def _csharp_declared_access(def_node: Node) -> str | None:
+    """The accessibility the declaration writes, or ``None`` if it writes none.
+
+    Read from the AST rather than from the captured modifier texts. The
+    queries capture a single ``(modifier)`` child and the parser's dedup keeps
+    the first match, so ``static internal void M()`` arrives at the
+    ``visibility_fn`` as ``["static"]`` with the accessibility dropped —
+    every declaration that writes a non-accessibility modifier first is
+    invisible to text alone.
+
+    The keyword is the ``modifier`` node's own child type, so this never
+    slices the source: ``src`` is decoded text and node offsets are byte
+    offsets, which diverge after any multi-byte character (a leading UTF-8
+    BOM is enough).
+    """
+    written = {
+        keyword.type for c in def_node.children if c.type == "modifier" for keyword in c.children
+    } & _CS_ACCESS_KEYWORDS
+    if not written:
+        return None
+    # Same precedence the modifier-text fn uses, so a pair reads identically
+    # whichever half the capture happened to keep: ``private protected`` is
+    # recorded private, ``protected internal`` protected.
+    for keyword in ("private", "protected", "internal", "public"):
+        if keyword in written:
+            return keyword
+    return None
+
+
+def refine_csharp_visibility(def_node: Node, current_visibility: str) -> str:
+    """Give a C# declaration the accessibility it writes, else its scope's default.
+
+    ``csharp_visibility`` sees modifier text only, and that text is both
+    truncated (see ``_csharp_declared_access``) and defaulted to the
+    top-level-type answer. The real default is ``private`` inside a
+    class/struct/record and ``public`` inside an interface or enum — a
+    two-bucket error that puts most C# members in the wrong dead-code pool.
+    """
+    declared = _csharp_declared_access(def_node)
+    if declared is not None:
+        return declared
+    # An explicit interface implementation (``void IFoo.Bar() { }``) forbids
+    # modifiers and is unreachable through the class, only through the
+    # interface. Calling it private would put a member with a live caller
+    # into the narrow dead-code pool.
+    if any(c.type == "explicit_interface_specifier" for c in def_node.children):
+        return "public"
+    node = def_node.parent
+    while node is not None:
+        default = _CS_DEFAULT_BY_ENCLOSING.get(node.type)
+        if default is not None:
+            return default
+        if node.type in ("namespace_declaration", "file_scoped_namespace_declaration"):
+            break
+        node = node.parent
+    return current_visibility
 
 
 # ---------------------------------------------------------------------------
