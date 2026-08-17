@@ -44,6 +44,7 @@ from repowise.core.analysis.security_scan import (
     SecurityScanner,
 )
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
+from repowise.core.test_paths import is_test_related_path
 
 
 def _run_git(repo_path: Path, args: list[str], *, timeout: float = 30.0) -> str:
@@ -216,9 +217,12 @@ class HistorySecurityScanner:
         else:
             rev_range = "--all"
 
+        # --no-abbrev is load-bearing: --raw abbreviates blob SHAs to 8 chars
+        # while ``rev-list --objects`` emits the full 40, so no lookup below
+        # could ever hit. (--full-index does not affect --raw, only patches.)
         raw = _run_git(
             repo_path,
-            ["log", "--reverse", "--format=%H%x1f%aI", "--raw", rev_range],
+            ["log", "--reverse", "--format=%H%x1f%aI", "--raw", "--no-abbrev", rev_range],
             timeout=120.0,
         )
         blob_introduced_at: dict[str, str] = {}
@@ -232,9 +236,14 @@ class HistorySecurityScanner:
                 if current_commit is None:
                     continue
                 parts = line.split()
-                if len(parts) < 3:
+                if len(parts) < 4:
                     continue
-                blob_sha = parts[2]
+                # parts[2] is the pre-image blob, parts[3] the post-image one.
+                # Keying on the pre-image attributed the *replaced* content and
+                # was all-zero for every added file.
+                blob_sha = parts[3]
+                if blob_sha.strip("0") == "":
+                    continue  # deletion: no post-image blob
                 blob_introduced_at.setdefault(blob_sha, current_commit)
                 continue
             if "\x1f" not in line:
@@ -268,9 +277,13 @@ class HistorySecurityScanner:
 
     @staticmethod
     def _is_source(path: str) -> bool:
-        """True when *path* has a language we scan (mirrors the indexer)."""
-        suffix = Path(path).suffix.lower().lstrip(".")
-        return suffix in EXTENSION_TO_LANGUAGE
+        """True when *path* has a language we scan (mirrors the indexer).
+
+        ``EXTENSION_TO_LANGUAGE`` is keyed *with* the leading dot, so stripping
+        it here matched nothing and every blob was filtered out — the history
+        scan walked the object graph and scanned zero files for its whole life.
+        """
+        return Path(path).suffix.lower() in EXTENSION_TO_LANGUAGE
 
     @staticmethod
     def _passes_gate(kind: str, *, secrets_only: bool) -> bool:
@@ -283,6 +296,16 @@ class HistorySecurityScanner:
         if secrets_only:
             return kind in SECRET_KINDS
         return True
+
+    @staticmethod
+    def _is_placeholder(snippet: str | None) -> bool:
+        """True when the matched line is documentation, not a credential.
+
+        ``api_key="sk-..."`` in a docstring or README is the shape every
+        provider example uses. An elided value is never a live secret, and on
+        this repo it accounted for every non-test history hit.
+        """
+        return "..." in (snippet or "")
 
     # ------------------------------------------------------------------
     # Scan driver
@@ -325,10 +348,17 @@ class HistorySecurityScanner:
         summary.blobs_scanned = len(blobs)
         blob_introduced_at, commit_dates = self._blob_introductions(repo_path, since, to)
 
+        # Test material is excluded from history mode, not merely down-ranked.
+        # A committed secret matters because it leaked a live credential, and a
+        # fixture is not one: on this repo 730 of 832 history hits (88%) were
+        # `api_key="sk-test"` in provider unit tests. That ratio makes the whole
+        # report untrustworthy, which is worse than reporting nothing.
+        # `--all-patterns` lifts this along with the kind gate.
         source_items = [
             (blob_sha, path)
             for blob_sha, path in blobs.items()
-            if not path or self._is_source(path)
+            if (not path or self._is_source(path))
+            and not (secrets_only and path and is_test_related_path(path))
         ]
         contents_map = self._read_blobs_batch(
             repo_path, [blob_sha for blob_sha, _ in source_items]
@@ -345,8 +375,10 @@ class HistorySecurityScanner:
                 continue
 
             kept = [
-                f for f in findings
+                f
+                for f in findings
                 if self._passes_gate(f["kind"], secrets_only=secrets_only)
+                and not (secrets_only and self._is_placeholder(f.get("snippet")))
             ]
             if not kept:
                 continue
