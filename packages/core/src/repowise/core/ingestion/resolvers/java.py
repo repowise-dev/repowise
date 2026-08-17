@@ -94,11 +94,19 @@ def resolve_java_import_all(
     if namespace_class == "external":
         return (ctx.add_external_node(module_path),)
 
-    # Try stem lookup (class name)
+    # Match on the class name alone, but only among the files of the package
+    # the import actually names: a repo-wide match discards the package, so a
+    # third-party type binds to any same-named repo class.
     local = parts[-1]
-    result = ctx.stem_lookup(local.lower())
-    if result and (result.endswith(".java") or result.endswith(".kt")):
-        return (result,)
+    if len(parts) > 1:
+        scoped = jvm_index.file_in_package_by_stem(".".join(parts[:-1]), local)
+        if scoped and (scoped.endswith(".java") or scoped.endswith(".kt")):
+            return (scoped,)
+    else:
+        # A single-segment import carries no package to check against.
+        result = ctx.stem_lookup(local.lower())
+        if result and (result.endswith(".java") or result.endswith(".kt")):
+            return (result,)
 
     # Try matching package path as directory structure
     if len(parts) > 1:

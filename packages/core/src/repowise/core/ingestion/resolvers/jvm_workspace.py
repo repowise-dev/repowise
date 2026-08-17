@@ -17,7 +17,7 @@ import contextlib
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -170,6 +170,25 @@ class JvmWorkspaceIndex:
             if files:
                 return files
         return ()
+
+    def file_in_package_by_stem(self, pkg_fqn: str, name: str) -> str | None:
+        """Match a simple name against the files of one package only.
+
+        The name-only fallback in the import resolvers searched the whole
+        repo, so a third-party ``com.google.common.cache.CacheStats`` bound to
+        any file called ``CacheStats``. The package the import names is the
+        only local evidence for a file, so the search is scoped to it. A
+        Kotlin top-level function, whose file the type scan records no type
+        for, still resolves — its package matches.
+        """
+        pkg = self.packages.get(pkg_fqn)
+        if pkg is None:
+            return None
+        target = name.lower()
+        for path in pkg.files:
+            if PurePosixPath(path).stem.lower() == target:
+                return path
+        return None
 
     def wildcard_expand(self, pkg_fqn: str) -> tuple[str, ...]:
         """Expand ``import pkg.*`` → all files in the package."""
