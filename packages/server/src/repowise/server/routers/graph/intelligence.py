@@ -155,31 +155,8 @@ async def get_callers_callees(
     callees: list[CallerCalleeEntry] = []
 
     for e in edges:
-        is_caller = e.target_node_id == node.node_id
-        other_id = e.source_node_id if is_caller else e.target_node_id
-        other = node_map.get(other_id)
-
-        entry = CallerCalleeEntry(
-            symbol_id=other_id,
-            # All three columns are nullable while the response fields are not,
-            # so each needs the value checked and not just the row: a null here
-            # failed validation for the whole call rather than degrading one
-            # row of twenty. `symbol_detail` already guarded name and file this
-            # way; this endpoint guarded none of them.
-            name=other.name
-            if other and other.name
-            else (other_id.split("::")[-1] if "::" in other_id else other_id),
-            kind=other.kind if other and other.kind else "unknown",
-            file=other.file_path
-            if other and other.file_path
-            else (other_id.split("::")[0] if "::" in other_id else other_id),
-            start_line=other.start_line if other else None,
-            edge_type=e.edge_type,
-            confidence=round(e.confidence or 0.0, 3),
-            resolution_origin=e.resolution_origin,
-        )
-
-        if is_caller:
+        entry = CallerCalleeEntry.from_edge(e, node_id=node.node_id, node_map=node_map)
+        if e.target_node_id == node.node_id:
             callers.append(entry)
         else:
             callees.append(entry)

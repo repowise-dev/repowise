@@ -899,6 +899,40 @@ async def get_node_degree_counts(
     }
 
 
+async def get_node_degree_by_edge_type(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+    *,
+    edge_types: list[str] | None = None,
+) -> dict[str, dict[str, int]]:
+    """Return ``edge_type -> {in_degree, out_degree}`` for one node.
+
+    The breakdown :func:`get_node_degree_counts` collapses. A surface that
+    groups a node's neighbours by relation kind needs a total *per kind* — and
+    getting there by calling the scalar version once per kind is a query per
+    row of the answer.
+
+    Edge types with no edges in either direction are absent rather than zero,
+    so the caller can treat the mapping as "what this node actually has".
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for direction, column in (
+        ("in_degree", GraphEdge.target_node_id),
+        ("out_degree", GraphEdge.source_node_id),
+    ):
+        q = (
+            select(GraphEdge.edge_type, func.count())
+            .where(GraphEdge.repository_id == repository_id, column == node_id)
+            .group_by(GraphEdge.edge_type)
+        )
+        if edge_types:
+            q = q.where(GraphEdge.edge_type.in_(edge_types))
+        for edge_type, n in await session.execute(q):
+            counts.setdefault(edge_type, {"in_degree": 0, "out_degree": 0})[direction] = n
+    return counts
+
+
 async def get_node_degree_counts_bulk(
     session: AsyncSession,
     repository_id: str,

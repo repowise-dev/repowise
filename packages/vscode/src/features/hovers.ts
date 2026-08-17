@@ -201,8 +201,11 @@ export function registerHovers(ctx: RepowiseContext): vscode.Disposable {
     md.isTrusted = { enabledCommands: [Commands.showFileHealth] };
     if (detail) {
       md.appendMarkdown(`**${match.name}** · ${detail.symbol.kind}\n\n`);
-      const callers = detail.graph.in_degree;
-      const callees = detail.graph.out_degree;
+      // Degree counts every relation kind, so it reports subclasses and
+      // framework wiring as callers. `caller_total` is calls only; fall back
+      // to degree on an index served by an older backend.
+      const callers = detail.graph.caller_total ?? detail.graph.in_degree;
+      const callees = detail.graph.callee_total ?? detail.graph.out_degree;
       md.appendMarkdown(`${callers} callers · ${callees} callees\n\n`);
       const owner = detail.file_context?.primary_owner;
       if (owner) {

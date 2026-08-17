@@ -91,12 +91,44 @@ export interface SymbolCallEntry {
   resolution_origin?: ResolutionOriginWire | null;
 }
 
+/**
+ * Which side of the symbol a relation sits on. `in` means the other symbol
+ * reaches this one.
+ */
+export type SymbolRelationDirection = "in" | "out";
+
+/**
+ * One relation kind on one side of a symbol, with the count it was cut from.
+ *
+ * `total` is counted unbounded while `rows` is capped, so a surface reports
+ * "10 of 1,516" rather than rendering the cap as if it were the answer.
+ * `group` partitions `edge_type` into the four families the engine's
+ * `SYMBOL_USE_EDGE_TYPES` covers; `symbol-relations.ts` in `@repowise-dev/ui`
+ * is the only place either becomes English.
+ */
+export interface SymbolRelationGroup<Row = SymbolCallEntry> {
+  direction: SymbolRelationDirection;
+  edge_type: string;
+  group: "heritage" | "wiring" | "reference";
+  total: number;
+  rows: Row[];
+}
+
 export interface SymbolDetailGraph {
   pagerank: number;
   in_degree: number;
   out_degree: number;
+  /** `calls` edges only. Every other relation kind is in `relations`. */
   callers: SymbolCallEntry[];
   callees: SymbolCallEntry[];
+  /** True `calls` counts. `callers.length` is the row cap, not the count.
+   *  Absent on a backend that predates the split, so a surface must fall back
+   *  to the array length rather than rendering `undefined`. */
+  caller_total?: number;
+  callee_total?: number;
+  /** Heritage, framework wiring and references, each named and counted
+   *  separately. Absent on an older backend. */
+  relations?: SymbolRelationGroup[];
 }
 
 export interface SymbolFileContext {
@@ -141,8 +173,12 @@ export interface SymbolBodyCall {
 export interface SymbolBodyGraph {
   in_degree: number;
   out_degree: number;
+  /** `calls` edges only — see `SymbolDetailGraph.callers`. */
   callers: SymbolBodyCall[];
   callees: SymbolBodyCall[];
+  caller_total?: number;
+  callee_total?: number;
+  relations?: SymbolRelationGroup<SymbolBodyCall>[];
   pagerank_percentile?: number | null;
   betweenness_percentile?: number | null;
   community_label?: string | null;

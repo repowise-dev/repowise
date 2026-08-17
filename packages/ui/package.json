@@ -48,6 +48,7 @@
     "./docs/reader-persona": "./src/docs/reader-persona.ts",
     "./docs/*": "./src/docs/*.tsx",
     "./symbols": "./src/symbols/index.ts",
+    "./symbols/normalize-calls": "./src/symbols/normalize-calls.ts",
     "./symbols/*": "./src/symbols/*.tsx",
     "./owners": "./src/owners/index.ts",
     "./owners/*": "./src/owners/*.tsx",

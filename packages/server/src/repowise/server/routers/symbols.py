@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -22,6 +23,11 @@ from repowise.core.persistence.models import (
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import Paginated, SymbolImportanceComponents, SymbolResponse
+from repowise.server.schemas.intelligence import (
+    SYMBOL_RELATION_GROUP_OF,
+    CallerCalleeEntry,
+    SymbolRelationGroup,
+)
 from repowise.server.services.symbol_ranking import (
     compute_components,
     rank_symbols,
@@ -396,54 +402,8 @@ async def symbol_detail(
     # comment true: unfiltered, a symbol's inbound containment edge — from its
     # own declaring file or class, which 34,570 of 34,808 symbols on this repo
     # have — was served as a caller.
-    callers: list[dict] = []
-    callees: list[dict] = []
     node = await crud.get_graph_node(session, repo_id, symbol_id)
-    if node is not None:
-        edges = await crud.get_graph_edges_for_node(
-            session,
-            repo_id,
-            symbol_id,
-            direction="both",
-            edge_types=sorted(SYMBOL_USE_EDGE_TYPES),
-            limit=40,
-        )
-        other_ids = {
-            e.source_node_id if e.source_node_id != symbol_id else e.target_node_id for e in edges
-        }
-        node_map = await crud.get_graph_nodes_by_ids(session, repo_id, list(other_ids))
-        for e in edges:
-            inbound = e.target_node_id == symbol_id
-            other_id = e.source_node_id if inbound else e.target_node_id
-            other = node_map.get(other_id)
-            entry = {
-                "symbol_id": other_id,
-                "name": other.name
-                if other and other.name
-                else (other_id.split("::")[-1] if "::" in other_id else other_id),
-                "kind": other.kind if other and other.kind else "unknown",
-                "file": other.file_path
-                if other and other.file_path
-                else (other_id.split("::")[0] if "::" in other_id else other_id),
-                "start_line": other.start_line if other else None,
-                "edge_type": e.edge_type,
-                "confidence": round(e.confidence or 0.0, 3),
-                "resolution_origin": e.resolution_origin,
-            }
-            (callers if inbound else callees).append(entry)
-        callers.sort(key=lambda x: (-x["confidence"], x["name"]))
-        callees.sort(key=lambda x: (-x["confidence"], x["name"]))
-
-    # Scoped to the same edges as `callers`/`callees`, which sit beside these
-    # two in one `graph` object. Unscoped, every symbol's in-degree carried the
-    # containment edge from its own declaring file or class.
-    degrees = (
-        await crud.get_node_degree_counts(
-            session, repo_id, symbol_id, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
-        )
-        if node is not None
-        else {"in_degree": 0, "out_degree": 0}
-    )
+    relations = await _symbol_relations(session, repo_id, symbol_id, present=node is not None)
 
     governing = [
         {"id": d.id, "title": d.title, "status": d.status}
@@ -465,10 +425,20 @@ async def symbol_detail(
         "symbol": symbol.model_dump(mode="json"),
         "graph": {
             "pagerank": round((node.pagerank if node else 0.0) or 0.0, 6),
-            "in_degree": degrees["in_degree"],
-            "out_degree": degrees["out_degree"],
-            "callers": callers,
-            "callees": callees,
+            # Degree across every use edge type, so it stays a graph metric
+            # rather than a second, disagreeing caller count. Summed from the
+            # counts the rows were cut from — it is NOT `caller_total`, which
+            # is calls only, and a surface wanting "N callers" wants that one.
+            "in_degree": relations.in_degree,
+            "out_degree": relations.out_degree,
+            # Calls only. Every other relation kind is carried by `relations`
+            # under its own name, so a subclass is no longer served as a caller.
+            "callers": [r.model_dump(mode="json") for r in relations.callers],
+            "callees": [r.model_dump(mode="json") for r in relations.callees],
+            # True counts. `len(callers)` is the cap, not the answer.
+            "caller_total": relations.caller_total,
+            "callee_total": relations.callee_total,
+            "relations": [g.model_dump(mode="json") for g in relations.groups],
         },
         "governing_decisions": governing,
         "file_context": file_context,
@@ -481,6 +451,132 @@ async def symbol_detail(
         # naive, and a naive ISO string is parsed as LOCAL time by JS.
         "fix_last_at": iso_utc(getattr(git_meta, "last_fix_at", None)),
     }
+
+
+#: Rows served per relation kind per direction. Calls get the larger cap
+#: because they are the reason most readers open the page; the rest exist to
+#: be *named and counted*, and a caller who wants all 1,516 subclasses has the
+#: graph page for it.
+_CALL_ROW_CAP = 40
+_RELATION_ROW_CAP = 10
+
+
+@dataclass
+class _SymbolRelations:
+    """Callers/callees plus every other relation kind, each counted honestly."""
+
+    callers: list[CallerCalleeEntry] = field(default_factory=list)
+    callees: list[CallerCalleeEntry] = field(default_factory=list)
+    caller_total: int = 0
+    callee_total: int = 0
+    groups: list[SymbolRelationGroup] = field(default_factory=list)
+    #: Degree across every use edge type, summed from the same counts the
+    #: rows were cut from rather than re-queried, so the two cannot disagree.
+    in_degree: int = 0
+    out_degree: int = 0
+
+
+async def _symbol_relations(
+    session: AsyncSession,
+    repo_id: str,
+    symbol_id: str,
+    *,
+    present: bool,
+) -> _SymbolRelations:
+    """Fetch this symbol's relations, each kind counted and capped on its own.
+
+    One fetch per edge type rather than one for all of
+    `SYMBOL_USE_EDGE_TYPES`, because a shared cap ranked by confidence lets the
+    commonest kind evict every other. Measured on the live django index:
+    `Model` has 8 callers and 1,516 subclasses, and the single 40-row cut
+    served 39 subclasses and 1 caller; `TestCase` has 3 callers and 868
+    subclasses and served none of its callers at all. Grouping alone does not
+    fix it — `extends` would still evict `implements` inside one heritage cap,
+    leaving "Implemented by (5)" over an empty list, which is the same lie one
+    level down.
+
+    Cost is unchanged for the common symbol. Only edge types the counts show
+    are present get fetched, and most symbols have exactly one, so this is the
+    same query count as the single-fetch version it replaces.
+    """
+    out = _SymbolRelations()
+    if not present:
+        return out
+
+    # Every total in two queries, before any rows. They say which edge types
+    # exist at all, so nothing is fetched speculatively, and they are the
+    # numbers the surface reports.
+    totals = await crud.get_node_degree_by_edge_type(
+        session, repo_id, symbol_id, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
+    )
+    if not totals:
+        return out
+    out.in_degree = sum(t["in_degree"] for t in totals.values())
+    out.out_degree = sum(t["out_degree"] for t in totals.values())
+
+    edges_by_type: dict[str, list] = {}
+    for edge_type in sorted(totals):
+        edges_by_type[edge_type] = await crud.get_graph_edges_for_node(
+            session,
+            repo_id,
+            symbol_id,
+            direction="both",
+            edge_types=[edge_type],
+            limit=_CALL_ROW_CAP if edge_type == "calls" else _RELATION_ROW_CAP,
+        )
+
+    # Hydrated once for every edge type at once: the neighbour lookup is the
+    # expensive half and it does not care which relation asked.
+    other_ids = {
+        e.source_node_id if e.target_node_id == symbol_id else e.target_node_id
+        for edges in edges_by_type.values()
+        for e in edges
+    }
+    node_map = await crud.get_graph_nodes_by_ids(session, repo_id, list(other_ids))
+
+    for edge_type, edges in edges_by_type.items():
+        inbound: list[CallerCalleeEntry] = []
+        outbound: list[CallerCalleeEntry] = []
+        # A self-edge — a recursive call — matches both of the direction
+        # queries, so it comes back twice. It is also counted once in each
+        # direction by the totals, so it belongs on both sides exactly once:
+        # dedupe first, then place each edge on every side it touches. Served
+        # once, its row is a permanent "+1 more" no paging can reach.
+        for e in {edge.id: edge for edge in edges}.values():
+            entry = CallerCalleeEntry.from_edge(e, node_id=symbol_id, node_map=node_map)
+            if e.target_node_id == symbol_id:
+                inbound.append(entry)
+            if e.source_node_id == symbol_id:
+                outbound.append(entry)
+        for rows in (inbound, outbound):
+            rows.sort(key=lambda r: (-r.confidence, r.name))
+
+        if edge_type == "calls":
+            out.callers = inbound
+            out.callees = outbound
+            out.caller_total = totals["calls"]["in_degree"]
+            out.callee_total = totals["calls"]["out_degree"]
+            continue
+
+        # Keyed per edge type, not per group: "Extended by" and "Implemented
+        # by" are different sentences and a reader needs to know which they
+        # are in.
+        for direction, rows in (("in", inbound), ("out", outbound)):
+            total = totals[edge_type]["in_degree" if direction == "in" else "out_degree"]
+            if not total:
+                continue
+            out.groups.append(
+                SymbolRelationGroup(
+                    direction=direction,
+                    edge_type=edge_type,
+                    group=SYMBOL_RELATION_GROUP_OF[edge_type],
+                    total=total,
+                    rows=rows,
+                )
+            )
+
+    out.groups.sort(key=lambda g: (g.direction, -g.total, g.edge_type))
+    return out
 
 
 def _symbol_fix_count(git_meta: object | None, symbol_id: str) -> int | None:

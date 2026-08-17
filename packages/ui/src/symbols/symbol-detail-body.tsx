@@ -191,6 +191,9 @@ export function SymbolDetailBody({
               centerName={id.name}
               callers={graph.callers}
               callees={graph.callees}
+              {...(graph.caller_total != null ? { callerTotal: graph.caller_total } : {})}
+              {...(graph.callee_total != null ? { calleeTotal: graph.callee_total } : {})}
+              {...(graph.relations ? { relations: graph.relations } : {})}
               {...(symbolHref ? { symbolHref } : {})}
             />
           )}
