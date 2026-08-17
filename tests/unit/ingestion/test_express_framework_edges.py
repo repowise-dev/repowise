@@ -138,8 +138,8 @@ class TestExpressLocalMiddlewareReads:
         module_sym = "routes.ts::__module__"
         for name in ("logRequest", "validateRequest", "handler"):
             sym_id = f"routes.ts::{name}"
-            assert graph.has_edge(module_sym, sym_id), f"missing reads edge to {name}"
-            assert graph[module_sym][sym_id]["edge_type"] == "reads"
+            assert graph.has_edge(module_sym, sym_id), f"missing wiring edge to {name}"
+            assert graph[module_sym][sym_id]["edge_type"] == "framework_binds"
 
     def test_app_use_middleware_gets_reads_edge(self, tmp_path: Path) -> None:
         (tmp_path / "mw.ts").write_text(
@@ -150,7 +150,7 @@ class TestExpressLocalMiddlewareReads:
         )
         graph = _build_graph_with_framework_edges(tmp_path)
         assert graph.has_edge("mw.ts::__module__", "mw.ts::authGuard")
-        assert graph["mw.ts::__module__"]["mw.ts::authGuard"]["edge_type"] == "reads"
+        assert graph["mw.ts::__module__"]["mw.ts::authGuard"]["edge_type"] == "framework_binds"
 
     def test_defines_edge_preserved(self, tmp_path: Path) -> None:
         (tmp_path / "routes.ts").write_text(
@@ -173,7 +173,7 @@ class TestExpressLocalMiddlewareReads:
         graph = _build_graph_with_framework_edges(tmp_path)
         handler = "routes.ts::handler"
         assert graph.has_edge("routes.ts::__module__", handler)
-        assert graph["routes.ts::__module__"][handler]["edge_type"] == "reads"
+        assert graph["routes.ts::__module__"][handler]["edge_type"] == "framework_binds"
         assert graph.has_edge("routes.ts::__module__", "routes.ts::requireRole")
 
     def test_commonjs_multiline_route_reads_edges(self, tmp_path: Path) -> None:
@@ -196,8 +196,8 @@ class TestExpressLocalMiddlewareReads:
         module_sym = "routes.js::__module__"
         for name in ("logRequest", "validateRequest"):
             sym_id = f"routes.js::{name}"
-            assert graph.has_edge(module_sym, sym_id), f"missing reads edge to {name}"
-            assert graph[module_sym][sym_id]["edge_type"] == "reads"
+            assert graph.has_edge(module_sym, sym_id), f"missing wiring edge to {name}"
+            assert graph[module_sym][sym_id]["edge_type"] == "framework_binds"
 
     def test_non_route_receiver_in_express_file_no_reads_edge(self, tmp_path: Path) -> None:
         (tmp_path / "svc.ts").write_text(

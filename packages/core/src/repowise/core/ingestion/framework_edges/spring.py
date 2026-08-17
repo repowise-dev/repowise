@@ -35,6 +35,8 @@ from .base import (
     FrameworkHandler,
     _add_edge_if_new,
     _build_class_to_file,
+    add_symbol_edge,
+    build_type_to_symbol,
     read_text,
 )
 
@@ -154,6 +156,32 @@ def _scan_lombok_ctor_params(text: str) -> list[str]:
     return params
 
 
+def _declaring_type_symbol(parsed: Any, path: str) -> str | None:
+    """The symbol id of the type *path* is named for.
+
+    Java and Kotlin both put the public type in a file of its own name, so the
+    stem is the reliable discriminator when a file also declares helper types.
+    A file whose stem names no type is skipped rather than guessed at.
+    """
+    stem = Path(path).stem
+    for sym in parsed.symbols:
+        if sym.name == stem and sym.kind in ("class", "interface", "record", "enum"):
+            return sym.id
+    return None
+
+
+def _bind_injected_symbol(
+    graph: nx.DiGraph, type_to_symbol: dict[str, str], owner: str | None, type_name: str
+) -> int:
+    """Link an injecting class's declaration to the injected type's declaration."""
+    if owner is None:
+        return 0
+    target = type_to_symbol.get(type_name.split("<")[0].strip())
+    if target is None:
+        return 0
+    return 1 if add_symbol_edge(graph, owner, target) else 0
+
+
 def _add_spring_edges(
     graph: nx.DiGraph,
     parsed_files: dict[str, Any],
@@ -162,6 +190,11 @@ def _add_spring_edges(
 ) -> int:
     count = 0
     class_to_file = _build_class_to_file(parsed_files, ("java", "kotlin"))
+    # Injection names a type, and a type is a symbol. The file-level edges below
+    # say the two files are related; these say which two declarations, which is
+    # what makes an injected-only collaborator stop reading as constructed by
+    # nobody.
+    type_to_symbol = build_type_to_symbol(parsed_files, ("java", "kotlin"))
 
     # Build interface → list of impl files map from heritage
     impl_map: dict[str, list[str]] = {}
@@ -215,9 +248,12 @@ def _add_spring_edges(
             node["framework_role"] = node.get("framework_role") or "spring_stereotype"
             node["is_entry_point"] = True
 
+        owner_symbol = _declaring_type_symbol(parsed, path)
+
         # 2a. Field injection (@Autowired / @Inject / @Resource)
         for m in _SPRING_INJECT_FIELD_RE.finditer(text):
             type_name = m.group(1).split("<")[0].strip()
+            count += _bind_injected_symbol(graph, type_to_symbol, owner_symbol, type_name)
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
@@ -236,12 +272,14 @@ def _add_spring_edges(
                 type_name = pm.group(1)
                 if type_name in ("String", "Integer", "Long", "Boolean", "Double", "Float"):
                     continue
+                count += _bind_injected_symbol(graph, type_to_symbol, owner_symbol, type_name)
                 for target in _resolve_type(type_name):
                     if target in path_set and _add_edge_if_new(graph, path, target):
                         count += 1
 
         # 2c. Lombok @RequiredArgsConstructor / @AllArgsConstructor / @Data
         for type_name in _scan_lombok_ctor_params(text):
+            count += _bind_injected_symbol(graph, type_to_symbol, owner_symbol, type_name)
             for target in _resolve_type(type_name):
                 if target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1

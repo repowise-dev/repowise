@@ -291,6 +291,14 @@ EdgeType = Literal[
     "dispatches_to",
     "co_changes",
     "framework",
+    # The symbol-level sibling of `framework`, which is file → file and always
+    # will be. A framework handler emits this when it can name *both* ends as
+    # symbols — a test function and the fixture it asks for by parameter name,
+    # a class and the collaborator injected into it. Deliberately not `calls`:
+    # nothing here is a call the parser could have seen, and letting it read as
+    # one would put an inferred wiring hop into execution flows as if it were
+    # source.
+    "framework_binds",
     # A data reference rather than a call. Two `_add_reads_edge` helpers emit
     # it at different layers: C# member access file → file, Express
     # route/middleware wiring symbol → symbol.
@@ -466,6 +474,11 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         # answers for, and that call lands on the base. Without this the whole
         # implementation side of an interface reads as called by nobody.
         "dispatches_to",
+        # A fixture nobody calls and a collaborator nobody constructs are both
+        # used — by the container, which no parser sees. Without this they read
+        # as reached by nobody, which is the same mistake `references` fixed for
+        # dispatch tables.
+        "framework_binds",
         "reads",
         # Naming a function is using it. A handler sitting in a dispatch table
         # is never called anywhere a parser can see, and treating that as "no

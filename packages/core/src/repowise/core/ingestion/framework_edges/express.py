@@ -15,6 +15,7 @@ from .base import (
     _add_edge_if_new,
     _build_class_to_file,
     _build_ts_var_to_file,
+    add_symbol_edge,
     read_text,
 )
 
@@ -57,13 +58,6 @@ def _match_paren(text: str, open_idx: int) -> int:
     return -1
 
 
-def _add_reads_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
-    if source == target or not graph.has_node(source) or not graph.has_node(target):
-        return False
-    if graph.has_edge(source, target):
-        return False
-    graph.add_edge(source, target, edge_type="reads", imported_names=[])
-    return True
 
 
 def _has_express_imports(parsed_files: dict[str, Any]) -> bool:
@@ -120,7 +114,7 @@ def _add_express_edges(
                     arg_blob = _STRING_LITERAL_RE.sub("", text[m.end() : close])
                     for ident in _ARG_IDENT_RE.finditer(arg_blob):
                         sym_id = local_funcs.get(ident.group(0))
-                        if sym_id and _add_reads_edge(graph, module_sym, sym_id):
+                        if sym_id and add_symbol_edge(graph, module_sym, sym_id):
                             count += 1
 
         # ---- NestJS: @Module({ controllers: [...], providers: [...], imports: [...] }) ----
