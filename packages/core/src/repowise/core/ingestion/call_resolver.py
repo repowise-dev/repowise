@@ -271,7 +271,11 @@ class CallResolver:
         for path, name_to_file in self._import_names.items():
             file_syms = self._file_symbols.get(path, {})
             for name, source_file in name_to_file.items():
-                if name not in file_syms:
+                # An origin outside the repo names no file any reader of this
+                # map can look up, and the wildcard pass below already refuses
+                # one. Holding the invariant in one pass and not its twin is
+                # what makes a later reader look safe when it is not.
+                if name not in file_syms and not source_file.startswith("external:"):
                     self._barrel_origins[path][name] = source_file
 
         # Track wildcard re-exports, which forward every symbol of the imported
@@ -1087,6 +1091,16 @@ class CallResolver:
         bound = self._import_names.get(file_path, {}).get(type_name)
         if bound is not None and not bound.startswith("external:"):
             sym_id = self._file_methods.get(bound, {}).get(key)
+            if sym_id is None:
+                # An import names the module it was written against, which in
+                # Python is usually a package ``__init__`` that re-exports the
+                # type rather than declaring it. Free calls already chase that
+                # chain; without it here the import settles which type this is
+                # and then refuses every method of it. ``!= bound`` because a
+                # mutual re-export can leave an entry pointing at its own file.
+                origin = self._barrel_origins.get(bound, {}).get(type_name)
+                if origin is not None and origin != bound:
+                    sym_id = self._file_methods.get(origin, {}).get(key)
             return None if sym_id is None else (sym_id, "import")
 
         # Bound to something outside the repo and there is no edge to find,

@@ -490,3 +490,84 @@ class TestPythonTypedReceiver:
         edges = _edges(parsed, tmp_path)
         assert not [e for e in edges if str(e[3]).startswith("receiver_field_")]
         assert not [e for e in edges if str(e[3]).startswith("receiver_typed_")]
+
+
+class TestImportedTypeThroughAReExport:
+    """An import binds the package, not the module that declares the type.
+
+    ``from pkg import Engine`` names ``pkg/__init__.py``, which re-exports
+    ``Engine`` and declares no method of it. Treating that as settling the type
+    and then refusing costs every method call on it.
+    """
+
+    def _repo(self) -> dict[str, tuple[str, str]]:
+        return {
+            "app.py": (
+                "python",
+                "from pkg import Engine\n\n"
+                "def run():\n"
+                "    engine = Engine()\n"
+                "    engine.render(1)\n",
+            ),
+            "pkg/__init__.py": ("python", "from pkg.engine import Engine\n"),
+            "pkg/engine.py": (
+                "python",
+                "class Engine:\n    def render(self, obj):\n        return obj\n",
+            ),
+        }
+
+    def test_a_re_exported_type_still_resolves_its_method(self, tmp_path: Path) -> None:
+        parsed = _parse_all(tmp_path, self._repo())
+        _link_imports(
+            parsed,
+            {
+                "app.py": {"pkg": "pkg/__init__.py"},
+                "pkg/__init__.py": {"pkg.engine": "pkg/engine.py"},
+            },
+        )
+        assert (
+            "app.py::run",
+            "pkg/engine.py::Engine::render",
+            0.88,
+            "receiver_typed_import",
+        ) in _edges(parsed, tmp_path)
+
+    def test_a_re_export_chain_does_not_invent_a_method(self, tmp_path: Path) -> None:
+        """Following the chain must not weaken the validator above it."""
+        files = self._repo()
+        files["app.py"] = (
+            "python",
+            "from pkg import Engine\n\n"
+            "def run():\n"
+            "    engine = Engine()\n"
+            "    engine.missing(1)\n",
+        )
+        parsed = _parse_all(tmp_path, files)
+        _link_imports(
+            parsed,
+            {
+                "app.py": {"pkg": "pkg/__init__.py"},
+                "pkg/__init__.py": {"pkg.engine": "pkg/engine.py"},
+            },
+        )
+        assert not [
+            e for e in _edges(parsed, tmp_path) if str(e[3]).startswith("receiver_typed_")
+        ]
+
+    def test_an_origin_outside_the_repo_is_never_recorded(self, tmp_path: Path) -> None:
+        """A re-export map holding an unreadable path makes a reader look safe."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "app.py": ("python", "from thirdparty import Engine\n\ndef run():\n    pass\n"),
+            },
+        )
+        for imp in parsed["app.py"].imports:
+            imp.resolved_file = "external:thirdparty"
+        resolver = CallResolver(parsed, {p: set() for p in parsed}, repo_path=str(tmp_path))
+        recorded = [
+            origin
+            for origins in resolver._barrel_origins.values()
+            for origin in origins.values()
+        ]
+        assert not [o for o in recorded if o.startswith("external:")]
