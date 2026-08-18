@@ -117,8 +117,9 @@ _REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
 # C/C++ node types that spell a type. Each one covers both the definition and
 # the forward declaration of that type; only the ``body`` field tells them
 # apart. See ``_is_bodiless_cpp_type``.
-# ``union_specifier`` is deliberately absent: neither grammar's query maps it
-# to a symbol, so a union never reaches here at all.
+# ``union_specifier`` is absent because neither grammar's query captures one
+# as a symbol today. If a union capture is ever added, add it here too, or a
+# bodiless ``union U;`` goes back to reading as a definition.
 _CPP_TYPE_SPECIFIER_NODES = frozenset(
     {"class_specifier", "struct_specifier", "enum_specifier"}
 )
@@ -135,11 +136,21 @@ def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool
     definition — call resolution's declaration/definition pairing and the
     dead-code passes — silently treats the header line as the real thing.
     """
-    return (
-        language in ("cpp", "c")
-        and node_type in _CPP_TYPE_SPECIFIER_NODES
-        and def_node.child_by_field_name("body") is None
-    )
+    if language not in ("cpp", "c"):
+        return False
+    if node_type not in _CPP_TYPE_SPECIFIER_NODES:
+        return False
+    if def_node.child_by_field_name("body") is not None:
+        return False
+    # ``typedef struct CBMAutomaton CBMAutomaton;`` — C's opaque-handle idiom.
+    # The tag and the typedef name are the same identifier, so both patterns
+    # match at one position and dedup keeps a single symbol. That symbol is the
+    # typedef name, which *is* a deletable API artifact and must stay
+    # reportable. Erring toward under-marking: a forward-declared tag under a
+    # differently-named typedef (``typedef struct Impl_s Handle;``) is left
+    # unmarked too, which only costs a suppression we never had.
+    parent = def_node.parent
+    return parent is None or parent.type != "type_definition"
 
 
 @cache

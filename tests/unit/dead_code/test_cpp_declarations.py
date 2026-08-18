@@ -108,11 +108,7 @@ class TestDeclarationNeverFlagged:
 class TestTypeDeclarationNeverFlagged:
     """A *type* forward declaration is not held to the ``defined_by`` clause.
 
-    A prototype promises a body, so a body that exists nowhere makes the
-    prototype itself the dead thing. ``class Env;`` promises nothing: it lets
-    the declaring file name the type without including its header, which makes
-    that file the declaration's user. It is not deletable whether the
-    definition is in this repo or in a dependency.
+    The asymmetry with a prototype is argued at the guard in ``analyzer.py``.
     """
 
     @staticmethod

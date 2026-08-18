@@ -226,6 +226,22 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         # --- Symbol nodes ---
         for sym in parsed.symbols:
+            # A declaration must never displace a definition already indexed
+            # under this id — the same rule ``call_resolver._build_indices``
+            # applies to its own symbol table, and it belongs here too because
+            # the id is ``<path>::<name>``, so a C++ header that defines a
+            # class and re-declares it later (a second namespace block, a
+            # template primary declaration beside its specializations) collapses
+            # both into one node and the *last* emission wins. Left unguarded,
+            # the one-line declaration overwrites a definition's span, kind and
+            # ``is_declaration``, and every consumer that tells the two apart
+            # then reads the header line as the whole symbol.
+            if sym.is_declaration:
+                existing = self._graph.nodes.get(sym.id)
+                if existing is not None and existing.get("is_declaration") is False:
+                    self._graph.add_edge(path, sym.id, edge_type="defines")
+                    continue
+
             self._graph.add_node(
                 sym.id,
                 node_type="symbol",

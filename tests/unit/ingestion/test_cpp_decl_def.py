@@ -115,10 +115,7 @@ class TestCallAttachesToDefinition:
 class TestTypeDeclarationFlag:
     """``class Env;`` is a declaration too, and only the ``body`` field says so.
 
-    ``declaration_node_types`` catches a prototype because a prototype really
-    is a tree-sitter ``declaration``. A type forward declaration arrives as the
-    same ``class_specifier`` the definition uses, so without the body check it
-    reads as a whole class defined on one line.
+    Mechanics in ``parser._is_bodiless_cpp_type``.
     """
 
     def test_bodiless_type_is_marked(self, tmp_path: Path) -> None:
@@ -136,14 +133,47 @@ class TestTypeDeclarationFlag:
         graph = _build(tmp_path)
         assert graph.nodes["env.h::Env"]["is_declaration"] is False
 
-    def test_definition_wins_when_both_are_in_one_file(self, tmp_path: Path) -> None:
-        # Declaration and definition share a symbol id, so the graph holds one
-        # node. It must be the definition: were the one-line declaration to win,
-        # the guard would silence a real finding on the class itself.
-        (tmp_path / "both.h").write_text(
-            "namespace geo {\nclass Shape;\nclass Shape {\n public:\n  int Area();\n};\n}\n"
+    def test_c_opaque_handle_typedef_stays_reportable(self, tmp_path: Path) -> None:
+        # ``typedef struct Foo Foo;`` is C's opaque-handle idiom. Tag and
+        # typedef name are one identifier, so the two query patterns match at
+        # one position and a single symbol survives — the typedef name, which
+        # is real API and must not be exempted as a forward declaration.
+        (tmp_path / "ac.h").write_text(
+            "typedef struct CBMAutomaton CBMAutomaton;\n"
+            "typedef struct Impl_s Handle;\n"
+            "struct Plain;\n"
         )
         graph = _build(tmp_path)
-        node = graph.nodes["both.h::Shape"]
-        assert node["is_declaration"] is False
-        assert node["end_line"] > node["start_line"]
+        assert graph.nodes["ac.h::CBMAutomaton"]["is_declaration"] is False
+        assert graph.nodes["ac.h::Handle"]["is_declaration"] is False
+        # Not a typedef, so still a plain forward declaration.
+        assert graph.nodes["ac.h::Plain"]["is_declaration"] is True
+
+    def test_definition_wins_whichever_order_they_appear_in(self, tmp_path: Path) -> None:
+        # Declaration and definition share a symbol id, so the graph holds one
+        # node and the last emission would otherwise win. Definition-*after*-
+        # declaration passes either way; the reverse is the real case (seastar's
+        # smp.hh defines smp_message_queue at 177 and re-declares it at 301) and
+        # it silently reduced a 120-line class to a one-line declaration.
+        decl, defn = "class Shape;", "class Shape {\n public:\n  int Area();\n};"
+        for name, body in (
+            ("decl_first.h", f"namespace geo {{\n{decl}\n{defn}\n}}\n"),
+            ("def_first.h", f"namespace geo {{\n{defn}\n{decl}\n}}\n"),
+        ):
+            (tmp_path / name).write_text(body)
+        graph = _build(tmp_path)
+        for name in ("decl_first.h", "def_first.h"):
+            node = graph.nodes[f"{name}::Shape"]
+            assert node["is_declaration"] is False, name
+            assert node["end_line"] > node["start_line"], name
+
+    def test_the_definition_keeps_its_defines_edge(self, tmp_path: Path) -> None:
+        # Skipping the declaration's ``add_node`` must not skip its file edge,
+        # or the file stops defining a symbol it does define.
+        (tmp_path / "def_first.h").write_text(
+            "namespace geo {\nclass Shape {\n public:\n  int Area();\n};\nclass Shape;\n}\n"
+        )
+        graph = _build(tmp_path)
+        assert graph.get_edge_data("def_first.h", "def_first.h::Shape") == {
+            "edge_type": "defines"
+        }
