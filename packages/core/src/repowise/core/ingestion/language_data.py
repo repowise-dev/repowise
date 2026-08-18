@@ -49,6 +49,12 @@ def get_builtin_parents(language: str) -> frozenset[str]:
     return spec.builtin_parents if spec else frozenset()
 
 
+def get_builtin_methods(language: str) -> frozenset[str]:
+    """Return the std-library method names the bare-name tier must not answer."""
+    spec = REGISTRY.get(language)
+    return spec.builtin_methods if spec else frozenset()
+
+
 def get_builtin_types(language: str) -> frozenset[str]:
     """Return the type names that never resolve to a repo-declared symbol."""
     spec = REGISTRY.get(language)
