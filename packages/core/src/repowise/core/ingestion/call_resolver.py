@@ -32,9 +32,13 @@ from typing import Any
 import structlog
 
 from .languages.receiver_types import (
+    FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     Declaration,
+    framework_decorated_type,
+    names_in_span,
+    scan_bindings,
     scan_declarations,
     types_by_class,
     types_in_span,
@@ -103,6 +107,24 @@ _TYPED_RECEIVER = ("_resolve_typed_receiver",)
 _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"})
 _FUNCTION_KINDS = frozenset({"function", "method"})
 
+# Kinds that can never be the callee of a call, used to keep the bare-name
+# Tier 3 index from offering a data member as a function (bug 90).
+#
+# This is deliberately NOT the complement of ``_FUNCTION_KINDS``. Measured over
+# the corpus, plenty of non-function kinds are legitimately called: ``class``
+# is a constructor in python/java/c#/typescript; ``variable`` is both a rust
+# tuple ``enum_variant`` (309 grounded call edges on goose) and a typescript
+# const whose initialiser is not syntactically a function, such as a factory
+# result or a ``.bind()`` handle (2,173 on zod); ``type_alias`` is a Go
+# conversion. Denying by function-ness would delete thousands of real edges.
+#
+# ``property`` is the one kind in the whole of ``language_configs.py`` that
+# means "data member" and nothing else: it is emitted by exactly one mapping,
+# rust's ``field_declaration``. Every other language spells its fields
+# ``variable``, which is why this fix cannot be extended to them — there a
+# field is indistinguishable from a callable value by kind alone.
+_NON_CALLABLE_KINDS = frozenset({"property"})
+
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
     member=("_resolve_jvm_receiver_same_package",),
@@ -122,13 +144,18 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member=("_resolve_go_package_call",),
         member_fallback=_TYPED_RECEIVER,
     ),
-    # Kotlin shares the JVM tiers but not the typed-receiver fallback: it has
-    # no declaration shapes yet, so registering it would promise a resolution
-    # the language gate immediately declines.
+    # Kotlin shares the JVM tiers and, since its declaration shapes landed,
+    # the typed-receiver fallback too. One `name: Type` shape reaches its
+    # typed vals, vars and parameters alike, so the language gate no longer
+    # declines the moment the fallback asks.
     "java": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
-    "kotlin": _JVM_STRATEGIES,
+    "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # Swift registers the fallback and nothing else: it has no package
+    # tier of its own, so a typed receiver is looked for in the caller's
+    # file, in what the file imports, and then in the global pair index.
+    "swift": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
 }
@@ -189,6 +216,11 @@ class CallResolver:
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
 
+        # Symbols in the index above that are data members, not callables
+        # (bug 90). Held as an id set rather than a full id→kind map because
+        # it is the only kind question asked of it and the set is small.
+        self._non_callable_ids: set[str] = set()
+
         # C/C++ forward declaration → the definition it declares. Populated by
         # ``_build_indices``; applied to every resolved call so the edge lands
         # on the body rather than the header line that announced it.
@@ -232,8 +264,13 @@ class CallResolver:
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
         self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
         self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
+        self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
+        self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
+        # {file: {name: type}} — module-level defs a framework decorator retyped.
+        self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
         self._method_name_set: frozenset[str] | None = None
+        self._framework_name_set: frozenset[str] | None = None
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
@@ -312,7 +349,13 @@ class CallResolver:
                 if resolved != path:
                     wildcard_sources[path].append(resolved)
                 source_syms = self._file_symbols.get(resolved, {})
-                for sym_name in source_syms:
+                source_parsed = self._parsed_files.get(resolved)
+                published = (
+                    (*source_syms, *source_parsed.export_aliases)
+                    if source_parsed
+                    else tuple(source_syms)
+                )
+                for sym_name in published:
                     if sym_name not in file_syms:
                         self._barrel_origins[path][sym_name] = resolved
 
@@ -623,6 +666,8 @@ class CallResolver:
                     self._global_methods[key].append((path, sym.id))
 
                 # Global indices
+                if sym.kind in _NON_CALLABLE_KINDS:
+                    self._non_callable_ids.add(sym.id)
                 self._global_symbols[sym.name].append(sym.id)
 
             self._file_symbols[path] = file_syms
@@ -699,6 +744,23 @@ class CallResolver:
             resolved.line,
             resolved.origin,
         )
+
+    def _published(self, file_path: str, name: str) -> str | None:
+        """The symbol *file_path* publishes under *name*, or None.
+
+        A module may declare a symbol under one name and export it under
+        another — ``export { stringType as string }`` — and every lookup that
+        arrives through a namespace, a barrel or an import asks for the
+        published name while the symbol table holds the local one. The table
+        answers first, so the alias can only ever add a hit.
+        """
+        symbols = self._file_symbols.get(file_path, {})
+        found = symbols.get(name)
+        if found is not None:
+            return found
+        parsed = self._parsed_files.get(file_path)
+        local = parsed.export_aliases.get(name) if parsed else None
+        return symbols.get(local) if local else None
 
     def _merged_symbols_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{name → symbol_id}`` across every file *file_path* imports.
@@ -849,11 +911,9 @@ class CallResolver:
             lookup_name = binding.exported_name or target_name
             if lookup_name in barrel:
                 source_file = barrel[lookup_name]
-            source_syms = self._file_symbols.get(source_file, {})
-            if lookup_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[lookup_name], 0.90, call.line, "import_scoped"
-                )
+            published = self._published(source_file, lookup_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
         if not declared:
             return None
@@ -865,11 +925,9 @@ class CallResolver:
             barrel = self._barrel_origins.get(source_file, {})
             if target_name in barrel:
                 source_file = barrel[target_name]
-            source_syms = self._file_symbols.get(source_file, {})
-            if target_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[target_name], 0.90, call.line, "import_scoped"
-                )
+            published = self._published(source_file, target_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
         # 2b: Check all imported files for the symbol (pre-merged lookup)
         merged_syms = self._merged_symbols_for(file_path)
@@ -878,9 +936,33 @@ class CallResolver:
                 caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
             )
 
-        # Tier 3: global unique match — only within the same language
+        # Tier 3: global unique match — only within the same language.
+        # A data member is not callable, so it must not be the unique answer
+        # that mints an edge (bug 90). Filtered here rather than at index build
+        # so the `declared` gate above and the member gate in
+        # ``_resolve_member_call`` keep seeing the whole repo.
+        # Uniqueness is judged on the unfiltered list on purpose. Filtering the
+        # pool *before* the length test would re-uniquify a name that a field
+        # and a method both declare, firing the tier where it used to refuse —
+        # measured at +916 new 0.50-confidence edges on goose, on the one tier
+        # hand-read at 28.6% precision.
         candidates = self._global_symbols.get(target_name, [])
         if len(candidates) == 1 and candidates[0] != caller_id:
+            if candidates[0] in self._non_callable_ids:
+                # Refused here rather than by falling through, so "this tier
+                # can lose an edge but never gain one" is true of the control
+                # flow and not only of the corpus. Falling through would reach
+                # the implicit-receiver tier below, which the old code could
+                # not reach on this input.
+                #
+                # That tier is provably empty here anyway: it ends in
+                # ``_inherited_method``, which reads ``_file_methods`` — filled
+                # by the same loop that unconditionally fills
+                # ``_global_symbols``. So any method it could return would be a
+                # second entry under this name, and ``len(candidates)`` would
+                # not be 1. Returning is what stops that argument having to be
+                # re-derived if either index changes.
+                return None
             caller_lang = symbol_id_language(self._parsed_files, caller_id)
             callee_lang = symbol_id_language(self._parsed_files, candidates[0])
             if caller_lang and callee_lang and caller_lang != callee_lang:
@@ -923,6 +1005,17 @@ class CallResolver:
         if method_name not in self._global_symbols:
             return None
 
+        # The caller's own file first. Every other tier is ordered narrow-first
+        # and this one was not: the language strategies below run before
+        # ``_receiver_pair_match``, so ``_resolve_jvm_receiver_same_package``
+        # claimed ``new Builder<>(...).build()`` for any same-package class of
+        # that name — a test-source-set one included — while the caller's own
+        # file declared a private inner ``Builder`` on the same page. The
+        # narrowest scope that can answer is the one the call actually means.
+        own_file = self._file_methods.get(file_path, {}).get((receiver_name, method_name))
+        if own_file is not None and own_file != caller_id:
+            return ResolvedCall(caller_id, own_file, 0.93, call.line, "receiver_same_file")
+
         # A language may reach a receiver no import statement mentions: a Go
         # package alias spanning several files, a JVM class in the same package.
         for strategy in self._strategies_for(file_path).member:
@@ -933,11 +1026,9 @@ class CallResolver:
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
-            source_syms = self._file_symbols.get(module_file, {})
-            if method_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[method_name], 0.88, call.line, "module_alias"
-                )
+            published = self._published(module_file, method_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
             # A namespace over a barrel names a file that declares nothing of
             # its own, so the lookup above can only ever miss. Chase the
             # re-export map, as free calls and typed receivers already do.
@@ -951,21 +1042,17 @@ class CallResolver:
             if origin is not None and origin != module_file:
                 binding = self._import_bindings.get(module_file, {}).get(method_name)
                 declared_name = (binding.exported_name if binding else None) or method_name
-                origin_syms = self._file_symbols.get(origin, {})
-                if declared_name in origin_syms:
-                    return ResolvedCall(
-                        caller_id, origin_syms[declared_name], 0.88, call.line, "module_alias"
-                    )
+                published = self._published(origin, declared_name)
+                if published is not None:
+                    return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
         name_to_file = self._import_names.get(file_path, {})
         if receiver_name in name_to_file and not module_file:
             source_file = name_to_file[receiver_name]
-            source_syms = self._file_symbols.get(source_file, {})
-            if method_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[method_name], 0.88, call.line, "module_alias"
-                )
+            published = self._published(source_file, method_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
         # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
         # The receiver is a crate name, the target is a symbol in that crate's lib.rs
@@ -1232,14 +1319,28 @@ class CallResolver:
         # type". Only a name the body never mentions reaches class scope.
         body_types = self._declared_types_in(file_path, caller_id, language)
         type_name = body_types.get(receiver_name)
-        from_field = (
-            receiver_name not in body_types and language in IMPLICIT_FIELD_LANGUAGES
-        )
+        unbound = receiver_name not in body_types
+        from_field = unbound and language in IMPLICIT_FIELD_LANGUAGES
         if from_field:
             class_id = caller_id.rpartition("::")[0]
             type_name = (
                 self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
             )
+        # Third scope: a module-level def a framework decorator turned into an
+        # instance. Neither of the two above can see it — it is not in the body
+        # and not a field.
+        from_framework = (
+            type_name is None and unbound and language in FRAMEWORK_DECORATOR_LANGUAGES
+        )
+        if from_framework:
+            # The type lookup is a dict hit and the shadowing scan reads the
+            # whole file, so the cheap half decides first: only a receiver this
+            # scope would actually answer for is worth scanning a body for.
+            type_name = self._framework_type_of(file_path, receiver_name, language)
+            if type_name is not None and receiver_name in self._bound_names_in(
+                file_path, caller_id, language
+            ):
+                return None
         if type_name is None:
             return None
 
@@ -1247,6 +1348,8 @@ class CallResolver:
         if found is None:
             return None
         sym_id, tier = found
+        if from_framework:
+            return self._framework_typed_call(caller_id, sym_id, tier, call.line)
         if from_field:
             return self._field_typed_call(caller_id, sym_id, tier, call.line)
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
@@ -1274,6 +1377,18 @@ class CallResolver:
         if tier == "import":
             return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_field_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_field_global")
+
+    def _framework_typed_call(
+        self, caller_id: str, sym_id: str, tier: str, line: int
+    ) -> ResolvedCall:
+        """Stamp an edge whose receiver was typed by a framework decorator."""
+        if tier == "same_file":
+            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_framework_same_file")
+        if tier == "same_package":
+            return ResolvedCall(caller_id, sym_id, 0.90, line, "receiver_framework_same_package")
+        if tier == "import":
+            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_framework_import")
+        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_framework_global")
 
     def _method_names(self) -> frozenset[str]:
         """Every name declared as a method of some class, built once."""
@@ -1353,6 +1468,96 @@ class CallResolver:
             self._field_types.clear()
         self._field_types[file_path] = by_class
         return by_class
+
+    def _bound_names_in(
+        self, file_path: str, caller_id: str, language: str
+    ) -> frozenset[str]:
+        """Every name the calling body binds, however it was bound."""
+        key = (file_path, caller_id)
+        names = self._bound_names.get(key)
+        if names is None:
+            span = self._spans_for(file_path).get(caller_id)
+            if span is None:
+                names = frozenset()
+            else:
+                names = names_in_span(self._bindings_for(file_path, language), *span)
+            if len(self._bound_names) >= _BODY_TYPE_CACHE_ENTRIES:
+                self._bound_names.clear()
+            self._bound_names[key] = names
+        return names
+
+    def _bindings_for(self, file_path: str, language: str) -> tuple[tuple[int, str], ...]:
+        """Every name one file binds, scanned once however many bodies ask."""
+        found = self._bindings.get(file_path)
+        if found is None:
+            found = scan_bindings(self._text_of(file_path), language)
+            if len(self._bindings) >= _SOURCE_CACHE_FILES:
+                self._bindings.clear()
+            self._bindings[file_path] = found
+        return found
+
+    def _framework_names(self, language: str) -> frozenset[str]:
+        """Every name a framework decorator retypes anywhere in the repo."""
+        if self._framework_name_set is None:
+            found: set[str] = set()
+            for parsed in self._parsed_files.values():
+                if parsed.file_info.language != language:
+                    continue
+                for symbol in parsed.symbols:
+                    if (
+                        symbol.kind in _FUNCTION_KINDS
+                        and not symbol.parent_name
+                        and framework_decorated_type(symbol.decorators, language)
+                    ):
+                        found.add(symbol.name)
+            self._framework_name_set = frozenset(found)
+        return self._framework_name_set
+
+    def _framework_types_in(self, file_path: str, language: str) -> dict[str, str]:
+        """``{name: type}`` for one file's module-level decorated defs."""
+        types = self._framework_types.get(file_path)
+        if types is None:
+            parsed = self._parsed_files.get(file_path)
+            types = {}
+            for symbol in parsed.symbols if parsed else ():
+                if symbol.kind not in _FUNCTION_KINDS or symbol.parent_name:
+                    continue
+                type_name = framework_decorated_type(symbol.decorators, language)
+                if type_name is not None:
+                    types[symbol.name] = type_name
+            # Uncapped, unlike the source-text caches: this holds names read off
+            # already-resident symbols, and is empty for all but a few files.
+            self._framework_types[file_path] = types
+        return types
+
+    def _framework_type_of(
+        self, file_path: str, receiver_name: str, language: str
+    ) -> str | None:
+        """The framework type of *receiver_name*, where this file can see it.
+
+        Declared here, or imported here by name. A decorated def in a file the
+        caller never imports is not this receiver, and reaching for it would be
+        the bare-name match this tier exists to avoid.
+        """
+        # One pass over the repo's symbols answers for every call site that
+        # names nothing decorated, which is all of them in a repo that uses no
+        # framework in the table. Without it every unresolved member call pays
+        # a per-file symbol walk and three dict lookups: 15% of django's build
+        # for a repo that gains no edge at all.
+        if receiver_name not in self._framework_names(language):
+            return None
+
+        own = self._framework_types_in(file_path, language).get(receiver_name)
+        if own is not None:
+            return own
+
+        bound = self._import_names.get(file_path, {}).get(receiver_name)
+        if bound is None or bound.startswith("external:"):
+            return None
+        binding = self._import_bindings.get(file_path, {}).get(receiver_name)
+        exported = (binding.exported_name if binding else None) or receiver_name
+        declaring = self._barrel_origins.get(bound, {}).get(exported) or bound
+        return self._framework_types_in(declaring, language).get(exported)
 
     def _declarations_for(self, file_path: str, language: str) -> tuple[Declaration, ...]:
         """Every declaration in one file, scanned once however many bodies ask."""

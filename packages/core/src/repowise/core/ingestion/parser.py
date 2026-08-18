@@ -54,6 +54,7 @@ from .extractors.visibility import (
     refine_csharp_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
+    ts_export_aliases,
 )
 from .language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from .languages.registry import REGISTRY as _LANG_REGISTRY
@@ -111,6 +112,45 @@ _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 # language would only scan the whole match list to find nothing, so the check
 # is here rather than inside ``_extract_references``.
 _REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
+
+
+# C/C++ node types that spell a type. Each one covers both the definition and
+# the forward declaration of that type; only the ``body`` field tells them
+# apart. See ``_is_bodiless_cpp_type``.
+# ``union_specifier`` is absent because neither grammar's query captures one
+# as a symbol today. If a union capture is ever added, add it here too, or a
+# bodiless ``union U;`` goes back to reading as a definition.
+_CPP_TYPE_SPECIFIER_NODES = frozenset(
+    {"class_specifier", "struct_specifier", "enum_specifier"}
+)
+
+
+def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool:
+    """True for a C/C++ type forward declaration such as ``class Env;``.
+
+    ``declaration_node_types`` already catches a *function* prototype, whose
+    tree-sitter node genuinely is a ``declaration``. A type forward declaration
+    is not: it arrives as the very same ``class_specifier`` a definition uses,
+    minus the ``body`` field. Left unmarked it reads as a whole class defined
+    on one line, so every consumer that distinguishes a declaration from a
+    definition — call resolution's declaration/definition pairing and the
+    dead-code passes — silently treats the header line as the real thing.
+    """
+    if language not in ("cpp", "c"):
+        return False
+    if node_type not in _CPP_TYPE_SPECIFIER_NODES:
+        return False
+    if def_node.child_by_field_name("body") is not None:
+        return False
+    # ``typedef struct CBMAutomaton CBMAutomaton;`` — C's opaque-handle idiom.
+    # The tag and the typedef name are the same identifier, so both patterns
+    # match at one position and dedup keeps a single symbol. That symbol is the
+    # typedef name, which *is* a deletable API artifact and must stay
+    # reportable. Erring toward under-marking: a forward-declared tag under a
+    # differently-named typedef (``typedef struct Impl_s Handle;``) is left
+    # unmarked too, which only costs a suppression we never had.
+    parent = def_node.parent
+    return parent is None or parent.type != "type_definition"
 
 
 @cache
@@ -447,6 +487,7 @@ class ASTParser:
         )
         heritage = extract_heritage(matches, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
+        export_aliases = ts_export_aliases(src) if lang in _TS_JS_LANGUAGES else {}
         docstring = extract_module_docstring(root, src, lang)
         type_refs = self._extract_type_refs(matches, src, lang)
 
@@ -474,6 +515,7 @@ class ASTParser:
             symbols=symbols,
             imports=imports,
             exports=exports,
+            export_aliases=export_aliases,
             calls=calls,
             heritage=heritage,
             docstring=docstring,
@@ -783,7 +825,10 @@ class ASTParser:
                     language=file_info.language,
                     parent_name=parent_name,
                     is_exported_symbol=is_exported_symbol,
-                    is_declaration=node_type in config.declaration_node_types,
+                    is_declaration=(
+                        node_type in config.declaration_node_types
+                        or _is_bodiless_cpp_type(file_info.language, node_type, def_node)
+                    ),
                 )
             )
             node_types.append(node_type)

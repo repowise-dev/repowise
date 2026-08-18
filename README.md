@@ -101,7 +101,7 @@ Because the exploration work is already done, that phase mostly disappears. Load
 one commit's context through `get_context` costs **393 tokens instead of 13,984**
 raw, 35.6x fewer. In a measured agent loop, across 43 questions on `django/django`,
 that is worth **-31.6% of the agent's own output tokens** (p&lt;0.0001), reached in
-**3.8 tool calls against a bare agent's 7.2** — roughly one answered question
+**3.8 tool calls against a bare agent's 7.2**, roughly one answered question
 replacing six greps. The saving grows with how much of the codebase the task
 touches. CodeGraph is a genuine second here at -24.4%: we lead a field in which
 more than one tool works.
@@ -128,7 +128,7 @@ queryable from the CLI, the MCP tools, and the local dashboard.
 
 | Layer | What it gives you | Edge |
 |---|---|---|
-| **◈ Graph** | Dependency graph across 19 languages · file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank and execution flows · route→handler edges across 22 frameworks | A real graph most tools never build |
+| **◈ Graph** | Dependency graph across 19 languages · file + symbol nodes · confidence-scored call resolution · Leiden communities · PageRank and execution flows · route→handler edges across 22 frameworks | A real graph most tools never build |
 | **◈ Git** | Hotspots (decayed churn + activity floors) · ownership % · co-change pairs (hidden coupling) · bus factor · which files actually get bug-fixed, and how recently | Behavioural signals static analysis cannot see |
 | **◈ Docs** | A generated wiki page per module and file · rebuilt incrementally every commit · freshness and confidence scoring · hybrid search (full-text + vector) · selectable style and output language | Stays current instead of rotting |
 | **◈ Decisions** | Architectural decisions mined from five sources, evidence-backed, each traced to a verbatim source span and stamped exact / fuzzy / unverified | **★ Captured nowhere else** |
@@ -144,6 +144,8 @@ from the CLI or right in the dashboard with the cost shown before you confirm.
 during doc generation needs a provider.)
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
+How the graph resolves an edge, and how much to trust one:
+**[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)**
 
 ---
 
@@ -249,14 +251,14 @@ every file, locates where the risk concentrates, and then names the specific fix
 Every file is scored 1-10 by **49 deterministic detectors** (McCabe complexity, brain
 methods, LCOM4 cohesion, god classes, native Rabin-Karp clone detection, untested
 hotspots, change entropy, prior-defect history and more), split into three lenses:
-**defect risk**, **maintainability**, and **performance** — static N+1 and I/O-in-loop
+**defect risk**, **maintainability**, and **performance**: static N+1 and I/O-in-loop
 risk traced *across* files through the call graph, where file-local linters found **0**
 of the cross-function cases and repowise surfaced ~90. Only **26** of the 49 are
 permitted to move the defect number, because that is the number carrying published
 accuracy claims.
 
 > **Zero LLM calls, zero cloud, zero new runtime dependencies.** Pure Python over
-> tree-sitter and git data, **under 30 seconds** on a 3,000-file repo — a budget
+> tree-sitter and git data, **under 30 seconds** on a 3,000-file repo, a budget
 > enforced by a CI test, not an estimate. Marker weights are **calibrated against a
 > real defect corpus, not hand-tuned**: every file scored at a commit preceding the
 > bug window so nothing leaks backward, and an L2-logistic fit with file size as an
@@ -267,7 +269,7 @@ accuracy claims.
 repowise checks its own flags against your git history and reports what it found:
 *"16 of the 20 lowest-health files had a bug fix in the last 6 months, 3.3x the 24%
 baseline."* If that number is bad on your codebase, you will see it. (It is an
-association on your indexed history, not a forward prediction — the leakage-free
+association on your indexed history, not a forward prediction, the leakage-free
 version is [in the benchmarks](docs/BENCHMARKS.md#5-code-health-predicts-defects).)
 
 Then it names the fix. Not "this class is too big", but **Extract Class**, **Extract
@@ -439,9 +441,15 @@ dependencies (including `index.html` → `src/main.ts`), and OpenAPI, Protobuf,
 GraphQL, Dockerfile, Terraform and friends get dedicated handlers. Anything else is
 still tracked through git history: blame, hotspots, co-change.
 
-Adding a language takes **one `.scm` query file and one config entry**, with no changes
-to the parser core. Full matrix and the contributor recipe:
-**[docs/layers/LANGUAGE_SUPPORT.md →](docs/layers/LANGUAGE_SUPPORT.md)**
+Every call edge is stamped with **how it was resolved and how much to trust it**, from
+`same_file` at 0.95 down to a repo-wide name match at 0.50, labelled as the guess it is
+([how that works](docs/layers/GRAPH.md)).
+Adding a language takes five small steps and **no changes to the parser core**.
+
+Full matrix: **[docs/layers/LANGUAGE_SUPPORT.md →](docs/layers/LANGUAGE_SUPPORT.md)** ·
+The graph itself: **[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)** ·
+Contributor recipe and internals:
+**[docs/architecture/language-support.md →](docs/architecture/language-support.md)**
 
 ---
 
@@ -615,7 +623,7 @@ The full page carries the rows we lose beside the rows we win.
   at -24.4%: more than one tool here works, and we lead the field rather than
   being alone in it.
 - **Fewer steps to get there.** 3.8 tool calls where the bare agent needed 7.2,
-  and 3.0 files opened instead of 7.2 — the mechanism behind the token saving,
+  and 3.0 files opened instead of 7.2, the mechanism behind the token saving,
   visible directly rather than inferred.
 
 **[The full results, the methodology, and the rows we lose →](docs/BENCHMARKS.md)**
@@ -670,7 +678,7 @@ August 2026. Unmarked rows are capability presence, not measurements.</sub>
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
 | **Precision at that budget** *(measured)* | 0.580 | ✅ **0.636**, a shorter list |
-| **Discrimination, ROC AUC** *(measured, paired)* | 0.731 | 0.705 — *p=0.054, not significant* |
+| **Discrimination, ROC AUC** *(measured, paired)* | 0.731 | 0.705, *p=0.054, not significant* |
 | Defect-prediction AUC, published and reproducible | ✅ 0.737 over 21 repos, held-out 0.76-0.78 | ✅ Code Red study |
 | Business impact (resolution time) | ❌ *we could not replicate this on open data* | ✅ Code Red study |
 | Git intelligence (hotspots, ownership, co-change) | ✅ | ✅ |

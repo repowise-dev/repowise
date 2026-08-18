@@ -65,11 +65,20 @@ def clear_fix_pressure_cache() -> None:
 
 def _walk(repo_path: str, upto_ref: str, depth: int) -> dict[str, list[float]]:
     """Commit timestamps of every bug-fix touching each file, up to *upto_ref*."""
+    is_shallow = (
+        _git(["rev-parse", "--is-shallow-repository"], repo_path, check=False).strip() == "true"
+    )
     try:
         proc = subprocess.run(
             [
-                "git", "log", f"-n{depth}", "--no-merges",
-                "--format=%x1e%ct%x1f%s", "--name-only", "--end-of-options", upto_ref,
+                "git",
+                "log",
+                f"-n{depth}",
+                "--no-merges",
+                "--format=%x1e%P%x1f%ct%x1f%s",
+                "--name-only",
+                "--end-of-options",
+                upto_ref,
             ],
             cwd=repo_path,
             capture_output=True,
@@ -93,14 +102,17 @@ def _walk(repo_path: str, upto_ref: str, depth: int) -> dict[str, list[float]]:
         if not block:
             continue
         lines = block.split("\n")
-        head = lines[0].split("\x1f")
-        if len(head) != 2:
+        head = lines[0].split("\x1f", 2)
+        if len(head) != 3:
+            continue
+        parents, timestamp_raw, subject = head
+        if is_shallow and not parents:
             continue
         try:
-            timestamp = float(head[0])
+            timestamp = float(timestamp_raw)
         except ValueError:
             continue
-        if not is_fix_commit(head[1]):
+        if not is_fix_commit(subject):
             continue
         for path in lines[1:]:
             path = path.strip()

@@ -161,6 +161,38 @@ def _decorator_base(raw: str) -> str:
     return base
 
 
+def _is_framework_registered(decorators: list[str]) -> bool:
+    """Whether any decorator wires the symbol into a framework dispatcher.
+
+    Both dead-code passes ask this question, and both asked it with the same
+    lines copy-pasted. It lives here once because a registration rule that
+    drifts between the export pass and the internals pass is a bug nobody goes
+    looking for.
+
+    Three spellings of one fact:
+
+    * a known base name or dotted prefix (``@Component``, ``@app.route``);
+    * a known trailing attribute, for a receiver the prefix list cannot
+      anticipate because it is named locally (``@my_group.command``);
+    * a registration verb in the final path segment. Every suffix entry begins
+      with a dot, so that list can only ever see a *dotted* decorator, and
+      celery's ``@register_drainer('eventlet')`` is bare — invisible to all of
+      them. Reading the final segment covers both spellings at once:
+      ``@register``, ``@register_drainer``, ``@Field.register_lookup``. Held to
+      ``register`` exactly or a ``register_`` stem so that a past participle
+      guarding a handler (``@registered_only``) is not read as one.
+    """
+    bases = [_decorator_base(d) for d in decorators]
+    if any(b.startswith(_FRAMEWORK_DECORATORS) for b in bases):
+        return True
+    if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
+        return True
+    return any(
+        segment == "register" or segment.startswith("register_")
+        for segment in (b.rsplit(".", 1)[-1] for b in bases)
+    )
+
+
 def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
     """Return True when the symbol is marked deprecated by name suffix or annotation.
 
@@ -323,6 +355,18 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
         "interface",
         "enum",
         "type_alias",
+    }
+)
+
+
+#: C/C++ symbol kinds a bare ``class Env;`` / ``struct Options;`` can carry.
+#: Paired with ``is_declaration`` this identifies a type forward declaration,
+#: which is never a deletable unit — see the guard in ``_detect_unused_exports``.
+_CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {
+        "class",
+        "struct",
+        "enum",
     }
 )
 
@@ -572,41 +616,25 @@ def _posix_normpath(config_dir: Path, raw: str) -> str:
     return posixpath.normpath(posixpath.join(config_dir.as_posix(), raw))
 
 
-_TS_EXPORT_ALIAS_RE = re.compile(r"\bexport\s*\{([^}]*)\}(?!\s*from)")
-
-
-def _find_ts_export_aliases(
-    parsed_files: dict,
-    source_map: dict[str, bytes] | None = None,
-) -> dict[str, dict[str, str]]:
+def _find_ts_export_aliases(parsed_files: dict) -> dict[str, dict[str, str]]:
     """Per-file ``{local_name: exported_alias}`` maps for TS/JS alias exports.
 
     ``export { ConversationHistoryWrapper as ConversationHistory }`` publishes
     the symbol under the alias, so importers pull ``ConversationHistory`` and
     the local name never appears in any ``imported_names`` edge. The unused-
     export pass consults this map to match the alias as well.
+
+    Inverted from what the parser already recorded, rather than scanned again.
+    This pass used to own a second regex over the same clause and a second read
+    of every TS/JS file; the parser now reads the clause once, with comments
+    stripped, and the two answers can no longer disagree.
     """
     aliases: dict[str, dict[str, str]] = {}
     for path, pf in parsed_files.items():
-        if not path.endswith((".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs")):
+        published = getattr(pf, "export_aliases", None)
+        if not published:
             continue
-        try:
-            file_info = getattr(pf, "file_info", None)
-            if file_info is None:
-                continue
-            source = read_source_text(path, file_info.abs_path, source_map)
-        except Exception:
-            continue
-        file_map: dict[str, str] = {}
-        for match in _TS_EXPORT_ALIAS_RE.finditer(source):
-            for part in match.group(1).split(","):
-                if " as " in part:
-                    local, _, alias = part.strip().partition(" as ")
-                    local, alias = local.strip(), alias.strip()
-                    if local and alias:
-                        file_map[local] = alias
-        if file_map:
-            aliases[path] = file_map
+        aliases[path] = {local: exported for exported, local in published.items()}
     return aliases
 
 
@@ -656,12 +684,15 @@ class DeadCodeAnalyzer:
         # subset. Empty when a caller has no source access, which is what makes
         # that check skip rather than guess.
         self._source_map: dict[str, bytes] = source_map or {}
-        # Four prepasses below each scan every indexed file for text markers.
+        # Three prepasses below each scan every indexed file for text markers.
         # ``source_map`` is ingestion's ``{repo_relative_path: raw bytes}`` for
-        # the same file set, so passing it turns four full-repo disk passes
+        # the same file set, so passing it turns three full-repo disk passes
         # into dict lookups. Callers that don't have it (a resume view, the
         # standalone ``dead-code`` command on a graph built elsewhere) pass
         # None and each prepass reads from disk exactly as before.
+        #
+        # The export-alias map was a fourth and is no longer a pass at all:
+        # the parser records the clause, so it is a dict inversion.
         self._dynamic_import_files = find_dynamic_import_files(
             parsed_files or {}, source_map
         ) | find_dynamic_edge_files(graph)
@@ -693,7 +724,7 @@ class DeadCodeAnalyzer:
         # ``export { local as alias }`` maps so importer edges carrying the
         # alias still count for the local symbol.
         self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
-            parsed_files or {}, source_map
+            parsed_files or {}
         )
         # Lazily-built package-directory maps for Go / JVM / C-C++, the one
         # piece of the rescue state that costs a graph scan. Built on first use
@@ -1220,6 +1251,22 @@ class DeadCodeAnalyzer:
                 # nothing else can carry the finding, so it still gets one.
                 if sym.get("is_declaration") and sym.get("defined_by"):
                     continue
+                # A C/C++ *type* forward declaration is not a deletable unit at
+                # all, paired or not, so it is not held to the clause above.
+                # A prototype promises a body, and a body that exists nowhere
+                # makes the prototype itself the dead thing. ``class Env;``
+                # promises nothing: it exists so the declaring file can name
+                # the type without including its header, which makes that file
+                # the declaration's user. Deleting the line breaks it whether
+                # the definition lives in this repo or in a dependency — and
+                # when it is in the repo, the definition already carries the
+                # finding.
+                if (
+                    sym.get("is_declaration")
+                    and sym.get("language") in ("cpp", "c")
+                    and sym.get("kind") in _CPP_TYPE_DECLARATION_KINDS
+                ):
+                    continue
                 # Names that contain a dot are namespace path fragments
                 # (e.g. ``eShop.ClientApp``), not user-visible exports.
                 if "." in sym_name:
@@ -1236,25 +1283,9 @@ class DeadCodeAnalyzer:
                 ):
                     continue
 
-                # Decorators are stored with the leading "@" (e.g. "@app.route").
-                # _FRAMEWORK_DECORATORS entries are bare prefixes; suffixes
-                # like ``.command`` match locally-named Click groups
-                # (``@my_group.command("add")``). Compare against the
-                # stripped form, and strip any call ``(...)`` tail so the
-                # suffix check sees the attribute path itself.
                 decorators = sym.get("decorators", [])
 
-                if any(
-                    _decorator_base(d).startswith(prefix)
-                    for d in decorators
-                    for prefix in _FRAMEWORK_DECORATORS
-                ):
-                    continue
-                if any(
-                    _decorator_base(d).endswith(suffix)
-                    for d in decorators
-                    for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
-                ):
+                if _is_framework_registered(decorators):
                     continue
                 if _declared_deliberately_unused(decorators):
                     continue
@@ -1495,22 +1526,11 @@ class DeadCodeAnalyzer:
             # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
             # method is invoked by the container, not by a source call.
             decorators = node_data.get("decorators") or []
-            if decorators:
 
-                if any(
-                    _decorator_base(d).startswith(prefix)
-                    for d in decorators
-                    for prefix in _FRAMEWORK_DECORATORS
-                ):
-                    continue
-                if any(
-                    _decorator_base(d).endswith(suffix)
-                    for d in decorators
-                    for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
-                ):
-                    continue
-                if _declared_deliberately_unused(decorators):
-                    continue
+            if _is_framework_registered(decorators):
+                continue
+            if _declared_deliberately_unused(decorators):
+                continue
 
             # Any inbound use, not only a call. A base class that is subclassed
             # rather than instantiated, a collaborator the container constructs,

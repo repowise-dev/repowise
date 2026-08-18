@@ -205,6 +205,27 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Fluent construction: new Builder().Method(args).
+; The receiver is captured from the constructed type rather than from a
+; variable, because here the type is written at the call site. That keeps the
+; site on the resolver's receiver-names-a-class path, which only binds when
+; that class declares the method, instead of the bare-name pool.
+(invocation_expression
+  function: (member_access_expression
+    expression: (object_creation_expression
+      type: [
+        (identifier) @call.receiver
+        (generic_name (identifier) @call.receiver)
+      ]
+    )
+    name: [
+      (identifier) @call.target
+      (generic_name (identifier) @call.target)
+    ]
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Constructor: new ClassName(args) and new ClassName<T>(args)
 (object_creation_expression
   type: [

@@ -18,7 +18,7 @@ Thanks for your interest in contributing to Repowise! This guide will help you g
 git clone https://github.com/repowise-dev/repowise.git
 cd repowise
 
-# Install Python dependencies (uv workspace — installs all packages)
+# Install Python dependencies (uv workspace, installs all packages)
 uv sync --all-packages
 
 # Install web frontend dependencies
@@ -94,8 +94,11 @@ are the only people who use repowise on repowise with fresh eyes.
   Cycle, and so on) with the blast radius attached. Each card has a copy-to-agent
   button. Picking one off that list is a genuinely useful contribution, and it is the
   fastest way to learn how the health layer thinks.
-- **Language support.** Adding a language is one `.scm` query file and one config entry.
-  See [docs/layers/LANGUAGE_SUPPORT.md](../docs/layers/LANGUAGE_SUPPORT.md).
+- **Language support.** A new language is five small steps: a `LanguageSpec`, a tag,
+  a `.scm` query file, a parser config and the grammar dependency, with no changes to
+  the parser core. Optional extractors and call-resolution seams add depth on top.
+  Recipe: [docs/architecture/language-support.md](../docs/architecture/language-support.md).
+  Current coverage: [docs/layers/LANGUAGE_SUPPORT.md](../docs/layers/LANGUAGE_SUPPORT.md).
 
 ### Claiming an issue
 
@@ -132,7 +135,7 @@ current ones. Changes there are welcome, but expect closer review and bring test
    ```bash
    git checkout -b feat/your-feature
    ```
-3. **Make your changes** — keep commits focused and well-described
+3. **Make your changes**: keep commits focused and well-described
 4. **Run tests** before pushing:
    ```bash
    uv run pytest tests/unit/
@@ -198,22 +201,22 @@ repowise/
    - For local CLI providers, use `asyncio.create_subprocess_exec` (never `shell=True`), validate user-supplied model names against a safe character set, and resolve paths with `Path.resolve()`
    - See `opencode.py` for a clean reference implementation
 
-2. **Register** in `registry.py` — add to `_BUILTIN_PROVIDERS` and the `_missing` package map
+2. **Register** in `registry.py`: add to `_BUILTIN_PROVIDERS` and the `_missing` package map
 
 3. **Wire up configuration** in these files:
-   - `rate_limiter.py` — add `RateLimitConfig` to `PROVIDER_DEFAULTS`
-   - `provider_config.py` — add entry to `PROVIDER_CATALOG`
-   - `provider_selection.py` — add to `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, and detection
-   - `helpers.py` — add validation in `validate_provider_config()`
+   - `rate_limiter.py`, add `RateLimitConfig` to `PROVIDER_DEFAULTS`
+   - `provider_config.py`, add entry to `PROVIDER_CATALOG`
+   - `provider_selection.py`, add to `_PROVIDER_DEFAULTS`, `_PROVIDER_ENV`, `_PROVIDER_SIGNUP`, and detection
+   - `helpers.py`, add validation in `validate_provider_config()`
 
-4. **Update the web UI** — add to `PROVIDERS`, `MODEL_PLACEHOLDERS`, and `PROVIDER_ENV_VARS` in `provider-section.tsx` and `run-config-form.tsx`
+4. **Update the web UI**: add to `PROVIDERS`, `MODEL_PLACEHOLDERS`, and `PROVIDER_ENV_VARS` in `provider-section.tsx` and `run-config-form.tsx`
 
-5. **Add tests** in `tests/unit/test_providers/` — mock the subprocess, test success/error/timeout paths (see `test_codex_cli_provider.py` for the pattern)
+5. **Add tests** in `tests/unit/test_providers/`: mock the subprocess, test success/error/timeout paths (see `test_codex_cli_provider.py` for the pattern)
 
-6. **Write docs** — `docs/<NAME>.md` and `website/<name>.md`, following `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
+6. **Write docs**: `docs/<NAME>.md` and `website/<name>.md`, following `docs/agent/CODEX.md` and `docs/agent/OPENCODE.md`.
 
-Adding a new language or LLM provider has a dedicated recipe — see
-[docs/layers/LANGUAGE_SUPPORT.md](../docs/layers/LANGUAGE_SUPPORT.md).
+Adding a new language has a dedicated recipe, see
+[docs/architecture/language-support.md](../docs/architecture/language-support.md).
 
 ## Testing
 

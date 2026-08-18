@@ -174,3 +174,71 @@ def test_star_barrel_edge_survives_global_name_shadow(tmp_path: Path) -> None:
     assert ("caller.py::run", "pkg/leaf.py::helper") in edges, edges
     # and it did NOT mis-resolve to the shadowing method
     assert ("caller.py::run", "other.py::Thing::helper") not in edges, edges
+
+
+def test_namespace_member_resolves_through_a_local_export_alias(tmp_path: Path) -> None:
+    """``export { stringType as string }`` publishes a symbol under a new name.
+
+    The clause carries no ``from``, so it is not an import and the barrel map
+    never sees it; the file's symbol table keeps ``stringType`` while every
+    lookup through the namespace asks for ``string``. A second ``string``
+    elsewhere defeats the global-unique tier, so the edge exists only if the
+    published name is read.
+    """
+    files = {
+        "leaf.ts": (
+            "function stringType(x: number) {\n  return x;\n}\n\n"
+            "export { stringType as string };\n"
+        ),
+        "barrel.ts": 'export * from "./leaf.js";\n',
+        "other.ts": "export class Thing {\n  string(x: number) {\n    return x;\n  }\n}\n",
+        "caller.ts": (
+            'import * as ns from "./barrel.js";\n\n'
+            "export function run() {\n  return ns.string(1);\n}\n"
+        ),
+    }
+    edges = _build_calls(tmp_path, files)
+    assert ("caller.ts::run", "leaf.ts::stringType") in edges, edges
+    assert ("caller.ts::run", "other.ts::Thing::string") not in edges, edges
+
+
+def test_default_export_alias_beats_a_same_named_stranger(tmp_path: Path) -> None:
+    """``export { _set as default }`` against a default import of that module.
+
+    The importer's local name is its own choice, so the only link between the
+    call and the declaration is the alias. Without it the call falls to a
+    weaker tier and binds a same-named symbol in an unrelated file.
+    """
+    files = {
+        "set.ts": "function _set(x: number) {\n  return x;\n}\n\nexport { _set as default };\n",
+        "stranger.ts": "export function set(x: number) {\n  return x;\n}\n",
+        "caller.ts": (
+            'import set from "./set.js";\n\nexport function run() {\n  return set(1);\n}\n'
+        ),
+    }
+    edges = _build_calls(tmp_path, files)
+    assert ("caller.ts::run", "set.ts::_set") in edges, edges
+    assert ("caller.ts::run", "stranger.ts::set") not in edges, edges
+
+
+def test_a_commented_out_export_alias_publishes_nothing(tmp_path: Path) -> None:
+    """A clause inside a comment names no published symbol.
+
+    The alias map decides which local symbol a module's public name reaches, so
+    reading one out of a comment does not mislabel a symbol -- it mints a call
+    edge to a local the module never exported.
+    """
+    files = {
+        "leaf.ts": (
+            "function real(x: number) {\n  return x;\n}\n\n"
+            "// export { real as helper };\n"
+            "/* export { real as helper }; */\n"
+        ),
+        "barrel.ts": 'export * from "./leaf.js";\n',
+        "caller.ts": (
+            'import * as ns from "./barrel.js";\n\n'
+            "export function run() {\n  return ns.helper(1);\n}\n"
+        ),
+    }
+    edges = _build_calls(tmp_path, files)
+    assert ("caller.ts::run", "leaf.ts::real") not in edges, edges

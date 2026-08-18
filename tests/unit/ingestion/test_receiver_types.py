@@ -224,10 +224,278 @@ class TestRefusals:
         assert declared_types("void run() { // a Node node; once lived here\n }", "java") == {}
 
     def test_an_unregistered_language_yields_nothing(self) -> None:
-        # Kotlin rather than Go: Go registered its shapes and now types this
-        # exact line. Kotlin is still one of the languages P8 left unattempted.
-        body = "fun run(w: TimerWheel) { }"
+        # Ruby rather than Kotlin: Kotlin registered its shapes and now types
+        # `w: TimerWheel`. Ruby is one of the languages P8 left unattempted,
+        # and it annotates nothing to begin with.
+        body = "def run(w)\n  w.tick\nend"
+        assert declared_types(body, "ruby") == {}
+
+
+class TestKotlinShapes:
+    """Kotlin annotates after the name, and one shape reaches almost all of it.
+
+    A typed `val`, a typed `var`, a function parameter and a primary
+    constructor's property are all `name: Type`, which is why there is one
+    annotation pattern here rather than four. Measured over ktor and exposed,
+    it is 6,291 typed `val`s, 1,242 `var`s and roughly 8,800 parameters,
+    against 1,183 for the construction shape.
+    """
+
+    def test_a_typed_val(self) -> None:
+        body = "fun run() {\n    val ctx: PipelineContext = call.context\n}"
+        assert declared_types(body, "kotlin")["ctx"] == "PipelineContext"
+
+    def test_a_typed_var(self) -> None:
+        body = "fun run() {\n    var engine: HttpEngine = make()\n}"
+        assert declared_types(body, "kotlin")["engine"] == "HttpEngine"
+
+    def test_a_parameter(self) -> None:
+        body = "fun handle(call: ApplicationCall, n: Int) { call.respond() }"
+        assert declared_types(body, "kotlin")["call"] == "ApplicationCall"
+
+    def test_a_parameter_in_a_multi_line_signature(self) -> None:
+        body = "fun handle(\n    request: HttpRequest,\n    n: Int,\n) { }"
+        assert declared_types(body, "kotlin")["request"] == "HttpRequest"
+
+    def test_a_primary_constructor_property(self) -> None:
+        body = "class Server(private val config: ServerConfig) { }"
+        assert declared_types(body, "kotlin")["config"] == "ServerConfig"
+
+    def test_a_construction(self) -> None:
+        body = "fun run() {\n    val registry = PluginRegistry()\n}"
+        assert declared_types(body, "kotlin")["registry"] == "PluginRegistry"
+
+    def test_a_nullable_type_keeps_its_type(self) -> None:
+        """``Foo?`` is still a ``Foo`` at the call site, and it is 15% of
+        ktor's typed declarations. Refusing it refuses a correct answer."""
+        body = "fun run() {\n    val timeout: Duration? = null\n}"
+        assert declared_types(body, "kotlin")["timeout"] == "Duration"
+
+    def test_a_generic_keeps_its_outer_type(self) -> None:
+        """The reverse of Python's rule, for the same reason spelled
+        backwards: Kotlin's ``Column<T>`` *is* a ``Column``, where Python's
+        ``Optional[T]`` is not a ``T``."""
+        body = "fun run(column: Column<String>) { }"
+        assert declared_types(body, "kotlin")["column"] == "Column"
+
+
+class TestKotlinRefusals:
+    def test_a_builtin_generic_is_refused(self) -> None:
+        """``List<Header>`` bares to ``List``, which the language spec refuses
+        — and must, because the value is a List and not a Header."""
+        body = "fun run() {\n    val items: List<Header> = call.headers\n}"
+        assert "items" not in declared_types(body, "kotlin")
+
+    def test_a_named_argument_is_not_a_declaration(self) -> None:
+        """Kotlin spells a named argument with ``=``, which is why the
+        construction shape is anchored to ``val``/``var`` rather than to the
+        start of a statement as Python's is."""
+        body = "fun run() {\n    dispatch(logger = Emitter())\n}"
         assert declared_types(body, "kotlin") == {}
+
+    def test_a_factory_call_is_not_a_construction(self) -> None:
+        """``Store.of(call)`` is a call on a class. Reading the qualifier's
+        last segment types ``cache`` as ``of``, which it briefly did."""
+        body = "fun run() {\n    val cache = Store.of(call)\n}"
+        assert "cache" not in declared_types(body, "kotlin")
+
+    def test_an_annotation_use_site_target_is_not_a_declaration(self) -> None:
+        """``@get:JvmName("x")`` reads as ``get: JvmName``. ``(`` is kept out
+        of the closer set precisely to refuse it."""
+        body = 'class C {\n    @get:JvmName("x")\n    fun f() { }\n}'
+        assert declared_types(body, "kotlin") == {}
+
+    def test_a_builtin_type_is_refused(self) -> None:
+        assert declared_types("fun run(name: String, n: Int) { }", "kotlin") == {}
+
+    def test_a_declaration_in_a_line_comment_is_ignored(self) -> None:
+        body = "fun run() { // a val node: Node once lived here\n }"
+        assert declared_types(body, "kotlin") == {}
+
+    def test_a_supertype_clause_is_not_a_declaration(self) -> None:
+        """Kotlin spells inheritance with the same colon. The name group being
+        lowercase-anchored is all that separates the two."""
+        assert declared_types("class Server : BaseServer() { }", "kotlin") == {}
+
+    def test_kotlin_reaches_class_scope(self) -> None:
+        """Unlike Python's, a Kotlin property is named with no qualifier, so a
+        class-scope declaration can answer for a bare receiver. It earned 56 of
+        ktor's 1,349 gained edges — small, and measured rather than assumed."""
+        assert "kotlin" in IMPLICIT_FIELD_LANGUAGES
+
+    def test_a_class_scope_property_is_a_field(self) -> None:
+        source = (
+            "class C {\n    private val logger: Logger = make()\n"
+            "    fun f() {\n        logger.debug()\n    }\n}"
+        )
+        assert fields(source, "kotlin", [(3, 5)])["logger"] == "Logger"
+
+    def test_a_local_is_not_a_field(self) -> None:
+        source = "class C {\n    fun f() {\n        val local: Logger = make()\n    }\n}"
+        assert "local" not in fields(source, "kotlin", [(2, 4)])
+
+
+    def test_a_chained_construction_types_nothing(self) -> None:
+        """``val x = Builder().build()`` makes ``x`` whatever ``build()``
+        returns, so typing it as a ``Builder`` is a wrong answer rather than a
+        missing one. ``_PY_CONSTRUCTED`` still has this shape; moving Python is
+        its own measured change."""
+        body = "fun f() {\n    val x = Builder().build()\n}"
+        assert declared_types(body, "kotlin") == {}
+
+    def test_a_nested_argument_chain_is_a_stated_ceiling(self) -> None:
+        """``[^()]*`` cannot cross a nested call, so this one is still typed.
+        The same direction of error as before the guard, not a new one."""
+        body = "fun f() {\n    val x = Builder(g(1)).build()\n}"
+        assert declared_types(body, "kotlin")["x"] == "Builder"
+
+    def test_a_kdoc_block_comment_is_not_a_declaration(self) -> None:
+        """KDoc writes ``@param connection: Store``, which is exactly Kotlin's
+        declaration shape -- unlike javadoc's ``@param connection the Store``,
+        which is not the C family's. Kotlin needs a block strip where Java does
+        not, and this fabricated a type from prose before it had one."""
+        body = "/**\n * @param connection: Store\n */\nfun run() { }"
+        assert declared_types(body, "kotlin") == {}
+
+    def test_the_java_scan_does_not_need_the_block_strip(self) -> None:
+        """The asymmetry is in the shapes, not the languages. Measured on the
+        same text, so the Kotlin-only table is a decision rather than an
+        oversight."""
+        body = "/**\n * @param connection the Store connection\n */\nvoid run() { }"
+        assert declared_types(body, "java") == {}
+
+
+class TestKotlinDelegation:
+    def test_a_delegated_property_is_typed(self) -> None:
+        """``by`` closes a declaration as well as punctuation does, and without
+        it the whole ``by lazy`` idiom types nothing."""
+        body = "fun f() {\n    val cache: Store by lazy { make() }\n}"
+        assert declared_types(body, "kotlin")["cache"] == "Store"
+
+
+class TestKotlinFieldScope:
+    def test_a_constructor_parameter_with_a_default_is_not_a_field(self) -> None:
+        """It closes on ``=`` at class scope exactly as a property does, and it
+        is not a property at all -- no ``val``/``var``, so no method body can
+        name it. The captured keyword is what tells the two apart."""
+        source = (
+            "class C(port: Int, timeout: Duration = Duration.seconds(5)) {\n"
+            "    fun run() { timeout.toString() }\n}"
+        )
+        assert "timeout" not in fields(source, "kotlin", [(2, 2)])
+
+    def test_a_constructor_property_with_a_default_is_still_read(self) -> None:
+        """The guard must not take the real property beside it."""
+        source = (
+            "class C {\n    private var timeout: Duration = Duration.seconds(5)\n"
+            "    fun run() { timeout.toString() }\n}"
+        )
+        assert fields(source, "kotlin", [(3, 3)])["timeout"] == "Duration"
+
+    def test_a_parameter_is_never_a_field(self) -> None:
+        """A `fun` parameter carries no keyword either, so class scope drops it
+        whatever punctuation follows."""
+        source = "class C {\n    fun run(timeout: Duration = d) { }\n}"
+        assert fields(source, "kotlin", []) == {}
+
+
+
+class TestSwiftShapes:
+    """Swift annotates after the name, and one shape reaches 88% of it.
+
+    Measured over swift-nio and Alamofire: 4,001 single-name parameters, 2,876
+    stored properties, 2,104 `var`s, 1,356 underscore-label parameters, 1,304
+    `let`s and 736 two-name-label parameters are all `name: Type`.
+    """
+
+    def test_a_typed_let(self) -> None:
+        body = "func run() {\n    let ctx: ChannelContext = loop.context\n}"
+        assert declared_types(body, "swift")["ctx"] == "ChannelContext"
+
+    def test_a_typed_var(self) -> None:
+        body = "func run() {\n    var channel: ServerChannel = make()\n}"
+        assert declared_types(body, "swift")["channel"] == "ServerChannel"
+
+    def test_a_plain_parameter(self) -> None:
+        body = "func handle(request: HTTPRequest) { request.body() }"
+        assert declared_types(body, "swift")["request"] == "HTTPRequest"
+
+    def test_an_underscore_label_names_the_second_identifier(self) -> None:
+        body = "func handle(_ request: HTTPRequest) { request.body() }"
+        assert declared_types(body, "swift")["request"] == "HTTPRequest"
+
+    def test_a_two_name_label_names_the_second_identifier(self) -> None:
+        """The declared name is `loop`, not `on`. A pattern anchored at `(` or
+        `,` takes the label and is wrong 736 times over the two repos; taking
+        the identifier adjacent to the colon is right in all three spellings
+        with no branch on any of them."""
+        body = "func handle(on loop: EventLoop) { loop.execute() }"
+        types = declared_types(body, "swift")
+        assert types["loop"] == "EventLoop"
+        assert "on" not in types
+
+    def test_a_construction(self) -> None:
+        body = "func run() {\n    let body = ResponseBody(request)\n}"
+        assert declared_types(body, "swift")["body"] == "ResponseBody"
+
+    def test_an_opaque_type_keeps_its_type(self) -> None:
+        """`some Foo` is a `Foo` at the call site, as `any Foo` is."""
+        body = "func run() {\n    let opaque: some Renderer = make()\n}"
+        assert declared_types(body, "swift")["opaque"] == "Renderer"
+
+    def test_an_optional_keeps_its_type(self) -> None:
+        body = "func run() {\n    var channel: ServerChannel? = nil\n}"
+        assert declared_types(body, "swift")["channel"] == "ServerChannel"
+
+    def test_an_implicitly_unwrapped_optional_keeps_its_type(self) -> None:
+        body = "func run() {\n    let session: Session! = current\n}"
+        assert declared_types(body, "swift")["session"] == "Session"
+
+
+class TestSwiftRefusals:
+    def test_an_array_types_nothing(self) -> None:
+        """The value is an Array of Header, not a Header. The type token starts
+        with `[`, so it matches nothing rather than matching wrongly."""
+        body = "func run() {\n    let items: [Header] = request.headers\n}"
+        assert "items" not in declared_types(body, "swift")
+
+    def test_a_dictionary_types_nothing(self) -> None:
+        """`]` is kept out of the closer set precisely so the inner `k: V` of a
+        dictionary type cannot close on it."""
+        body = "func run() {\n    let lookup: [String: Header] = request.map\n}"
+        assert declared_types(body, "swift") == {}
+
+    def test_a_factory_call_is_not_a_construction(self) -> None:
+        body = "func run() {\n    let cache = Store.shared(request)\n}"
+        assert "cache" not in declared_types(body, "swift")
+
+    def test_a_chained_construction_types_nothing(self) -> None:
+        body = "func run() {\n    let x = Builder().build()\n}"
+        assert declared_types(body, "swift") == {}
+
+    def test_a_doc_comment_parameter_is_not_a_declaration(self) -> None:
+        """swift-nio carries 18,722 `///` lines and 331 `- Parameter Name:`
+        ones, which read exactly like `name: Type`. `///` starts with `//`, so
+        one line-comment pattern covers them; Swift needs no block strip, since
+        genuine `/* */` runs are 15 in swift-nio and 2 in Alamofire."""
+        body = "/// - Parameter Handler: the RequestHandler to use\nfunc run() { }"
+        assert declared_types(body, "swift") == {}
+
+    def test_an_initialiser_parameter_is_not_a_field(self) -> None:
+        """It sits at type scope and closes on `=` exactly as a stored property
+        does, and it is a parameter. The captured keyword is what refuses it."""
+        source = (
+            "class C {\n    init(timeout: Duration = .seconds(5)) { }\n"
+            "    func run() { timeout.tick() }\n}"
+        )
+        assert "timeout" not in fields(source, "swift", [(2, 2), (3, 3)])
+
+    def test_a_stored_property_is_a_field(self) -> None:
+        source = (
+            "class C {\n    private let logger: Logger = Logger()\n"
+            "    func run() {\n        logger.debug()\n    }\n}"
+        )
+        assert fields(source, "swift", [(3, 5)])["logger"] == "Logger"
 
 
 class TestGoShapes:
@@ -357,7 +625,7 @@ class TestClassScope:
 
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
-    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "go", "java", "python"}
+    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "go", "java", "kotlin", "python", "swift"}
 
 
 def test_go_is_not_a_field_language() -> None:

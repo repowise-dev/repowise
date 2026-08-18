@@ -55,9 +55,10 @@ your agent in under five minutes, with no API key.
 | [layers/CHANGE_RISK.md](layers/CHANGE_RISK.md) | Score any commit or `base..HEAD` range 0-10 for defect risk |
 | [layers/BUG_HISTORY.md](layers/BUG_HISTORY.md) | Which files and symbols actually get bug-fixed, and how recently |
 | [layers/TEST_INTELLIGENCE.md](layers/TEST_INTELLIGENCE.md) | Coverage ingestion, untested hotspots, and running only the tests a diff touches |
+| [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph: what is in it, how every edge is resolved, and how much to trust each one |
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
 | [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language, across 18 parsed languages and 13 at the Full tier |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language, across 19 parsed languages and 13 at the Full tier |
 | [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, what `update` re-renders, styles, output language |
 
 ## Scale it

@@ -118,6 +118,13 @@ SymbolKind = Literal[
     "module",
     "macro",
     "variable",
+    # Rust's ``field_declaration`` only. Every other language maps its fields
+    # and properties to ``variable``; Rust keeps them separate, and the call
+    # resolver relies on that to refuse a field as a bare-name call target
+    # (``_NON_CALLABLE_KINDS``). Normalising this to ``variable`` would make
+    # Rust fields indistinguishable from callable values and silently undo
+    # that refusal, so it is declared here rather than mapped away.
+    "property",
 ]
 
 # ---------------------------------------------------------------------------
@@ -377,6 +384,13 @@ ResolutionOrigin = Literal[
     "receiver_field_same_package",  # 0.90 (JVM)
     "receiver_field_import",  # 0.88
     "receiver_field_global",  # 0.75
+    # The same four scopes once more, for a receiver a framework decorator
+    # retyped — `@shared_task def add` is a `Task`, so `add.s()` is `Task::s`.
+    # Separate because the evidence is a decorator table, not a declaration.
+    "receiver_framework_same_file",  # 0.93
+    "receiver_framework_same_package",  # 0.90
+    "receiver_framework_import",  # 0.88
+    "receiver_framework_global",  # 0.75
     # 0.90 — the caller's own class does not declare the method but exactly one
     # of its ancestors does. Below the two same-class origins because the walk
     # compares no signature and reads no visibility, so it can reach a method
@@ -540,6 +554,11 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # ``{exported name: local name}`` where a TS/JS module publishes a symbol
+    # it declares under a different name (``export { stringType as string }``).
+    # Empty for every other language and for the far commoner clause that does
+    # not rename, where the symbol table already answers.
+    export_aliases: dict[str, str] = field(default_factory=dict)
     calls: list[CallSite] = field(default_factory=list)
     heritage: list[HeritageRelation] = field(default_factory=list)
     docstring: str | None = None  # module/file-level docstring

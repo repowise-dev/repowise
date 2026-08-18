@@ -1,10 +1,13 @@
-"""The four marker prepasses read ingestion's bytes, and fall back cleanly.
+"""The marker prepasses read ingestion's bytes, and fall back cleanly.
 
-``DeadCodeAnalyzer.__init__`` runs four scans over the whole indexed file
-set: dynamic-import markers, ``namespace JSX`` declarations, bundler
-``resolve.alias`` targets, and ``export { local as alias }`` maps. Each used
-to open every file itself, so a TS/JS repo paid four full-repo read passes
-before detection started. They now take ingestion's ``source_map``.
+``DeadCodeAnalyzer.__init__`` runs three scans over the whole indexed file
+set: dynamic-import markers, ``namespace JSX`` declarations and bundler
+``resolve.alias`` targets. Each used to open every file itself, so a TS/JS
+repo paid a full-repo read pass each before detection started. They now take
+ingestion's ``source_map``.
+
+A fourth, the ``export { local as alias }`` map, is no longer a pass at all:
+the parser records the clause on the parsed file, so this reads it back.
 
 These tests pin the three states that matter (map hit, map miss, no map at
 all) plus the decoding contract, since a prepass that decoded the handed-in
@@ -130,25 +133,34 @@ def test_bundler_alias_targets_fall_back_to_disk(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_export_aliases_read_the_source_map(tmp_path):
-    parsed = {"src/history.ts": _parsed(tmp_path, "src/history.ts", "export {};\n")}
-    source_map = {"src/history.ts": b"export { HistoryWrapper as History };\n"}
+def test_export_aliases_come_from_the_parsed_file(tmp_path):
+    """The map is the parser's, inverted — neither disk nor the source map.
+
+    Both of those carry a *different* alias here, so a pass that still read
+    either one would say so. What the analyzer reports is what the parser
+    recorded, which is the whole point of folding the two readers into one.
+    """
+    parsed = {
+        "src/history.ts": _parsed(tmp_path, "src/history.ts", "export { OnDisk as History };\n")
+    }
+    parsed["src/history.ts"].export_aliases = {"History": "HistoryWrapper"}
+    source_map = {"src/history.ts": b"export { InTheMap as History };\n"}
 
     assert _analyzer(parsed, source_map)._ts_export_aliases == {
         "src/history.ts": {"HistoryWrapper": "History"}
     }
 
 
-def test_export_aliases_fall_back_to_disk(tmp_path):
+def test_a_file_the_parser_recorded_no_alias_for_is_absent(tmp_path):
+    """Including one whose text holds a clause the parser declined to record."""
     parsed = {
         "src/history.ts": _parsed(
             tmp_path, "src/history.ts", "export { HistoryWrapper as History };\n"
         )
     }
+    parsed["src/history.ts"].export_aliases = {}
 
-    assert _analyzer(parsed, {})._ts_export_aliases == {
-        "src/history.ts": {"HistoryWrapper": "History"}
-    }
+    assert _analyzer(parsed, {})._ts_export_aliases == {}
 
 
 # --------------------------------------------------------------------------

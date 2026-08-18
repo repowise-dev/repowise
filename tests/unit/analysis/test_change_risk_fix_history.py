@@ -64,6 +64,60 @@ def repo_with_history(tmp_path: Path) -> Path:
     return repo
 
 
+def test_fix_pressure_skips_fix_shaped_shallow_boundary(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(["init", "-q"], source)
+    _git(["config", "user.name", "Dev"], source)
+    _git(["config", "user.email", "d@e.com"], source)
+
+    _commit(
+        source,
+        {"hot.py": "v = 0\n", "cold.py": "c = 0\n"},
+        "feat: seed",
+    )
+    _commit(source, {"hot.py": "v = 1\n"}, "feat: prepare")
+    _commit(source, {"hot.py": "v = 2\n"}, "fix: boundary bug")
+    _commit(source, {"hot.py": "v = 3\n"}, "fix: later bug")
+    _commit(source, {"cold.py": "c = 1\n"}, "feat: latest")
+
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "-q",
+            "--depth=3",
+            source.resolve().as_uri(),
+            str(shallow),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    shallow_pressure = fix_pressure(str(shallow), "HEAD")
+    full_pressure = fix_pressure(str(source), "HEAD")
+
+    assert "cold.py" not in shallow_pressure
+    assert set(shallow_pressure) <= set(full_pressure)
+    assert shallow_pressure["hot.py"] < full_pressure["hot.py"]
+
+
+def test_fix_pressure_keeps_parentless_root_in_full_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "full"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _git(["config", "user.name", "Dev"], repo)
+    _git(["config", "user.email", "d@e.com"], repo)
+
+    _commit(repo, {"root.py": "value = 1\n"}, "fix: seed repository")
+
+    pressure = fix_pressure(str(repo), "HEAD")
+
+    assert pressure["root.py"] == pytest.approx(1.0, abs=0.05)
+
+
 def test_fix_pressure_counts_only_fix_commits(repo_with_history: Path) -> None:
     pressure = fix_pressure(str(repo_with_history), "HEAD")
     assert pressure["hot.py"] == pytest.approx(3.0, abs=0.05)

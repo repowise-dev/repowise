@@ -810,6 +810,75 @@ def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
     return text if is_resolvable_type_name(text, "kotlin") else None
 
 
+# ---------------------------------------------------------------------------
+# Rust type-reference head extraction
+# ---------------------------------------------------------------------------
+
+def _rust_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head identifier of a Rust type expression, or None.
+
+    Rust needs its own extractor because the C#-shaped default spells a type
+    name ``identifier`` while tree-sitter-rust spells it ``type_identifier``.
+    The default therefore returned None for every bare Rust type, and for
+    ``std::io::Error`` returned the leftmost segment ``io`` — a crate name,
+    not the type.
+
+    Examples:
+        ``MyType``              -> "MyType"
+        ``&Other`` / ``&mut T`` -> "Other"  (reference_type unwrapped)
+        ``dyn MyTrait``         -> "MyTrait"
+        ``impl Shape``          -> "Shape"
+        ``Box<Inner>``          -> "Box"    -> filtered (builtin)
+        ``std::io::Error``      -> "Error"  (rightmost component)
+        ``u32`` / ``String``    -> None     (builtin)
+        ``T``                   -> None     (single-letter generic param)
+
+    Generic arguments are not recursed into: ``Vec<Foo>`` yields the head
+    ``Vec`` only. Foo reaches the resolver through its own capture, matching
+    the Go and Kotlin extractors.
+    """
+    node: Node | None = type_node
+    text = ""
+    for _ in range(8):
+        if node is None:
+            return None
+        kind = node.type
+        if kind == "type_identifier":
+            text = _node_text(node, src)
+            break
+        if kind == "scoped_type_identifier":
+            # ``std::io::Error`` — the type is the rightmost component.
+            name = node.child_by_field_name("name")
+            if name is None:
+                return None
+            node = name
+            continue
+        if kind in ("reference_type", "pointer_type"):
+            # ``&T`` / ``&mut T`` / ``*const T`` — the type field is the
+            # referent; ``mut`` and ``const`` are unnamed children.
+            node = node.child_by_field_name("type")
+            continue
+        if kind == "generic_type":
+            # ``Box<Inner>`` — head is the constructor, args are captured
+            # separately.
+            node = node.child_by_field_name("type")
+            continue
+        if kind in ("dynamic_type", "abstract_type"):
+            # ``dyn Trait`` / ``impl Trait`` — sole named child is the trait.
+            node = node.child_by_field_name("trait") or next(
+                iter(node.named_children), None
+            )
+            continue
+        if kind in ("primitive_type", "tuple_type", "unit_type", "array_type",
+                    "function_type", "never_type", "empty_type"):
+            # Builtin, or no single head name to resolve.
+            return None
+        # Unknown shape - descend into the first named child and re-classify.
+        node = next(iter(node.named_children), None)
+
+    return text if is_resolvable_type_name(text, "rust") else None
+
+
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
@@ -821,6 +890,7 @@ TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "javascript": _ts_head_type_identifier,
     "java": _java_head_type_identifier,
     "kotlin": _kotlin_head_type_identifier,
+    "rust": _rust_head_type_identifier,
 }
 
 

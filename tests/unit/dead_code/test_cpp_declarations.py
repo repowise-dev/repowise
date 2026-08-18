@@ -103,3 +103,90 @@ class TestDeclarationNeverFlagged:
             }
         )
         assert _unused_export_symbols(graph) == {"Vanished"}
+
+
+class TestTypeDeclarationNeverFlagged:
+    """A *type* forward declaration is not held to the ``defined_by`` clause.
+
+    The asymmetry with a prototype is argued at the guard in ``analyzer.py``.
+    """
+
+    @staticmethod
+    def _header_with(kind: str, *, defined_by: str | None = None) -> dict:
+        symbol = {
+            "name": "Env",
+            "kind": kind,
+            "visibility": "public",
+            "language": "cpp",
+            "is_declaration": True,
+            "start_line": 4,
+            "end_line": 4,
+        }
+        if defined_by:
+            symbol["defined_by"] = defined_by
+        return {
+            "src/builder.h": {
+                "node_type": "file",
+                "language": "cpp",
+                "symbols": [symbol],
+            }
+        }
+
+    def test_unpaired_type_declaration_is_skipped(self) -> None:
+        # The orphaned-prototype rule must not extend to types: `class Env;`
+        # with the definition in a dependency is the normal case, not dead code.
+        for kind in ("class", "struct", "enum"):
+            graph = _build_graph(self._header_with(kind))
+            assert _unused_export_symbols(graph) == set(), kind
+
+    def test_paired_type_declaration_is_skipped(self) -> None:
+        graph = _build_graph(self._header_with("class", defined_by="src/env.cc::Env"))
+        assert _unused_export_symbols(graph) == set()
+
+    def test_type_definition_is_still_reported(self) -> None:
+        # Only the declaration is exempt. An unused definition of the same name
+        # must still be reported, or the guard has bought a false negative.
+        graph = _build_graph(
+            {
+                "src/env.h": {
+                    "node_type": "file",
+                    "language": "cpp",
+                    "symbols": [
+                        {
+                            "name": "Env",
+                            "kind": "class",
+                            "visibility": "public",
+                            "language": "cpp",
+                            "is_declaration": False,
+                            "start_line": 4,
+                            "end_line": 40,
+                        }
+                    ],
+                }
+            }
+        )
+        assert _unused_export_symbols(graph) == {"Env"}
+
+    def test_other_languages_are_untouched(self) -> None:
+        # The guard is C/C++ only. Nothing else marks a bodiless type as a
+        # declaration, and a stray flag must not silence another language.
+        graph = _build_graph(
+            {
+                "src/model.ts": {
+                    "node_type": "file",
+                    "language": "typescript",
+                    "symbols": [
+                        {
+                            "name": "Env",
+                            "kind": "class",
+                            "visibility": "public",
+                            "language": "typescript",
+                            "is_declaration": True,
+                            "start_line": 4,
+                            "end_line": 4,
+                        }
+                    ],
+                }
+            }
+        )
+        assert _unused_export_symbols(graph) == {"Env"}

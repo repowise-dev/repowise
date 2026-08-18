@@ -1,8 +1,8 @@
 """Dynamic-hint extractor for C++ function pointers, dlopen/dlsym, and Qt
 ``QObject::connect`` signal/slot wiring.
 
-Mirrors :mod:`.c` but on C++ extensions (``.cc``/``.cpp``/``.cxx``/``.hpp``/
-``.hxx``) and adds the Qt connect-string idiom — ``QObject::connect(s,
+Mirrors :mod:`.c` but on the C++ extensions in ``_CPP_EXTS`` below, and adds
+the Qt connect-string idiom — ``QObject::connect(s,
 SIGNAL(sig()), r, SLOT(slot()))`` — which wires a method into a runtime
 dispatch table that the static call graph never sees.
 """
@@ -24,7 +24,7 @@ _SKIP_DIRS = {
 # .inl is exactly where function-pointer and designated-initialiser wiring
 # tends to live, which is the wiring this extractor exists to find.
 _CPP_EXTS: tuple[str, ...] = (
-    ".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hxx", ".h",
+    ".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h",
     *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
 )
 
