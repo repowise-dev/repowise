@@ -10,6 +10,7 @@ copy of the old scan over a corpus of tricky paths.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 from repowise.core.analysis.health.engine import (
     _has_paired_test_file,
@@ -109,7 +110,7 @@ class TestPascalPairing:
     program named ``Test<Stem>.dpr`` (the ``u`` dropped) -- confirmed against
     a real ~150-file Delphi codebase's ``src/tools/Test*.dpr`` convention."""
 
-    CORPUS: set[str] = {
+    CORPUS: ClassVar[set[str]] = {
         "src/Core/uKeymap.pas",
         "src/tools/TestKeymap.dpr",
         "src/Core/uANSIParser.pas",
