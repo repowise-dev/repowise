@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import re
 
-from repowise.core.generation.mermaid_safety import sanitize_mermaid, sanitize_pages, strip_leading_preamble
+from repowise.core.generation.mermaid_safety import (
+    sanitize_mermaid,
+    sanitize_pages,
+    strip_leading_preamble,
+)
 
 
 def _block(body: str) -> str:
