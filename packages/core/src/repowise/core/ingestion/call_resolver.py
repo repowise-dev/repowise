@@ -32,9 +32,13 @@ from typing import Any
 import structlog
 
 from .languages.receiver_types import (
+    FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
     RECEIVER_TYPE_LANGUAGES,
     Declaration,
+    framework_decorated_type,
+    names_in_span,
+    scan_bindings,
     scan_declarations,
     types_by_class,
     types_in_span,
@@ -232,6 +236,10 @@ class CallResolver:
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
         self._body_types: dict[tuple[str, str], dict[str, str | None]] = {}
         self._field_types: dict[str, dict[str, dict[str, str | None]]] = {}
+        self._bindings: dict[str, tuple[tuple[int, str], ...]] = {}
+        self._bound_names: dict[tuple[str, str], frozenset[str]] = {}
+        # {file: {name: type}} — module-level defs a framework decorator retyped.
+        self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
         self._method_name_set: frozenset[str] | None = None
 
@@ -1245,14 +1253,28 @@ class CallResolver:
         # type". Only a name the body never mentions reaches class scope.
         body_types = self._declared_types_in(file_path, caller_id, language)
         type_name = body_types.get(receiver_name)
-        from_field = (
-            receiver_name not in body_types and language in IMPLICIT_FIELD_LANGUAGES
-        )
+        unbound = receiver_name not in body_types
+        from_field = unbound and language in IMPLICIT_FIELD_LANGUAGES
         if from_field:
             class_id = caller_id.rpartition("::")[0]
             type_name = (
                 self._field_types_in(file_path, language).get(class_id, {}).get(receiver_name)
             )
+        # Third scope: a module-level def a framework decorator turned into an
+        # instance. Neither of the two above can see it — it is not in the body
+        # and not a field.
+        from_framework = (
+            type_name is None and unbound and language in FRAMEWORK_DECORATOR_LANGUAGES
+        )
+        if from_framework:
+            # The type lookup is a dict hit and the shadowing scan reads the
+            # whole file, so the cheap half decides first: only a receiver this
+            # scope would actually answer for is worth scanning a body for.
+            type_name = self._framework_type_of(file_path, receiver_name, language)
+            if type_name is not None and receiver_name in self._bound_names_in(
+                file_path, caller_id, language
+            ):
+                return None
         if type_name is None:
             return None
 
@@ -1260,6 +1282,8 @@ class CallResolver:
         if found is None:
             return None
         sym_id, tier = found
+        if from_framework:
+            return self._framework_typed_call(caller_id, sym_id, tier, call.line)
         if from_field:
             return self._field_typed_call(caller_id, sym_id, tier, call.line)
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
@@ -1287,6 +1311,18 @@ class CallResolver:
         if tier == "import":
             return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_field_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_field_global")
+
+    def _framework_typed_call(
+        self, caller_id: str, sym_id: str, tier: str, line: int
+    ) -> ResolvedCall:
+        """Stamp an edge whose receiver was typed by a framework decorator."""
+        if tier == "same_file":
+            return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_framework_same_file")
+        if tier == "same_package":
+            return ResolvedCall(caller_id, sym_id, 0.90, line, "receiver_framework_same_package")
+        if tier == "import":
+            return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_framework_import")
+        return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_framework_global")
 
     def _method_names(self) -> frozenset[str]:
         """Every name declared as a method of some class, built once."""
@@ -1366,6 +1402,71 @@ class CallResolver:
             self._field_types.clear()
         self._field_types[file_path] = by_class
         return by_class
+
+    def _bound_names_in(
+        self, file_path: str, caller_id: str, language: str
+    ) -> frozenset[str]:
+        """Every name the calling body binds, however it was bound."""
+        key = (file_path, caller_id)
+        names = self._bound_names.get(key)
+        if names is None:
+            span = self._spans_for(file_path).get(caller_id)
+            if span is None:
+                names = frozenset()
+            else:
+                names = names_in_span(self._bindings_for(file_path, language), *span)
+            if len(self._bound_names) >= _BODY_TYPE_CACHE_ENTRIES:
+                self._bound_names.clear()
+            self._bound_names[key] = names
+        return names
+
+    def _bindings_for(self, file_path: str, language: str) -> tuple[tuple[int, str], ...]:
+        """Every name one file binds, scanned once however many bodies ask."""
+        found = self._bindings.get(file_path)
+        if found is None:
+            found = scan_bindings(self._text_of(file_path), language)
+            if len(self._bindings) >= _SOURCE_CACHE_FILES:
+                self._bindings.clear()
+            self._bindings[file_path] = found
+        return found
+
+    def _framework_types_in(self, file_path: str, language: str) -> dict[str, str]:
+        """``{name: type}`` for one file's module-level decorated defs."""
+        types = self._framework_types.get(file_path)
+        if types is None:
+            parsed = self._parsed_files.get(file_path)
+            types = {}
+            for symbol in parsed.symbols if parsed else ():
+                if symbol.kind not in _FUNCTION_KINDS or symbol.parent_name:
+                    continue
+                type_name = framework_decorated_type(symbol.decorators, language)
+                if type_name is not None:
+                    types[symbol.name] = type_name
+            # Uncapped, unlike the source-text caches: this holds names read off
+            # already-resident symbols, and is empty for all but a few files.
+            self._framework_types[file_path] = types
+        return types
+
+    def _framework_type_of(
+        self, file_path: str, receiver_name: str, language: str
+    ) -> str | None:
+        """The framework type of *receiver_name*, where this file can see it.
+
+        Declared here, or imported here by name. A decorated def in a file the
+        caller never imports is not this receiver, and reaching for it would be
+        the bare-name match this tier exists to avoid.
+        """
+        own = self._framework_types_in(file_path, language).get(receiver_name)
+        if own is not None:
+            return own
+
+        bound = self._import_names.get(file_path, {}).get(receiver_name)
+        if bound is None or bound.startswith("external:"):
+            return None
+        binding = self._import_bindings.get(file_path, {}).get(receiver_name)
+        exported = (binding.exported_name if binding else None) or receiver_name
+        declaring = self._barrel_origins.get(bound, {}).get(exported) or bound
+        return self._framework_types_in(declaring, language).get(exported)
 
     def _declarations_for(self, file_path: str, language: str) -> tuple[Declaration, ...]:
         """Every declaration in one file, scanned once however many bodies ask."""

@@ -46,6 +46,10 @@ const ALL_ORIGINS: ResolutionOrigin[] = [
   "receiver_field_same_package",
   "receiver_field_import",
   "receiver_field_global",
+  "receiver_framework_same_file",
+  "receiver_framework_same_package",
+  "receiver_framework_import",
+  "receiver_framework_global",
   "self_inherited",
   "enclosing_inherited",
 ];
@@ -94,12 +98,13 @@ describe("originDescriptor", () => {
 });
 
 describe("isNameMatch", () => {
-  it("marks exactly the four origins that rest on a name alone", () => {
+  it("marks exactly the origins that rest on a name alone", () => {
     const marked = ALL_ORIGINS.filter(isNameMatch);
     expect(marked.sort()).toEqual(
       [
         "global_unique",
         "receiver_field_global",
+        "receiver_framework_global",
         "receiver_global",
         "receiver_typed_global",
       ].sort(),

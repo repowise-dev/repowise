@@ -19,8 +19,11 @@ the expensive half; ``types_in_span`` and ``types_by_class`` narrow the result
 and are nearly free. Scanning per body instead would re-read every line that
 two spans share, and a class body contains all of its methods'.
 
-Adding a language means adding its shapes to ``_LANGUAGE_PATTERNS`` and
-nothing else; a language absent from it is excluded by construction.
+Adding a language means adding its shapes to ``_LANGUAGE_PATTERNS``; a
+language absent from it is excluded by construction. Two smaller tables sit
+beside it: ``_FRAMEWORK_DECORATOR_TYPES``, for a decorator that changes what
+the symbol it wraps is, and ``_PY_BINDINGS``, which says only that a name is
+taken -- a refusal rather than a type.
 """
 
 from __future__ import annotations
@@ -165,6 +168,104 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # queries mint no call site for at all — so class scope has nothing there to
 # answer, and consulting it could only bind a bare local name to a field.
 IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "java"})
+
+# A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
+# no function behind, so `add.s(...)` is a method call and `(Task, s)` a
+# checkable pair. A table, not an inference — the decorator lives in the
+# framework, which an application imports rather than vendors. Ceiling: an entry
+# earns nothing unless the repo also declares the type.
+_FRAMEWORK_DECORATOR_TYPES: dict[str, tuple[tuple[re.Pattern[str], str], ...]] = {
+    "python": (
+        # celery: `@task`, `@shared_task`, `@app.task`, `@celery.task`, bare or
+        # called with arguments. The qualifier is optional and must end in a
+        # dot, which is what keeps `@mytask` and `@task_group` out.
+        (re.compile(r"@(?:[\w.]+\.)?(?:shared_task|task)\b"), "Task"),
+    ),
+}
+
+FRAMEWORK_DECORATOR_LANGUAGES = frozenset(_FRAMEWORK_DECORATOR_TYPES)
+
+# Every shape that binds a name in a Python body, whatever its value. The
+# framework scope must refuse a name the body rebinds: `fail = signature(...)`
+# leaves `fail` a Signature, and the CapWords-only scan above cannot see it.
+# Over-matching is safe here — refusing only ever costs an edge.
+
+# A comma-separated target list: every name in `a, b[0], c.d = ...` and in
+# `for a, b in ...`. Read whole and split by the caller, so a subscript or an
+# attribute in any position cannot hide the bare names beside it.
+_TARGETS = r"[\w.\[\]]+(?:\s*,\s*[\w.\[\]]+)*"
+
+_PY_TARGET_LISTS = (
+    # An assignment, plain or augmented, at the start of a statement.
+    re.compile(
+        rf"(?m)^[ \t]*(?P<lhs>{_TARGETS})\s*(?::[^=\n]*)?"
+        r"(?:[-+*/%|&^@]|//|\*\*|>>|<<)?=(?!=)"
+    ),
+    # A `for` target, statement or comprehension.
+    re.compile(rf"\bfor\s+(?P<lhs>{_TARGETS})\s+in\b"),
+)
+
+_PY_BINDINGS = (
+    # `with ... as n`, `except ... as n`, `import x as n`.
+    re.compile(r"\bas\s+(?P<name>[a-z_]\w*)\b"),
+    re.compile(r"\b(?P<name>[a-z_]\w*)\s*:="),
+    re.compile(r"\b(?:global|nonlocal)\s+(?P<name>[a-z_]\w*)"),
+    # A parameter of any `def` or `lambda` in the span, the enclosing one
+    # included: its signature line is the first line of its own span.
+    re.compile(r"\b(?:def\s+\w+\s*\(|lambda\s+)[^)\n:]*?\b(?P<name>[a-z_]\w*)\s*(?=[,=)\n:])"),
+)
+
+# A plain `import` inside a body is deliberately absent: it names the same
+# module symbol this scope resolves against, and refusing it cost 3 correct
+# edges on celery (`from .tasks import ping`, then `ping.delay()`).
+
+_PY_IDENTIFIER = re.compile(r"^[a-z_]\w*$")
+
+
+def scan_bindings(text: str, language: str) -> tuple[tuple[int, str], ...]:
+    """Every ``(line, name)`` *text* binds, in line order."""
+    if language != "python":
+        return ()
+    cleaned = _DOCSTRING.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    cleaned = _HASH_COMMENT.sub("", cleaned)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    found: set[tuple[int, str]] = set()
+
+    for pattern in _PY_TARGET_LISTS:
+        for match in pattern.finditer(cleaned):
+            line = bisect_right(starts, match.start("lhs"))
+            for target in match.group("lhs").split(","):
+                # `self.x = ...` and `d[k] = ...` bind no bare name.
+                name = target.strip()
+                if _PY_IDENTIFIER.match(name):
+                    found.add((line, name))
+
+    for pattern in _PY_BINDINGS:
+        for match in pattern.finditer(cleaned):
+            found.add((bisect_right(starts, match.start("name")), match.group("name")))
+    return tuple(sorted(found))
+
+
+def names_in_span(
+    bindings: tuple[tuple[int, str], ...],
+    start_line: int,
+    end_line: int,
+) -> frozenset[str]:
+    """Every name bound inside one function body."""
+    first = bisect_left(bindings, start_line, key=lambda b: b[0])
+    return frozenset(name for line, name in bindings[first:] if line <= end_line)
+
+
+def framework_decorated_type(decorators: Iterable[str], language: str) -> str | None:
+    """The type a framework decorator turns the symbol it wraps into."""
+    entries = _FRAMEWORK_DECORATOR_TYPES.get(language)
+    if not entries:
+        return None
+    for decorator in decorators:
+        for pattern, type_name in entries:
+            if pattern.match(decorator):
+                return type_name
+    return None
 
 _LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
     "csharp": _LINE_COMMENT,

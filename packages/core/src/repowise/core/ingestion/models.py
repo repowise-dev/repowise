@@ -377,6 +377,13 @@ ResolutionOrigin = Literal[
     "receiver_field_same_package",  # 0.90 (JVM)
     "receiver_field_import",  # 0.88
     "receiver_field_global",  # 0.75
+    # The same four scopes once more, for a receiver a framework decorator
+    # retyped — `@shared_task def add` is a `Task`, so `add.s()` is `Task::s`.
+    # Separate because the evidence is a decorator table, not a declaration.
+    "receiver_framework_same_file",  # 0.93
+    "receiver_framework_same_package",  # 0.90
+    "receiver_framework_import",  # 0.88
+    "receiver_framework_global",  # 0.75
     # 0.90 — the caller's own class does not declare the method but exactly one
     # of its ancestors does. Below the two same-class origins because the walk
     # compares no signature and reads no visibility, so it can reach a method

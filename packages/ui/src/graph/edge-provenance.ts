@@ -61,6 +61,11 @@ const ORIGINS = {
     because: "the receiver is a field whose type is a class in this file",
     tier: "direct",
   },
+  receiver_framework_same_file: {
+    label: "Framework type, same file",
+    because: "a framework decorator retyped the receiver, and that class is in this file",
+    tier: "direct",
+  },
 
   // --- scoped: an import, a package, a module, a supertype ---------------
   same_package: {
@@ -128,6 +133,16 @@ const ORIGINS = {
     because: "the receiver is a field whose type was found in an imported file",
     tier: "scoped",
   },
+  receiver_framework_same_package: {
+    label: "Framework type, same package",
+    because: "a framework decorator retyped the receiver, and that class is in the same package",
+    tier: "scoped",
+  },
+  receiver_framework_import: {
+    label: "Framework type, imported",
+    because: "a framework decorator retyped the receiver, and that class was found in an imported file",
+    tier: "scoped",
+  },
   self_inherited: {
     label: "Inherited",
     because: "the caller's class does not declare it but one ancestor does",
@@ -153,6 +168,11 @@ const ORIGINS = {
   receiver_field_global: {
     label: "Name match",
     because: "the field's type and method pair exists somewhere in the repo",
+    tier: "name_match",
+  },
+  receiver_framework_global: {
+    label: "Name match",
+    because: "the framework type and method pair exists somewhere in the repo",
     tier: "name_match",
   },
   global_unique: {
