@@ -651,6 +651,7 @@ agent over MCP.
 | **Output tokens vs a bare agent** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=43)* | ✅ **-31.6%** | -24.4% | -14.8% | not measured |
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
 | | *one-time; updates after it are incremental* | | | |
+| **Call-edge precision** *([measured](docs/BENCHMARKS.md#7-edge-precision), 540 rows hand-graded from source)* | ✅ **84.8%** | 57.0% | not measured | not measured |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ |
@@ -663,6 +664,11 @@ CodeGraph builds its index **22x faster than we do**, and if a call graph is all
 you need, that is the right trade. With prose generation on, which is what a
 default `repowise init` actually costs, it is **135x**. Graphify and
 code-review-graph were in the same measured field and are on the benchmarks page.
+
+The precision row cuts the other way and is worth stating as plainly: of the call
+edges we draw, **about fifteen percent are wrong**, and on `seastar` CodeGraph
+grades better than we do. Nine languages were read on both sides, four separate,
+five are statistical ties.
 
 <sub>Measured against CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
 code-review-graph 2.3.7, on repowise `081a59fa` (between v0.37.0 and v0.38.0),

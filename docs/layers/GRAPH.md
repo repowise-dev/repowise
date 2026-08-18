@@ -269,6 +269,14 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
 - **Method-level dead-code detection is not shipped**, for any language. It was
   measured, precision failed, and shipping it would have meant confidently
   recommending deletions that were wrong.
+- **Roughly fifteen percent of our call edges are wrong.** Hand-graded from
+  source, 270 rows across nine languages: 84.8% correct overall, and the misses
+  concentrate in java, rust and cpp, which read 20/30, 22/30 and 23/30
+  respectively. That figure is a floor rather than a best case, because the
+  resolver changes made since the earliest rows were graded only remove wrong
+  edges. Method, per-language and per-repository splits, and the same audit run
+  against a competitor, are in the [graph-quality
+  benchmark](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g1-edge-precision).
 
 ---
 

@@ -436,6 +436,55 @@ finding against us.
 
 ---
 
+## 7. Edge precision
+
+Every other row on this page counts things. This one asks whether they are **true**.
+
+A resolver that guesses aggressively wins a coverage table and a raw edge count while
+sending its reader to the wrong function. So we hand-graded call edges from source, on
+both sides, by the same method: 30 rows per language per tool, seed 2026, stratified by
+resolution strategy, every row read with its imports and enclosing scope open.
+
+| | correct / n | 95% CI |
+|---|---|---|
+| **repowise** | **229/270 = 84.8%** | [80.0, 88.6] |
+| **CodeGraph 1.5.0** | **154/270 = 57.0%** | [51.1, 62.8] |
+
+Per language, nine languages, both sides read:
+
+| Language | repowise | CodeGraph | |
+|---|---|---|---|
+| typescript | 29/30 | 7/30 | separates |
+| go | 29/30 | 29/30 | tie |
+| csharp | 28/30 | 20/30 | separates |
+| python | 28/30 | 19/30 | separates |
+| kotlin | 27/30 | 13/30 | separates |
+| swift | 23/30 | 19/30 | tie |
+| cpp | 23/30 | 16/30 | tie |
+| rust | 22/30 | 13/30 | tie |
+| java | 20/30 | 18/30 | tie |
+
+**Read our number the other way round: roughly fifteen percent of our call edges are
+wrong.** That is the number we plan against, and rust, java and cpp are where it
+concentrates.
+
+**Four of nine cells separate. Five are ties and we report them as ties** — at n=30 the
+interval runs about ±16 points near 60%, so a point-estimate gap inside two overlapping
+intervals is not a win. C++ is a tie despite looking like a 23-point lead.
+
+**One repository goes clearly to them.** On `seastar` CodeGraph reads 6/10 against our
+4/10 — the only repository in the audit, on any language, where they beat us on a clear
+margin. Our misses there are chained calls on an untyped receiver; they infer the
+callee's declared return type and validate against it, so a failed inference costs them
+an edge instead of buying them a wrong one. On `aria2` both sides read 10/10 and they
+resolve 24,950 distinct call edges to our 9,486. Precision is not the only reading.
+
+Cells were measured at different commits, and the staleness runs **conservative**: every
+resolver change in between only removes wrong edges and gained zero, so 84.8% is a floor.
+No cell was measured on the 0.44.0 release; the full table pins a commit per cell.
+
+---
+
 ## Limits
 
 Beyond the ones stated in each section:
@@ -520,6 +569,7 @@ one above it.
 | Level | What is there |
 |---|---|
 | **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Who wins what, the build-cost curve, and what each index can rank at all |
+| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | The graph-quality bench: edge precision hand-graded on both sides, cross-file coverage, adversarial invariance and build cost, across five tools and nine languages |
 | **[arms/](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head/arms)** | One page per competitor: what it is, what it serves, and every setup trap. Four of six have a step that produces a clean zero when missed |
 | **[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)** | The method and all nine gates, each named with the failure that created it |
 | **[configs/arms.yaml](https://github.com/repowise-dev/repowise-bench/blob/master/configs/arms.yaml)** | Every launch command, allowlisted tool and exclusion with its reason. Read this if you think an arm was set up unfairly |
