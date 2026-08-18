@@ -7,7 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -134,6 +134,13 @@ _DEAD_CODE_GIT_FIELDS = (
 )
 
 
+def _as_aware_utc(value: datetime | None) -> datetime | None:
+    """Treat a naive stored timestamp as the UTC it was written as."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
 async def get_dead_code_git_fields(session: AsyncSession, repository_id: str) -> dict[str, dict]:
     """Return ``{file_path: {field: value}}`` for the dead-code scoring fields.
 
@@ -151,6 +158,15 @@ async def get_dead_code_git_fields(session: AsyncSession, repository_id: str) ->
     The values are one update-interval stale for idle files, whose time-decayed
     windows are rewritten later in the same run, after analysis. That is
     strictly closer to the truth than the empty dict it replaces.
+
+    ``last_commit_at`` comes back tz-aware. SQLite drops the offset from
+    ``DateTime(timezone=True)``, and the analyzer merges these rows with freshly
+    read git metadata, which *is* aware — so a naive value here meets an aware
+    one in ``datetime.now(UTC) - last_commit`` and in the ``>`` that picks a
+    package's newest commit, and raises ``TypeError``. The dead-code phase
+    catches broadly, so the whole analysis was skipped for a one-line warning
+    and every finding kept its previous verdict. Normalizing at the read is what
+    keeps that from reaching either site.
     """
     rows = (
         await session.execute(
@@ -160,7 +176,13 @@ async def get_dead_code_git_fields(session: AsyncSession, repository_id: str) ->
             ).where(GitMetadata.repository_id == repository_id)
         )
     ).all()
-    return {r[0]: dict(zip(_DEAD_CODE_GIT_FIELDS, r[1:], strict=True)) for r in rows}
+    return {
+        r[0]: {
+            f: _as_aware_utc(v) if f == "last_commit_at" else v
+            for f, v in zip(_DEAD_CODE_GIT_FIELDS, r[1:], strict=True)
+        }
+        for r in rows
+    }
 
 
 # Repo-wide-walk signals (co-change pairs, Hassan entropy). A pass that did
