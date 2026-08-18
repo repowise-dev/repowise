@@ -103,6 +103,51 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Self-dispatch: this.method(args). The pattern above claims ``this.field.m()``
+; and the bare pattern claims everything, so without this a plain ``this.m()``
+; arrives receiver-less and is read as an implicit receiver — which resolves by
+; bare name through the flat same-file index instead of against the caller's own
+; class.
+;
+; ``super`` is deliberately NOT in this alternation, and the reason is narrower
+; than "super is unsafe". Capturing any receiver makes the bare twin
+; member-shaped, which suppresses ``_enclosing_class_method``'s recursion
+; refusal — the guard that emits no edge when the flat index hands a method its
+; own name. The call then falls through to the same-file tier, and THAT is only
+; wrong when the file declares the target name on MORE THAN ONE class: the flat
+; index is last-wins, so it answers with a sibling's method.
+;
+; So the hazard is a property of the file, not of the keyword, and ``this`` is
+; not immune to it — it is merely far less likely to sit in such a file.
+; Measured on caffeine: ``super`` costs 2 wrong edges (``DelegationBenchmark``
+; declares ``get`` on both ``InheritMap`` and ``DelegateMap``), while all 3
+; self-recursive ``this.add()`` sites are safe because ``IntegerSum`` is the only
+; class in its file declaring ``add`` and the ``callee != caller`` guard then
+; refuses. ``super`` is excluded because its population sits in override-heavy
+; files where sibling classes share names; that costs recall only, which is the
+; right direction to err in. If a future session adds ``super``, the fix it
+; needs first is a same-file index keyed by class, not a wider capture.
+(method_invocation
+  object: (this) @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Fluent construction: new Foo().bar(args). The receiver type is written at the
+; call site, so this lands on the receiver-names-a-class tier — which only binds
+; when that class declares the method — instead of the bare-name pool. Same
+; shape as csharp.scm's ``new Builder().Method()`` (#1680).
+(method_invocation
+  object: (object_creation_expression
+    type: [
+      (type_identifier) @call.receiver
+      (generic_type (type_identifier) @call.receiver)
+    ]
+  )
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Chained method call: obj.method1().method2(args)
 (method_invocation
   object: (method_invocation)
