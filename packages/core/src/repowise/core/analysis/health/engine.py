@@ -288,6 +288,35 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     return not candidates.isdisjoint(path_basenames)
 
 
+def _has_importing_test_file(file_path: str, graph: Any) -> bool:
+    """True if a file recognised as a test (``is_test`` on the import graph
+    node) directly imports *file_path*.
+
+    ``_has_paired_test_file`` only catches a test whose own name embeds the
+    target's stem, which assumes a one-test-file-per-source-file
+    convention. Some ecosystems have no such convention at all: a single
+    Delphi/FPC console test *program* commonly exercises several units
+    together (``TestDualPanelCmdLine.dpr`` directly ``uses``/``in``-imports
+    ``uDualPanelCmd.pas``, ``uInputLine.pas``, ``uVfsTypes.pas``, ...), so
+    no test file's name ever embeds any one of those units' stems. The
+    import graph already has this edge — ingestion resolves a project
+    file's ``uses``/``in`` clauses the same as any other import — so this
+    reads it back instead of re-parsing file content. Language-agnostic:
+    the same check would also catch e.g. a Python integration test module
+    that imports several modules under one file with no per-module test
+    name, which name-pairing misses identically.
+    """
+    if graph is None or file_path not in graph:
+        return False
+    try:
+        for pred in graph.predecessors(file_path):
+            if graph.nodes[pred].get("is_test", False):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 class HealthAnalyzer:
     """Pure-Python health analyzer. No LLM, no network."""
 
@@ -915,7 +944,8 @@ class HealthAnalyzer:
             has_test_file=_has_paired_test_file(file_path, path_basenames)
             or pf.file_info.is_test
             or _coverage_is_test_file(file_path)
-            or fcx.has_inline_tests,
+            or fcx.has_inline_tests
+            or _has_importing_test_file(file_path, self.graph),
             module=module,
             function_metrics=fn_metrics,
             class_metrics=fcx.classes,

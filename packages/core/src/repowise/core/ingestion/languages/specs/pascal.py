@@ -69,5 +69,16 @@ SPEC = LanguageSpec(
         "TObject", "TInterfacedObject", "TPersistent", "TComponent",
         "IUnknown", "IInterface", "IDispatch",
     }),
+    # Delphi/FPC has no same-directory same-stem test-file convention (no
+    # ``uFoo.pas`` <-> ``uFoo_test.pas``): a unit is exercised by a
+    # standalone console test *program* named ``Test<Unit>.dpr`` -- one
+    # test project per unit, or sometimes one project exercising several
+    # related units together -- typically living in its own directory
+    # (this repo's own validation corpus keeps them under ``src/tools/``,
+    # separate from ``src/Core/``). ``Test`` is a prefix, not a suffix, so
+    # this is the mirror of the suffix-shaped ``FooTest.java`` convention:
+    # ``TestKeymap.dpr`` matches, ``Testing.dpr`` and bare ``Test.dpr``
+    # don't (see ``test_camel_prefixes`` on ``LanguageSpec``).
+    test_camel_prefixes=("Test",),
     color_hex="#E3352E",
 )
