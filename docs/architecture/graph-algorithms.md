@@ -2,6 +2,8 @@
 
 This document covers every graph algorithm used in Repowise: what it does, the intuition behind it, the actual math, and why Repowise chose it.
 
+For what the graph *contains* rather than what runs over it, including the edge vocabulary and how each call edge is resolved, see [docs/layers/GRAPH.md](../layers/GRAPH.md).
+
 ---
 
 ## The Foundation: What Is the Graph?

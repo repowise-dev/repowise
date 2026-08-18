@@ -87,7 +87,9 @@ Good language resolves imports outright.
 ## Why these graphs are different
 
 Plenty of tools will hand you a call graph. Three things separate a graph you
-can act on from a picture of arrows.
+can act on from a picture of arrows. This is the short version; the full story,
+with the complete origin table and worked examples, is in
+[GRAPH.md](GRAPH.md).
 
 ### Every call edge says how it was resolved, and how much to trust it
 
@@ -385,6 +387,7 @@ cannot check.
 
 ## See also
 
+- **[GRAPH.md](GRAPH.md)** · the graph itself: edge vocabulary, resolution origins, execution flows
 - **[architecture/language-support.md](../architecture/language-support.md)** · pipeline internals, the call-resolution architecture, and the contributor recipe for adding a language
 - [CODE_HEALTH.md](CODE_HEALTH.md) · health markers and per-language precision
 - [WORKSPACES.md](../scale/WORKSPACES.md) · cross-repo contracts and co-change

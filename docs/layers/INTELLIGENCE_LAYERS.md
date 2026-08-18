@@ -75,7 +75,9 @@ Swift). Heritage extraction covers `extends`, `implements` and trait impls.
   Gin/Echo/Chi, Axum/Actix/Rocket, Rails, Laravel, TYPO3, Flutter and the
   pytest/gtest test runners.
 
-Every derived metric is defined in
+Full detail, including the resolution-origin table, receiver typing worked
+through, and what each edge type does and does not claim:
+[`GRAPH.md`](GRAPH.md). Every derived metric is defined in
 [`COMPUTED_GLOSSARY.md`](../reference/COMPUTED_GLOSSARY.md).
 
 ---

@@ -144,6 +144,8 @@ from the CLI or right in the dashboard with the cost shown before you confirm.
 during doc generation needs a provider.)
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
+How the graph resolves an edge, and how much to trust one:
+**[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)**
 
 ---
 
@@ -440,10 +442,12 @@ GraphQL, Dockerfile, Terraform and friends get dedicated handlers. Anything else
 still tracked through git history: blame, hotspots, co-change.
 
 Every call edge is stamped with **how it was resolved and how much to trust it**, from
-`same_file` at 0.95 down to a repo-wide name match at 0.50, labelled as the guess it is.
+`same_file` at 0.95 down to a repo-wide name match at 0.50, labelled as the guess it is
+([how that works](docs/layers/GRAPH.md)).
 Adding a language takes five small steps and **no changes to the parser core**.
 
 Full matrix: **[docs/layers/LANGUAGE_SUPPORT.md →](docs/layers/LANGUAGE_SUPPORT.md)** ·
+The graph itself: **[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)** ·
 Contributor recipe and internals:
 **[docs/architecture/language-support.md →](docs/architecture/language-support.md)**
 

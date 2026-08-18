@@ -800,6 +800,7 @@ workspace guide.
 
 ## See also
 
+- [docs/layers/GRAPH.md](../layers/GRAPH.md) · user-facing graph page: edge vocabulary, origins, flows
 - [docs/layers/LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md) · user-facing support matrix
 - [docs/layers/CODE_HEALTH.md](../layers/CODE_HEALTH.md) · code-health markers and per-language precision hazards
 - [architecture/code-health.md](code-health.md) · code-health layer internals

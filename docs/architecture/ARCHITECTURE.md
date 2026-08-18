@@ -480,7 +480,8 @@ instead of tree-sitter.
 - `package`: every package/module directory
 - `external`: third-party packages (lightweight node, not fully documented)
 
-**Edge types.** `EdgeType` in `ingestion/models.py` is the source of truth, a
+**Edge types.** User-facing walkthrough: [docs/layers/GRAPH.md](../layers/GRAPH.md).
+`EdgeType` in `ingestion/models.py` is the source of truth, a
 closed `Literal` of 17 values, with `EDGE_TYPE_VALUES` derived from it at runtime
 and pinned by `tests/unit/ingestion/test_edge_type_vocabulary.py`. The ones whose
 meaning is easy to get wrong:
