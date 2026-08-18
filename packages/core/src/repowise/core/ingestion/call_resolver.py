@@ -951,6 +951,17 @@ class CallResolver:
         if method_name not in self._global_symbols:
             return None
 
+        # The caller's own file first. Every other tier is ordered narrow-first
+        # and this one was not: the language strategies below run before
+        # ``_receiver_pair_match``, so ``_resolve_jvm_receiver_same_package``
+        # claimed ``new Builder<>(...).build()`` for any same-package class of
+        # that name — a test-source-set one included — while the caller's own
+        # file declared a private inner ``Builder`` on the same page. The
+        # narrowest scope that can answer is the one the call actually means.
+        own_file = self._file_methods.get(file_path, {}).get((receiver_name, method_name))
+        if own_file is not None and own_file != caller_id:
+            return ResolvedCall(caller_id, own_file, 0.93, call.line, "receiver_same_file")
+
         # A language may reach a receiver no import statement mentions: a Go
         # package alias spanning several files, a JVM class in the same package.
         for strategy in self._strategies_for(file_path).member:
