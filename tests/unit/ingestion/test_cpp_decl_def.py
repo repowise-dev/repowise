@@ -110,3 +110,40 @@ class TestCallAttachesToDefinition:
         graph = _build(tmp_path)
         assert _callers_of(graph, "circle.cpp::Area") == set()
         assert _callers_of(graph, "square.cpp::Area") == set()
+
+
+class TestTypeDeclarationFlag:
+    """``class Env;`` is a declaration too, and only the ``body`` field says so.
+
+    ``declaration_node_types`` catches a prototype because a prototype really
+    is a tree-sitter ``declaration``. A type forward declaration arrives as the
+    same ``class_specifier`` the definition uses, so without the body check it
+    reads as a whole class defined on one line.
+    """
+
+    def test_bodiless_type_is_marked(self, tmp_path: Path) -> None:
+        (tmp_path / "builder.h").write_text(
+            "namespace leveldb {\nclass Env;\nstruct Options;\nenum Level;\n}\n"
+        )
+        graph = _build(tmp_path)
+        for name in ("Env", "Options", "Level"):
+            assert graph.nodes[f"builder.h::{name}"]["is_declaration"] is True, name
+
+    def test_type_with_a_body_is_not_marked(self, tmp_path: Path) -> None:
+        (tmp_path / "env.h").write_text(
+            "namespace leveldb {\nclass Env {\n public:\n  int Now();\n};\n}\n"
+        )
+        graph = _build(tmp_path)
+        assert graph.nodes["env.h::Env"]["is_declaration"] is False
+
+    def test_definition_wins_when_both_are_in_one_file(self, tmp_path: Path) -> None:
+        # Declaration and definition share a symbol id, so the graph holds one
+        # node. It must be the definition: were the one-line declaration to win,
+        # the guard would silence a real finding on the class itself.
+        (tmp_path / "both.h").write_text(
+            "namespace geo {\nclass Shape;\nclass Shape {\n public:\n  int Area();\n};\n}\n"
+        )
+        graph = _build(tmp_path)
+        node = graph.nodes["both.h::Shape"]
+        assert node["is_declaration"] is False
+        assert node["end_line"] > node["start_line"]

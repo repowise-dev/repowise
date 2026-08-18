@@ -358,6 +358,18 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
     }
 )
 
+
+#: C/C++ symbol kinds a bare ``class Env;`` / ``struct Options;`` can carry.
+#: Paired with ``is_declaration`` this identifies a type forward declaration,
+#: which is never a deletable unit — see the guard in ``_detect_unused_exports``.
+_CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {
+        "class",
+        "struct",
+        "enum",
+    }
+)
+
 # Symbol names that are language-runtime entry points or compiler-implicit
 # anchors — never invoked by user-authored callers, never dead.
 _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset(
@@ -1238,6 +1250,22 @@ class DeadCodeAnalyzer:
                 # prototype with no definition anywhere is the opposite case:
                 # nothing else can carry the finding, so it still gets one.
                 if sym.get("is_declaration") and sym.get("defined_by"):
+                    continue
+                # A C/C++ *type* forward declaration is not a deletable unit at
+                # all, paired or not, so it is not held to the clause above.
+                # A prototype promises a body, and a body that exists nowhere
+                # makes the prototype itself the dead thing. ``class Env;``
+                # promises nothing: it exists so the declaring file can name
+                # the type without including its header, which makes that file
+                # the declaration's user. Deleting the line breaks it whether
+                # the definition lives in this repo or in a dependency — and
+                # when it is in the repo, the definition already carries the
+                # finding.
+                if (
+                    sym.get("is_declaration")
+                    and sym.get("language") in ("cpp", "c")
+                    and sym.get("kind") in _CPP_TYPE_DECLARATION_KINDS
+                ):
                     continue
                 # Names that contain a dot are namespace path fragments
                 # (e.g. ``eShop.ClientApp``), not user-visible exports.
