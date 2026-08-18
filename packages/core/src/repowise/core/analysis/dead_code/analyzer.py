@@ -161,6 +161,38 @@ def _decorator_base(raw: str) -> str:
     return base
 
 
+def _is_framework_registered(decorators: list[str]) -> bool:
+    """Whether any decorator wires the symbol into a framework dispatcher.
+
+    Both dead-code passes ask this question, and both asked it with the same
+    lines copy-pasted. It lives here once because a registration rule that
+    drifts between the export pass and the internals pass is a bug nobody goes
+    looking for.
+
+    Three spellings of one fact:
+
+    * a known base name or dotted prefix (``@Component``, ``@app.route``);
+    * a known trailing attribute, for a receiver the prefix list cannot
+      anticipate because it is named locally (``@my_group.command``);
+    * a registration verb in the final path segment. Every suffix entry begins
+      with a dot, so that list can only ever see a *dotted* decorator, and
+      celery's ``@register_drainer('eventlet')`` is bare — invisible to all of
+      them. Reading the final segment covers both spellings at once:
+      ``@register``, ``@register_drainer``, ``@Field.register_lookup``. Held to
+      ``register`` exactly or a ``register_`` stem so that a past participle
+      guarding a handler (``@registered_only``) is not read as one.
+    """
+    bases = [_decorator_base(d) for d in decorators]
+    if any(b.startswith(_FRAMEWORK_DECORATORS) for b in bases):
+        return True
+    if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
+        return True
+    return any(
+        segment == "register" or segment.startswith("register_")
+        for segment in (b.rsplit(".", 1)[-1] for b in bases)
+    )
+
+
 def _is_symbol_deprecated(sym_name: str, decorators: list[str]) -> bool:
     """Return True when the symbol is marked deprecated by name suffix or annotation.
 
@@ -1236,25 +1268,9 @@ class DeadCodeAnalyzer:
                 ):
                     continue
 
-                # Decorators are stored with the leading "@" (e.g. "@app.route").
-                # _FRAMEWORK_DECORATORS entries are bare prefixes; suffixes
-                # like ``.command`` match locally-named Click groups
-                # (``@my_group.command("add")``). Compare against the
-                # stripped form, and strip any call ``(...)`` tail so the
-                # suffix check sees the attribute path itself.
                 decorators = sym.get("decorators", [])
 
-                if any(
-                    _decorator_base(d).startswith(prefix)
-                    for d in decorators
-                    for prefix in _FRAMEWORK_DECORATORS
-                ):
-                    continue
-                if any(
-                    _decorator_base(d).endswith(suffix)
-                    for d in decorators
-                    for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
-                ):
+                if _is_framework_registered(decorators):
                     continue
                 if _declared_deliberately_unused(decorators):
                     continue
@@ -1495,22 +1511,11 @@ class DeadCodeAnalyzer:
             # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
             # method is invoked by the container, not by a source call.
             decorators = node_data.get("decorators") or []
-            if decorators:
 
-                if any(
-                    _decorator_base(d).startswith(prefix)
-                    for d in decorators
-                    for prefix in _FRAMEWORK_DECORATORS
-                ):
-                    continue
-                if any(
-                    _decorator_base(d).endswith(suffix)
-                    for d in decorators
-                    for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
-                ):
-                    continue
-                if _declared_deliberately_unused(decorators):
-                    continue
+            if _is_framework_registered(decorators):
+                continue
+            if _declared_deliberately_unused(decorators):
+                continue
 
             # Any inbound use, not only a call. A base class that is subclassed
             # rather than instantiated, a collaborator the container constructs,

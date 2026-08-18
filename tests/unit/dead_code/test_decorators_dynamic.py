@@ -344,6 +344,17 @@ def test_unrelated_dot_command_function_still_flagged():
         '@filter_registry.register("git_status")',
         # ``from pytest import fixture`` leaves a bare, undotted decorator.
         "@fixture",
+        # A *bare* registration decorator. No dotted suffix can reach this
+        # form, so it was invisible to every list until the final path
+        # segment became the thing matched.
+        "@register_drainer('eventlet')",
+        "@register",
+        # The dotted spellings of the same rule, which must keep working
+        # after the ``.register`` suffix entry was retired into it.
+        "@Field.register_lookup",
+        "@atexit.register",
+        # Lifecycle hooks: the framework calls them, nothing imports them.
+        '@app.on_event("shutdown")',
     ],
 )
 def test_renamed_receiver_and_registry_decorators_excluded(decorator):
@@ -372,3 +383,90 @@ def test_renamed_receiver_and_registry_decorators_excluded(decorator):
     report = analyzer.analyze({"detect_unreachable_files": False, "detect_zombie_packages": False})
     names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
     assert "wired_symbol" not in names
+
+
+@pytest.mark.parametrize(
+    "decorator",
+    [
+        # A past participle guarding a handler is not a registration, and it
+        # is the one word a ``register`` prefix would swallow — hence the rule
+        # matches ``register`` exactly or a ``register_`` stem, nothing else.
+        "@registered_only",
+        "@registry_cache",
+        # The receiver being called ``register`` says nothing about the
+        # decorator, which is what the final path segment is read for.
+        "@register.unwrap",
+    ],
+)
+def test_register_lookalike_decorators_still_flagged(decorator):
+    g = _build_graph(
+        nodes={
+            "pkg/guarded.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "guarded_symbol",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [decorator],
+                        "start_line": 1,
+                        "end_line": 10,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze({"detect_unreachable_files": False, "detect_zombie_packages": False})
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "guarded_symbol" in names
+
+
+@pytest.mark.parametrize(
+    "decorator",
+    ["@register_drainer('gevent')", '@app.on_event("startup")', "@shared_task"],
+)
+def test_framework_registration_also_skips_the_internals_pass(decorator):
+    """The unused-internal pass must apply the same rule as the export pass.
+
+    It carried its own copy of it, so the two could diverge without any test
+    noticing — a private ``@register_drainer`` helper is registered by exactly
+    the same side effect as a public one.
+    """
+    g = _build_graph(
+        nodes={
+            "pkg/wired.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "_wired_helper",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [decorator],
+                        "start_line": 1,
+                        "end_line": 10,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+    assert "_wired_helper" not in names

@@ -971,12 +971,11 @@ _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".command",
     ".group",
     ".callback",
-    # Registry registration: ``@filter_registry.register`` / ``@hooks.register``
-    # wires the symbol in by side effect; consumers look it up by string key,
-    # so the name never appears in an import. Any decorator whose attribute
-    # path ends in ``.register`` is a registration, whatever the registry
-    # object is called.
-    ".register",
+    # Registry registration (``@filter_registry.register``) is deliberately not
+    # here. It is one spelling of a rule that must also reach the bare
+    # ``@register_drainer`` form, which no dotted suffix can ever match, so
+    # ``_is_framework_registered`` carries both rather than this list carrying
+    # half.
     # FastAPI / Flask / Sanic route decorators on a receiver the prefix list
     # doesn't anticipate (``api = FastAPI()``, ``_repo_health_router =
     # APIRouter()``). A decorator ending in an HTTP verb or routing method is
@@ -993,6 +992,10 @@ _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".websocket",
     ".middleware",
     ".exception_handler",
+    # Startup/shutdown lifecycle hooks (``@app.on_event("shutdown")``). The
+    # framework calls them and nothing imports them, exactly as for the route
+    # decorators above; the list simply never carried the hook form.
+    ".on_event",
     # Celery apps under a non-``app``/``celery`` local name (``@worker.task``).
     ".task",
     # Django template tags and filters. ``@register.tag(name="result_list")``
