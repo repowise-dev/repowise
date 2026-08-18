@@ -126,11 +126,12 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member=("_resolve_go_package_call",),
         member_fallback=_TYPED_RECEIVER,
     ),
-    # Kotlin shares the JVM tiers but not the typed-receiver fallback: it has
-    # no declaration shapes yet, so registering it would promise a resolution
-    # the language gate immediately declines.
+    # Kotlin shares the JVM tiers and, since its declaration shapes landed,
+    # the typed-receiver fallback too. One `name: Type` shape reaches its
+    # typed vals, vars and parameters alike, so the language gate no longer
+    # declines the moment the fallback asks.
     "java": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
-    "kotlin": _JVM_STRATEGIES,
+    "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "cpp": _CPP_STRATEGIES,

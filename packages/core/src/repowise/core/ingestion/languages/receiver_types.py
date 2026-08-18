@@ -23,7 +23,7 @@ Adding a language means adding its shapes to ``_LANGUAGE_PATTERNS``; a
 language absent from it is excluded by construction. Two smaller tables sit
 beside it: ``_FRAMEWORK_DECORATOR_TYPES``, for a decorator that changes what
 the symbol it wraps is, and ``_PY_BINDINGS``, which says only that a name is
-taken -- a refusal rather than a type.
+taken — a refusal rather than a type.
 """
 
 from __future__ import annotations
@@ -70,6 +70,20 @@ _HASH_COMMENT = re.compile(r"#.*")
 # so triple-quoted runs are blanked, keeping their newlines so line numbers
 # survive.
 _DOCSTRING = re.compile(r"(\"\"\"|''')(?:.|\n)*?\1")
+
+# A block comment, blanked to its newlines so line numbers survive. Kotlin
+# needs this where Java and C# do not, and the asymmetry is in the shapes
+# rather than in the languages: KDoc writes `@param connection: Store`, which
+# is exactly Kotlin's `name: Type`, while javadoc's `@param connection the
+# Store` is not the C family's `Type name`. Measured on the same text — the
+# Kotlin scan fabricated `connection: Store` from prose and the Java scan
+# returned nothing.
+#
+# Run before the line strip, not after: truncating at `//` first would eat the
+# `*/` out of `/* see http://x */` and leave the opener unterminated. As with
+# `//`, a `/*` inside a string literal is over-matched, which can only ever
+# lose a declaration and never invent one.
+_BLOCK_COMMENT = re.compile(r"/\*(?:.|\n)*?\*/")
 
 _NEWLINE = re.compile(r"\n")
 
@@ -147,16 +161,80 @@ _GO_SHORT_DECL = re.compile(
 # the one shape neither pattern above reaches.
 _GO_VAR_DECL = re.compile(rf"(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})")
 
+# Kotlin annotates after the name, as Python does, and one shape reaches every
+# declaration that matters: `val x: Foo`, `var x: Foo`, `fun f(x: Foo)` and a
+# primary constructor's `class A(val x: Foo)` are all `name: Type`. Measured
+# over ktor and exposed, that one shape is 6,291 typed `val`s, 1,242 `var`s and
+# ~8,800 parameters, against 1,183 for the constructor shape below.
+#
+# The type reuses the C family's `_TYPE`, so a generic is matched and reduced to
+# its bare name. That is right in Kotlin and wrong in Python for the same
+# reason spelled backwards: `List<Foo>` bares to `List`, a builtin the language
+# spec refuses downstream, while `Column<T>` bares to `Column`, which is the
+# type the value actually has. Python's `Optional[T]` had no such reading, which
+# is why `_PY_ANNOTATED` refuses a generic outright.
+#
+# A trailing `?` is consumed rather than refused: `Foo?` is still a `Foo` at the
+# call site, and it is 15% of ktor's typed declarations.
+#
+# `by` closes a declaration as well as the punctuation does. `val x: Foo by
+# lazy { ... }` is a delegated property, `x` is a `Foo`, and without this the
+# whole idiom types nothing. It is a word rather than a symbol, so it is an
+# alternation and not another character in the class — and it can never be a
+# field closer, which is the conservative reading: a delegated property at
+# class scope stays untyped rather than being guessed at.
+#
+# The `val`/`var` keyword is captured, optional, and read by nothing except
+# field classification. A parameter is `name: Type` with no keyword, and a
+# primary constructor's `class C(timeout: Duration = 5.seconds)` therefore
+# closes on `=` at class scope exactly as a real property does — so without
+# this group `timeout` is registered as a field it is not, since a parameter
+# with no `val`/`var` is not a property and no method body can name it.
+# Blanking the closer is what refuses it; body typing is unaffected either
+# way, because only `types_by_class` reads a closer at all.
+#
+# `(` is deliberately not a closer. It is what keeps the pattern off an
+# annotation use-site target — `@get:JvmName("x")` reads as `get: JvmName`.
+#
+# A function type's own parameters are reached incidentally: `statement:
+# Transaction.(dest: Dest) -> Unit` presents `dest: Dest` to the same pattern.
+# That is kept rather than excluded — the hand-read found 3 such rows and all
+# 3 were right, and the validator makes a wrong one cost an edge, not an error.
+_KT_ANNOTATED = re.compile(
+    rf"(?<![\w.])(?:(?P<keyword>va[lr])\s+)?(?P<name>[a-z_]\w*)\s*:\s*"
+    rf"(?P<type>{_TYPE})\??\s*(?=(?P<closer>[=,)\n]|by\b))"
+)
+
+# `val x = Foo(...)`, the shape an inferred Kotlin declaration takes. Anchored
+# to `val`/`var` rather than to the start of a statement, which is what Python's
+# equivalent needed: Kotlin spells a named argument with `=` too, so
+# `dispatch(logger = Emitter())` is otherwise read as declaring `logger`.
+# Bare-named on purpose — `val x = Foo.bar()` is a call on a class, and typing
+# `x` as `Foo` from it would simply be wrong.
+#
+# The lookahead refuses a chain: `val x = Builder().build()` makes `x` whatever
+# `build()` returns, not a `Builder`, and typing it as one is a wrong answer
+# rather than a missing one. `_PY_CONSTRUCTED` has the same shape and does not
+# refuse it; moving Python is its own measured change and is not made here.
+# `[^()]*` cannot cross a nested call, so `Foo(bar(1)).baz()` is still typed --
+# a stated ceiling, and the same direction of error as today rather than a new
+# one.
+_KT_CONSTRUCTED = re.compile(
+    r"(?<![\w.])va[lr]\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\((?![^()]*\)\s*\.)"
+)
+
 _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
 # No Go shape captures a closer, so every Go declaration carries ``""`` and
 # class scope would drop all of them. That is the intended reading: Go is not
 # in IMPLICIT_FIELD_LANGUAGES and must not be.
 _GO_FAMILY = (_GO_PARAM, _GO_SHORT_DECL, _GO_VAR_DECL)
+_KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED)
 
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "csharp": _C_FAMILY,
     "go": _GO_FAMILY,
     "java": _C_FAMILY,
+    "kotlin": _KT_FAMILY,
     "python": (_PY_ANNOTATED, _PY_CONSTRUCTED),
 }
 
@@ -167,7 +245,18 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # writes ``self.foo.bar()``, whose receiver is dotted and which our grammar
 # queries mint no call site for at all — so class scope has nothing there to
 # answer, and consulting it could only bind a bare local name to a field.
-IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "java"})
+#
+# Kotlin is here on a count rather than on its semantics, which is the lesson
+# bug 63 cost: Python has implicit field access too, and registering it would
+# have promised nothing, because only 1.8% of its field receivers are typed
+# where this scan looks. Kotlin declares a property at class scope in its own
+# idiom, and the scan does find them — 56 of ktor's 1,349 gained edges and 100
+# of exposed's 320, hand-read 10/10 correct. Small, and measured.
+#
+# Only a `val`/`var` reaches class scope. A primary-constructor parameter with
+# a default closes on `=` there too and is not a property at all, which is why
+# `_KT_ANNOTATED` captures the keyword.
+IMPLICIT_FIELD_LANGUAGES = frozenset({"csharp", "java", "kotlin"})
 
 # A decorator that changes what the symbol it wraps *is*: `@shared_task` leaves
 # no function behind, so `add.s(...)` is a method call and `(Task, s)` a
@@ -267,10 +356,15 @@ def framework_decorated_type(decorators: Iterable[str], language: str) -> str | 
                 return type_name
     return None
 
+_LANGUAGE_BLOCK_COMMENTS: dict[str, re.Pattern[str]] = {
+    "kotlin": _BLOCK_COMMENT,
+}
+
 _LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
     "csharp": _LINE_COMMENT,
     "go": _LINE_COMMENT,
     "java": _LINE_COMMENT,
+    "kotlin": _LINE_COMMENT,
     "python": _HASH_COMMENT,
 }
 
@@ -324,6 +418,9 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
     cleaned = text
     if language == "python":
         cleaned = _DOCSTRING.sub(lambda m: "\n" * m.group(0).count("\n"), cleaned)
+    block = _LANGUAGE_BLOCK_COMMENTS.get(language)
+    if block is not None:
+        cleaned = block.sub(lambda m: "\n" * m.group(0).count("\n"), cleaned)
     comment = _LANGUAGE_COMMENTS.get(language)
     if comment is not None:
         cleaned = comment.sub("", cleaned)
@@ -343,12 +440,19 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
             type_name = resolved[raw]
             if type_name is None:
                 continue
+            groups = match.groupdict()
+            # A shape that names a declaration keyword and did not match one
+            # is not a declaration that can own a field — see `_KT_ANNOTATED`.
+            # Shapes with no `keyword` group are unaffected.
+            closer = groups.get("closer") or ""
+            if "keyword" in groups and not groups["keyword"]:
+                closer = ""
             found.append(
                 Declaration(
                     bisect_right(starts, match.start()),
                     match.group("name"),
                     type_name,
-                    match.groupdict().get("closer") or "",
+                    closer,
                 )
             )
 
