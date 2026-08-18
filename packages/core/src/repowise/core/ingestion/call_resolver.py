@@ -242,6 +242,7 @@ class CallResolver:
         self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
         self._method_name_set: frozenset[str] | None = None
+        self._framework_name_set: frozenset[str] | None = None
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
@@ -1430,6 +1431,23 @@ class CallResolver:
             self._bindings[file_path] = found
         return found
 
+    def _framework_names(self, language: str) -> frozenset[str]:
+        """Every name a framework decorator retypes anywhere in the repo."""
+        if self._framework_name_set is None:
+            found: set[str] = set()
+            for parsed in self._parsed_files.values():
+                if parsed.file_info.language != language:
+                    continue
+                for symbol in parsed.symbols:
+                    if (
+                        symbol.kind in _FUNCTION_KINDS
+                        and not symbol.parent_name
+                        and framework_decorated_type(symbol.decorators, language)
+                    ):
+                        found.add(symbol.name)
+            self._framework_name_set = frozenset(found)
+        return self._framework_name_set
+
     def _framework_types_in(self, file_path: str, language: str) -> dict[str, str]:
         """``{name: type}`` for one file's module-level decorated defs."""
         types = self._framework_types.get(file_path)
@@ -1456,6 +1474,14 @@ class CallResolver:
         caller never imports is not this receiver, and reaching for it would be
         the bare-name match this tier exists to avoid.
         """
+        # One pass over the repo's symbols answers for every call site that
+        # names nothing decorated, which is all of them in a repo that uses no
+        # framework in the table. Without it every unresolved member call pays
+        # a per-file symbol walk and three dict lookups: 15% of django's build
+        # for a repo that gains no edge at all.
+        if receiver_name not in self._framework_names(language):
+            return None
+
         own = self._framework_types_in(file_path, language).get(receiver_name)
         if own is not None:
             return own
