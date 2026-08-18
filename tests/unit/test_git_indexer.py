@@ -889,6 +889,57 @@ class TestGitUnavailableGraceful:
         assert "blob:none" in on_warning.call_args.args[0]
         get_tracked_files.assert_not_called()
         repo.git.log.assert_not_called()
+        repo.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_partial_clone_skips_incremental_file_history(self) -> None:
+        """Incremental updates must not re-enter the blob-dependent walk."""
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            "remote.origin.promisor true",
+            "blob:none",
+        ]
+        on_warning = MagicMock()
+
+        with patch.object(indexer, "_get_repo", return_value=repo):
+            metadata = await indexer.index_changed_files(
+                ["changed.py"],
+                on_warning=on_warning,
+            )
+
+        assert metadata == []
+        on_warning.assert_called_once()
+        assert "partial clone" in on_warning.call_args.args[0]
+        repo.git.log.assert_not_called()
+        repo.close.assert_called_once()
+
+    def test_partial_clone_skips_incremental_commit_capture(self) -> None:
+        """Standalone commit capture must obey the same no-fetch invariant."""
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            "remote.origin.promisor true",
+            "blob:none",
+        ]
+
+        with patch.object(indexer, "_get_repo", return_value=repo):
+            rows = indexer.capture_new_commit_rows()
+
+        assert rows == []
+        repo.git.log.assert_not_called()
+        repo.close.assert_called_once()
+
+    @pytest.mark.parametrize("promisor_value", ["true", "1", "yes", "on"])
+    def test_partial_clone_accepts_git_boolean_aliases(self, promisor_value: str) -> None:
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            f"remote.origin.promisor {promisor_value}",
+            "blob:none",
+        ]
+
+        assert indexer._partial_clone_filter(repo) == "blob:none"
 
     def test_non_promisor_clone_keeps_history_enabled(self) -> None:
         indexer = GitIndexer("/tmp/repo")

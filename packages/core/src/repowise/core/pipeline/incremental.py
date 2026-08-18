@@ -288,6 +288,7 @@ async def rebuild_graph_and_git(
             all_files=set(source_map.keys()),
             co_change_sink=co_change_full,
             idle_decay_sink=idle_decay_sink,
+            on_warning=log,
         )
         git_meta_map = {m["file_path"]: m for m in updated_meta}
         if co_change_full:

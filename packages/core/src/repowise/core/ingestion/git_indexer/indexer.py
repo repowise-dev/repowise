@@ -121,22 +121,11 @@ class GitIndexer:
         if repo is None:
             return GitIndexSummary(0, 0, 0, 0.0), []
 
-        partial_filter = self._partial_clone_filter(repo)
-        if partial_filter is not None:
-            warning = (
-                "Git history skipped for partial clone "
-                f"(filter: {partial_filter}) to avoid fetching missing objects; "
-                "use a full clone to enable history, churn, and ownership signals."
-            )
-            logger.warning(
-                "git_history_skipped_partial_clone",
-                partial_clone_filter=partial_filter,
-            )
-            if on_warning is not None:
-                with contextlib.suppress(Exception):
-                    on_warning(warning)
+        if self._skip_partial_clone_history(repo, on_warning=on_warning):
             if on_start is not None:
                 on_start(0)
+            with contextlib.suppress(Exception):
+                repo.close()
             return GitIndexSummary(0, 0, 0, time.monotonic() - start), []
 
         tracked_files = self._get_tracked_files(repo)
@@ -391,6 +380,7 @@ class GitIndexer:
         all_files: set[str] | None = None,
         co_change_sink: dict[str, list[dict]] | None = None,
         idle_decay_sink: dict[str, dict] | None = None,
+        on_warning: Callable[[str], None] | None = None,
     ) -> list[dict]:
         """Incremental update: re-index only changed files.
 
@@ -426,6 +416,10 @@ class GitIndexer:
         """
         repo = self._get_repo()
         if repo is None:
+            return []
+        if self._skip_partial_clone_history(repo, on_warning=on_warning):
+            with contextlib.suppress(Exception):
+                repo.close()
             return []
 
         loop = asyncio.get_event_loop()
@@ -644,6 +638,9 @@ class GitIndexer:
         if repo is None:
             return []
         try:
+            if self._skip_partial_clone_history(repo):
+                return []
+
             from ..git_commit_index import load_commit_index
             from .commit_rows import build_commit_rows
 
@@ -966,7 +963,7 @@ class GitIndexer:
 
         for line in promisor_config.splitlines():
             key, separator, value = line.partition(" ")
-            if not separator or value.strip().lower() != "true":
+            if not separator or value.strip().lower() not in {"true", "1", "yes", "on"}:
                 continue
             parts = key.split(".")
             if len(parts) < 3:
@@ -981,6 +978,31 @@ class GitIndexer:
                 clone_filter = ""
             return clone_filter or "promisor"
         return None
+
+    def _skip_partial_clone_history(
+        self,
+        repo: Any,
+        *,
+        on_warning: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Report and bound git enrichment when *repo* is a partial clone."""
+        partial_filter = self._partial_clone_filter(repo)
+        if partial_filter is None:
+            return False
+
+        warning = (
+            "Git history skipped for partial clone "
+            f"(filter: {partial_filter}) to avoid fetching missing objects; "
+            "use a full clone to enable history, churn, and ownership signals."
+        )
+        logger.warning(
+            "git_history_skipped_partial_clone",
+            partial_clone_filter=partial_filter,
+        )
+        if on_warning is not None:
+            with contextlib.suppress(Exception):
+                on_warning(warning)
+        return True
 
     def _get_tracked_files(self, repo: Any) -> list[str]:
         try:
