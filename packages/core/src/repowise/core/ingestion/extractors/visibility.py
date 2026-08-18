@@ -146,6 +146,18 @@ _TS_EXPORT_DEFAULT_RE = re.compile(r"\bexport\s+default\s+([A-Za-z_$][\w$]*)")
 _TS_EXPORT_ASSIGN_RE = re.compile(r"\bexport\s*=\s*([A-Za-z_$][\w$]*)")
 _TS_CJS_EXPORTS_RE = re.compile(r"\bmodule\.exports\b|\bexports\s*[.\[]")
 
+# The same list form, plus whatever follows the closing brace, so a clause with
+# a ``from`` source can be told from one without. Only the source-less form
+# publishes a name for a symbol the file declares itself; the other is a
+# re-export the import pipeline already carries.
+_TS_EXPORT_LIST_SOURCE_RE = re.compile(r"\bexport\s*\{([^}]*)\}\s*(from\b)?")
+
+# Dropped outright rather than blanked: nothing downstream of the alias scan
+# reads a line number, and collapsing a comment between a clause and its
+# ``from`` is what lets the two be told apart at all.
+_TS_BLOCK_COMMENT = re.compile(r"/\*(?:.|\n)*?\*/")
+_TS_LINE_COMMENT = re.compile(r"//.*")
+
 _TS_CLASSLIKE_ANCESTORS = frozenset(
     {
         "class_declaration",
@@ -178,6 +190,45 @@ def ts_deferred_export_names(src: str) -> frozenset[str] | None:
         for m in regex.finditer(src):
             names.add(m.group(1))
     return frozenset(names)
+
+
+def ts_export_aliases(src: str) -> dict[str, str]:
+    """``{exported name: local name}`` for renaming, source-less export clauses.
+
+    ``export { stringType as string }`` is the only place a module states that
+    the symbol it declares as ``stringType`` is published as ``string``. It
+    carries no ``from`` clause, so it is not an import and nothing in the
+    import pipeline records it; the file's symbol table keeps the local name,
+    and every namespace, barrel and member lookup downstream asks for the
+    published one.
+
+    Clauses that do not rename are omitted: the two names agree, so the symbol
+    table already answers and an entry would only duplicate it.
+    """
+    # Every alias is written ``local as exported``, so a file without that
+    # token cannot hold one and need not be scanned. Most files do not, and
+    # the scan is over the whole source.
+    if " as " not in src:
+        return {}
+
+    # Comments are stripped first, and this map is the reason it is worth the
+    # pass. ``ts_deferred_export_names`` reads the same clause unstripped and a
+    # commented-out one only ever mislabels a symbol public; here it would name
+    # a local symbol as some module's published API and mint a call edge to it.
+    cleaned = _TS_LINE_COMMENT.sub("", _TS_BLOCK_COMMENT.sub("", src))
+
+    aliases: dict[str, str] = {}
+    for m in _TS_EXPORT_LIST_SOURCE_RE.finditer(cleaned):
+        if m.group(2):  # ``export { a as b } from "./x"`` — a re-export
+            continue
+        for part in m.group(1).split(","):
+            local, separator, exported = (p.strip() for p in part.partition(" as "))
+            if not separator or not local.isidentifier() or not exported.isidentifier():
+                continue
+            # A name published twice under one spelling has no single answer,
+            # and guessing costs a wrong edge where refusing costs none.
+            aliases[exported] = local if aliases.get(exported, local) == local else ""
+    return {exported: local for exported, local in aliases.items() if local}
 
 
 def refine_ts_visibility(

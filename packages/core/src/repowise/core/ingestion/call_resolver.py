@@ -312,7 +312,13 @@ class CallResolver:
                 if resolved != path:
                     wildcard_sources[path].append(resolved)
                 source_syms = self._file_symbols.get(resolved, {})
-                for sym_name in source_syms:
+                source_parsed = self._parsed_files.get(resolved)
+                published = (
+                    (*source_syms, *source_parsed.export_aliases)
+                    if source_parsed
+                    else tuple(source_syms)
+                )
+                for sym_name in published:
                     if sym_name not in file_syms:
                         self._barrel_origins[path][sym_name] = resolved
 
@@ -700,6 +706,23 @@ class CallResolver:
             resolved.origin,
         )
 
+    def _published(self, file_path: str, name: str) -> str | None:
+        """The symbol *file_path* publishes under *name*, or None.
+
+        A module may declare a symbol under one name and export it under
+        another — ``export { stringType as string }`` — and every lookup that
+        arrives through a namespace, a barrel or an import asks for the
+        published name while the symbol table holds the local one. The table
+        answers first, so the alias can only ever add a hit.
+        """
+        symbols = self._file_symbols.get(file_path, {})
+        found = symbols.get(name)
+        if found is not None:
+            return found
+        parsed = self._parsed_files.get(file_path)
+        local = parsed.export_aliases.get(name) if parsed else None
+        return symbols.get(local) if local else None
+
     def _merged_symbols_for(self, file_path: str) -> dict[str, str]:
         """Merged ``{name → symbol_id}`` across every file *file_path* imports.
 
@@ -849,11 +872,9 @@ class CallResolver:
             lookup_name = binding.exported_name or target_name
             if lookup_name in barrel:
                 source_file = barrel[lookup_name]
-            source_syms = self._file_symbols.get(source_file, {})
-            if lookup_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[lookup_name], 0.90, call.line, "import_scoped"
-                )
+            published = self._published(source_file, lookup_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
         if not declared:
             return None
@@ -865,11 +886,9 @@ class CallResolver:
             barrel = self._barrel_origins.get(source_file, {})
             if target_name in barrel:
                 source_file = barrel[target_name]
-            source_syms = self._file_symbols.get(source_file, {})
-            if target_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[target_name], 0.90, call.line, "import_scoped"
-                )
+            published = self._published(source_file, target_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
         # 2b: Check all imported files for the symbol (pre-merged lookup)
         merged_syms = self._merged_symbols_for(file_path)
@@ -933,11 +952,9 @@ class CallResolver:
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
-            source_syms = self._file_symbols.get(module_file, {})
-            if method_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[method_name], 0.88, call.line, "module_alias"
-                )
+            published = self._published(module_file, method_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
             # A namespace over a barrel names a file that declares nothing of
             # its own, so the lookup above can only ever miss. Chase the
             # re-export map, as free calls and typed receivers already do.
@@ -951,21 +968,17 @@ class CallResolver:
             if origin is not None and origin != module_file:
                 binding = self._import_bindings.get(module_file, {}).get(method_name)
                 declared_name = (binding.exported_name if binding else None) or method_name
-                origin_syms = self._file_symbols.get(origin, {})
-                if declared_name in origin_syms:
-                    return ResolvedCall(
-                        caller_id, origin_syms[declared_name], 0.88, call.line, "module_alias"
-                    )
+                published = self._published(origin, declared_name)
+                if published is not None:
+                    return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
         name_to_file = self._import_names.get(file_path, {})
         if receiver_name in name_to_file and not module_file:
             source_file = name_to_file[receiver_name]
-            source_syms = self._file_symbols.get(source_file, {})
-            if method_name in source_syms:
-                return ResolvedCall(
-                    caller_id, source_syms[method_name], 0.88, call.line, "module_alias"
-                )
+            published = self._published(source_file, method_name)
+            if published is not None:
+                return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
 
         # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
         # The receiver is a crate name, the target is a symbol in that crate's lib.rs

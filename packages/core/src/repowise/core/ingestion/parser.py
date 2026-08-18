@@ -54,6 +54,7 @@ from .extractors.visibility import (
     refine_csharp_visibility,
     refine_ts_visibility,
     ts_deferred_export_names,
+    ts_export_aliases,
 )
 from .language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from .languages.registry import REGISTRY as _LANG_REGISTRY
@@ -447,6 +448,7 @@ class ASTParser:
         )
         heritage = extract_heritage(matches, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
+        export_aliases = ts_export_aliases(src) if lang in _TS_JS_LANGUAGES else {}
         docstring = extract_module_docstring(root, src, lang)
         type_refs = self._extract_type_refs(matches, src, lang)
 
@@ -474,6 +476,7 @@ class ASTParser:
             symbols=symbols,
             imports=imports,
             exports=exports,
+            export_aliases=export_aliases,
             calls=calls,
             heritage=heritage,
             docstring=docstring,

@@ -540,6 +540,11 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # ``{exported name: local name}`` where a TS/JS module publishes a symbol
+    # it declares under a different name (``export { stringType as string }``).
+    # Empty for every other language and for the far commoner clause that does
+    # not rename, where the symbol table already answers.
+    export_aliases: dict[str, str] = field(default_factory=dict)
     calls: list[CallSite] = field(default_factory=list)
     heritage: list[HeritageRelation] = field(default_factory=list)
     docstring: str | None = None  # module/file-level docstring
