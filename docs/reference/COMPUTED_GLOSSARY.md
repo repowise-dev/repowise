@@ -393,7 +393,7 @@ workspace overlays, MCP responses, and CLI output.
 | Dead-code status | `open`, `acknowledged`, `resolved`, `false_positive` |
 | Security severity | `high`, `med`, `low` |
 | Security kind | `eval_call`, `exec_call`, `pickle_loads`, `subprocess_shell_true`, `os_system`, `hardcoded_password`, `hardcoded_secret`, `fstring_sql`, `concat_sql`, `tls_verify_false`, `weak_hash`, `security_sensitive_symbol` |
-| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `co_changes`, `framework`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route` — the complete list, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py` |
+| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `dispatches_to`, `co_changes`, `framework`, `framework_binds`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route`, `references`; all 17, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py`. `reads` is file-to-file only; its former symbol-level producer emits `framework_binds` |
 | Node type | `file`, `symbol`, `external` |
 | Search type | `vector`, `fulltext` |
 | Contract type | `http`, `grpc`, `topic` |

@@ -21,7 +21,7 @@ searchable in natural language.
 4. [Decision Intelligence](#decision-intelligence)
 5. [Code Health Intelligence](#code-health-intelligence)
 
-**Derived** — built on the five, each with its own reference page
+**Derived**: built on the five, each with its own reference page
 
 6. [Change Risk](#change-risk) · [Test Intelligence](#test-intelligence) ·
    [Bug History](#bug-history) · [Security](#security) ·
@@ -41,15 +41,29 @@ upgrade for prose quality in the docs layer, never a requirement for the index.
 ## Graph Intelligence
 
 tree-sitter parses your source into a **two-tier dependency graph**: file nodes
-and symbol nodes (functions, classes, methods). 18 languages parse to a full
+and symbol nodes (functions, classes, methods). 19 languages parse to a full
 AST; see [`LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language tiers.
 
-A **3-tier call resolver with confidence scoring** handles import aliases,
-barrel re-exports and namespace imports: same-file resolution at 0.95,
-import-scoped at 0.90, globally-unique at 0.50, with language-specific pre-tiers
-for Go packages, JVM same-package and C++ same-target. Heritage extraction
-covers `extends`, `implements` and trait impls.
+A **confidence-scored call resolver** handles import aliases, barrel
+re-exports and namespace imports. Every `calls` edge is stamped with one of 29
+named resolution origins (`ResolutionOrigin` in `ingestion/models.py`), each
+carrying a fixed confidence from 0.95 (`same_file`) down to 0.50
+(`global_unique`, a repo-wide name match, labelled as the guess it is). That
+includes per-language tiers for Go packages, JVM same-package and C++
+same-target, and twelve receiver-typing origins that resolve a call on a
+variable by reading the variable's declaration (Java, C#, Python, Go, Kotlin,
+Swift). Heritage extraction covers `extends`, `implements` and trait impls.
 
+- **A closed edge vocabulary** keeps inference from reading as fact. A
+  `calls` edge means the parser saw a call; `references` means something only
+  holds a handle to the function; `dispatches_to` names an implementation that
+  *could* answer for a base method; `framework_binds` is wiring a framework
+  performs and no parser could have seen. Consumers read the derived edge sets
+  rather than re-deriving their own filter.
+- **An execution flow says why it stopped**, from a six-value vocabulary: a real
+  end, a cycle, an exhausted hop budget, an all-excluded successor set, a
+  confidence-filtered one, or calls that failed to resolve. A trace that simply
+  ends is the one thing it never reports.
 - **Leiden community detection** (Louvain fallback) finds logical modules even
   when your directory structure doesn't reflect them.
 - **PageRank, betweenness centrality, SCC analysis, and execution-flow tracing**
@@ -72,7 +86,7 @@ repowise mines your git history to produce signals no static analysis can find.
 
 **Hotspots**: files in the top quartile of *decayed* churn (exponential
 half-life, so last month outweighs last year) that also clear minimum-activity
-floors — at least 3 commits in 90 days and a meaningful temporal score. Churn
+floors, at least 3 commits in 90 days and a meaningful temporal score. Churn
 alone would flag every file a bulk refactor touched; the floors keep the list
 about sustained activity. Surfaced by `get_risk()` before your agent edits.
 
@@ -86,12 +100,12 @@ co-change partners alongside direct dependencies.
 **Bus factor**: how many authors it takes to cover 80% of a file's commits. A
 bus factor of 1 is the classic single-owner risk, surfaced in `CLAUDE.md`.
 
-**Significant commits**: up to 50 meaningful commit messages per file — merges,
-dependency bumps, lint-only and bot commits filtered out — with the commit body
+**Significant commits**: up to 50 meaningful commit messages per file, merges,
+dependency bumps, lint-only and bot commits filtered out, with the commit body
 retained when it carries decision intent. These feed generation prompts, so the
 wiki can explain *why* code is structured the way it is.
 
-**Contributor profiles**: every author gets a page — modules they own, top
+**Contributor profiles**: every author gets a page, modules they own, top
 files, co-authors, commit category mix, silo modules, bus-factor risk files, and
 dead-code burden.
 
@@ -172,8 +186,8 @@ your own repo six months later. This keeps it in the codebase.
 
 ## Code Health Intelligence
 
-repowise scores **every file 1–10** on three co-equal signals — defect risk,
-maintainability, and performance risk — from a roster of **49 deterministic
+repowise scores **every file 1–10** on three co-equal signals (defect risk,
+maintainability, and performance risk) from a roster of **49 deterministic
 detectors**, of which only **26 are permitted to move the defect number**. Pure
 static analysis over tree-sitter and git data, budgeted (and CI-tested) to
 finish in **under 30 seconds on a 3,000-file repo**.
@@ -188,7 +202,7 @@ Validated leakage-free across **21 repositories, 9 languages, 2,826 files** at
 mean ROC AUC **0.737**, and **0.76–0.78** on the public PROMISE/jEdit dataset
 that played no part in calibration.
 
-It does not stop at scoring — the layer closes the loop into concrete,
+It does not stop at scoring; the layer closes the loop into concrete,
 graph-aware refactoring plans an agent can execute: Extract Class, Extract
 Method, Extract Helper, Move Method, Break Cycle and Split File, each with its
 plan, recovered impact and blast radius.
@@ -207,7 +221,7 @@ Full guide, the calibration story and the head-to-head against CodeScene:
 ## Change Risk
 
 A calibrated 0–10 defect-risk score for **a whole commit or `base..head`
-range**, computed from the diff's shape against the live checkout — no index
+range**, computed from the diff's shape against the live checkout, no index
 lookup, no model call. Distinct from `get_risk()`, which scores indexed files by
 path. Lead with `risk_percentile`, which ranks the change against sampled recent
 commits in the same repo.
@@ -241,7 +255,7 @@ Reference: [`TEST_INTELLIGENCE.md`](TEST_INTELLIGENCE.md).
 Bug-fix commits attributed back to the files and functions they repaired, giving
 each file a fix count, a last-fixed age, and a "bug magnet" flag. This is why the
 generated `CLAUDE.md` orders its *files that need care* by **bug-fix history
-first, then churn** — a file that keeps breaking is a better warning than a file
+first, then churn**: a file that keeps breaking is a better warning than a file
 that merely changes often.
 
 Reference: [`BUG_HISTORY.md`](BUG_HISTORY.md).
@@ -284,7 +298,7 @@ Reference: [`DEAD_CODE.md`](DEAD_CODE.md).
 
 ## Proactive context enrichment: hooks
 
-Most MCP tools are passive — the agent has to know to call them. repowise hooks
+Most MCP tools are passive; the agent has to know to call them. repowise hooks
 are active: they act on what the agent is already doing. No LLM calls, no
 network, pure local SQLite queries. Installed automatically during
 `repowise init`.
@@ -294,28 +308,28 @@ version enriched every `Grep`/`Glob` before it ran and was removed: it added
 noise on the majority of searches where the agent had already found what it
 wanted. What ships now fires on evidence that the agent needs help:
 
-- **Zero-result rescue** — a grep found nothing, so wiki full-text, fuzzy symbol
+- **Zero-result rescue**: a grep found nothing, so wiki full-text, fuzzy symbol
   and decision matches surface the closest real hit.
-- **Flood digest and triage** — a search returning far too much is replaced with
+- **Flood digest and triage**: a search returning far too much is replaced with
   a compact per-file digest of match counts and anchor lines, plus the top files
   by PageRank.
-- **Wrong-path rescue** — a failed `Read`/`Edit`/`Write` path is resolved against
+- **Wrong-path rescue**: a failed `Read`/`Edit`/`Write` path is resolved against
   the index to the file you almost certainly meant.
-- **Read skeleton** — an unbounded read of a large indexed file is served as its
+- **Read skeleton**: an unbounded read of a large indexed file is served as its
   skeleton with 1-indexed ranges, once per file per session.
-- **Stale-read notice** — a file was edited after this session read it earlier.
-- **Decision injection** — editing a file with a governing decision surfaces it
+- **Stale-read notice**: a file was edited after this session read it earlier.
+- **Decision injection**: editing a file with a governing decision surfaces it
   in one line.
-- **Session start** — index freshness, the trust protocol, and standing
+- **Session start**: index freshness, the trust protocol, and standing
   decisions.
-- **Post-commit staleness** — after a successful commit, merge, rebase,
+- **Post-commit staleness**: after a successful commit, merge, rebase,
   cherry-pick or pull, a notice if the wiki has drifted from HEAD.
 
 Claude Code and Codex are both supported.
 
 > **Related capability:** [Distill](../agent/DISTILL.md) reuses the index
 > (symbol bounds, centrality, hotspots) to compress noisy command output and
-> large reads before the agent sees them — built *on* the layers, not a layer.
+> large reads before the agent sees them, built *on* the layers, not a layer.
 
 ---
 

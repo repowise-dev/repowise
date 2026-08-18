@@ -57,7 +57,7 @@ your agent in under five minutes, with no API key.
 | [layers/TEST_INTELLIGENCE.md](layers/TEST_INTELLIGENCE.md) | Coverage ingestion, untested hotspots, and running only the tests a diff touches |
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
 | [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language, across 18 parsed languages and 13 at the Full tier |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language, across 19 parsed languages and 13 at the Full tier |
 | [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, what `update` re-renders, styles, output language |
 
 ## Scale it

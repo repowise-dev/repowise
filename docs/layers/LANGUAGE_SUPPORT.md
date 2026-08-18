@@ -1,62 +1,159 @@
 # Language Support
 
-repowise parses **19 languages to a full AST**, resolves imports and call
-graphs across them, and scores **13 at the Full tier** with code-health markers.
-Everything else in your repo is still tracked through git history and appears in
-the wiki. This page is the "what works for my language today" reference.
+**19 languages parsed to a full AST · 13 at the Full tier · framework-aware
+across all of them.** Everything else in your repo still appears in the wiki and
+is tracked through git history. This page is the "what works for my language
+today" reference.
 
-> **How to add a language, and how the pipeline works internally:** see
-> [architecture/language-support.md](../architecture/language-support.md). Adding
-> a language needs one `.scm` query file and one config entry, with no changes
-> to the parser core.
+<p>
+  <strong>Full tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" />
+  <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
+  <img src="https://img.shields.io/badge/Vue-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue" />
+  <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" />
+  <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
+  <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
+  <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/C++-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++" />
+  <img src="https://img.shields.io/badge/C%23-512BD4?style=flat-square&logo=csharp&logoColor=white" alt="C#" />
+  <img src="https://img.shields.io/badge/Scala-DC322F?style=flat-square&logo=scala&logoColor=white" alt="Scala" />
+  <img src="https://img.shields.io/badge/Ruby-CC342D?style=flat-square&logo=ruby&logoColor=white" alt="Ruby" />
+</p>
+<p>
+  <strong>Good tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" />
+  <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" />
+  <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
+  <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
+  <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  &nbsp;<strong>· Partial &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
+</p>
 
-**Contents:** [Tiers at a glance](#tiers-at-a-glance) ·
-[Full tier](#full-tier) · [Good tier](#good-tier) · [SQL + dbt](#sql--dbt) ·
-[Lightweight, Partial, Structural](#lightweight-partial-and-structural-tiers) ·
-[Code-health coverage](#code-health-coverage) · [Roadmap](#roadmap) ·
-[See also](#see-also)
+**Contents:** [Tiers](#tiers) ·
+[What the pipeline gives each tier](#what-the-pipeline-gives-each-tier) ·
+[Why these graphs are different](#why-these-graphs-are-different) ·
+[Full tier](#full-tier) · [Good tier](#good-tier) ·
+[Beyond code files](#beyond-code-files) ·
+[Code-health coverage](#code-health-coverage) ·
+[Known ceilings](#known-ceilings) · [Roadmap](#roadmap)
 
 ---
 
-## Tiers at a glance
+## Tiers
 
-Every language falls into one tier. The tier determines which pipeline stages
+Every language lands in one tier, and the tier decides which pipeline stages
 produce meaningful output.
 
-| Tier | Languages | What works |
-|------|-----------|------------|
-| [**Full**](#full-tier) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, framework-aware edges, dynamic-hint extractors, and **code-health markers** |
-| [**Good**](#good-tier) | C · Swift · PHP · Dart · Object Pascal | Everything above except code-health markers (C, Swift, PHP; Dart and Object Pascal *do* get health markers). Dedicated workspace resolvers and framework edges per language, except Object Pascal, which resolves imports via the generic stem-map fallback (see [Known gaps](#object-pascal-known-gaps)) |
-| [**SQL / dbt**](#sql--dbt) | `.sql` via sqlglot | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage |
-| **Shell** | `.sh` `.bash` `.zsh` | Function definitions as symbols, `source` / `.` import edges (incl. `$SCRIPT_DIR` / `dirname` / `$BATS_ROOT` idioms), and function-level code-health complexity (CCN, nesting, cognitive). No class metrics, heritage, bindings, or dead-code flagging |
-| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | In the file tree and wiki; special handlers extract endpoints / targets where applicable |
-| [**Lightweight**](#lightweight-partial-and-structural-tiers) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | File-level import graph only (no symbols/calls). Honest file-to-file dependencies, no symbol-level claims |
-| [**Partial**](#lightweight-partial-and-structural-tiers) | Luau / Roblox | AST symbols + `require()` resolution (Rojo / `.luaurc` aware); no health markers yet |
-| [**Structural**](#lightweight-partial-and-structural-tiers) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only (blame, hotspots, co-change). No AST parsing |
+| Tier | Languages | What you get |
+|------|-----------|--------------|
+| **Full** | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
+| **Good** | C · Swift · PHP · Dart · Object Pascal | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift and PHP don't yet |
+| **Partial** | Luau / Roblox | AST symbols and `require()` resolution (Rojo / `.luaurc` aware). No health markers yet |
+| **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, no symbol-level claims |
+| **Structural** | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-**Pipeline stage coverage:**
+[**SQL / dbt**](#sql--dbt) and [**shell**](#shell) sit outside this ladder on
+purpose: each has a coverage shape the tiers cannot describe. SQL is parsed by
+sqlglot rather than tree-sitter and gets symbols, wiki pages and health markers
+but no call graph, with import edges only inside a dbt project. Shell gets
+symbols, `source` edges and function-level complexity, but reachability is
+meaningless for a script invoked by name. See
+[Beyond code files](#beyond-code-files), along with
+[config and data formats](#config-and-data).
 
-| Stage | Full | Good | Lightweight | Structural | Config / Data |
-|-------|:----:|:----:|:-----------:|:----------:|:-------------:|
+## What the pipeline gives each tier
+
+| Stage | Full | Good | Partial | Lightweight | Structural |
+|-------|:----:|:----:|:-------:|:-----------:|:----------:|
 | File discovery & git history | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AST symbol extraction | ✅ | ✅ | - | - | - |
-| Import resolution | ✅¹ | ✅ | file-level³ | - | - |
-| Call graph edges | ✅ | ✅ | - | - | - |
-| Heritage (extends/implements) | ✅ | ✅ | - | - | - |
-| Named bindings | ✅ | ✅ | - | - | - |
-| Code-health markers | ✅² | Dart, Object Pascal | - | - | - |
-| Dead code detection | ✅ | ✅ | ✅ | ✅ | - |
+| AST symbol extraction | ✅ | ✅ | ✅ | — | — |
+| Import resolution | ✅ | ✅ | ✅ | file-level | — |
+| Call graph edges | ✅ | ✅ | ✅ | — | — |
+| Heritage (extends / implements) | ✅ | ✅ | — | — | — |
+| Named bindings | ✅ | ✅ | — | — | — |
+| Code-health markers | ✅ | Dart, Pascal | — | — | — |
+| Dead code detection | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-¹ Scala's import resolution is partial (shared JVM index with SBT/Mill
-build-file fallback); every other Full and Good language resolves imports
-fully.
-² See [code-health coverage](#code-health-coverage), a language is only "Full"
-once it clears the health checklist.
-³ File-to-file only, no symbol resolution. Regex-extracted for every
-Lightweight language except HTML, which uses the `tree-sitter-html` grammar.
-Dead-code detection covers the Lightweight tier except HTML, which is never
-flagged (see below).
+Scala's import resolution is partial: it shares the JVM index with Java and
+Kotlin and falls back to parsing SBT / Mill build files. Every other Full and
+Good language resolves imports outright.
+
+---
+
+## Why these graphs are different
+
+Plenty of tools will hand you a call graph. Three things separate a graph you
+can act on from a picture of arrows.
+
+### Every call edge says how it was resolved, and how much to trust it
+
+Most graphs give you an unlabelled arrow. `A calls B`, but was `B` the only
+match in the entire repo, or was it right there in the same file? Those are
+wildly different claims, and a tool that renders them identically is asking you
+to trust its weakest guess as much as its strongest fact.
+
+Every `calls` edge repowise emits carries a **resolution origin** from a closed
+vocabulary, and every origin has exactly one confidence:
+
+| Origin | Confidence | What it means |
+|--------|:---:|---|
+| `same_file` | 0.95 | Defined in the calling file. A certainty |
+| `self_scope` | 0.95 | `self` / `this`, a method on the caller's own class |
+| `import_scoped` | 0.90 | The name was imported from the file that defines it |
+| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |
+| `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
+| `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
+
+That is six of 29. You can filter a graph by confidence, and both
+the MCP tools and the web UI surface which origin produced an edge, so an agent
+reading an execution flow can tell a fact from an inference instead of treating
+both as source.
+
+### A call on a variable resolves by typing the variable
+
+`user.save()` is only a useful edge if something worked out what `user` is. The
+naive approach matches `save` against every method named `save` in the repo and
+picks one, which is how graphs end up confidently wrong.
+
+repowise instead reads the receiver's **declaration** and resolves the method on
+that type. It covers the receiver shapes that actually occur:
+
+- **locals and parameters**: `var repo = new UserRepo()`, `fun f(r: UserRepo)`
+- **fields**: a call on `this.repo`, typed from the enclosing class
+- **freshly constructed receivers**: `new Foo().bar()`
+- **the method's own receiver**: Go's `func (s *Server) handle()`
+- **framework-retyped symbols**: `@shared_task def add` makes `add` a `Task`,
+  so `add.s()` resolves to `Task::s`
+
+Shipped for **Java, C#, Python, Go, Kotlin and Swift**. Each language was gated
+on measured precision before it shipped, and the ones that failed the gate are
+recorded as unsupported rather than shipped loose.
+
+### It reports silence instead of guessing
+
+Every capability degrades to *no signal* rather than a wrong one, and each
+degradation is deliberate:
+
+- **An execution flow says why it stopped.** A trace that just ends reads the
+  same whether execution really ends there or the walker ran out of things it
+  could follow. Six terminations are named separately: a real end, a cycle, an
+  exhausted hop budget, an all-excluded successor set, a confidence-filtered one,
+  and calls that failed to resolve. Where a confidence floor stopped the walk, it
+  reports which origins it declined.
+- **A `calls` edge means the callee is callable.** Edges pointing at properties,
+  constants and modules were withdrawn and re-minted as `references`: "something
+  holds a handle to this", which is enough to make deleting it unsafe and not
+  enough to claim it is invoked.
+- **Framework wiring is its own edge type.** A pytest fixture injection or a
+  Spring `@Autowired` field is a `framework_binds` edge, never a `calls` edge.
+  Nothing there is a call the parser could have seen, and letting it read as one
+  would put an inferred hop into an execution flow as if it were source.
+- **An unmapped language produces no findings, not bad ones.** A language reaches
+  a health dialect or it stays silent. There is no "best effort" middle.
 
 ---
 
@@ -64,412 +161,230 @@ flagged (see below).
 
 Complete pipeline coverage: AST parsing, import resolution, call resolution,
 named bindings, heritage, docstrings, framework-aware edges, dynamic-hint
-extractors, and code-health markers.
+extractors and code-health markers.
 
-| Language | Extensions | Import style |
+| Language | Extensions | Import resolution |
 |----------|-----------|--------------|
-| **Python** | `.py` `.pyi` | `import x` / `from x import y`; source-root-aware module index (src/, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
-| **TypeScript** | `.ts` `.tsx` | ESM / `require()` with tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels, optional `.vue`/`.svelte`/`.astro` probing |
+| **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
+| **TypeScript** | `.ts` `.tsx` | ESM / `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
 | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` / `require()` including CommonJS re-export shapes and member picks |
-| **Svelte** | `.svelte` | Same resolver as TS/JS, plus SvelteKit's `$lib` alias and Node `#`-prefixed subpath imports; `$app/*` / `$env/*` stay external (virtual modules) |
-| **Vue** | `.vue` | Same resolver as TS/JS, including `jsconfig`/`tsconfig` path aliases (`@/* → src/*`), directory-index components (`./Foo` → `Foo/index.vue`), and router `import()` specifiers |
-| **Java** | `.java` | `import pkg.Class` / `.*` / `import static` with Maven + Gradle reactor discovery, JPMS recognition, package fan-out |
-| **Kotlin** | `.kt` `.kts` | Shares the JVM workspace index with Java (cross-language resolution); `.kt` under `src/main/java` recognised |
-| **Go** | `.go` | `import "path"` with multi-module `go.mod` discovery; a package import fans out to every file in the package |
+| **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and Node `#`-prefixed subpath imports |
+| **Vue** | `.vue` | The TS/JS resolver plus `jsconfig`/`tsconfig` aliases, directory-index components, router `import()` specifiers |
+| **Java** | `.java` | `import` / `.*` / `import static` with Maven + Gradle reactor discovery, JPMS, package fan-out |
+| **Kotlin** | `.kt` `.kts` | Shares the JVM workspace index with Java, so resolution is cross-language |
+| **Go** | `.go` | Multi-module `go.mod` discovery; a package import fans out to every file in the package |
 | **Rust** | `.rs` | `use crate::` / `super::` / `self::` with `Cargo.toml` |
-| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `#include` via `compile_commands.json` + CMake / Bazel workspace header maps, header↔implementation pairing |
-| **C#** | `.cs` | `using` / `global using` / `using static` / aliases with `.csproj` / `.sln` resolution; MSBuild project graph; `partial` class linking |
-| **Scala** | `.scala` | `import pkg.Foo`, brace/wildcard/package imports via the shared JVM index (cross-language with Java/Kotlin); SBT / Mill build parsing as fallback (partial import resolution¹) |
-| **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, RSpec mirror edges, Rails / Zeitwerk autoloading |
+| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` `.inl` `.ipp` `.tpp` | `#include` via `compile_commands.json` plus CMake / Bazel header maps, header↔implementation pairing |
+| **C#** | `.cs` | `using` / `global using` / aliases via `.csproj` / `.sln`, MSBuild project graph, `partial` class linking |
+| **Scala** | `.scala` | The shared JVM index (cross-language with Java/Kotlin), SBT / Mill build parsing as fallback |
+| **Ruby** | `.rb` | `require` / `require_relative` with `$LOAD_PATH` probing, Gemfile externals, Rails / Zeitwerk autoloading |
 
-All thirteen also support three-tier call resolution (same-file, cross-file,
-global stem match) and docstring extraction (Python, Ruby comments, JSDoc,
-GoDoc, Rustdoc, Javadoc, Scaladoc, Doxygen, XML doc).
+All thirteen also get docstring extraction: Python, Ruby comments, JSDoc,
+GoDoc, Rustdoc, Javadoc, Scaladoc, Doxygen and XML doc.
 
-**Single-file components** (`.svelte`, `.vue`) are three languages in one file,
-so they get a shared projection rather than a grammar of their own. A markup
-grammar locates the `<script>` blocks and the markup expressions; everything
-else (markup, `<style>`) is blanked to spaces with newlines preserved, and the
-result is parsed as TypeScript at **byte-identical offsets**. So a component
-reuses the TypeScript queries, config, and all three health dialects verbatim,
-and every line number points at the real source file. Only the region-location
-step differs per language, behind a small locator registry in `sfc_source.py`.
+### Framework-aware edges
 
-Vue has no grammar on PyPI, but `tree-sitter-html` parses an SFC cleanly —
-`<template>`, `<script>` and `<style>` are just elements to it — so one
-dependency covers both Vue and plain HTML.
-
-| | Svelte | Vue |
-|---|---|---|
-| Script blocks | `<script>`, `<script context="module">` | `<script>`, `<script setup>` |
-| Markup expressions | `{expr}`, `on:click={inc}`, `{#if}` heads | `:class="c"`, `@click="inc"`, `v-if="ok"`, `{{ interp }}` |
-| Expression fence | the surrounding `{` `}` | the surrounding attribute quotes |
-| Skipped binding forms | `{#each x as y}`, `{#await}` | `v-for="x in xs"`, `v-slot` / `#default` |
-
-Three pieces sit on top for both:
-
-- the **component itself** becomes a class-kind symbol named after the file
-  (`Button.svelte` → `Button`), since nothing in the source names it. Vue
-  normalises the stem the same way it normalises a tag, so `warningBar.vue`,
-  `back-to-top.vue` and `Logo/index.vue` declare `WarningBar`, `BackToTop` and
-  `Logo` — which is what a parent actually imports and writes;
-- **`<Foo />` in markup** mints a call edge on `Foo`, the same way `tsx.scm`
-  treats a JSX element. Framework intrinsics never do: Svelte's `svelte:*`
-  namespace, and Vue's `<KeepAlive>` / `<Transition>` / `<RouterView>` in
-  either the PascalCase or kebab spelling;
-- **markup expressions are kept**, so a handler referenced only from
-  `on:click={inc}` or `@click="inc"` still carries an edge instead of reading
-  as dead code.
-
-Deliberate ceilings. Binding forms (the table above) *parse* as JS but mean
-something else, so they are skipped — a parse that succeeds with the wrong
-meaning is worse than a skip. Object-literal attributes (`use:action={{ a, b }}`,
-`#default="{ row }"`) read as a block at statement position and are dropped. A
-component's props are set by the parent as markup attributes and never imported
-by name, so the unused-export pass is suppressed for both languages — the
-alternative flags every prop, and every component, in the repo.
-
-One ceiling is Vue-specific: an Options-API member spelled
-`foo: function () {}` or `foo: () => {}` is not captured, because
-`typescript.scm` has no pattern for a `pair` with a function value. The
-shorthand `foo() {}` spelling **is** captured, which covers 1,588 of 1,592
-member functions (99.7%) across the 275 Options-API files in the validation
-corpus. The remaining 0.3% is a general TS/JS object-literal gap, not a Vue
-one, so lifting it belongs in `typescript.scm`.
-
-**Framework-aware edges** connect routes to handlers, DI registrations to
-implementations, and ORM entities to relationships:
+Routes connect to handlers, DI registrations to implementations, ORM entities to
+their relationships:
 
 | Language | Frameworks |
 |----------|-----------|
-| Python | Django, FastAPI, Flask, pytest fixtures |
-| Ruby | Rails (routes → controller actions, Zeitwerk autoloading), RSpec mirror edges |
+| Python | Django, FastAPI, Flask, Celery, pytest fixtures |
+| Ruby | Rails (routes → controller actions, Zeitwerk), RSpec mirror edges |
 | Java / Kotlin | Spring (stereotypes, `@RequestMapping`, Spring Data, `@Bean`), Jakarta / JPA, Quarkus, Micronaut, Android manifest |
-| C# | ASP.NET (attribute + minimal API), EF Core, gRPC-dotnet, host-builder extension methods, CommunityToolkit MVVM |
+| C# | ASP.NET (attribute + minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, gRPC server registration |
 | Rust | Axum, Actix route → handler |
-| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit (`+page.svelte`, `+layout.svelte` and their `.ts` siblings) / Astro, tRPC, Express / NestJS |
+| JS / TS / Svelte | Next.js App Router, Hono / Fastify / Koa / Elysia, Remix / SvelteKit / Astro, tRPC, Express / NestJS |
 | C++ | GoogleTest, Catch2, Boost.Test, doctest, Google Benchmark, libFuzzer |
 
-The dead-code analyzer understands each ecosystem's entry points, generated-file
-conventions, and never-flag globs so build products and framework-invoked code
-aren't reported as unreachable. (Full per-language detail:
-[architecture/language-support.md](../architecture/language-support.md).)
+The dead-code analyzer knows each ecosystem's entry points, generated-file
+conventions and never-flag globs, so build products and framework-invoked code
+are not reported as unreachable.
+
+### Single-file components (Svelte, Vue)
+
+A `.svelte` or `.vue` file is three languages at once, so it gets a shared
+projection rather than a grammar of its own: a markup grammar locates the
+`<script>` blocks and the markup expressions, everything else is blanked to
+spaces with newlines preserved, and the result is parsed as TypeScript at
+**byte-identical offsets**.
+
+That one property is what makes the rest free: a component reuses the
+TypeScript queries, config and all three health dialects verbatim, and every line
+number points at the real source file. On top of it: the component itself becomes
+a symbol named after the file (`back-to-top.vue` declares `BackToTop`, which is
+what a parent actually writes), `<Foo />` in markup mints a call edge, and a
+handler referenced only from `on:click={inc}` or `@click="inc"` carries an edge
+instead of reading as dead code.
 
 ---
 
 ## Good tier
 
 AST parsing, symbol extraction, import resolution, call resolution, named
-bindings, and heritage (Swift extension conformance, PHP trait use, Dart
-mixins). Dedicated workspace resolvers per language.
+bindings and heritage, with a dedicated workspace resolver per language.
 
-| Language | Extensions | Import style |
+| Language | Extensions | Import resolution |
 |----------|-----------|--------------|
-| **C** | `.c` | `#include` via `compile_commands.json` (shares C++ grammar) |
-| **Swift** | `.swift` | `import` with SPM `Package.swift` target → directory mapping; intra-module type references; `@main` entry points |
+| **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
+| **Swift** | `.swift` | SPM `Package.swift` target → directory mapping, intra-module type references, `@main` entry points |
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
-| **Dart** | `.dart` | `import` / `export` / `part` URIs; `package:` via every `pubspec.yaml`; Flutter route tables and `runApp()` edges; **code-health markers** |
-| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses UnitA, UnitB;` resolved via the generic unit-name → file-stem fallback (no dedicated resolver); `.dpr`/`.dpk`/`.lpr` project files as entry points; **code-health markers** |
-
-### Object Pascal known gaps
-
-Delphi (`.pas`/`.dpr`/`.dpk`) and Free Pascal/Lazarus (`.pas`/`.pp`/`.lpr`) via
-`tree-sitter-pascal`. Newest AST-parsed language in this tier, so its ceilings
-are less battle-tested than C/Swift/PHP/Dart's:
-
-- **Type kind collapses to `"class"`.** `record` / `interface` / class-helper /
-  enum / plain type alias are all reported as `kind="class"` — the query
-  captures the declaration but not which of the five forms it is.
-- **`extends`/`implements` heritage split is best-effort.** Delphi's
-  `class(TBase, IFoo, IBar)` ancestor list doesn't itself distinguish a base
-  class from an implemented interface; the heritage extractor infers it from
-  naming convention (`I`-prefixed identifiers), which is the real-world Delphi
-  convention but not a language guarantee.
-- **No dedicated import resolver.** Unlike C/Swift/PHP/Dart, `uses` clauses
-  resolve through the same generic unit-name → file-stem fallback as the
-  Lightweight tier, rather than a project-file-aware resolver — accurate for
-  the near-universal "unit name equals file stem" convention, wrong when it
-  doesn't hold.
-- **No class-level metrics (LCOM4 / god-class).** Pascal splits a class into
-  an interface-only declaration (method signatures, no bodies) and a fully
-  separate implementation section where each qualified method (`TFoo.Bar`) is
-  its own top-level node — there is no single AST node that groups a type's
-  method *bodies* the way class-level analysis expects. Same posture as Go
-  (external-receiver methods): left unmapped rather than emitting classes
-  with `method_count == 0`. Function-level complexity/nesting and duplication
-  are unaffected — see [code-health coverage](#code-health-coverage).
-- **No assertion-smell or performance-risk markers yet** (no assert-call or
-  call-node kinds registered).
-- **No Extract Method (dataflow) support yet** — the CFG builder has real
-  branch/loop/try node kinds, but no `DefUseDialect` is registered, so
-  def/use and reaching-definitions stay silent (the same "later" state as
-  C# / Kotlin / Scala / Ruby).
-- **One known grammar gap left unhandled deliberately:** an anonymous
-  `array[...] of record ... end` element type has no tree-sitter-pascal rule
-  and degrades to a wrong `parent_name` for whatever the same class declares
-  afterward — contained to that one class, not fixed, since a correct fix
-  needs a nesting-aware scanner for one construct seen once in the validation
-  corpus. See `prepare_pascal_source` in `ingestion/parser_helpers.py`.
+| **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
+| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
 
 ---
 
-## SQL + dbt
+## Beyond code files
 
-SQL is parsed by a dedicated sqlglot handler (multi-dialect, error-tolerant)
-rather than tree-sitter, plus the lightweight import tier for dbt lineage.
+### SQL + dbt
 
-- **DDL symbols** (any `.sql` file), `CREATE TABLE` / `VIEW` /
-  `MATERIALIZED VIEW` become class-kind symbols with columns in the signature;
-  `CREATE FUNCTION` / `PROCEDURE` become function-kind symbols, with wiki pages
-  and `get_symbol` lookups. Set `sql_dialect` in config for dialect-specific
-  syntax (`postgres`, `mysql`, `tsql`, `clickhouse`, …). Any parse problem
-  degrades the file to passthrough, never a crash, never a guess.
-- **dbt lineage** (gated on `dbt_project.yml`), `{{ ref('model') }}` and
-  `{{ source('schema', 'table') }}` become real import edges resolved against a
-  per-project model-name index, so model-level lineage, hotspots, co-change,
-  ownership, and communities all fall out free.
-- **App-to-database contracts** (workspace mode), pairs table *providers* (DDL,
-  Alembic, ORM entities) with table *consumers* (SQL string literals in app
-  code) into `data` contracts on the Live System Map. See
-  [WORKSPACES.md](../scale/WORKSPACES.md).
-- **Health markers**, stored routines get cyclomatic complexity;
-  `sql_select_star`, `sql_update_delete_without_where`, and `sql_cartesian_join`
-  ride the sqlglot AST. All uncalibrated by construction and never move the
-  defect headline. See [CODE_HEALTH.md](CODE_HEALTH.md).
+Parsed by a dedicated sqlglot handler (multi-dialect, error-tolerant) rather
+than tree-sitter.
 
----
+- **DDL symbols**: `CREATE TABLE` / `VIEW` become class-kind symbols with their
+  columns in the signature; `CREATE FUNCTION` / `PROCEDURE` become function-kind
+  symbols. Both get wiki pages and `get_symbol` lookups. Set `sql_dialect` in
+  config for dialect-specific syntax. Any parse problem degrades the file to
+  passthrough, never a crash, never a guess.
+- **dbt lineage**: `{{ ref('model') }}` and `{{ source(...) }}` become real
+  import edges, so model-level lineage, hotspots, co-change, ownership and
+  communities all fall out free.
+- **App-to-database contracts** (workspace mode), table *providers* (DDL,
+  Alembic, ORM entities) pair with table *consumers* (SQL literals in app code)
+  on the Live System Map. See [WORKSPACES.md](../scale/WORKSPACES.md).
+- **Health markers**: stored routines get cyclomatic complexity, plus
+  `sql_select_star`, `sql_update_delete_without_where` and `sql_cartesian_join`.
+  All of them are **uncalibrated by construction** (no defect corpus covers
+  procedural SQL), so they surface as findings and never move the defect
+  headline score.
 
-## Lightweight, Partial, and Structural tiers
+SQL is not placed in a tier because it would misreport in both directions:
+Partial would understate the health markers, and any higher tier would claim a
+call graph and heritage that a DDL file does not have. Outside a dbt project,
+`.sql` files get symbols and pages but no import edges at all.
 
-**Lightweight** (Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML), no symbol
-extraction, but a real file-level import graph: import statements are extracted
-per-language and resolved against a declared module-name index. The knowledge
-graph runs in flow/sparse mode on the result: honest file-to-file dependencies,
-no symbol-level claims. F# additionally honours the fsproj `<Compile Include>`
-compile-order spine. All of these use a regex tier except HTML, which uses the
-`tree-sitter-html` grammar repowise already ships for Vue.
+### Shell
 
-**HTML** (`.html` / `.htm`) is import-tier *only*, and deliberately so: HTML has
-no functions, classes or calls, so there are no symbols to claim. What it does
-carry is `<script src>` and `<link href>`, which become file-level edges —
-including the one every Vite/webpack SPA depends on, `index.html` →
-`src/main.ts`. References are resolved as document- or root-relative asset
-paths, never as module specifiers: there is no extension inference and no
-`index.*` lookup, because `src="./app"` in a browser fetches a file literally
-named `app`. A root-relative `/src/main.tsx` is anchored first at the
-referencing page's own directory (the bundler convention), then at its
-`public/`, then by unique path suffix; a tie yields no edge rather than a
-guessed one. CDN and `data:` references are external and mint no edge.
+`.sh` / `.bash` / `.zsh`. Function definitions become symbols, `source` / `.`
+statements become import edges, and calls to functions defined in the same or a
+sourced file resolve to call edges; external binaries like `grep` mint nothing.
+Resolution covers literal paths plus the common directory-anchor idioms
+(`$SCRIPT_DIR/x.sh`, `$(dirname "$0")/x.sh`, `$BATS_ROOT/lib/x.sh`); genuinely
+dynamic paths stay external. Shell also gets **function-level complexity**, with
+`&&` / `||` command lists counted toward CCN. No class metrics, heritage or
+dead-code flagging: shell scripts are invoked by name, so static reachability is
+meaningless.
 
-`.html` files are **never flagged as dead code**. Whether a page is reachable
-is not statically decidable — a server serves it, a human navigates to it, a
-build copies it — and checked-in generated HTML is everywhere. Their outbound
-edges still anchor everything they reference.
+### Lightweight tier
 
-The known ceiling is **template dialects**. Django/Jinja, Go templates, ERB,
-Handlebars, Blade, Thymeleaf and Angular's `*ngIf` are invisible to an HTML
-parser: `{% extends "base.html" %}` is plain text, so such a file parses
-cleanly and yields nothing. Measured on the validation corpus, 744 of 749
-template-dialect files (99.3%) produce no edges at all. Covering them needs a
-per-dialect regex tier gated on a framework manifest — a different mechanism,
-not yet built.
+Elixir, Clojure, Haskell, Lean 4, Erlang, F# and HTML get a real file-level
+import graph: imports extracted per language and resolved against a declared
+module-name index. The knowledge graph runs in flow/sparse mode on the result:
+honest file-to-file dependencies, no symbol-level claims. F# additionally honours
+the fsproj `<Compile Include>` compile order.
 
-**Partial** (Luau / Roblox), AST symbols, Luau type aliases, and `require(...)`
-capture are wired. Import resolution handles string literals, `script` relative
-instance paths (including `:WaitForChild` idioms), absolute Roblox paths via
-Rojo's `default.project.json`, and `@alias` requires via `.luaurc`. No health
-markers yet.
+**HTML** is import-tier on purpose. It has no functions, classes or calls, so
+there are no symbols to claim, but its `<script src>` and `<link href>` become
+file-level edges, including the one every Vite/webpack SPA depends on:
+`index.html` → `src/main.ts`. References resolve as document- or root-relative
+asset paths, never as module specifiers, and a tie yields no edge rather than a
+guessed one. `.html` files are **never flagged as dead code**: whether a page is
+reachable is not statically decidable.
 
-**Shell** (`.sh` / `.bash` / `.zsh`), function definitions (both `foo()` and
-`function foo` forms) become symbols, `source` / `.` statements become import
-edges, and calls to functions defined in the same or a sourced file resolve to
-call edges (external binaries like `grep` mint no edge). Import resolution
-covers literal relative paths plus the common directory-anchor idioms
-(`$SCRIPT_DIR/x.sh`, `$(dirname "$0")/x.sh`, `${BASH_SOURCE%/*}/x.sh`) and
-project-root anchors (`$BATS_ROOT/$LIBDIR/lib/x.sh`) via a unique path-suffix
-match; genuinely dynamic paths (`source "$1"`) stay external. Shell also gets
-**function-level complexity** markers (CCN / nesting / cognitive, with `&&` /
-`||` command lists counted). tree-sitter-bash parses the bash/POSIX subset, so
-zsh mostly works and fish does not; any parse error degrades that file to
-passthrough. No class metrics, heritage, bindings, or dead-code flagging (shell
-scripts are invoked by name, so static reachability is meaningless).
+### Config and data
 
-**Structural** (Objective-C, R, Zig, Julia, Elm, OCaml, Crystal, Nim, D) -
-tracked in git history (blame, hotspots, co-change) but no AST parsing. Files
-appear in the wiki as traversal-level entries, and the knowledge graph runs in
-structural mode: it orients by directory structure, naming, and git evidence,
-and never claims an execution flow it cannot see.
+OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform and
+Markdown appear in the file tree and the wiki, with special handlers extracting
+endpoints and targets where applicable.
 
 ---
 
 ## Code-health coverage
 
-Code-health markers run off a per-language complexity-walker map that is
-**independent** of `.scm` parsing, a language can parse perfectly for the graph
-yet still need this map before health markers fire. This table is why a language
-is "Full" vs "Good".
+Health markers run off a per-language walker map that is **independent** of
+`.scm` parsing: a language can parse perfectly for the graph and still need this
+map before markers fire. This table is why a language is Full rather than Good.
 
-| Language | Complexity / nesting | Class metrics (LCOM4, god-class) | Assertion smells | Extract Method (dataflow) | Performance risk |
+| Language | Complexity / nesting | Class metrics | Assertion smells | Extract Method | Performance risk |
 |----------|:---:|:---:|:---:|:---:|:---:|
 | Python | ✅ | ✅ | ✅ | ✅ | ✅ |
 | TypeScript / JavaScript | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Svelte | ✅¹⁰ | ✅ | ✅ | ✅ | ✅ |
-| Vue | ✅¹⁰ | ✅ | ✅ | ✅ | ✅ |
+| Svelte · Vue | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Java | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go | ✅ | n/a¹ | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ | ✅ | ✅² |
+| Go | ✅ | n/a | ✅ | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ | ✅ | ✅ |
+| C++ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | C# | ✅ | ✅ | ✅ | later | ✅ |
-| Kotlin | ✅ | ✅ | ✅ | later | ✅¹¹ |
-| C++ | ✅ | ✅ | ✅ | ✅ | ✅¹² |
-| Dart | ✅ | n/a³ | ✅ | later | ✅ |
-| Scala | ✅ | ✅ | ✅⁴ | later | ✅⁵ |
-| Ruby | ✅ | ✅⁶ | ✅⁷ | later | ✅⁸ |
-| Shell | ✅⁹ | n/a | n/a | n/a | n/a |
-| Object Pascal | ✅ | n/a¹⁴ | later | later | n/a |
+| Kotlin | ✅ | ✅ | ✅ | blocked | ✅ |
+| Scala | ✅ | ✅ | ✅ | later | ✅ |
+| Ruby | ✅ | ✅ | ✅ | later | ✅ |
+| Dart | ✅ | n/a | ✅ | later | ✅ |
+| Object Pascal | ✅ | n/a | later | later | n/a |
+| Shell | ✅ | n/a | n/a | n/a | n/a |
 
-¹ Go methods attach to a type via an external receiver rather than nesting in a
-class body, so class-level metrics aren't computable; Go gets the function- and
-assertion-level markers.
-² Rust omits `string_concat_in_loop` by design (`String::push_str` is amortized
-O(1), so it would be a guaranteed false positive).
-³ Dart assertion smells cover `assert` statements only; `expect()` calls have no
-call-node type to key on.
-⁴ Plain `assert(...)` and munit/JUnit-style `assert*` calls are counted;
-ScalaTest's infix DSL (`x shouldBe y`) has no assert-prefixed callee and is not.
-⁵ Rides the JVM sink lexicon (JDBC / JPA / Spring-Data interop) plus
-Scala-native boundaries (`scala.io.Source`, os-lib, sttp / http4s, Slick /
-doobie). Scala-specific markers: `"...".r` regex recompile in a loop and
-`Await.result` / `Thread.sleep` inside a `Future`-returning def
-(`blocking_sync_in_async`). Combinator iteration (`.map` / `.foreach`) is not
-loop-tracked yet; loops are `while` / `do-while` / for-comprehensions.
-⁶ Class size / method-count / god-class facts only. LCOM4 deliberately sits at
-its "no signal" valve: idiomatic Ruby reaches state via receiver-less `@ivar`
-reads and bare sibling-method calls, so the only mappable shape (`self.member`)
-is too sparse to build an honest cohesion graph on. `@ivar` text grouping is a
-possible follow-up.
-⁷ Bare `assert` and minitest `assert_*` calls plus RSpec `expect(...)` chains
-are counted; minitest's `refute_*` family is not (no assert/expect prefix), and
-RSpec examples (`it ... do` blocks) are not methods, so assertion-run smells
-fire on minitest-style test methods only.
-⁸ **Loops include Ruby's real iteration idiom**: a combinator call with an
-inline block (`.each` / `.map` / `.times` / `find_each` …) counts as a loop
-scope — the block body is per-iteration, the receiver runs once, and
-literal-receiver bounds (`3.times`, `[1, 2].each`, `ALL_CAPS.each`) are
-constant-suppressed. ActiveRecord sinks are stratified: distinctive verbs
-(`find_by` / `pluck` / `update_all` / bang persistence `create!`…) fire
-ungated, `where` needs a constant-rooted receiver, and collision-prone verbs
-(`find` / `first` / `count` / `save`…) need a classified db `require` — which
-Zeitwerk-autoloaded Rails files rarely carry, a deliberate recall ceiling that
-keeps in-memory `Registry.find(name)` lookups silent. Backticks / `system` /
-`Open3` are subprocess sinks; `s += "…"` in a loop is flagged while `s << x`
-(amortized append) never is.
+Every cell is a deliberate call, not an oversight. Go and Object Pascal have no
+class metrics because neither language nests a type's method *bodies* inside the
+type; mapping them anyway would emit a class with `method_count == 0` for every
+class in the repo. Kotlin's Extract Method is **blocked on the grammar**, not
+unscheduled: tree-sitter-kotlin parses a bare `break` as a plain identifier, and
+a slicer that cannot see a jump would propose an extraction that silently changes
+control flow. Rust and C++ omit `string_concat_in_loop` because both append in
+amortized O(1), so it would be a guaranteed false positive.
 
-¹⁰ Svelte and Vue ride the TypeScript dialect on all three health layers, because a
-component reaches them as a TypeScript buffer. Markers therefore cover the
-`<script>` blocks and markup expressions — the parts that *are* JS. Markup
-structure and `<style>` carry no health signal, so a component's markers
-describe its logic, not its template size.
+Per-marker mechanics, every per-language precision ceiling and the reasoning
+behind each `n/a`: [CODE_HEALTH.md](CODE_HEALTH.md) and
+[architecture/language-support.md](../architecture/language-support.md).
 
-¹¹ Kotlin rides the JVM sink lexicon (JDBC / JPA / Spring-Data interop) plus
-Kotlin-native boundaries (JetBrains Exposed, `File`-only `kotlin.io`
-extensions). **Loops include combinator iteration**: a call with a trailing
-lambda whose method is a full-iteration combinator (`forEach` / `map` /
-`filter` / `fold` …) is a loop scope via the shared `block_loop_body` hook Ruby
-established — scope functions (`let` / `apply` / `run`) and early-exit searches
-(`firstOrNull`) deliberately are not. `suspend` is a modifier *token*, so
-`blocking_sync_in_async` fires on `runBlocking` / `Thread.sleep` inside a
-`suspend fun`. Three deliberate recall ceilings, each set after a false
-positive on a real corpus: bare HTTP verbs are excluded (they are the
-route-registration DSL of every Kotlin web framework), the generic
-`kotlin.io` stream verbs `readText` / `writeText` / `readBytes` / `copyTo` are
-excluded (`kotlinx-io` reuses them on in-memory buffers), and the ambiguous db
-stratum drops `find` / `get` / `count` (they are stdlib collection
-combinators here, unlike in Java). A regex pattern containing a string
-template is not reported, because it is not hoistable.
+---
 
-¹² C++ is deliberately narrow, and omits three markers other languages carry
-because each would be a guaranteed false positive: `string_concat_in_loop`
-(`std::string::operator+=` appends in place into a geometrically-grown buffer —
-amortized O(1), the same reason Rust omits it), `resource_construction_in_loop`
-(a loop-built `std::ifstream` is opened over a per-iteration *path*, and
-`std::thread` in a loop is how a thread pool is built), and
-`blocking_io_under_lock` (an RAII `lock_guard` holds to the end of the
-*enclosing* block, so no node's body is the held region). What remains:
-`io_in_loop` over POSIX / `std::filesystem` / libcurl / sqlite3 / MySQL /
-libpq entry points, `regex_compile_in_loop` on a constant-pattern `std::regex`,
-and `lock_in_loop`. Two ceilings: a C free function classifies only when
-*truly unqualified* (a namespaced call merely sharing a POSIX name — `json::accept`,
-`std::fprintf` — never does), and the socket verbs that double as plausible
-member names (`send` / `recv` / `connect` / `bind` / `listen` / `accept`) are
-excluded, because an implicit-`this` member call is spelled identically. C has
-no `LanguageNodeMap` at all, so it reaches no dialect despite sharing the
-grammar.
+## Known ceilings
 
-¹³ **Kotlin dataflow is blocked on tree-sitter-kotlin, not merely unscheduled.**
-The def/use dialect itself would be routine; the CFG builder and the Extract
-Method slicer are what the grammar defeats, in four independent places:
-`function_declaration` labels no `body` field (and wraps its block in a
-`function_body` sibling, so the existing single-child unwrap misses it);
-`for_statement` / `while_statement` label no `body` field either;
-`if_expression` labels no `alternative` field and has no `else_clause` node, so
-an `else` body would be silently dropped from the CFG; and a bare `break` /
-`continue` parses as a plain `identifier`, with no node type to key on. That
-last one is the blocker that matters: the slicer refuses any span containing a
-jump, so invisible jumps would let it propose an Extract Method that silently
-changes control flow — a wrong suggestion, not a missing one. Kotlin therefore
-stays at "no dataflow signal", which is the correct degradation. Reviving this
-needs either a grammar upgrade or a text-based jump seam plus positional
-body/else resolution in the CFG core.
+Stated plainly, because a ceiling you know about is worth more than a claim you
+cannot check.
 
-⁹ Shell gets function-level complexity only (CCN / nesting / cognitive / NLOC).
-`&&` / `||` command lists count toward CCN (`cmd || exit 1` is +1), which is
-honest: shell branching is chained command lists. There are no classes,
-assertions, dataflow, or perf dialect for shell.
-
-¹⁴ **Pascal has no single node grouping a type's method bodies.** A class
-declaration (`declType` → `declClass`) holds only method *signatures*
-(`declProc`, no body); the implementation of each qualified method
-(`TFoo.Bar`) is a separate top-level node keyed by name, not nested inside
-the class. Class-level analysis expects methods physically nested in the
-class node, so mapping it here would silently emit a `ClassComplexity` with
-`method_count == 0` for every class — same posture as Go's external-receiver
-methods (footnote 1): left unmapped rather than emit a misleading zero.
-Function-level complexity/nesting/cognitive and the CFG (branch/loop/try/with,
-raise) are unaffected; no `DefUseDialect` is registered yet, so Extract Method
-stays at "no signal" like C# / Kotlin / Scala / Ruby.
-
-The **performance** signal (`io_in_loop`, `string_concat_in_loop`,
-`resource_construction_in_loop`, language-specific markers like Go
-`defer_in_loop` and C# sync-over-async) and the **dataflow** layer (powering
-Extract Method) each roll out per language in value order, degrading to silence
-where a dialect isn't wired yet. Per-marker mechanics and precision hazards:
-[CODE_HEALTH.md](CODE_HEALTH.md).
+- **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
+  Handlebars, Blade and Thymeleaf parse cleanly as HTML and yield nothing:
+  `{% extends "base.html" %}` is plain text to an HTML parser. Covering them
+  needs a per-dialect regex tier gated on a framework manifest.
+- **Svelte and Vue binding forms are skipped.** `{#each x as y}` and
+  `v-for="x in xs"` *parse* as JS but mean something else, so they are skipped: a
+  parse that succeeds with the wrong meaning is worse than a skip. Component
+  props are set by the parent as markup attributes and never imported by name, so
+  the unused-export pass is suppressed for both.
+- **Object Pascal type kinds collapse.** `record` / `interface` / class-helper /
+  enum / type alias all report as `kind="class"`, and its `extends` vs
+  `implements` split is inferred from the `I`-prefix naming convention rather
+  than guaranteed by the language.
+- **C has no health dialect.** It shares the C++ grammar for parsing but reaches
+  no health walker map, so it gets graph coverage without markers.
+- **Scala import resolution is partial**, and ScalaTest's infix DSL
+  (`x shouldBe y`) is not counted as an assertion: there is no assert-prefixed
+  callee to key on.
 
 ---
 
 ## Roadmap
 
-| Language | Target tier | Status |
-|----------|------------|--------|
-| Vue | Full | Shipped: TS projection of `<script>` / `<script setup>` + template expressions, component symbols with tag-consistent naming, `<Foo />` call edges, alias + directory-index + dynamic-`import()` resolution, all three health dialects. Next: Options-API `pair`-function members, `v-for` head bindings |
-| Svelte | Full | Shipped: TS projection of `<script>` + markup expressions, component symbols, `<Foo />` call edges, `$lib` / `#`-subpath resolution, SvelteKit route edges, all three health dialects. Next: `{#each}` head bindings, object-literal attributes, `.svelte.ts` rune modules |
-| Dart | Good | Shipped: AST, health control-flow + class facts, perf dialect, Flutter edges. Next: riverpod/get_it dynamic hints, dataflow dialect |
-| Scala | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, `.r` recompile, sync-over-Future). Next: dataflow dialect, combinator (`.map`/`.foreach`) loop tracking via the shared `block_loop_body` hook Ruby established |
-| Ruby | Full (health) | Shipped: complexity/class/assertion markers + perf dialect with block-iteration loops (`.each`/`.map` blocks) and the stratified ActiveRecord N+1 lexicon. Next: dataflow dialect, LCOM4 via `@ivar` grouping |
-| Kotlin | Full (health) | Shipped: complexity/class/assertion markers + perf dialect (JVM lexicon, Exposed, combinator loops via `block_loop_body`, `suspend` sync-in-async). Dataflow is **blocked on the grammar**, not unstarted — see ¹³ |
-| C++ | Full | Shipped: complexity/class/assertion markers, perf dialect (POSIX / `std::filesystem` / sqlite3 sinks, constant-pattern `std::regex` recompile, `lock_in_loop`), and the dataflow dialect powering Extract Method |
-| C# | Full (health) | Dataflow dialect pending; perf shipped |
-| Elixir | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-elixir` available) |
-| F# | Good | Lightweight tier shipped; AST upgrade planned (`tree-sitter-f-sharp` available) |
-| SQL / dbt | - | DDL symbols, dbt lineage, app-to-database contracts, health markers shipped. Next: column-level blast radius |
-| Shell | - | Function symbols, `source` import edges, function-level complexity shipped. Next: shebang-based detection of extensionless executables (a traverser capability) |
-| HTML | Lightweight | Shipped: `<script src>` / `<link href>` edges with document-, `public/`- and root-relative resolution; never dead-code flagged. Stays import-tier — HTML has no symbols. Next: a regex import tier for template dialects (Django/Jinja, Go templates, ERB, Handlebars), gated on a framework manifest |
+| Language | Target | Next |
+|----------|--------|------|
+| Vue | Full | Options-API `pair`-function members, `v-for` head bindings |
+| Svelte | Full | `{#each}` head bindings, object-literal attributes, `.svelte.ts` rune modules |
+| Kotlin | Full (health) | Dataflow is **blocked on the grammar** and needs a grammar upgrade or a text-based jump seam |
+| Scala | Full (health) | Dataflow dialect, combinator (`.map` / `.foreach`) loop tracking |
+| Ruby | Full (health) | Dataflow dialect, LCOM4 via `@ivar` grouping |
+| C# | Full (health) | Dataflow dialect |
+| Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
+| Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
+| Elixir · F# | Good | AST upgrade (both grammars are available on PyPI) |
+| SQL / dbt | — | Column-level blast radius |
+| Shell | — | Shebang detection for extensionless executables |
+| HTML | Lightweight | A regex import tier for template dialects, gated on a framework manifest |
 
 ---
 
 ## See also
 
-- [architecture/language-support.md](../architecture/language-support.md), pipeline internals + how to add a language
-- [CODE_HEALTH.md](CODE_HEALTH.md), code-health markers and per-language precision
-- [WORKSPACES.md](../scale/WORKSPACES.md), cross-repo contracts and co-change
+- **[architecture/language-support.md](../architecture/language-support.md)** · pipeline internals, the call-resolution architecture, and the contributor recipe for adding a language
+- [CODE_HEALTH.md](CODE_HEALTH.md) · health markers and per-language precision
+- [WORKSPACES.md](../scale/WORKSPACES.md) · cross-repo contracts and co-change
