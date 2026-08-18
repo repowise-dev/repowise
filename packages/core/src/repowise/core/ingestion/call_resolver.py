@@ -1348,6 +1348,10 @@ class CallResolver:
         Read off the raw import statements rather than ``_import_names``, which
         only carries bindings that resolved to a file — precisely the ones this
         needs to exclude.
+
+        The names wanted here are the ones *this file writes*, which is what
+        ``Import.local_names`` answers: ``imported_names`` carries the source
+        module's name, and under an alias the two differ.
         """
         names = self._external_names.get(file_path)
         if names is not None:
@@ -1358,7 +1362,7 @@ class CallResolver:
         for imp in parsed.imports if parsed else ():
             if imp.resolved_file and not imp.resolved_file.startswith("external:"):
                 continue
-            bound = (*imp.imported_names, imp.module_path.rsplit(".", 1)[-1])
+            bound = (*imp.local_names, imp.module_path.rsplit(".", 1)[-1])
             found.update(name for name in bound if name and name != "*")
 
         names = frozenset(found)
