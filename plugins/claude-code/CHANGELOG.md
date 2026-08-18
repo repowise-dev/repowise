@@ -2,6 +2,14 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.44.0
+
+### Changed
+- Version bump to track the 0.44.0 release. No command, skill, hook or MCP tool
+  surface changed this cycle: the live `list_tools()` set is unchanged, no
+  `@click.option` moved on any documented command, and `hooks.json` still
+  mirrors `claude_config.py`.
+
 ## 0.43.0
 
 ### Changed

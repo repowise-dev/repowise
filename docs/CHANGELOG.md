@@ -13,6 +13,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.44.0] — 2026-08-18
+
+The theme this cycle is the call graph knowing who the receiver is. A call written `user.save()` only becomes an edge if something can say what `user` is, and for most languages nothing could: the resolver matched the bare name against every symbol in the repo and guessed. Receiver typing now runs for Go, Kotlin, Swift, C#, Java, Python, PHP and Luau, and resolution follows re-export chains. On microdot, a small pure-Python repo with none of the languages that gained most, call edges went from 876 to 1,371. Dead code got the matching precision pass, and updates now carry both onto an index built by an older version, which they previously did not. Expect the first `repowise update` after upgrading to run long, once.
+
+### Added
+
+- **Receiver typing across eight languages.** A call's receiver is typed from its declaration in Go (#1674), Kotlin (#1687), Swift (#1688) and C# (#1680), from the enclosing class for a bare call plus PHP and Luau receivers (#1630), from a field's declaring class (#1642), from a local's declaration (#1639), from assignments in a Python function body (#1643), from a Java call on its own field (#1658), and from a framework decorator that retyped it (#1684). Three more receiver shapes a bare-name match had been guessing at are now captured directly (#1686).
+- **Resolution follows re-exports.** A call resolves through the name a module publishes (#1682), a method on a type imported through a re-export (#1664), and a namespace member through the whole re-export chain (#1672).
+- **`dispatches_to` edges** link a base method to the implementations that answer for it (#1649), and a framework-wired symbol to the symbol it is wired to (#1654).
+- **Every call edge records the strategy that resolved it** (#1628), and the web UI says how each edge got into the graph (#1652). An execution flow now says why it stopped instead of just stopping (#1650).
+- **Security findings carry a verified line and a commit date** (#1668).
+- **Pascal is registered in the complexity, duplication and dataflow dialects**, so health scores it like the other 18 languages (#1629).
+
+### Changed
+
+- **The file detail page is ported onto the design language** (#1621) and gained inbound and outbound navigation (#1622).
+- **The workspace System Map moves its chrome off the canvas**, and the per-repo view works (#1616).
+- **Dead code surfaces staleness on the web** and drops the package column (#1669).
+- **`this.method()` self-dispatch is recorded in six languages** (#1617).
+- **Export aliases are read from the parser** rather than a second scan of the file (#1683).
+
+### Fixed
+
+- **An extraction change now reaches unchanged files.** An incremental update rewrote only the git-changed files' rows in `graph_edges`, which is right for a content change and wrong for a parser change: the latter alters every file's edges at once. The build that wrote a repo's edges is now recorded, and a mismatch widens the reconcile to the whole parsed set once before re-stamping. Without this, none of this release's graph work would reach an existing index short of a full re-index. (#1619)
+- **Dead-code analysis no longer skips itself on update.** Stored commit timestamps came back without a timezone while freshly read ones carried one, so ageing a package raised `TypeError`, a broad catch turned it into a one-line warning, and every finding silently kept its previous verdict. Present since 0.40.0. (#1702)
+- **Symbols reached by a framework or a container** (#1673), **wired in by a registration decorator** (#1681), or **named by a docs build or an API dump** (#1677) are no longer reported as dead.
+- **Every use of a private symbol counts**, not only a call (#1662). Only genuinely narrow scopes stay in the uncalled-symbol pool (#1646), and a top-tier confidence means the checks behind it ran (#1666).
+- **C and C++**: a forward-declared type is not an unused export (#1700), nor is a template forward declaration (#1703); a call edge attaches to the definition rather than the header declaration (#1626); a function named but never called counts as a use (#1627); `.inl` / `.ipp` / `.tpp` (#1625) and `.hh` are recognised as C++, and `.inc` is reassigned from Pascal (#1693).
+- **Every language gives one answer for a type's bare name** (#1634). A struct field is not callable, so the bare-name tier no longer offers one (#1692), and Rust type positions are filed as `type_use` rather than calls (#1690).
+- **Inheritance is emitted for JavaScript classes** (#1636) and Go interface embedding (#1641). C# resolves inherited calls again (#1651), captures generic method calls (#1637), and records the visibility a declaration actually has (#1644).
+- **A third-party JVM import no longer takes a same-named repo class** (#1659). A Go method whose receiver is unexported is typed (#1676). A workspace package that publishes only from a build directory binds correctly (#1670).
+- **A method passed as a value is separated from a method called** (#1661).
+- **MCP**: four tools answered a bad argument with a reassuring negative instead of an error (#1671); `get_context` counted a subclass and a fixture as callers (#1663); raw doubles and two different scales shipped under one key (#1631). The symbol page made the same subclass mistake (#1660).
+- **A failed framework pass is reported** rather than swallowed (#1645).
+- **`repowise update --full` runs under the single-flight lock** (#1529), and the incremental hotspot gate reuses the persisted function-modification p80 (#1532).
+- **ADR discovery no longer mines paths git cannot see** (#1614), the security history scanner actually scans (#1667), and fix history ignores the shallow-clone boundary (#1633).
+
+### Performance
+
+- **Graph build stops re-reading the repository** (#1648), and each language gets a call-strategy seam that rejects unresolvable names first (#1632).
+- **The file page stops reading the whole repo to render one file** (#1618).
+- **Workspace `.csproj` scanning walks each repo once** (#1615).
+
+### Documentation
+
+- The language-support pages are rewritten, a graph layer page is added, and the claims that pointed at them are corrected (#1689).
+
+---
+
 ## [0.43.0] — 2026-08-15
 
 The through-line this cycle is a number meaning what it says. Change risk scored the size of the diff and presented it as danger. `get_answer` could return `confidence: high` beside `retrieval_quality: weak`, with a note that asserted dominance and denied it in the same sentence. `get_why` answered every question, including the ones its store knew nothing about. The dashboard summed dead exports across a side project and a monorepo. Six surfaces each computed hotspot health their own way and none of them agreed. Each of those is fixed by giving the answer one owner and reporting the reason alongside it. `repowise risk` now leads with the bug-fix history of the files a change touches, an answer's confidence note quotes the test that earned it, and a question the decision store cannot answer gets a redirect instead of the three closest records.
