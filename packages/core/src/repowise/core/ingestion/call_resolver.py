@@ -107,6 +107,24 @@ _TYPED_RECEIVER = ("_resolve_typed_receiver",)
 _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"})
 _FUNCTION_KINDS = frozenset({"function", "method"})
 
+# Kinds that can never be the callee of a call, used to keep the bare-name
+# Tier 3 index from offering a data member as a function (bug 90).
+#
+# This is deliberately NOT the complement of ``_FUNCTION_KINDS``. Measured over
+# the corpus, plenty of non-function kinds are legitimately called: ``class``
+# is a constructor in python/java/c#/typescript; ``variable`` is both a rust
+# tuple ``enum_variant`` (309 grounded call edges on goose) and a typescript
+# const whose initialiser is not syntactically a function, such as a factory
+# result or a ``.bind()`` handle (2,173 on zod); ``type_alias`` is a Go
+# conversion. Denying by function-ness would delete thousands of real edges.
+#
+# ``property`` is the one kind in the whole of ``language_configs.py`` that
+# means "data member" and nothing else: it is emitted by exactly one mapping,
+# rust's ``field_declaration``. Every other language spells its fields
+# ``variable``, which is why this fix cannot be extended to them — there a
+# field is indistinguishable from a callable value by kind alone.
+_NON_CALLABLE_KINDS = frozenset({"property"})
+
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
     member=("_resolve_jvm_receiver_same_package",),
@@ -197,6 +215,11 @@ class CallResolver:
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
+
+        # Symbols in the index above that are data members, not callables
+        # (bug 90). Held as an id set rather than a full id→kind map because
+        # it is the only kind question asked of it and the set is small.
+        self._non_callable_ids: set[str] = set()
 
         # C/C++ forward declaration → the definition it declares. Populated by
         # ``_build_indices``; applied to every resolved call so the edge lands
@@ -643,6 +666,8 @@ class CallResolver:
                     self._global_methods[key].append((path, sym.id))
 
                 # Global indices
+                if sym.kind in _NON_CALLABLE_KINDS:
+                    self._non_callable_ids.add(sym.id)
                 self._global_symbols[sym.name].append(sym.id)
 
             self._file_symbols[path] = file_syms
@@ -911,9 +936,24 @@ class CallResolver:
                 caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
             )
 
-        # Tier 3: global unique match — only within the same language
+        # Tier 3: global unique match — only within the same language.
+        # A data member is not callable, so it must not be the unique answer
+        # that mints an edge (bug 90). Filtered here rather than at index build
+        # so the `declared` gate above and the member gate in
+        # ``_resolve_member_call`` keep seeing the whole repo.
         candidates = self._global_symbols.get(target_name, [])
-        if len(candidates) == 1 and candidates[0] != caller_id:
+        if (
+            len(candidates) == 1
+            and candidates[0] != caller_id
+            # Uniqueness is judged on the unfiltered list on purpose: this asks
+            # only whether the single answer is callable, so the tier can lose
+            # an edge but never gain one. Filtering the pool *before* the
+            # length test instead would re-uniquify a name that a field and a
+            # method both declare, firing the tier where it used to refuse —
+            # measured at +916 new 0.50-confidence edges on goose, on the one
+            # tier hand-read at 28.6% precision.
+            and candidates[0] not in self._non_callable_ids
+        ):
             caller_lang = symbol_id_language(self._parsed_files, caller_id)
             callee_lang = symbol_id_language(self._parsed_files, candidates[0])
             if caller_lang and callee_lang and caller_lang != callee_lang:
