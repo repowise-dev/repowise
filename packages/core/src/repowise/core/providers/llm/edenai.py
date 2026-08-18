@@ -1,18 +1,21 @@
 """Eden AI provider for repowise.
 
-Routes requests to 700+ models (Mistral, GPT, Claude, Gemini, Cohere, DeepSeek,
-Llama, etc.) through a single API key via Eden AI's OpenAI-compatible gateway at
+Routes requests to models from many vendors (Mistral, GPT, Claude, Gemini, Cohere,
+DeepSeek, Llama) through a single API key via Eden AI's OpenAI-compatible gateway at
 https://api.edenai.run/v3. Eden AI is EU-headquartered and offers an EU endpoint
 (https://api.eu.edenai.run/v3) for data residency / GDPR-sensitive workloads.
 
-No additional pip install required — uses the ``openai`` package with a custom
+No additional pip install required, it uses the ``openai`` package with a custom
 base_url, following the same pattern as OpenRouterProvider / DeepSeekProvider.
 
 Models use ``vendor/model`` format:
-    - mistral/mistral-small-latest  — fast, economical EU model [default]
-    - openai/gpt-4o-mini            — OpenAI small model
-    - anthropic/claude-haiku-4-5    — Anthropic Claude Haiku
-    - google/gemini-2.5-flash       — Google Gemini Flash
+    - mistral/mistral-small-latest  fast, economical EU model [default]
+    - openai/gpt-4o-mini            OpenAI small model
+    - anthropic/claude-haiku-4-5    Anthropic Claude Haiku
+    - google/gemini-2.5-flash       Google Gemini Flash
+
+The live catalogue is public and needs no authentication at
+https://api.edenai.run/v3/models.
 
 Set the EU endpoint for data residency:
     export EDENAI_BASE_URL="https://api.eu.edenai.run/v3"
@@ -163,7 +166,7 @@ def _edenai_model_options(
 
 
 class EdenAIProvider(BaseProvider):
-    """Eden AI provider — access 700+ models via a single OpenAI-compatible key.
+    """Eden AI provider, reaching many vendors via a single OpenAI-compatible key.
 
     Args:
         api_key:      Eden AI API key. Falls back to EDENAI_API_KEY env var.
@@ -310,7 +313,7 @@ class EdenAIProvider(BaseProvider):
         )
 
         if self._cost_tracker is not None:
-            # Await the cost record inline rather than spawning a detached task —
+            # Await the cost record inline rather than spawning a detached task,
             # a fire-and-forget create_task can still be flushing its aiosqlite
             # write when the event loop is torn down, surfacing as a noisy
             # "Event loop is closed" traceback. record() swallows its own

@@ -1,6 +1,6 @@
 """Unit tests for EdenAIProvider.
 
-All tests mock the AsyncOpenAI client / httpx — no real API calls are made.
+All tests mock the AsyncOpenAI client and httpx. No real API calls are made.
 """
 
 from __future__ import annotations

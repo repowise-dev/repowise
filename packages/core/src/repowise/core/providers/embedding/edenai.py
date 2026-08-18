@@ -1,10 +1,11 @@
 """Eden AI embedding support for repowise semantic search.
 
 Uses Eden AI's OpenAI-compatible endpoint at ``https://api.edenai.run/v3``.
-No additional pip install required — uses the ``openai`` package. Set
-``EDENAI_BASE_URL=https://api.eu.edenai.run/v3`` for EU data residency.
+No additional pip install required, it uses the ``openai`` package. Set
+``EDENAI_BASE_URL=https://api.eu.edenai.run/v3`` to keep requests on Eden AI's
+EU gateway.
 
-Default model: openai/text-embedding-3-small (1536 dims)
+Default model: amazon/amazon.titan-embed-text-v2:0 (1024 dims, EU region)
 
 Usage:
     from repowise.core.providers.embedding.edenai import EdenAIEmbedder
@@ -18,23 +19,40 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+from typing import ClassVar
+
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
 
 
 class EdenAIEmbedder:
     """Eden AI embedding adapter implementing the repowise Embedder protocol.
 
     Args:
-        api_key:  Eden AI API key. Falls back to EDENAI_API_KEY env var.
-        model:    Embedding model in ``vendor/model`` form. Default:
-                  "openai/text-embedding-3-small".
-        base_url: Override the Eden AI API URL. Falls back to EDENAI_BASE_URL,
-                  then the global endpoint.
+        api_key:    Eden AI API key. Falls back to EDENAI_API_KEY env var.
+        model:      Embedding model in ``vendor/model`` form. Default:
+                    "amazon/amazon.titan-embed-text-v2:0".
+        base_url:   Override the Eden AI API URL. Falls back to EDENAI_BASE_URL,
+                    then the global endpoint.
+        dimensions: Override the declared output width. Falls back to
+                    REPOWISE_EMBEDDING_DIMS, then ``_DIMS``. Note: this overrides
+                    only the *declared* width that the vector store trusts, it
+                    does not add a ``dimensions`` parameter to the API request.
+                    Use it to correct a wrong ``_DIMS`` entry when the model's
+                    real output differs.
     """
 
-    _DIMS: dict[str, int] = {
+    # Widths measured against Eden AI's /v3/embeddings endpoint, not copied from
+    # the upstream vendors. Eden AI returns google/gemini-embedding-001 at its
+    # full 3072 width, where OpenRouterEmbedder._DIMS records 768 for the same
+    # model id, so the two tables are correct and must not be reconciled.
+    # The default is EU-region and the cheapest of these per token.
+    _DIMS: ClassVar[dict[str, int]] = {
+        "amazon/amazon.titan-embed-text-v2:0": 1024,  # EU region
+        "amazon/cohere.embed-multilingual-v3": 1024,  # EU region
+        "databricks/databricks-bge-large-en": 1024,  # EU region
+        "google/gemini-embedding-001": 3072,  # EU region
         "openai/text-embedding-3-small": 1536,
         "openai/text-embedding-3-large": 3072,
-        "cohere/embed-multilingual-v3.0": 1024,
     }
 
     _DEFAULT_BASE_URL: str = "https://api.edenai.run/v3"
@@ -43,9 +61,10 @@ class EdenAIEmbedder:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "openai/text-embedding-3-small",
+        model: str = "amazon/amazon.titan-embed-text-v2:0",
         base_url: str | None = None,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = None,
+        dimensions: int | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("EDENAI_API_KEY")
         if not self._api_key:
@@ -61,15 +80,26 @@ class EdenAIEmbedder:
                 f"or pick a known model: {known}."
             )
         self._model = model
-        self._base_url = (base_url or os.environ.get("EDENAI_BASE_URL") or self._DEFAULT_BASE_URL).rstrip(
-            "/"
+        self._base_url = (
+            base_url or os.environ.get("EDENAI_BASE_URL") or self._DEFAULT_BASE_URL
+        ).rstrip("/")
+        self._timeout = resolve_embedding_timeout(
+            timeout, self._DEFAULT_TIMEOUT, provider_env="EDENAI_EMBEDDING_TIMEOUT"
         )
-        self._timeout = timeout
+        # Resolve declared width: explicit arg > REPOWISE_EMBEDDING_DIMS > _DIMS table.
+        if dimensions is None:
+            env = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+            if env:
+                try:
+                    dimensions = int(env)
+                except ValueError:
+                    raise ValueError("dimensions must be a positive integer") from None
+        self._dimensions = dimensions if dimensions is not None else self._DIMS[model]
         self._client: object | None = None
 
     @property
     def dimensions(self) -> int:
-        return self._DIMS[self._model]
+        return self._dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts using Eden AI.
@@ -83,6 +113,7 @@ class EdenAIEmbedder:
         model = self._model
         timeout = self._timeout
         base_url = self._base_url
+        expected_dimensions = self._dimensions
 
         def _embed_sync() -> list[list[float]]:
             import openai
@@ -95,6 +126,15 @@ class EdenAIEmbedder:
                 )
             response = self._client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]
+            widths = {len(v) for v in raw_vectors}
+            if widths and widths != {expected_dimensions}:
+                actual = min(widths - {expected_dimensions})
+                raise ValueError(
+                    f"EdenAIEmbedder declared {expected_dimensions}-dimensional vectors but the API"
+                    f" returned {actual} (model={model!r}). Update"
+                    f" EdenAIEmbedder._DIMS[{model!r}] = {actual} to match the server's"
+                    f" real output."
+                )
             return [_l2_normalize(v) for v in raw_vectors]
 
         return await asyncio.to_thread(_embed_sync)
