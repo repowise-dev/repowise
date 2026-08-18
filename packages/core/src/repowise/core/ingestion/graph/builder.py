@@ -446,7 +446,19 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 # only contribute to file-reachability — not to
                 # ``import_targets`` which gates cross-file call /
                 # heritage lookups.
-                if data.get("edge_type") in ("imports", "type_use"):
+                # ``no_scope_widening`` marks a type-use edge whose target was
+                # inferred (the repo declares that type name in exactly one
+                # file) rather than read off an import the file actually
+                # writes. Such an edge is real evidence the target is used, so
+                # it still counts for file reachability and the unused-export
+                # pass, but it is not evidence that this file's bare names
+                # resolve into the target — feeding it to ``import_targets``
+                # let unrelated same-named symbols match and minted false call
+                # edges (measured on goose: 25% precision on the edges it
+                # gained).
+                if data.get("edge_type") in ("imports", "type_use") and not data.get(
+                    "no_scope_widening"
+                ):
                     import_targets.setdefault(path, set()).add(target)
         if progress:
             _phase_done = getattr(progress, "on_phase_done", None)

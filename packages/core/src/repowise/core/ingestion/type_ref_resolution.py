@@ -192,15 +192,54 @@ def _resolve_rust_type_refs(
         if bare in rust_builtin_types:
             continue
 
-        target = _find_rust_type_file(
+        target, inferred = _find_rust_type_file(
             bare, from_path, sorted_imports, ctx, graph, defined_names
         )
         if target is None:
             continue
         _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
-                                    type_name=bare, origin=ref.origin)
+                                    type_name=bare, origin=ref.origin,
+                                    widens_scope=not inferred)
         emitted += 1
     return emitted
+
+
+def _rust_unique_owner_index(
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> dict[str, str]:
+    """Map each type name declared in exactly one Rust file to that file.
+
+    Rust reaches most sibling-crate types through a ``use`` path that import
+    resolution cannot always land on a file, and its type names almost never
+    match a file stem, so the import and stem lookups in
+    :func:`_find_rust_type_file` both miss. Without a third lookup the vast
+    majority of Rust type references resolve to nothing, and a type used only
+    in a parameter or return position reads as an unused export.
+
+    Only names with a single Rust definition are kept: a name defined twice is
+    ambiguous and gets no edge, the same rule the stem lookup applies. The
+    index is restricted to Rust files so a name shared with a class in another
+    language cannot mint a cross-language edge.
+
+    Cached on the graph and keyed by the identity of *defined_names*, which is
+    rebuilt once per :func:`resolve_type_refs` pass; holding the reference
+    keeps that identity valid for the life of the cache.
+    """
+    cached = graph.graph.get("_rust_type_owner_cache")
+    if cached is not None and cached[0] is defined_names:
+        return cached[1]
+
+    owners: dict[str, str | None] = {}
+    for file_path, names in defined_names.items():
+        node = graph.nodes.get(file_path)
+        if node is None or node.get("language") != "rust":
+            continue
+        for name in names:
+            owners[name] = file_path if name not in owners else None
+    index = {name: f for name, f in owners.items() if f is not None}
+    graph.graph["_rust_type_owner_cache"] = (defined_names, index)
+    return index
 
 
 def _find_rust_type_file(
@@ -210,17 +249,31 @@ def _find_rust_type_file(
     ctx: ResolverContext,
     graph: nx.DiGraph,
     defined_names: dict[str, set[str]],
-) -> str | None:
-    """Find the file defining *type_name*, preferring imported files."""
+) -> tuple[str | None, bool]:
+    """Find the file defining *type_name*, preferring imported files.
+
+    Returns ``(target, inferred)``. *inferred* is True when the answer came
+    from a name-shaped guess — the file stem matching the type name, or the
+    repo-wide unique-owner index — rather than from an import the file actually
+    writes. That distinction matters downstream: an inferred edge is good
+    evidence the target file is *used* (so it counts for reachability and the
+    unused-export pass) but it is not evidence that the caller's bare names
+    resolve into that file, so it must not widen call-resolution scope. Both
+    guesses were measured minting false call edges on goose when they did.
+    """
     for imp_file in sorted_imports:
         if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
-            return imp_file
+            return imp_file, False
 
     candidates = ctx.stem_map.get(type_name.lower(), [])
     if len(candidates) == 1 and candidates[0] != from_path and graph.has_node(candidates[0]):
-        return candidates[0]
+        return candidates[0], True
 
-    return None
+    owner = _rust_unique_owner_index(graph, defined_names).get(type_name)
+    if owner is not None and owner != from_path:
+        return owner, True
+
+    return None, False
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +793,7 @@ def _add_or_merge_type_use_edge(
     type_name: str,
     origin: str,
     hint_source: str | None = None,
+    widens_scope: bool = True,
 ) -> None:
     """Add a ``type_use`` edge between two files, merging on conflict.
 
@@ -775,6 +829,10 @@ def _add_or_merge_type_use_edge(
         names = data.setdefault("imported_names", [])
         if type_name not in names:
             names.append(type_name)
+        # One directly-evidenced reference upgrades the whole edge: the files
+        # are genuinely import-linked however the earlier references were found.
+        if widens_scope:
+            data.pop("no_scope_widening", None)
         return
     attrs: dict[str, Any] = {
         "edge_type": "type_use",
@@ -783,6 +841,8 @@ def _add_or_merge_type_use_edge(
         "type_uses": [type_name],
         "imported_names": [type_name],
     }
+    if not widens_scope:
+        attrs["no_scope_widening"] = True
     if hint_source is not None:
         attrs["hint_source"] = hint_source
     graph.add_edge(src, dst, **attrs)
