@@ -399,6 +399,105 @@ class TestKotlinFieldScope:
         assert fields(source, "kotlin", []) == {}
 
 
+
+class TestSwiftShapes:
+    """Swift annotates after the name, and one shape reaches 88% of it.
+
+    Measured over swift-nio and Alamofire: 4,001 single-name parameters, 2,876
+    stored properties, 2,104 `var`s, 1,356 underscore-label parameters, 1,304
+    `let`s and 736 two-name-label parameters are all `name: Type`.
+    """
+
+    def test_a_typed_let(self) -> None:
+        body = "func run() {\n    let ctx: ChannelContext = loop.context\n}"
+        assert declared_types(body, "swift")["ctx"] == "ChannelContext"
+
+    def test_a_typed_var(self) -> None:
+        body = "func run() {\n    var channel: ServerChannel = make()\n}"
+        assert declared_types(body, "swift")["channel"] == "ServerChannel"
+
+    def test_a_plain_parameter(self) -> None:
+        body = "func handle(request: HTTPRequest) { request.body() }"
+        assert declared_types(body, "swift")["request"] == "HTTPRequest"
+
+    def test_an_underscore_label_names_the_second_identifier(self) -> None:
+        body = "func handle(_ request: HTTPRequest) { request.body() }"
+        assert declared_types(body, "swift")["request"] == "HTTPRequest"
+
+    def test_a_two_name_label_names_the_second_identifier(self) -> None:
+        """The declared name is `loop`, not `on`. A pattern anchored at `(` or
+        `,` takes the label and is wrong 736 times over the two repos; taking
+        the identifier adjacent to the colon is right in all three spellings
+        with no branch on any of them."""
+        body = "func handle(on loop: EventLoop) { loop.execute() }"
+        types = declared_types(body, "swift")
+        assert types["loop"] == "EventLoop"
+        assert "on" not in types
+
+    def test_a_construction(self) -> None:
+        body = "func run() {\n    let body = ResponseBody(request)\n}"
+        assert declared_types(body, "swift")["body"] == "ResponseBody"
+
+    def test_an_opaque_type_keeps_its_type(self) -> None:
+        """`some Foo` is a `Foo` at the call site, as `any Foo` is."""
+        body = "func run() {\n    let opaque: some Renderer = make()\n}"
+        assert declared_types(body, "swift")["opaque"] == "Renderer"
+
+    def test_an_optional_keeps_its_type(self) -> None:
+        body = "func run() {\n    var channel: ServerChannel? = nil\n}"
+        assert declared_types(body, "swift")["channel"] == "ServerChannel"
+
+    def test_an_implicitly_unwrapped_optional_keeps_its_type(self) -> None:
+        body = "func run() {\n    let session: Session! = current\n}"
+        assert declared_types(body, "swift")["session"] == "Session"
+
+
+class TestSwiftRefusals:
+    def test_an_array_types_nothing(self) -> None:
+        """The value is an Array of Header, not a Header. The type token starts
+        with `[`, so it matches nothing rather than matching wrongly."""
+        body = "func run() {\n    let items: [Header] = request.headers\n}"
+        assert "items" not in declared_types(body, "swift")
+
+    def test_a_dictionary_types_nothing(self) -> None:
+        """`]` is kept out of the closer set precisely so the inner `k: V` of a
+        dictionary type cannot close on it."""
+        body = "func run() {\n    let lookup: [String: Header] = request.map\n}"
+        assert declared_types(body, "swift") == {}
+
+    def test_a_factory_call_is_not_a_construction(self) -> None:
+        body = "func run() {\n    let cache = Store.shared(request)\n}"
+        assert "cache" not in declared_types(body, "swift")
+
+    def test_a_chained_construction_types_nothing(self) -> None:
+        body = "func run() {\n    let x = Builder().build()\n}"
+        assert declared_types(body, "swift") == {}
+
+    def test_a_doc_comment_parameter_is_not_a_declaration(self) -> None:
+        """swift-nio carries 18,722 `///` lines and 331 `- Parameter Name:`
+        ones, which read exactly like `name: Type`. `///` starts with `//`, so
+        one line-comment pattern covers them; Swift needs no block strip, since
+        genuine `/* */` runs are 15 in swift-nio and 2 in Alamofire."""
+        body = "/// - Parameter Handler: the RequestHandler to use\nfunc run() { }"
+        assert declared_types(body, "swift") == {}
+
+    def test_an_initialiser_parameter_is_not_a_field(self) -> None:
+        """It sits at type scope and closes on `=` exactly as a stored property
+        does, and it is a parameter. The captured keyword is what refuses it."""
+        source = (
+            "class C {\n    init(timeout: Duration = .seconds(5)) { }\n"
+            "    func run() { timeout.tick() }\n}"
+        )
+        assert "timeout" not in fields(source, "swift", [(2, 2), (3, 3)])
+
+    def test_a_stored_property_is_a_field(self) -> None:
+        source = (
+            "class C {\n    private let logger: Logger = Logger()\n"
+            "    func run() {\n        logger.debug()\n    }\n}"
+        )
+        assert fields(source, "swift", [(3, 5)])["logger"] == "Logger"
+
+
 class TestGoShapes:
     """Go writes ``name T``, which is the reverse of every other shape here.
 
@@ -526,7 +625,7 @@ class TestClassScope:
 
 def test_the_language_set_is_what_the_patterns_declare() -> None:
     """Excluding a language means removing its shapes, not gating a caller."""
-    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "go", "java", "kotlin", "python"}
+    assert set(RECEIVER_TYPE_LANGUAGES) == {"csharp", "go", "java", "kotlin", "python", "swift"}
 
 
 def test_go_is_not_a_field_language() -> None:
