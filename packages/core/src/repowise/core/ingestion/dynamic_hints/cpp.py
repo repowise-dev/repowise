@@ -24,7 +24,7 @@ _SKIP_DIRS = {
 # .inl is exactly where function-pointer and designated-initialiser wiring
 # tends to live, which is the wiring this extractor exists to find.
 _CPP_EXTS: tuple[str, ...] = (
-    ".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hxx", ".h",
+    ".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h",
     *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
 )
 

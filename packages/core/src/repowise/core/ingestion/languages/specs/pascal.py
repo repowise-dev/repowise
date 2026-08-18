@@ -22,7 +22,13 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="pascal",
     display_name="Object Pascal",
-    extensions=frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr", ".inc"}),
+    # ``.inc`` is a Delphi include convention, but it is also C++'s and PHP's,
+    # and this spec held it exclusively. The corpus has 24 C++ ``.inc`` files
+    # and zero Pascal ones, so it now belongs to cpp — see the note on
+    # ``specs/cpp.INCLUDE_FRAGMENT_EXTENSIONS``. Dropped rather than left to
+    # first-spec-wins ordering so the routing survives a reordering of
+    # ``ALL_SPECS``.
+    extensions=frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"}),
     grammar_package="tree_sitter_pascal",
     scm_file="pascal.scm",
     heritage_node_types=frozenset({"declType"}),
