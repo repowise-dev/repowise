@@ -329,3 +329,34 @@ def test_base_includes_all_models():
         "kg_node_meta",
     }
     assert expected == table_names
+
+
+# ---------------------------------------------------------------------------
+# Column widths — the values that have no natural bound
+# ---------------------------------------------------------------------------
+
+# Columns that store a symbol name, or a label built from one. SQLite ignores
+# VARCHAR length, so a narrow type here is invisible on the default backend and
+# aborts the run on PostgreSQL (issue #1565: a 365-character generated symbol
+# name kills `INSERT INTO graph_nodes` in the persistence phase, after the whole
+# index has been computed). Bounded vocabularies — severity, confidence, kind,
+# status — are deliberately absent: String(n) is the right type for those.
+_UNBOUNDED_TEXT_COLUMNS = [
+    ("graph_nodes", "name"),
+    ("wiki_symbols", "name"),
+    ("wiki_symbols", "parent_name"),
+    ("dead_code_findings", "symbol_name"),
+    ("health_findings", "function_name"),
+    ("refactoring_suggestions", "target_symbol"),
+]
+
+
+@pytest.mark.parametrize(("table_name", "column_name"), _UNBOUNDED_TEXT_COLUMNS)
+def test_symbol_columns_are_unbounded_text(table_name: str, column_name: str) -> None:
+    column = Base.metadata.tables[table_name].columns[column_name]
+    length = getattr(column.type, "length", None)
+    assert length is None, (
+        f"{table_name}.{column_name} is {column.type!r}; it holds a symbol name, "
+        "which has no length bound — a long one aborts the PostgreSQL insert. "
+        "Use Text."
+    )

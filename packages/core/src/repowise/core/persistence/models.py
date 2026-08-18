@@ -230,7 +230,7 @@ class GraphNode(Base):
     community_meta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Symbol-level fields (null for file nodes)
     kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
     qualified_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -443,7 +443,7 @@ class WikiSymbol(Base):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     # "{path}::{name}" — the ingestion Symbol.id field
     symbol_id: Mapped[str] = mapped_column(Text, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
     qualified_name: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     signature: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -454,7 +454,7 @@ class WikiSymbol(Base):
     is_async: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     complexity_estimate: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     language: Mapped[str] = mapped_column(String(32), nullable=False, default="")
-    parent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    parent_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1137,7 +1137,7 @@ class DeadCodeFinding(Base):
         String(32), nullable=False
     )  # unreachable_file, unused_export, etc.
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    symbol_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    symbol_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     symbol_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1181,7 +1181,7 @@ class HealthFinding(Base):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     biomarker_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
-    function_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    function_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -1230,7 +1230,7 @@ class RefactoringSuggestion(Base):
     )
     refactoring_type: Mapped[str] = mapped_column(String(32), nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    target_symbol: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    target_symbol: Mapped[str] = mapped_column(Text, nullable=False, default="")
     line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     plan_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
