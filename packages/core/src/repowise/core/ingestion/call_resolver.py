@@ -941,19 +941,28 @@ class CallResolver:
         # that mints an edge (bug 90). Filtered here rather than at index build
         # so the `declared` gate above and the member gate in
         # ``_resolve_member_call`` keep seeing the whole repo.
+        # Uniqueness is judged on the unfiltered list on purpose. Filtering the
+        # pool *before* the length test would re-uniquify a name that a field
+        # and a method both declare, firing the tier where it used to refuse —
+        # measured at +916 new 0.50-confidence edges on goose, on the one tier
+        # hand-read at 28.6% precision.
         candidates = self._global_symbols.get(target_name, [])
-        if (
-            len(candidates) == 1
-            and candidates[0] != caller_id
-            # Uniqueness is judged on the unfiltered list on purpose: this asks
-            # only whether the single answer is callable, so the tier can lose
-            # an edge but never gain one. Filtering the pool *before* the
-            # length test instead would re-uniquify a name that a field and a
-            # method both declare, firing the tier where it used to refuse —
-            # measured at +916 new 0.50-confidence edges on goose, on the one
-            # tier hand-read at 28.6% precision.
-            and candidates[0] not in self._non_callable_ids
-        ):
+        if len(candidates) == 1 and candidates[0] != caller_id:
+            if candidates[0] in self._non_callable_ids:
+                # Refused here rather than by falling through, so "this tier
+                # can lose an edge but never gain one" is true of the control
+                # flow and not only of the corpus. Falling through would reach
+                # the implicit-receiver tier below, which the old code could
+                # not reach on this input.
+                #
+                # That tier is provably empty here anyway: it ends in
+                # ``_inherited_method``, which reads ``_file_methods`` — filled
+                # by the same loop that unconditionally fills
+                # ``_global_symbols``. So any method it could return would be a
+                # second entry under this name, and ``len(candidates)`` would
+                # not be 1. Returning is what stops that argument having to be
+                # re-derived if either index changes.
+                return None
             caller_lang = symbol_id_language(self._parsed_files, caller_id)
             callee_lang = symbol_id_language(self._parsed_files, candidates[0])
             if caller_lang and callee_lang and caller_lang != callee_lang:
