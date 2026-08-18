@@ -131,6 +131,30 @@ def test_pascal_complex_method_ccn():
     assert many.param_count == 5
 
 
+def test_pascal_else_if_chain_is_flat_not_nested():
+    # Regression: found on a real ~40-arm `else if` VK-code dispatch chain
+    # (StringToVK in a real Delphi codebase) — every arm nests the grammar's
+    # `ifElse`/`if` one level inside the previous arm's `else` field, so an
+    # unflattened walk reported nesting 33 / cognitive 583 for a flat lookup
+    # table. Each arm still charges CCN (it's a real decision point) but
+    # must not open a fresh nesting level or inflate cognitive complexity.
+    src = (
+        b"unit U;\ninterface\nimplementation\n"
+        b"function F(S: string): Integer;\nbegin\n"
+        b"  if S = 'a' then Result := 1\n"
+        b"  else if S = 'b' then Result := 2\n"
+        b"  else if S = 'c' then Result := 3\n"
+        b"  else if S = 'd' then Result := 4\n"
+        b"  else if S = 'e' then Result := 5\n"
+        b"  else Result := 0;\n"
+        b"end;\nend.\n"
+    )
+    fn = _find(walk_file("u.pas", "pascal", src).functions, "F")
+    assert fn is not None
+    assert fn.ccn == 6, f"expected CCN 6 (5 arms + base), got {fn.ccn}"
+    assert fn.max_nesting == 1, f"expected flat chain (nesting 1), got {fn.max_nesting}"
+
+
 def test_pascal_no_class_metrics():
     # Pascal method bodies live in a top-level ``defProc`` outside the
     # ``declClass`` node (see languages.py's ``_PASCAL`` comment) -- class
