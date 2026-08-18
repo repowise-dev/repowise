@@ -364,7 +364,10 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "declProc": "function",  # signature only (interface decl / forward decl)
             "defProc": "function",   # full definition with body
             # Matches C#'s choice for the same concept (property_declaration ->
-            # "variable"); "property" is not a valid SymbolKind literal.
+            # "variable"). Rust is the one language that keeps fields under a
+            # distinct "property" kind; everywhere else a field and a callable
+            # value share "variable", which is what stops the call resolver's
+            # non-callable refusal from extending beyond Rust.
             "declProp": "variable",
         },
         import_node_types=["declUses"],

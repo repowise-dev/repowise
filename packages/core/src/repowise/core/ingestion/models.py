@@ -118,6 +118,13 @@ SymbolKind = Literal[
     "module",
     "macro",
     "variable",
+    # Rust's ``field_declaration`` only. Every other language maps its fields
+    # and properties to ``variable``; Rust keeps them separate, and the call
+    # resolver relies on that to refuse a field as a bare-name call target
+    # (``_NON_CALLABLE_KINDS``). Normalising this to ``variable`` would make
+    # Rust fields indistinguishable from callable values and silently undo
+    # that refusal, so it is declared here rather than mapped away.
+    "property",
 ]
 
 # ---------------------------------------------------------------------------
