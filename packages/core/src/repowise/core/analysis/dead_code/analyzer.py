@@ -604,41 +604,25 @@ def _posix_normpath(config_dir: Path, raw: str) -> str:
     return posixpath.normpath(posixpath.join(config_dir.as_posix(), raw))
 
 
-_TS_EXPORT_ALIAS_RE = re.compile(r"\bexport\s*\{([^}]*)\}(?!\s*from)")
-
-
-def _find_ts_export_aliases(
-    parsed_files: dict,
-    source_map: dict[str, bytes] | None = None,
-) -> dict[str, dict[str, str]]:
+def _find_ts_export_aliases(parsed_files: dict) -> dict[str, dict[str, str]]:
     """Per-file ``{local_name: exported_alias}`` maps for TS/JS alias exports.
 
     ``export { ConversationHistoryWrapper as ConversationHistory }`` publishes
     the symbol under the alias, so importers pull ``ConversationHistory`` and
     the local name never appears in any ``imported_names`` edge. The unused-
     export pass consults this map to match the alias as well.
+
+    Inverted from what the parser already recorded, rather than scanned again.
+    This pass used to own a second regex over the same clause and a second read
+    of every TS/JS file; the parser now reads the clause once, with comments
+    stripped, and the two answers can no longer disagree.
     """
     aliases: dict[str, dict[str, str]] = {}
     for path, pf in parsed_files.items():
-        if not path.endswith((".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs")):
+        published = getattr(pf, "export_aliases", None)
+        if not published:
             continue
-        try:
-            file_info = getattr(pf, "file_info", None)
-            if file_info is None:
-                continue
-            source = read_source_text(path, file_info.abs_path, source_map)
-        except Exception:
-            continue
-        file_map: dict[str, str] = {}
-        for match in _TS_EXPORT_ALIAS_RE.finditer(source):
-            for part in match.group(1).split(","):
-                if " as " in part:
-                    local, _, alias = part.strip().partition(" as ")
-                    local, alias = local.strip(), alias.strip()
-                    if local and alias:
-                        file_map[local] = alias
-        if file_map:
-            aliases[path] = file_map
+        aliases[path] = {local: exported for exported, local in published.items()}
     return aliases
 
 
@@ -688,12 +672,15 @@ class DeadCodeAnalyzer:
         # subset. Empty when a caller has no source access, which is what makes
         # that check skip rather than guess.
         self._source_map: dict[str, bytes] = source_map or {}
-        # Four prepasses below each scan every indexed file for text markers.
+        # Three prepasses below each scan every indexed file for text markers.
         # ``source_map`` is ingestion's ``{repo_relative_path: raw bytes}`` for
-        # the same file set, so passing it turns four full-repo disk passes
+        # the same file set, so passing it turns three full-repo disk passes
         # into dict lookups. Callers that don't have it (a resume view, the
         # standalone ``dead-code`` command on a graph built elsewhere) pass
         # None and each prepass reads from disk exactly as before.
+        #
+        # The export-alias map was a fourth and is no longer a pass at all:
+        # the parser records the clause, so it is a dict inversion.
         self._dynamic_import_files = find_dynamic_import_files(
             parsed_files or {}, source_map
         ) | find_dynamic_edge_files(graph)
@@ -725,7 +712,7 @@ class DeadCodeAnalyzer:
         # ``export { local as alias }`` maps so importer edges carrying the
         # alias still count for the local symbol.
         self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
-            parsed_files or {}, source_map
+            parsed_files or {}
         )
         # Lazily-built package-directory maps for Go / JVM / C-C++, the one
         # piece of the rescue state that costs a graph scan. Built on first use

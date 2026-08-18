@@ -44,10 +44,20 @@ def _file_node(symbols: list[dict], language: str = "typescript") -> dict:
 
 
 def _parsed_stub(tmp_path: Path, rel: str, source: str) -> SimpleNamespace:
+    """A parsed-file stub carrying the export aliases the parser would record.
+
+    Read through the parser's own extractor rather than restated, so a stub
+    cannot claim an alias the real pipeline would decline.
+    """
+    from repowise.core.ingestion.extractors.visibility import ts_export_aliases
+
     abs_path = tmp_path / rel
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(source, encoding="utf-8")
-    return SimpleNamespace(file_info=SimpleNamespace(abs_path=str(abs_path)))
+    return SimpleNamespace(
+        file_info=SimpleNamespace(abs_path=str(abs_path)),
+        export_aliases=ts_export_aliases(source),
+    )
 
 
 def _unused_export_names(analyzer: DeadCodeAnalyzer) -> set[str]:
