@@ -42,6 +42,7 @@ from .extractors import (
     node_text,
     refine_go_type_kind,
     refine_kotlin_class_kind,
+    refine_pascal_type_kind,
 )
 from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.bindings.ts_js import (
@@ -615,6 +616,13 @@ class ASTParser:
             ):
                 kind = refine_kotlin_class_kind(def_node)
 
+            # Refine "class" kind for Pascal (declType wraps class / record /
+            # object / interface / class-helper / enum / set / array / alias
+            # in one node shape -- see the spec docstring and
+            # refine_pascal_type_kind's own docstring for the disambiguation).
+            if kind == "class" and file_info.language == "pascal" and def_node.type == "declType":
+                kind = refine_pascal_type_kind(def_node)
+
             # Dart: a function is a ``function_signature`` whose BODY is a
             # sibling ``function_body`` node (members wrap the signature in
             # ``method_signature``). Two consequences the generic path can't
@@ -927,7 +935,25 @@ class ASTParser:
                         Import(
                             raw_statement=raw,
                             module_path=unit_name,
-                            imported_names=[],
+                            # ``uses UnitA;`` exposes UnitA's ENTIRE public
+                            # interface section, unlike Python/JS's
+                            # name-scoped `from x import y` -- Pascal has no
+                            # per-symbol import syntax to name a specific
+                            # one. ``imported_names=[]`` (empty, not
+                            # wildcard) meant dead_code/analyzer.py's
+                            # `sym_name in imported_names` / `"*" in
+                            # imported_names` file-level unused-export
+                            # rescue could structurally never fire for
+                            # Pascal -- every public symbol fell straight
+                            # through to the (now Phase-1-fixed, but still
+                            # best-effort) symbol-level call/type_use
+                            # rescue instead. ``["*"]`` is this codebase's
+                            # existing wildcard-import sentinel (see the
+                            # Python `import *` and CJS re-export branches
+                            # of this function) and is the semantically
+                            # correct value here, not a workaround: it says
+                            # exactly what a Pascal `uses` clause does.
+                            imported_names=["*"],
                             is_relative=False,
                             resolved_file=None,
                             bindings=[],
