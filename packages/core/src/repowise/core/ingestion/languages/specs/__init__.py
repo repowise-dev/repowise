@@ -24,6 +24,7 @@ from .elixir import SPEC as _ELIXIR
 from .elm import SPEC as _ELM
 from .erlang import SPEC as _ERLANG
 from .fsharp import SPEC as _FSHARP
+from .gdscript import SPEC as _GDSCRIPT
 from .go import SPEC as _GO
 from .graphql import SPEC as _GRAPHQL
 from .haskell import SPEC as _HASKELL
@@ -93,6 +94,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _SCALA,
     _DART,
     _PASCAL,
+    _GDSCRIPT,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------

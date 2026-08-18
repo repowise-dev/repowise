@@ -41,7 +41,7 @@ upgrade for prose quality in the docs layer, never a requirement for the index.
 ## Graph Intelligence
 
 tree-sitter parses your source into a **two-tier dependency graph**: file nodes
-and symbol nodes (functions, classes, methods). 18 languages parse to a full
+and symbol nodes (functions, classes, methods). 20 languages parse to a full
 AST; see [`LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language tiers.
 
 A **3-tier call resolver with confidence scoring** handles import aliases,
