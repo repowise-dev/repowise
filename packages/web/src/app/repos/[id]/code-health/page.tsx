@@ -59,7 +59,7 @@ type TabId = (typeof TABS)[number];
 const TAB_LABELS: Record<TabId, string> = {
   triage: "Overview",
   findings: "Findings",
-  coverage: "Coverage",
+  coverage: "Tests",
   "dead-code": "Dead code",
   security: "Security",
   impact: "Blast radius",

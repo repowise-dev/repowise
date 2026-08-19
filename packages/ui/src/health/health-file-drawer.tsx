@@ -690,6 +690,10 @@ function MetricGrid({ metric }: { metric: HealthDrawerMetric }) {
     },
     { label: "Performance", value: <PillarScore v={metric.performance_score ?? null} /> },
     {
+      // Stays "Coverage" while the tab is renamed to "Tests": this cell is the
+      // measured percentage, and a "Tests" cell already sits four rows down
+      // carrying the paired-file flag. Two cells named the same thing in one
+      // grid is the vocabulary failure the rename exists to avoid.
       label: "Coverage",
       value: (
         <PlainValue>

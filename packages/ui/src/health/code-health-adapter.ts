@@ -7,6 +7,7 @@ import type {
   HealthOverviewResponse,
   RefactoringQuery,
   RefactoringTargetsResponse,
+  TestsReachingFile,
 } from "@repowise-dev/types/health";
 
 /** Subset of the findings list query the shared views need. */
@@ -59,6 +60,14 @@ export interface CodeHealthAdapter {
     limit?: number;
     module_limit?: number;
   }): Promise<HealthCoverageResponse>;
+
+  /**
+   * Which tests reach one file, per the dependency graph. Optional: a host that
+   * has not wired it yet renders no test list rather than an error, which is
+   * the same degradation the response types use for a frontend ahead of its
+   * backend.
+   */
+  getTestsReaching?(filePath: string): Promise<TestsReachingFile>;
 
   /** Build an href to a file detail page. */
   fileHref(path: string): string;
