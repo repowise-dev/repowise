@@ -157,6 +157,26 @@ def extract_guarded_jsx_renders(
                     names.extend(_extract_bound_names(c))
         return names
 
+    def _collect_module_local_vars(root: Any) -> set[str]:
+        mod_vars: set[str] = set()
+        for child in root.children:
+            target_node = child
+            if child.type == "export_statement":
+                for c in child.children:
+                    if c.type in ("lexical_declaration", "variable_declaration"):
+                        target_node = c
+                        break
+            if target_node.type in ("lexical_declaration", "variable_declaration"):
+                for dec in target_node.children:
+                    if dec.type == "variable_declarator":
+                        for c in dec.children:
+                            if c.type in ("identifier", "array_pattern", "object_pattern"):
+                                mod_vars.update(_extract_bound_names(c))
+                                break
+        return mod_vars
+
+    module_vars = _collect_module_local_vars(tree.root_node)
+
     def _collect_function_param_props(fn_node: Any) -> set[str] | None:
         params_node = None
         for c in fn_node.children:
@@ -191,7 +211,7 @@ def extract_guarded_jsx_renders(
         return param_props if has_destructured_param else None
 
     def _collect_function_local_vars(fn_node: Any) -> set[str]:
-        local_vars: set[str] = set()
+        local_vars: set[str] = set(module_vars)
 
         def _scan(n: Any) -> None:
             if n != fn_node and n.type in (

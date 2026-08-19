@@ -174,6 +174,7 @@ class ResolvedCall:
     confidence: float  # 0.0–1.0
     line: int  # call site line number (for diagnostics)
     origin: ResolutionOrigin  # which strategy below produced it
+    supplied_props: frozenset[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
 
 
 class CallResolver:

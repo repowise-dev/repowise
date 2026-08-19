@@ -734,6 +734,11 @@ class DeadCodeAnalyzer:
         # because the whitelist arrives per ``analyze()`` call and the map does
         # not.
         self._package_files: PackageFileMap | None = None
+        # Cache for JSX prop-guard extraction: maps pred_file → list of
+        # (parent_fn, child_component, guard_prop) triples. Populated lazily
+        # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
+        # disk and parsed by tree-sitter at most once per analysis run.
+        self._guard_cache: dict[str, list[tuple[str, str, str]]] = {}
 
     def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
         """Assemble the rescue state the shared predicate reads."""
@@ -744,28 +749,6 @@ class DeadCodeAnalyzer:
             whitelist=frozenset(whitelist),
             package_files=self._package_files,
         )
-<<<<<<< HEAD
-=======
-        # Lazily-built rescue state for the shared reachability predicate: the
-        # package-directory maps for Go / JVM / C-C++ plus the bundler-alias
-        # targets found above. Built on first use so a graph that never
-        # reaches the unreachable-files pass never pays for it.
-        self._rescues: ReachabilityRescues | None = None
-        # Cache for JSX prop-guard extraction: maps pred_file → list of
-        # (parent_fn, child_component, guard_prop) triples. Populated lazily
-        # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
-        # disk and parsed by tree-sitter at most once per analysis run.
-        self._guard_cache: dict[str, list[tuple[str, str, str]]] = {}
-
-    def _reachability_rescues(self) -> ReachabilityRescues:
-        """Return the cached rescue state, building it on first use."""
-        if self._rescues is None:
-            self._rescues = ReachabilityRescues(
-                bundler_alias_targets=frozenset(self._bundler_alias_targets),
-                package_files=build_package_file_map(self.graph),
-            )
-        return self._rescues
->>>>>>> fix(dead-code): address code-review issues for JSX prop-guard detection (#1554)
 
     def analyze(
         self,
@@ -1398,9 +1381,14 @@ class DeadCodeAnalyzer:
                 if self._member_is_used(sym_id, sym.get("language")):
                     continue
 
+                risk_factors = path_risk_factors(str(node))
+                file_basename = Path(node).name
+
                 if unsatisfied_guard:
                     guard_prop, caller_name = unsatisfied_guard
                     confidence = RISK_CAP_CONFIDENCE
+                    if risk_factors:
+                        confidence = min(confidence, RISK_CAP_CONFIDENCE)
                     safe = False
                     reason = f"Public symbol '{sym_name}' is rendered behind prop guard '{guard_prop}' which is never supplied"
                     evidence = [f"Prop '{guard_prop}' is missing across all call sites of '{caller_name}'"]
@@ -1418,7 +1406,6 @@ class DeadCodeAnalyzer:
                     if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
                         confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
-                    risk_factors = path_risk_factors(str(node))
                     if risk_factors:
                         confidence = min(confidence, RISK_CAP_CONFIDENCE)
 

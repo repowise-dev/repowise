@@ -575,4 +575,73 @@ def test_jsx_prop_guard_destructured_props_local_state_ignored(tmp_path):
     assert "ComponentB" not in sym_names
 
 
+def test_jsx_prop_guard_module_constant_ignored(tmp_path):
+    """Module-level constants should NOT be extracted as prop guards."""
+    a_file = tmp_path / "ComponentA.tsx"
+    b_file = tmp_path / "ComponentB.tsx"
+    c_file = tmp_path / "App.tsx"
+
+    a_file.write_text(
+        "import React from 'react';\n"
+        "import { ComponentB } from './ComponentB';\n"
+        "const SHOW_DEBUG = true;\n"
+        "export function ComponentA() {\n"
+        "    return <div>{SHOW_DEBUG && <ComponentB />}</div>;\n"
+        "}\n"
+    )
+    b_file.write_text("export function ComponentB() { return <div>B</div>; }\n")
+    c_file.write_text(
+        "import { ComponentA } from './ComponentA';\n"
+        "export function App() { return <ComponentA />;\n"
+    )
+
+    g = _build_graph(
+        nodes={
+            str(a_file): {
+                "is_entry_point": False,
+                "is_test": False,
+                "symbols": [{"name": "ComponentA", "kind": "function", "visibility": "public"}],
+            },
+            str(b_file): {
+                "is_entry_point": False,
+                "is_test": False,
+                "symbols": [{"name": "ComponentB", "kind": "function", "visibility": "public"}],
+            },
+            str(c_file): {
+                "is_entry_point": True,
+                "is_test": False,
+                "symbols": [{"name": "App", "kind": "function", "visibility": "public"}],
+            },
+        },
+        edges=[
+            (str(a_file), str(b_file), {"imported_names": ["ComponentB"]}),
+            (str(c_file), str(a_file), {"imported_names": ["ComponentA"]}),
+            (str(c_file), str(b_file), {"imported_names": ["ComponentB"]}),
+            (
+                f"{a_file}::ComponentA",
+                f"{b_file}::ComponentB",
+                {"edge_type": "calls", "confidence": 0.95, "supplied_props": frozenset()},
+            ),
+            (
+                f"{c_file}::App",
+                f"{a_file}::ComponentA",
+                {"edge_type": "calls", "confidence": 0.95, "supplied_props": frozenset()},
+            ),
+        ],
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+        }
+    )
+
+    unused = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
+    sym_names = [f.symbol_name for f in unused]
+    assert "ComponentB" not in sym_names
+
+
+
 
