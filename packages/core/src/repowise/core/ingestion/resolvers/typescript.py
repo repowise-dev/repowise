@@ -34,9 +34,11 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
             ".js",
             ".jsx",
             "/index.ts",
+            "/index.tsx",
             "/index.mts",
             "/index.cts",
             "/index.js",
+            "/index.jsx",
         )
         if ctx.has_sfc_files:
             # Both the bare file (``./Foo`` -> ``Foo.vue``) and the directory
