@@ -113,7 +113,7 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     scope = parent.child_by_field_name("scope")
     if scope is None:
         return None
-    text = src[scope.start_byte : scope.end_byte].strip()
+    text = node_text(scope, src).strip()
     # ``scope`` may itself be a qualified path (``NS::Foo``); take the
     # last component — that's the immediate enclosing type.
     return text.rsplit("::", 1)[-1] or None
