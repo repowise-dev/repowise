@@ -162,8 +162,9 @@ export function RiskCoverageScatter({
             cx={geom.xOf(p)}
             cy={geom.yScale(p.health_score)}
             r={geom.radius(p.nloc)}
-            className={`${bandFill(p.health_score)} ${onSelect ? "cursor-pointer" : ""}`}
-            fillOpacity={0.7}
+            className={`${inferred ? "" : bandFill(p.health_score)} ${onSelect ? "cursor-pointer" : ""}`}
+            {...(inferred ? { fill: reachedFill(p.reached) } : {})}
+            fillOpacity={0.75}
           />
         ))}
       </g>
@@ -213,32 +214,7 @@ export function RiskCoverageScatter({
             if (point) onSelect(point);
           }}
         >
-          {inferred ? (
-            <>
-              {/* Two column grounds, in the sunset pair. Not the health ramp:
-                  green/amber/red carry a band, and painting inferred data in
-                  band colours would make it read as a measurement. Plum and
-                  orange separate cleanly in both themes and mean nothing on
-                  their own, which is exactly what is wanted for a split that
-                  the axis label already names. */}
-              <rect
-                x={padL}
-                y={padT}
-                width={midX - padL}
-                height={H - padB - padT}
-                fill="var(--color-accent-secondary)"
-                fillOpacity={0.07}
-              />
-              <rect
-                x={midX}
-                y={padT}
-                width={W - padR - midX}
-                height={H - padB - padT}
-                fill="var(--color-accent-fill)"
-                fillOpacity={0.06}
-              />
-            </>
-          ) : (
+          {inferred ? null : (
             <>
               {/* Quadrant tinting. Faint enough to read as ground rather than as
                   four coloured panels the dots sit on top of. */}
@@ -309,7 +285,8 @@ export function RiskCoverageScatter({
               cx={xOf(active)}
               cy={yScale(active.health_score)}
               r={geom.radius(active.nloc) * 1.5}
-              className={bandFill(active.health_score)}
+              className={inferred ? "" : bandFill(active.health_score)}
+              {...(inferred ? { fill: reachedFill(active.reached) } : {})}
               fillOpacity={0.9}
               stroke="var(--color-text-primary)"
               strokeWidth={1.5}
@@ -346,11 +323,29 @@ export function RiskCoverageScatter({
 
       <p className="border-t border-[var(--color-border-default)] pt-2 font-mono text-[10px] uppercase tracking-[0.12em] tabular-nums text-[var(--color-text-tertiary)]">
         {inferred
-          ? `${data.length.toLocaleString()} files · ${reachedCount.toLocaleString()} reached by a test · dot size = lines of code · horizontal spread within a column carries no meaning`
+          ? `${data.length.toLocaleString()} files · ${reachedCount.toLocaleString()} reached by a test · colour repeats the column · dot size = lines of code · height is the health score · horizontal spread carries no meaning`
           : `${data.length.toLocaleString()} files · dot size = lines of code · thresholds at 60% coverage and 7.0 health`}
       </p>
     </div>
   );
+}
+
+/**
+ * Fill by which column the file sits in, on the inferred basis.
+ *
+ * The sunset pair, and deliberately not the health ramp. Green/amber/red carry a
+ * band, so spending them here would dress a static reading as a measurement -
+ * and it would be redundant besides, because the Y axis already *is* the health
+ * score. Hue is the only thing left to carry the split, which is the one fact
+ * this chart exists to show.
+ *
+ * Tried first as a 6% wash behind the dots, which failed twice over: plum at
+ * that opacity is indistinguishable from grey on a light ground, and the
+ * health-banded dots on top took the whole visual budget to re-say what their
+ * own vertical position already said.
+ */
+function reachedFill(reached: boolean | undefined): string {
+  return reached ? "var(--color-accent-fill)" : "var(--color-accent-secondary)";
 }
 
 /** Fill by health band. The bands are the same ones the rest of health uses. */
