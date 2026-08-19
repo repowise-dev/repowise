@@ -40,11 +40,15 @@ def extract_guarded_jsx_renders(
     def _node_text(n: Any) -> str:
         return code[n.start_byte : n.end_byte].decode("utf-8", errors="replace")
 
-    def _extract_prop_names(n: Any, local_vars: set[str] | None = None) -> list[str]:
+    def _extract_prop_names(
+        n: Any,
+        local_vars: set[str] | None = None,
+        param_props: set[str] | None = None,
+    ) -> list[str]:
         if n.type == "parenthesized_expression":
             for c in n.children:
                 if c.type not in ("(", ")"):
-                    return _extract_prop_names(c, local_vars)
+                    return _extract_prop_names(c, local_vars, param_props)
         elif n.type == "member_expression":
             obj_node = n.children[0]
             obj_text = _node_text(obj_node)
@@ -59,10 +63,13 @@ def extract_guarded_jsx_renders(
                 return [prop_text]
         elif n.type == "identifier":
             name = _node_text(n)
-            if name not in ("true", "false", "undefined", "null") and (
-                local_vars is None or name not in local_vars
-            ):
-                return [name]
+            if name in ("true", "false", "undefined", "null"):
+                return []
+            if local_vars is not None and name in local_vars:
+                return []
+            if param_props is not None:
+                return [name] if name in param_props else []
+            return [name]
         elif n.type == "unary_expression":
             op = None
             operand = None
@@ -81,7 +88,7 @@ def extract_guarded_jsx_renders(
                         else:
                             sub_operand = sub
                     if sub_op == "!" and sub_operand:
-                        return _extract_prop_names(sub_operand, local_vars)
+                        return _extract_prop_names(sub_operand, local_vars, param_props)
                 return []
         elif n.type == "binary_expression":
             op = None
@@ -95,14 +102,16 @@ def extract_guarded_jsx_renders(
                 else:
                     right = c
             if op in ("&&", "===", "==") and left and right:
-                return _extract_prop_names(left, local_vars) + _extract_prop_names(right, local_vars)
+                return _extract_prop_names(left, local_vars, param_props) + _extract_prop_names(
+                    right, local_vars, param_props
+                )
             elif op in ("!==", "!=") and left and right:
                 right_text = _node_text(right)
                 left_text = _node_text(left)
                 if right_text in ("undefined", "null", "false"):
-                    return _extract_prop_names(left, local_vars)
+                    return _extract_prop_names(left, local_vars, param_props)
                 elif left_text in ("undefined", "null", "false"):
-                    return _extract_prop_names(right, local_vars)
+                    return _extract_prop_names(right, local_vars, param_props)
         return []
 
     def _find_jsx_targets(n: Any) -> list[str]:
@@ -148,6 +157,39 @@ def extract_guarded_jsx_renders(
                     names.extend(_extract_bound_names(c))
         return names
 
+    def _collect_function_param_props(fn_node: Any) -> set[str] | None:
+        params_node = None
+        for c in fn_node.children:
+            if c.type in ("formal_parameters", "parameters"):
+                params_node = c
+                break
+        if not params_node:
+            return None
+
+        param_props: set[str] = set()
+        has_destructured_param = False
+
+        for param in params_node.children:
+            if param.type in ("(", ")", ",", ":"):
+                continue
+            p = param
+            if p.type == "required_parameter":
+                for child in p.children:
+                    if child.type in ("object_pattern", "identifier", "assignment_pattern"):
+                        p = child
+                        break
+            if p.type == "assignment_pattern":
+                for child in p.children:
+                    if child.type in ("object_pattern", "identifier"):
+                        p = child
+                        break
+
+            if p.type == "object_pattern":
+                has_destructured_param = True
+                param_props.update(_extract_bound_names(p))
+
+        return param_props if has_destructured_param else None
+
     def _collect_function_local_vars(fn_node: Any) -> set[str]:
         local_vars: set[str] = set()
 
@@ -170,8 +212,14 @@ def extract_guarded_jsx_renders(
         _scan(fn_node)
         return local_vars
 
-    def _walk(n: Any, current_fn: str | None = None, local_vars: set[str] | None = None) -> None:
+    def _walk(
+        n: Any,
+        current_fn: str | None = None,
+        local_vars: set[str] | None = None,
+        param_props: set[str] | None = None,
+    ) -> None:
         current_local_vars = local_vars
+        current_param_props = param_props
         if n.type in (
             "function_declaration",
             "arrow_function",
@@ -191,6 +239,7 @@ def extract_guarded_jsx_renders(
                         break
             current_fn = fn_name or "Anonymous"
             current_local_vars = _collect_function_local_vars(n)
+            current_param_props = _collect_function_param_props(n)
 
         if n.type == "binary_expression":
             op = None
@@ -206,7 +255,7 @@ def extract_guarded_jsx_renders(
             if op == "&&" and left and right:
                 jsx_targets = _find_jsx_targets(right)
                 if jsx_targets and current_fn:
-                    prop_names = _extract_prop_names(left, current_local_vars)
+                    prop_names = _extract_prop_names(left, current_local_vars, current_param_props)
                     for prop_name in prop_names:
                         for target in jsx_targets:
                             results.append((current_fn, target, prop_name))
@@ -223,13 +272,13 @@ def extract_guarded_jsx_renders(
             if cond and consequence and current_fn:
                 jsx_targets = _find_jsx_targets(consequence)
                 if jsx_targets:
-                    prop_names = _extract_prop_names(cond, current_local_vars)
+                    prop_names = _extract_prop_names(cond, current_local_vars, current_param_props)
                     for prop_name in prop_names:
                         for target in jsx_targets:
                             results.append((current_fn, target, prop_name))
 
         for child in n.children:
-            _walk(child, current_fn, current_local_vars)
+            _walk(child, current_fn, current_local_vars, current_param_props)
 
     _walk(tree.root_node)
     return results
