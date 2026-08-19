@@ -17,6 +17,8 @@ matter. Everything after them is the sample size, the caveat and the row we lose
 | Command-output compression | RTK | [§4](#4-command-output-compression) **not measured head to head** |
 | Code health and defect prediction | CodeScene | [§5](#5-code-health-predicts-defects) **we win** on recall and effort-aware ranking, p=0.003 |
 | Indexing time | CodeGraph, Graphify, code-review-graph | [§6](#6-indexing-time-the-row-we-lose) **we lose**, 22x, because we build four more layers in the same pass |
+| Are the call edges true | CodeGraph | [§7](#7-edge-precision) **we win**, 84.8% against 57.0%, 540 rows hand-graded from source |
+| The same question, judged by a compiler | CodeGraph, codebase-memory-mcp | [§8](#8-the-same-question-against-an-answer-key-we-do-not-control) **most precise arm in 7 of 7 cells**, and the recall column we lose |
 | Documentation generation | DeepWiki, Google Code Wiki, Swimm | **not measured** |
 | PR review | CodeRabbit, Greptile | **not measured** |
 
@@ -485,6 +487,103 @@ No cell was measured on the 0.44.0 release; the full table pins a commit per cel
 
 ---
 
+## 8. The same question, against an answer key we do not control
+
+Section 7 is hand-graded, by us, on both sides. That is the strongest form of a
+weak thing: **every graph-quality number in this field, ours included, is scored
+against something the publisher controls.** A tool that is confidently wrong in a
+consistent way scores well and the reader has no way to check.
+
+So we re-asked the question with the answer key taken out of our hands. On Go the
+oracle is the **Go team's own RTA call graph** from
+`golang.org/x/tools/go/callgraph/rta`, over the fully type-checked program. On
+TypeScript it is the **`tsc` type checker's own resolution** of every call site.
+We did not write either one, we cannot tune either one, and anyone with the
+toolchain can regenerate both.
+
+**Precision: of the call edges a tool emits, the share the compiler confirms.**
+
+| cell | repowise | CodeGraph 1.5.0 | codebase-memory-mcp 0.10.8 |
+|---|---|---|---|
+| cobra (with tests) | **0.972** [0.963, 0.980] | 0.929 [0.916, 0.940] | 0.912 [0.898, 0.925] |
+| gitleaks (no tests) | 0.976 [0.967, 0.982] | 0.972 [0.962, 0.979] | 0.934 [0.921, 0.945] |
+| gitleaks (with tests) | 0.974 [0.965, 0.981] | 0.971 [0.961, 0.978] | 0.922 [0.909, 0.934] |
+| syft (no tests) | **0.943** [0.935, 0.949] | 0.872 [0.862, 0.881] | 0.635 [0.623, 0.646] |
+| syft (with tests) | **0.950** [0.945, 0.955] | 0.864 [0.857, 0.871] | 0.673 [0.665, 0.682] |
+| zod (no tests) | 0.992 [0.984, 0.996] | 0.729 [0.694, 0.762] | 0.987 [0.977, 0.992] |
+| hono (no tests) | 0.977 [0.961, 0.987] | 0.805 [0.771, 0.835] | 0.949 [0.926, 0.965] |
+
+**We are the most precise arm in seven cells of seven.** Bold marks the three
+cells where our interval clears both other arms at once. Against each competitor
+taken singly we separate in five of seven: against CodeGraph everywhere except
+the two gitleaks cells, against codebase-memory-mcp everywhere except the two
+TypeScript cells. **The rest are ties and are printed as ties.**
+
+This also does something section 7 cannot: it removes the n=30 ceiling.
+Hand-grading caps a precision estimate at roughly ±13 points near a 95% rate. An
+oracle grades every edge, so n becomes the size of the repository, and the seven
+cells above are judged over 37,853 oracle edges rather than 540 hand-read rows.
+
+**The two methods agree.** On Go, section 7 read 29/30 = 96.7% by hand for us and
+29/30 = 96.7% for CodeGraph. The Go compiler, over roughly 1,600 edges on the same
+repository, says 97.6% and 97.2%. Two unrelated methods, one person reading source
+and one type checker, land within about a point on both arms. That is the result
+we care about most and it is not a competitive one.
+
+### The column we lose
+
+Recall runs the other way, and we do not lead it.
+
+| cell | repowise | CodeGraph | codebase-memory-mcp |
+|---|---|---|---|
+| cobra (with tests) | 0.684 [0.664, 0.704] | 0.763 [0.745, 0.781] | 0.743 [0.724, 0.761] |
+| gitleaks (no tests) | 0.955 [0.943, 0.964] | 0.920 [0.906, 0.933] | 0.967 [0.957, 0.975] |
+| gitleaks (with tests) | 0.914 [0.900, 0.926] | 0.895 [0.880, 0.909] | **0.945** [0.933, 0.954] |
+| syft (no tests) | 0.513 [0.502, 0.524] | 0.508 [0.497, 0.519] | **0.542** [0.531, 0.553] |
+| syft (with tests) | 0.322 [0.316, 0.328] | 0.338 [0.332, 0.344] | **0.361** [0.355, 0.367] |
+| zod (no tests) | 0.703 [0.677, 0.727] | 0.373 [0.347, 0.401] | 0.694 [0.668, 0.719] |
+| hono (no tests) | 0.731 [0.697, 0.762] | 0.684 [0.649, 0.717] | 0.686 [0.650, 0.719] |
+
+**codebase-memory-mcp has the higher recall in every Go cell and separates in
+three of them.** We lead no Go cell. The two TypeScript cells are ties.
+
+**Do not compare recall across rows.** It swings from 0.32 to 0.97, driven by how
+many entry points the oracle had (4 on gitleaks, 268 on syft-with-tests), not by
+tool quality. Only within-row comparisons carry meaning and a pooled recall over
+these cells would be meaningless.
+
+**The two tables are one finding.** codebase-memory-mcp recovers more of the true
+call graph and emits far more that is not in it: on syft, more than a third of
+what it emits is a call the Go compiler says does not exist. That is also why our
+own cross-file coverage trails it on 15 of 35 repositories in the same bench.
+Coverage rewards drawing edges and never asks whether they are real, which is why
+no page here publishes a coverage number without a precision number beside it.
+
+### Limits
+
+- **Two languages, seven cells, five repositories.** This is not a nine-language
+  claim and must not be quoted as one. Section 7 is the nine-language number.
+- **A contradicted edge is very strong evidence, not proof.** RTA is unsound under
+  reflection and `go:linkname`, so a genuinely dynamic edge can land in that
+  bucket. It applies to all three arms equally and the gaps are far too large to
+  be explained by it, which is why the metric is named *precision against the
+  oracle* rather than precision.
+- **Edges the oracle cannot speak about are charged to nobody** and reported at
+  full size. That bucket is 0.4% to 11.1% of a tool's output on the Go cells and
+  16% to 46% on the TypeScript ones, where dependencies are not installed in the
+  pinned corpus.
+- **A library has no `main`, so RTA has no roots**; cobra is analysed through its
+  test binaries only.
+- The two variants of a repository answer different questions. Report both or say
+  which one you used.
+
+Full method, per-cell artifacts, the twenty hand-confirmed identities the protocol
+required, and the graded pre-registration including the two predictions that
+missed:
+**[graph/experiments/g4-oracle-anchored](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)**.
+
+---
+
 ## Limits
 
 Beyond the ones stated in each section:
@@ -569,7 +668,7 @@ one above it.
 | Level | What is there |
 |---|---|
 | **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Who wins what, the build-cost curve, and what each index can rank at all |
-| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | The graph-quality bench: edge precision hand-graded on both sides, cross-file coverage, adversarial invariance and build cost, across five tools and nine languages |
+| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | The graph-quality bench: edge precision hand-graded on both sides across five tools and nine languages, precision and recall against a compiler oracle on Go and TypeScript, cross-file coverage, adversarial invariance and build cost |
 | **[arms/](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head/arms)** | One page per competitor: what it is, what it serves, and every setup trap. Four of six have a step that produces a clean zero when missed |
 | **[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)** | The method and all nine gates, each named with the failure that created it |
 | **[configs/arms.yaml](https://github.com/repowise-dev/repowise-bench/blob/master/configs/arms.yaml)** | Every launch command, allowlisted tool and exclusion with its reason. Read this if you think an arm was set up unfairly |

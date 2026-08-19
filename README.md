@@ -652,6 +652,7 @@ agent over MCP.
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
 | | *one-time; updates after it are incremental* | | | |
 | **Call-edge precision** *([measured](docs/BENCHMARKS.md#7-edge-precision), 540 rows hand-graded from source)* | ✅ **84.8%** | 57.0% | not measured | not measured |
+| **Call-edge precision, judged by a compiler** *([measured](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control), 7 cells, 37,853 edges)* | ✅ **most precise arm in 7 of 7** | behind in 7 of 7 | not measured | not measured |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ |
@@ -669,6 +670,13 @@ The precision row cuts the other way and is worth stating as plainly: of the cal
 edges we draw, **about fifteen percent are wrong**, and on `seastar` CodeGraph
 grades better than we do. Nine languages were read on both sides, four separate,
 five are statistical ties.
+
+The compiler row exists because we graded the hand-read one ourselves. On Go and
+TypeScript the answer key is the Go team's own RTA call graph and the `tsc`
+checker's own resolution, which we neither wrote nor can tune. It also carries the
+column we lose: **the tool with the highest recall in every Go cell is not us**,
+because it draws far more edges and more than a third of them, on the largest
+repository, are calls the compiler says do not exist.
 
 <sub>Measured against CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
 code-review-graph 2.3.7, on repowise `081a59fa` (between v0.37.0 and v0.38.0),

@@ -277,6 +277,16 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
   edges. Method, per-language and per-repository splits, and the same audit run
   against a competitor, are in the [graph-quality
   benchmark](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g1-edge-precision).
+- **A compiler agrees with that figure, and adds the column we lose.** On Go and
+  TypeScript the same edges were judged against the Go team's own RTA call graph
+  and the `tsc` checker's own resolution, answer keys we neither wrote nor can
+  tune. Precision there is 0.94 to 0.99 per cell and we are the most precise of
+  three tools in all seven; recall is 0.32 to 0.96 and **we lead none of the Go
+  cells**. Most of what we miss is interface dispatch, where the fan-out is 6.5
+  distinct targets per call site and matching it would mean emitting edges we
+  cannot stand behind. The [oracle-anchored
+  cells](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)
+  decompose the miss.
 
 ---
 
