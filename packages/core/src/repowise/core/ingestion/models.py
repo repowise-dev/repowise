@@ -499,6 +499,17 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
 )
 
 
+# Symbol → symbol edges along which control can actually reach the target, for
+# the question "would running this test execute that code?". The reachability
+# view minus the two that record a mention rather than a transfer of control:
+# `references` is a name sitting in a dispatch table and `reads` is a field
+# access, and neither runs the thing it names. Narrower than
+# SYMBOL_USE_EDGE_TYPES on purpose — dead code asks "is this used", which a
+# mention answers, and the inferred test map asks "is this run", which it does
+# not.
+EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references", "reads"}
+
+
 # "Does anything use this symbol at all?" — the reachability view. Adds
 # ``type_use`` to the symbol set: a C#-style type reference is a real use, and
 # the dead-code analyzer and the C/C++ reachability pass both asked for exactly

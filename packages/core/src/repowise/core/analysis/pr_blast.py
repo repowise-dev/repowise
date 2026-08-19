@@ -274,11 +274,12 @@ class PRBlastRadiusAnalyzer:
 
         1. A per-test coverage row (from ``repowise coverage add``) is
            execution-*proof*: never a gap.
-        2. A test file reaching it in the import graph is evidence, not proof -
-           importing a module is not exercising it - but it is a recorded edge
-           rather than a guess, and it finds the suites that name their tests
-           for behaviour instead of for the file under test. Used only as this
-           floor; nothing downstream reads a coverage figure off it.
+        2. A test file reaching it in the dependency graph is evidence, not
+           proof - control reaching a file is not a run exercising it - but it
+           is a recorded edge rather than a guess, and it finds the suites that
+           name their tests for behaviour instead of for the file under test.
+           Used only as this floor; nothing downstream reads a coverage figure
+           off it.
         3. Otherwise the filename pattern (test_<name>, <name>_test,
            <name>.spec.*) - an honest "unknown", never asserted as untested.
 
@@ -364,11 +365,11 @@ class PRBlastRadiusAnalyzer:
         a real diff.
 
         Falls back to the graph when no coverage report has been ingested, which
-        is most repositories: a test file that imports a changed file is a
+        is most repositories: a test file that reaches a changed file is a
         candidate worth running. ``basis`` says which of the two answered, and
         the two are never merged. A run-list the coverage map proved and one the
-        import graph suggests are different claims, and averaging them would
-        leave the reader unable to tell a measured test from a guessed one. The
+        graph suggests are different claims, and averaging them would leave the
+        reader unable to tell a measured test from a guessed one. The
         inferred list names test *files* rather than test ids, because reaching
         is a file-level fact; both forms are runnable arguments to pytest.
 

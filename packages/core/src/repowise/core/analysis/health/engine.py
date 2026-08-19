@@ -38,8 +38,8 @@ from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ..test_reachability import (
+    call_graph_from_graph,
     files_reached_by_tests,
-    forward_dependencies_from_graph,
 )
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
@@ -92,7 +92,9 @@ log = structlog.get_logger(__name__)
 # ``has_test_file`` widened to match it. Both stored values are wrong on an
 # index built before that, and wrong in the direction that accuses a tested
 # file, so they should not wait out the decay timer.
-HEALTH_ANALYZER_VERSION = 2
+# 3: that signal moved from the import graph to the call graph, so the same two
+# values are wrong again on an index stamped 2 - this time in both directions.
+HEALTH_ANALYZER_VERSION = 3
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -336,24 +338,24 @@ class HealthAnalyzer:
         self._tests_reach_cache: set[str] | None = None
 
     def _files_reached_by_tests(self) -> set[str]:
-        """Non-test files that some test file reaches through the import graph.
+        """Non-test files that some test file can execute into, per the call graph.
 
         The graph-backed half of "is this file tested". Computed once per
         analyzer over the whole file set (one multi-source walk, not one per
         file), because every ``_evaluate_file`` call asks the same question of
         the same graph.
 
-        Inferred, and it over-claims: a test importing a module reaches every
-        file that module depends on, whether or not the test body exercises
-        them. Consumers must use it only as a floor - "something tests this" -
-        never as a coverage quantity. See ``analysis.test_reachability``.
+        Inferred, and it over-claims: a call edge says control *can* reach the
+        file, not that a given run did. Consumers must use it only as a floor -
+        "something tests this" - never as a coverage quantity. See
+        ``analysis.test_reachability``.
         """
         if self._tests_reach_cache is None:
             test_files = {
                 pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test
             }
             self._tests_reach_cache = files_reached_by_tests(
-                forward_dependencies_from_graph(self.graph), test_files
+                call_graph_from_graph(self.graph), test_files
             )
         return self._tests_reach_cache
 
@@ -950,10 +952,9 @@ class HealthAnalyzer:
             or fcx.has_inline_tests,
             # Kept separate from ``has_test_file`` on purpose. That flag means
             # "a file named like this one's test exists"; this one means "the
-            # graph records a test reaching this file". They disagree often -
-            # measured here, the graph finds 984 files the naming convention
-            # misses - and collapsing them would leave no way to say which
-            # signal answered, or that one of them over-claims.
+            # call graph records a test reaching this file". They disagree
+            # often, and collapsing them would leave no way to say which signal
+            # answered, or that one of them over-claims.
             reached_by_tests=file_path in self._files_reached_by_tests(),
             module=module,
             function_metrics=fn_metrics,

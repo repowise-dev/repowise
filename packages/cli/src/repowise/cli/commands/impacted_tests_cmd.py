@@ -7,9 +7,9 @@ the per-test test-to-code map built by ``repowise coverage add``. The output is
 
 Honest about what it knows:
   - a changed file with per-test coverage -> the exact covering tests;
-  - a changed file with no coverage rows -> candidate tests the import graph
-    shows reaching it, or failing that a filename-pattern guess, each labelled
-    with which one answered and none of them claimed as coverage;
+  - a changed file with no coverage rows -> candidate tests the dependency
+    graph shows reaching it, or failing that a filename-pattern guess, each
+    labelled with which one answered and none of them claimed as coverage;
   - a new file with neither -> "unknown, run the full suite" (never implied
     as "no tests needed").
 
@@ -161,16 +161,21 @@ async def _resolve_impacted(
         No coverage row, so fall back to naming candidates. A changed file that
         is itself a test is its own candidate (``via="changed-test"``) - it used
         to be reported as a file with no test, which is true and useless. Then
-        the import graph (``via="import-graph"``): a test file that reaches this
-        one is a recorded edge, and it finds suites whose tests are named for
-        behaviour rather than for the file. The filename pattern answers when
-        the graph is silent (``via="filename-pattern"``). All are file-level and
-        all over-claim; none may be read as coverage.
+        the dependency graph, which reports which tier answered: a test whose
+        calls reach the file (``via="call-graph"``) or, only where no call edge
+        does, a test that imports it (``via="import-graph"``). Both are recorded
+        edges, and they find suites whose tests are named for behaviour rather
+        than for the file. The filename pattern answers when the graph is silent
+        (``via="filename-pattern"``). All are file-level and all over-claim;
+        none may be read as coverage.
     ``unknown``
         Nothing said anything. Run the full suite.
     """
     from repowise.core.analysis.health.coverage import paired_test_file
-    from repowise.core.analysis.test_reachability import load_test_files, tests_reaching
+    from repowise.core.analysis.test_reachability import (
+        load_test_files,
+        tests_reaching_by_tier,
+    )
     from repowise.core.persistence.crud import tests_covering
 
     covered: dict[str, dict] = out["covered"]
@@ -195,7 +200,7 @@ async def _resolve_impacted(
     # is what makes this cheap, and splitting it would run the same query once
     # per changed path.
     try:
-        reaching = await tests_reaching(session, repo_id, uncovered)
+        reaching = await tests_reaching_by_tier(session, repo_id, uncovered)
         test_files = await load_test_files(session, repo_id)
     except Exception:
         reaching, test_files = {}, set()
@@ -210,11 +215,11 @@ async def _resolve_impacted(
                 }
             )
             continue
-        graph_tests = reaching.get(source_file) or []
-        if graph_tests:
+        reached = reaching.get(source_file)
+        if reached:
             out["inferred"].extend(
-                {"source_file": source_file, "test_file": t, "via": "import-graph"}
-                for t in graph_tests
+                {"source_file": source_file, "test_file": t, "via": reached.via}
+                for t in reached.tests
             )
             continue
         guess = paired_test_file(source_file, repo_keys)
@@ -301,7 +306,7 @@ def _render_table(result: dict) -> None:
             "[yellow]No test-to-code map ingested.[/yellow] Run "
             "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
             "[cyan]coverage run --contexts=test[/cyan] to get exact impacted tests. "
-            "Falling back to the import graph and filename patterns below."
+            "Falling back to the dependency graph and filename patterns below."
         )
 
     covered = result["covered"]
@@ -331,7 +336,8 @@ def _render_table(result: dict) -> None:
         console.print(
             f"[yellow]{len(result['inferred'])} candidate(s)[/yellow] for {files} file(s) with "
             "no coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
-            "[dim]import-graph[/dim] = a test file that reaches this one; "
+            "[dim]call-graph[/dim] = a test whose calls reach this file; "
+            "[dim]import-graph[/dim] = a test that only imports it; "
             "[dim]filename-pattern[/dim] = a name-shaped guess. None proves execution - "
             "verify they exercise the change."
         )

@@ -187,9 +187,9 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
 
     1. A per-test coverage row (from ``repowise coverage add``) is
        execution-proof: never a gap.
-    2. A test file reaching it in the import graph is evidence, not proof, but a
-       recorded edge rather than a guess - it catches the suites whose tests are
-       named for behaviour rather than for the file under test.
+    2. A test file reaching it in the dependency graph is evidence, not proof,
+       but a recorded edge rather than a guess - it catches the suites whose
+       tests are named for behaviour rather than for the file under test.
     3. Otherwise the filename pattern (test_<name>, <name>_test, <name>.spec.*)
        - an honest "unknown", never asserted as untested.
 

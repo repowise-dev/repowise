@@ -46,13 +46,14 @@ class FileContext:
     # Per-file git metadata (may be empty when git indexing skipped).
     git_meta: dict[str, Any] = field(default_factory=dict)
     # Graph-derived signals.
-    # True when a test file reaches this one through the import graph, within
-    # ``test_reachability.DEFAULT_MAX_DEPTH`` hops. Distinct from
+    # True when a test file can execute into this one along the call graph,
+    # within ``test_reachability.DEFAULT_CALL_DEPTH`` hops. Distinct from
     # ``has_test_file``, which is a filename convention: this is a recorded
     # edge, so it finds behaviour-named tests the convention cannot, and it
-    # over-claims, since importing a module is not exercising it. Sound as a
-    # floor ("something tests this"), never as a coverage quantity. ``False``
-    # when no graph was available - the documented "no signal" outcome.
+    # over-claims, since control reaching a file is not a run exercising it.
+    # Sound as a floor ("something tests this"), never as a coverage quantity.
+    # ``False`` when no graph was available - the documented "no signal"
+    # outcome.
     reached_by_tests: bool = False
     dependents_count: int = 0
     # Repo-wide 80th percentile of file-level in-degree (dependents),

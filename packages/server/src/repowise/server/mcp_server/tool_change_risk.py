@@ -61,7 +61,7 @@ async def get_change_risk(
 
     ``impacted_tests`` names the tests for this change; ``missing_tests`` the
     uncovered lines. ``basis``: ``measured`` = a coverage map proves those tests
-    run the changed *lines*; ``inferred`` = test files the import graph shows
+    run the changed *lines*; ``inferred`` = test files the graph shows
     reaching it (candidates, file-level, no ingest needed). No map is never
     "untested": ``status`` ``no_map`` means run the suite. ``prior_fixes``
     counts past fixes whose lines overlap this diff.
@@ -425,10 +425,11 @@ async def _inferred_impacted(
     """Graph-inferred candidates for a repo with no coverage map.
 
     "Run the full suite" is correct but useless on the repositories that have
-    no coverage report, which is most of them. The import graph can narrow it:
-    a test file that reaches a changed file is worth running first. That is a candidate list and is labelled one - ``basis`` is
-    ``"inferred"`` and ``map_present`` stays False, so nothing here can be read
-    as the line-precise measured answer.
+    no coverage report, which is most of them. The dependency graph can narrow
+    it: a test file that reaches a changed file is worth running first. That is
+    a candidate list and is labelled one - ``basis`` is ``"inferred"`` and
+    ``map_present`` stays False, so nothing here can be read as the line-precise
+    measured answer.
 
     Deliberately file-level and line-blind. Reaching carries no line
     attribution, so ``missing_tests`` stays empty rather than being filled from
@@ -438,7 +439,7 @@ async def _inferred_impacted(
     from repowise.core.analysis.test_reachability import tests_reaching
 
     hint = (
-        "Inferred from the import graph, not measured. For the line-precise "
+        "Inferred from the dependency graph, not measured. For the line-precise "
         "answer build the map with `coverage run --contexts=test` then "
         "`repowise coverage add`."
     )
@@ -462,7 +463,7 @@ async def _inferred_impacted(
             "total": total,
             "truncated": total > _IMPACTED_TESTS_LIMIT,
             "summary": (
-                f"{total} test file(s) reach the changed files via the import graph"
+                f"{total} test file(s) reach the changed files in the graph"
                 + (
                     f"; showing first {_IMPACTED_TESTS_LIMIT}"
                     if total > _IMPACTED_TESTS_LIMIT

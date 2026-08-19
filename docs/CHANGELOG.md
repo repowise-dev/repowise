@@ -16,43 +16,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A test-to-code map that needs no coverage report.** The per-test map only
   ever existed if you ingested a coverage report with contexts, so on most
   repositories `tests_to_run` was empty, `impacted_tests` said "run the full
-  suite", and `untested_hotspot` fell back to matching filenames. The dependency
-  graph already records which test files import which source files, and that
+  suite", and `untested_hotspot` fell back to matching filenames. The call graph
+  already records which test can execute into which source file, and that
   relation now answers when the measured one cannot. It is labelled `inferred`
   everywhere, never blended with measured coverage, and never turned into a
   percentage. Nothing is stored: it is a bounded walk over rows already indexed,
-  measured at 27 ms once per health run on a 3,700-file repository.
+  measured at 63 ms once per health run on a 3,700-file repository.
+
+  The call graph is the primary signal and the import graph the weaker fallback,
+  which is a measured choice rather than a preference. Dogfooded against a real
+  `coverage run --contexts=test` over a slice where per-test attribution is
+  complete, with both sides seeing the same 37 test files: walking imports one
+  hop scored 72.1% precision at 19.5% recall, walking calls three hops scored
+  91.7% at 27.7%, and dropping the one call-resolution strategy that only
+  matches a name repo-wide (`global_unique`) took that to 95.7% at no cost to
+  recall. Unioning the two is worse than either lead, so the import tier is
+  spent only on the files the call graph says nothing about, where it answers
+  one more of them at no loss of precision.
 
   New fields: `tests_to_run_basis` on `get_risk`'s directive
   (`measured` / `inferred` / `none`), `basis` and a `status: "inferred"` on
   `get_change_risk`'s `impacted_tests`, and a `via` marker on every
-  `repowise impacted-tests` candidate.
+  `repowise impacted-tests` candidate saying which tier answered.
 
 ### Changed
 
-- **`untested_hotspot` stops accusing files that six tests import.** With no
+- **`untested_hotspot` stops accusing files that the tests run.** With no
   coverage ingested it fired on any hotspot without a *paired test file*, which
   is a filename convention, so a suite that names its tests for behaviour
-  satisfied nothing. A test reaching the file in the import graph now suppresses
-  it too. On this repository five of the six worst bug-magnet files had no test
-  named for them and read as untested; the sixth, `analysis/health/engine.py`,
-  was called tested because the convention matched `distill/test_engine.py` on
-  basename alone. The same floor now runs under `get_risk`'s `missing_tests`,
-  which had two separate filename heuristics that disagreed.
+  satisfied nothing. A test whose calls reach the file now suppresses it too. On
+  this repository five of the six worst bug-magnet files had no test named for
+  them and read as untested; the sixth, `analysis/health/engine.py`, was called
+  tested because the convention matched `distill/test_engine.py` on basename
+  alone. The same floor now runs under `get_risk`'s `missing_tests`, which had
+  two separate filename heuristics that disagreed.
 
-  Measured on repowise's own index: 74 of its 110 standing `untested_hotspot`
-  findings are cleared, 18 of them graded critical. The persisted
-  `has_test_file` widens to match, so the file table stops labelling those same
-  files "untested" while the biomarker says nothing.
+  Measured on repowise's own index, against the 80 standing `untested_hotspot`
+  findings the filename convention leaves behind: the call graph clears 32 of
+  them, 22 graded high and 3 critical, where a one-hop import walk clears 11.
+  The persisted `has_test_file` widens to match, so the file table stops
+  labelling those same files "untested" while the biomarker says nothing.
 
   Both stored values are wrong on an index built before this, so
-  `HEALTH_ANALYZER_VERSION` moves to 2 and the next `repowise update` with
+  `HEALTH_ANALYZER_VERSION` moves to 3 and the next `repowise update` with
   changed files re-scores health rather than waiting out the decay timer.
 
 - **`repowise impacted-tests --format json` renames `guessed_tests` to
   `inferred_tests`.** The bucket no longer holds only filename guesses, so the
-  old name described the wrong thing; each entry carries `via`
-  (`import-graph` or `filename-pattern`) to say which tier answered.
+  old name described the wrong thing; each entry carries `via` (`call-graph`,
+  `import-graph` or `filename-pattern`) to say which tier answered.
 
 ---
 

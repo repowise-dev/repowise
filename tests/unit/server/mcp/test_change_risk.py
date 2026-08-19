@@ -306,7 +306,10 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     assert it["map_present"] is False
     assert it["tests"] == ["tests/test_round_trips.py"]
     assert it["missing_tests"]["untested_changes"] == []
-    assert "import graph" in it["summary"]
+    # Answered by the import tier: there is no call edge here, which is exactly
+    # when the weaker tier is allowed to speak.
+    assert "reach the changed files in the graph" in it["summary"]
+    assert "not measured" in it["summary"]
 
 
 @pytest.mark.asyncio

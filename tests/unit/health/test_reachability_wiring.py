@@ -1,4 +1,4 @@
-"""The health engine reads ``reached_by_tests`` off the real graph.
+"""The health engine reads ``reached_by_tests`` off the real call graph.
 
 The helper walks are unit-tested in ``tests/unit/analysis``; what this pins is
 the wiring, because the walk can be right while the engine still hands the
@@ -34,10 +34,21 @@ def _tree(tmp_path):
     ]
 
 
-def _graph(*edges):
+def _graph(*, calls=False, extra=None):
+    """The tree's graph, optionally with the test's call into ``parser.py``.
+
+    Files join to their symbols by ``defines`` and symbols to each other by
+    ``calls``, so clearing the finding takes all three edges, not one.
+    """
     g = nx.DiGraph()
-    for src, dst in edges:
-        g.add_edge(src, dst, edge_type="imports")
+    g.add_edge("tests/test_round_trips.py", "tests/test_round_trips.py::test_it", edge_type="defines")
+    g.add_edge("src/parser.py", "src/parser.py::parse", edge_type="defines")
+    if calls:
+        g.add_edge(
+            "tests/test_round_trips.py::test_it", "src/parser.py::parse", edge_type="calls"
+        )
+    if extra:
+        g.add_edge(*extra[:2], edge_type=extra[2])
     # Dependents for the centrality gate; untested_hotspot wants at least four.
     for i in range(6):
         g.add_edge(f"src/consumer_{i}.py", "src/parser.py", edge_type="imports")
@@ -53,10 +64,11 @@ def _findings(parsed, graph):
     return [f for f in report.findings if f.biomarker_type == "untested_hotspot"]
 
 
-def test_a_test_importing_the_file_clears_the_untested_hotspot(tmp_path):
+def test_a_test_calling_into_the_file_clears_the_untested_hotspot(tmp_path):
     parsed = _tree(tmp_path)
-    graph = _graph(("tests/test_round_trips.py", "src/parser.py"))
-    assert [f for f in _findings(parsed, graph) if f.file_path == "src/parser.py"] == []
+    assert [
+        f for f in _findings(parsed, _graph(calls=True)) if f.file_path == "src/parser.py"
+    ] == []
 
 
 def test_without_that_edge_the_same_tree_still_fires(tmp_path):
@@ -66,12 +78,16 @@ def test_without_that_edge_the_same_tree_still_fires(tmp_path):
     assert [f.file_path for f in fired if f.file_path == "src/parser.py"] == ["src/parser.py"]
 
 
-@pytest.mark.parametrize("edge_type", ["co_changes", "defines"])
-def test_a_non_dependency_edge_does_not_clear_it(tmp_path, edge_type):
-    """Changing together, or containment, is not testing."""
+@pytest.mark.parametrize("edge_type", ["co_changes", "defines", "imports", "references"])
+def test_a_non_execution_edge_does_not_clear_it(tmp_path, edge_type):
+    """Changing together, containment, importing and naming are not executing.
+
+    ``imports`` is the one that changed: it clears the finding no longer. On the
+    dogfooded slice unioning the import graph into this walk bought 0.6 points
+    of recall for 16.8 of precision, and each false clear hides a real gap.
+    """
     parsed = _tree(tmp_path)
-    graph = _graph()
-    graph.add_edge("tests/test_round_trips.py", "src/parser.py", edge_type=edge_type)
+    graph = _graph(extra=("tests/test_round_trips.py", "src/parser.py", edge_type))
     fired = [f.file_path for f in _findings(parsed, graph) if f.file_path == "src/parser.py"]
     assert fired == ["src/parser.py"]
 
@@ -102,9 +118,8 @@ def test_the_stored_metric_agrees_with_the_biomarker(tmp_path):
     disagreement, one layer further out.
     """
     parsed = _tree(tmp_path)
-    graph = _graph(("tests/test_round_trips.py", "src/parser.py"))
     report = HealthAnalyzer(
-        graph,
+        _graph(calls=True),
         parsed_files=parsed,
         git_meta_map={"src/parser.py": dict(_HOTSPOT_META)},
     ).analyze()

@@ -5,7 +5,7 @@ Fires when a file is **all three** of:
 - a *hotspot* (``git_meta['is_hotspot']`` true OR commit_count_90d ≥ 8)
 - under-tested (``line_coverage_pct`` < 40 when coverage is available,
   OR, when it isn't, neither a paired test file nor a test reaching it
-  through the import graph)
+  through the call graph)
 - centrally depended on (``dependents_count`` ≥ 4 OR temporal_hotspot
   in the top decile)
 
@@ -14,9 +14,10 @@ file has.
 
 When no coverage report has been ingested the biomarker falls back to two
 signals that both mean "something tests this": the paired-test-file naming
-convention, and ``reached_by_tests``: a test file importing this one, recorded
-in the dependency graph. Either suppresses the finding. Both over-claim relative to real execution, which is the right
-direction of error for a check whose output is an accusation.
+convention, and ``reached_by_tests``, a test file whose calls reach this one in
+the dependency graph. Either suppresses the finding. Both over-claim relative to
+real execution, which is the right direction of error for a check whose output
+is an accusation.
 """
 
 from __future__ import annotations

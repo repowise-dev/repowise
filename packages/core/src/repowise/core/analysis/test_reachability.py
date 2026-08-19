@@ -9,115 +9,260 @@ Matching filenames fails both ways, and this repository is the proof. Of its six
 worst bug-magnet files, five - ``call_resolver.py``, ``dead_code/analyzer.py``,
 ``pipeline/persist.py``, ``tool_answer/answer.py``, ``pr_blast.py`` - have no
 file named for them anywhere under ``tests/`` and so read as untested, while the
-graph names 7, 9, 23, 18 and 3 test files importing them. The sixth,
+graph names the test files that reach them. The sixth,
 ``analysis/health/engine.py``, is worse: the convention matches on basename
 alone, so it paired with ``tests/unit/distill/test_engine.py`` - a different
 engine, in a different subsystem - and called the file tested on the strength of
-a name collision. The graph names the six ``tests/unit/health/`` files that
-actually import it.
+a name collision.
 
-The graph already knows the answer in the shape it can honestly give: a test
-file that imports a source file *reaches* it. This module reads that relation.
-It is a second signal beside the measured one, never a replacement and never
-averaged with it.
+The graph already knows the answer. This module reads that relation. It is a
+second signal beside the measured one, never a replacement and never averaged
+with it.
+
+Which graph, and why
+--------------------
+Two graphs can answer "does a test reach this file", and they are not equally
+good at it.
+
+The **call graph** is the primary signal: seed the symbols a test file declares,
+walk ``EXECUTION_EDGE_TYPES`` forward, and every symbol reached is one the test
+can actually run. This is the closer model of the question - the claim is about
+execution, and these edges are execution.
+
+The **import graph** is the broader, weaker tier: a test file that imports a
+source file references it, which is real evidence and a much cruder one. A test
+importing a module pulls in every symbol the module defines while the test body
+may touch one function.
+
+Measured against a real ``coverage run --contexts=test`` on this repository,
+over the slice where per-test attribution is complete and both sides see the
+same 37 test files (159 production files provably executed):
+
+============================  =======  =======  =========  =======
+forward signal                 claims  correct  precision   recall
+============================  =======  =======  =========  =======
+import graph, 1 hop                43       31      72.1%    19.5%
+call graph, 3 hops                 48       44      91.7%    27.7%
+call graph, 3 hops, filtered       46       44      95.7%    27.7%
+both unioned                       57       45      78.9%    28.3%
+============================  =======  =======  =========  =======
+
+The call graph wins on both axes, so it leads. Unioning the import graph into it
+buys 0.6 points of recall for 16.8 points of precision, and a false "something
+reaches this" suppresses a real untested-hotspot finding, so the forward walk
+does not union - it is call edges only.
+
+The reverse walk combines them differently, because there the import tier can be
+spent only on the targets the call graph said nothing about:
+
+=============================  =======  ======  =========
+reverse signal                 targets     hit  precision
+=============================  =======  ======  =========
+import graph, 1 hop                 32   96.9%      94.8%
+call graph, 3 hops, filtered        46  100.0%      97.5%
+both unioned                        47  100.0%      95.8%
+call graph, else import graph       47  100.0%      97.5%
+=============================  =======  ======  =========
+
+Falling back is free where unioning is not: it answers one more target at
+identical precision, because the second tier never speaks over the first.
+
+Both tables compare the signals uncapped and over the same test set, which is
+what makes them a choice between signals rather than two different experiments.
+End to end through this module, with the walk seeing the repository's whole test
+set and ``MAX_TESTS_PER_TARGET`` applied, the reverse walk scores 100.0% hit and
+95.5% precision on the same slice; the gap is the cap truncating a repo-wide
+list, not a difference in the walk.
+
+Depth, and why 3
+----------------
+The call walk saturates at 3 hops - 3, 4 and 5 return the same 48 claims and 44
+confirmations - so the recall ceiling is the call graph's own capture rate, not
+the depth, and there is nothing to buy by walking further. The import walk keeps
+its measured default of 1: a blanket second hop was tested and recovers 20 of
+128 misses while adding 50 wrong claims, and both a facade-only second hop
+through ``__init__.py`` (3 recovered, 5 added) and ``conftest.py`` transitivity
+(zero recovered) were tested and disproved. What the import graph misses is
+transitive *execution*, which import edges structurally cannot see, which is
+what the call graph is for.
+
+Why recall reads low, and why that is not the graph's fault
+-----------------------------------------------------------
+27.7% looks poor for a graph this dense, and the reason is what the ground truth
+counts. ``coverage`` records a line as run whether a test called into it or
+Python merely evaluated the module body on import, so a file that was only
+imported is indistinguishable in the truth set from one a test drove. Splitting
+the 159 truth files by how much of what ran was *inside a function body*:
+
+=================================  =======  =======  ========
+what actually ran in the file        files    found    recall
+=================================  =======  =======  ========
+nothing inside any function body        39        0        0%
+under a quarter inside bodies           19        0        0%
+a quarter to three quarters             45        3        7%
+over three quarters inside bodies       56       43       77%
+=================================  =======  =======  ========
+
+A quarter of the "covered" files never ran a single line inside a function. The
+walk is right to miss those: nothing called them, and claiming otherwise is the
+import graph's error, which is what it costs 16.8 points of precision to make.
+
+Of the 13 missed in the bottom row, 11 are ``alembic/versions/*`` migrations,
+whose ``upgrade``/``downgrade`` the framework invokes by naming convention with
+no static caller anywhere in the repository. Excluding those, the walk finds 43
+of 45 files that a test genuinely exercised and that anything statically calls.
+Chasing the headline number by widening the walk trades that away.
+
+Confidence, and why one origin is dropped
+-----------------------------------------
+``graph_edges.resolution_origin`` records which strategy resolved a call edge,
+and they are not equally trustworthy. ``global_unique`` binds a name to the only
+symbol carrying it anywhere in the repository, which is a guess, and it is the
+one origin the vocabulary itself scores at 0.50. Dropping it costs no recall at
+all and buys 4.0 points of forward precision (91.7% -> 95.7%) and 1.1 of reverse
+(96.4% -> 97.5%). Nothing else earns its keep: filtering ``receiver_global`` too
+changes no number, and a confidence floor of 0.90 cuts recall from 27.7% to
+23.3%.
 
 What it claims, and what it does not
 ------------------------------------
-Reaching is not executing. A test that imports a module pulls in every symbol
-the module defines, while the test body may touch one function; the inferred
-map therefore **over-claims**, and the direction of the error is known and
-one-sided:
+Reaching is not executing. A call edge says control *can* flow, not that a given
+test run did, so the inferred map **over-claims**, and the direction of the
+error is known and one-sided:
 
 * Sound as a floor. "Some test reaches this file, so do not call it untested"
-  is safe: the import is recorded, not guessed.
+  is safe: the edge is recorded, not guessed.
 * Unsound as a quantity. No percentage may be derived from it. There is no line
   attribution here at all - reaching is a file-level fact - so a caller that
   needs "are these changed *lines* covered" must use the measured map or say it
   does not know.
 
 Every surface that consumes this labels the result ``inferred``. Nothing here
-writes to ``test_coverage``, and no row it produces is stored: the relation is
-a bounded walk over ``graph_edges``/``graph_nodes``, which are already indexed
-and already fresh. Materialising it would cost a transitive closure - on this
-repository tests reach 1,630 of 2,509 production files, so the stored form is
-O(tests x sources) rows that go stale the moment the graph moves, to answer a
-query that is a breadth-first search over data already in the database.
-
-Depth
------
-``max_depth`` bounds the chain, and the default of 1 was measured rather than
-picked. Dogfooded against a real ``coverage run --contexts=test`` on this
-repository, over a slice where per-test attribution was complete and both sides
-saw the same 38 test files:
-
-===========  =========  =========  ==========  ==========
-max_depth    reach      reach      run-list    run-list
-             precision  recall     precision   hit rate
-===========  =========  =========  ==========  ==========
-1            72.1%      30.4%      93.1%       96.8%
-2            40.7%      45.1%      73.8%       97.9%
-3            17.1%      45.1%      -           -
-===========  =========  =========  ==========  ==========
-
-Both uses want precision. A false "something reaches this" suppresses a real
-untested-hotspot finding, and a false entry in a run-list sends someone to run
-a test that cannot fail for their change; the extra recall a second hop buys is
-not worth halving either. Depth 3 is where the closure starts to blow up (269
-claims for the same 46 confirmations) and is never a sensible default.
-
-Recall at depth 1 already beats the filename convention it sits beside (30.4%
-against 23.5% on the same set) while resting on a recorded edge instead of a
-name, and the two are unioned rather than ranked, so the shipped floor is
-better than either.
-
-A repository whose tests import a package facade rather than the module under
-test will want ``max_depth=2``; it is a keyword argument on both walks for
-exactly that reason.
+writes to ``test_coverage``, and no row it produces is stored: the relation is a
+bounded walk over ``graph_edges``/``graph_nodes``, which are already indexed and
+already fresh. Materialising it would cost a transitive closure that goes stale
+the moment the graph moves, to answer a query that is a breadth-first search
+over data already in the database.
 """
 
 from __future__ import annotations
 
-from collections import deque
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.models import (
+    EXECUTION_EDGE_TYPES,
+    FILE_DEPENDENCY_EDGE_TYPES,
+)
 from repowise.core.persistence.models import GraphNode
 
-# How many dependency hops a test may take and still be said to reach a file.
-# 1 - a test imports the file - is the measured choice, not a conservative
-# guess; see the Depth section above for the numbers behind it.
+# How many call hops a test may take and still be said to reach a file. The walk
+# saturates here; see the Depth section above.
+DEFAULT_CALL_DEPTH = 3
+
+# How many import hops the weaker fallback tier may take. Still the measured
+# choice; a blanket second hop costs more than it buys.
 DEFAULT_MAX_DEPTH = 1
 
+# Call edges whose resolver only matched a name. See the Confidence section.
+UNRELIABLE_CALL_ORIGINS = frozenset({"global_unique"})
+
 # Cap on how many test files one target reports. The consumers all cut their
-# own lists shorter; the cap exists so a facade module imported by every test
-# in the suite cannot produce an unbounded intermediate.
+# own lists shorter; the cap exists so a helper called from every test in the
+# suite cannot produce an unbounded intermediate.
 MAX_TESTS_PER_TARGET = 50
 
+# Which tier answered. The CLI prints this so a reader can tell "this test runs
+# into the file" from the weaker "this test imports it".
+ReachedVia = Literal["call-graph", "import-graph"]
+
 __all__ = [
+    "DEFAULT_CALL_DEPTH",
     "DEFAULT_MAX_DEPTH",
     "MAX_TESTS_PER_TARGET",
+    "UNRELIABLE_CALL_ORIGINS",
+    "CallGraphView",
+    "ReachedBy",
+    "call_graph_from_graph",
     "files_reached_by_tests",
-    "forward_dependencies_from_graph",
     "load_test_files",
     "tests_reaching",
+    "tests_reaching_by_tier",
 ]
 
 
+@dataclass(frozen=True)
+class CallGraphView:
+    """The two adjacencies a call-graph reachability walk needs.
+
+    ``declares`` bridges the file layer to the symbol layer - nothing points
+    from a symbol back to a file, so without it a walk cannot start at a test
+    file. ``calls`` is the symbol-to-symbol adjacency, already origin-filtered.
+    """
+
+    declares: dict[str, set[str]]
+    calls: dict[str, set[str]]
+
+
+@dataclass(frozen=True)
+class ReachedBy:
+    """Tests reaching one target, and which tier found them."""
+
+    tests: list[str]
+    via: ReachedVia
+
+
+def _file_of(symbol_id: str) -> str:
+    """The file a symbol node belongs to. Node ids are ``path::Name``."""
+    return symbol_id.split("::", 1)[0]
+
+
+def call_graph_from_graph(graph: Any) -> CallGraphView:
+    """Build the call-reachability view from an in-memory NetworkX graph.
+
+    ``defines`` alone bridges files to symbols: measured across this repository
+    it reaches every symbol, class members included, so also walking
+    ``has_method`` would add a second containment layer for nothing.
+
+    Returns an empty view for ``None`` - the health engine runs without a graph
+    on some paths, and the documented outcome there is "no signal".
+    """
+    declares: dict[str, set[str]] = {}
+    calls: dict[str, set[str]] = {}
+    if graph is None:
+        return CallGraphView(declares, calls)
+    try:
+        edges = graph.edges(data=True)
+    except Exception:
+        return CallGraphView(declares, calls)
+    for src, dst, data in edges:
+        attrs = data or {}
+        edge_type = attrs.get("edge_type")
+        if edge_type == "defines":
+            declares.setdefault(src, set()).add(dst)
+        elif (
+            edge_type in EXECUTION_EDGE_TYPES
+            and attrs.get("resolution_origin") not in UNRELIABLE_CALL_ORIGINS
+        ):
+            calls.setdefault(src, set()).add(dst)
+    return CallGraphView(declares, calls)
+
+
 def files_reached_by_tests(
-    forward_deps: dict[str, set[str]],
+    view: CallGraphView,
     test_files: set[str],
     *,
-    max_depth: int = DEFAULT_MAX_DEPTH,
+    max_depth: int = DEFAULT_CALL_DEPTH,
 ) -> set[str]:
-    """Every non-test file some test reaches within *max_depth* hops.
+    """Every non-test file some test can execute into within *max_depth* hops.
 
-    One multi-source breadth-first search from the whole test set at once, so
-    the cost is O(V+E) however many test files there are - this is the batch
-    question ("which files are reached at all"), not the attributed one.
-    *forward_deps* maps a file to the files it depends on.
+    One multi-source breadth-first search from every symbol the test files
+    declare, so the cost is O(V+E) however many test files there are - this is
+    the batch question ("which files are reached at all"), not the attributed
+    one.
 
     Returns the reached set with the test files themselves removed: a test does
     not need a test.
@@ -125,43 +270,24 @@ def files_reached_by_tests(
     if not test_files or max_depth < 1:
         return set()
 
-    seen = set(test_files)
-    frontier = set(test_files)
+    frontier: set[str] = set()
+    for path in test_files:
+        frontier |= view.declares.get(path, frozenset())
+    seen = set(frontier)
+    # The seeds are what the tests *declare*, not what they reach. Counting them
+    # would make containment alone a claim of reaching.
+    reached: set[str] = set()
     for _ in range(max_depth):
         nxt: set[str] = set()
         for node in frontier:
-            nxt |= forward_deps.get(node, frozenset())
+            nxt |= view.calls.get(node, frozenset())
         nxt -= seen
         if not nxt:
             break
         seen |= nxt
+        reached |= nxt
         frontier = nxt
-    return seen - test_files
-
-
-def forward_dependencies_from_graph(graph: Any) -> dict[str, set[str]]:
-    """Build the file -> depends-on map from an in-memory NetworkX graph.
-
-    Restricted to :data:`FILE_DEPENDENCY_EDGE_TYPES`, the codified answer to
-    "which edges mean one file depends on another". Containment edges are the
-    ones that matter to exclude: with ``defines`` in, a walk leaves the file
-    layer into symbol nodes and every file defining a called symbol reads as a
-    dependency of the caller's *file*.
-
-    Returns an empty map for ``None`` - the health engine runs without a graph
-    on some paths, and the documented outcome there is "no signal".
-    """
-    out: dict[str, set[str]] = {}
-    if graph is None:
-        return out
-    try:
-        edges = graph.edges(data=True)
-    except Exception:
-        return out
-    for src, dst, data in edges:
-        if (data or {}).get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES:
-            out.setdefault(src, set()).add(dst)
-    return out
+    return {_file_of(symbol) for symbol in reached} - test_files
 
 
 async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
@@ -180,56 +306,153 @@ async def tests_reaching(
     repo_id: str,
     targets: list[str],
     *,
-    max_depth: int = DEFAULT_MAX_DEPTH,
+    call_depth: int = DEFAULT_CALL_DEPTH,
+    import_depth: int = DEFAULT_MAX_DEPTH,
 ) -> dict[str, list[str]]:
     """Test files that reach each of *targets*, keyed by target path.
-
-    The reverse of :func:`files_reached_by_tests`, and attributed: the walk
-    runs backwards along dependency edges from the targets, carrying the seed
-    each visited node came from, so the answer says *which* target each test
-    guards rather than only that some test does.
-
-    Attribution is why this is a separate walk rather than a filter over the
-    forward one. It stays cheap because the seed set is a change's files, not
-    the repository: one ``IN`` query per depth level, at most *max_depth* of
-    them, which is the shape ``pr_blast._transitive_affected`` already uses.
 
     Targets nothing reaches are absent from the result. An empty dict is
     "no test reaches these"; the caller decides whether that reads as untested
     or as unknown.
     """
+    found = await tests_reaching_by_tier(
+        session, repo_id, targets, call_depth=call_depth, import_depth=import_depth
+    )
+    return {target: reached.tests for target, reached in found.items()}
+
+
+async def tests_reaching_by_tier(
+    session: AsyncSession,
+    repo_id: str,
+    targets: list[str],
+    *,
+    call_depth: int = DEFAULT_CALL_DEPTH,
+    import_depth: int = DEFAULT_MAX_DEPTH,
+) -> dict[str, ReachedBy]:
+    """:func:`tests_reaching`, also saying which tier answered each target.
+
+    The call walk runs first; the import walk is then seeded with only the
+    targets it left unanswered, so the weaker tier never speaks over the
+    stronger one and costs nothing where the stronger one already spoke.
+
+    Both walks are attributed: they run backwards from the targets carrying the
+    seed each visited node came from, so the answer says *which* target each
+    test guards rather than only that some test does. That is why these are
+    separate walks rather than a filter over the forward one, and it stays cheap
+    because the seed set is a change's files, not the repository - one ``IN``
+    query per level, which is the shape ``pr_blast._transitive_affected``
+    already uses.
+    """
     seeds = sorted({t for t in targets if t})
-    if not seeds or max_depth < 1:
+    if not seeds:
         return {}
 
     test_files = await load_test_files(session, repo_id)
     if not test_files:
         return {}
 
-    # node -> the seeds it was reached from. A node can serve several seeds (one
-    # shared helper changed alongside its caller), and dropping that would
-    # report the test against an arbitrary one of them.
+    out: dict[str, ReachedBy] = {}
+    if call_depth >= 1:
+        found = await _call_reaching(session, repo_id, seeds, test_files, call_depth)
+        for seed, tests in found.items():
+            out[seed] = ReachedBy(_cut(tests), "call-graph")
+
+    unanswered = [seed for seed in seeds if seed not in out]
+    if unanswered and import_depth >= 1:
+        found = await _import_reaching(
+            session, repo_id, unanswered, test_files, import_depth
+        )
+        for seed, tests in found.items():
+            out[seed] = ReachedBy(_cut(tests), "import-graph")
+    return out
+
+
+def _cut(tests: set[str]) -> list[str]:
+    return sorted(tests)[:MAX_TESTS_PER_TARGET]
+
+
+async def _call_reaching(
+    session: AsyncSession,
+    repo_id: str,
+    seeds: list[str],
+    test_files: set[str],
+    max_depth: int,
+) -> dict[str, set[str]]:
+    """Tests that can execute into each seed file, walking call edges backwards.
+
+    Starts one layer below the other walk: the seeds are files and call edges
+    join symbols, so the first query resolves each seed to the symbols it
+    declares, and the walk carries the seed from there.
+    """
+    declared = await _edges_from(session, repo_id, seeds, ["defines"])
+    origins: dict[str, set[str]] = {}
+    for seed, symbol in declared:
+        origins.setdefault(symbol, set()).add(seed)
+    if not origins:
+        return {}
+
+    found: dict[str, set[str]] = {}
+    frontier = list(origins)
+    for _ in range(max_depth):
+        if not frontier:
+            break
+        level, frontier = frontier, []
+        queued: set[str] = set()
+        for caller, callee in await _edges_into(
+            session,
+            repo_id,
+            level,
+            sorted(EXECUTION_EDGE_TYPES),
+            UNRELIABLE_CALL_ORIGINS,
+        ):
+            carried = origins.get(callee, frozenset())
+            if not carried:
+                continue
+            owner = _file_of(caller)
+            if owner in test_files:
+                for seed in carried:
+                    found.setdefault(seed, set()).add(owner)
+                # A test is a leaf. Walking through one would let "test A calls
+                # shared helper B" drag B's unrelated targets in.
+                continue
+            known = origins.setdefault(caller, set())
+            fresh = carried - known
+            if not fresh:
+                continue
+            known |= fresh
+            if caller not in queued:
+                queued.add(caller)
+                frontier.append(caller)
+    return found
+
+
+async def _import_reaching(
+    session: AsyncSession,
+    repo_id: str,
+    seeds: list[str],
+    test_files: set[str],
+    max_depth: int,
+) -> dict[str, set[str]]:
+    """Tests that import each seed file, directly or within *max_depth* hops."""
     origins: dict[str, set[str]] = {s: {s} for s in seeds}
     found: dict[str, set[str]] = {}
     seed_set = set(seeds)
-    frontier: deque[str] = deque(seeds)
+    frontier = list(seeds)
 
     for _ in range(max_depth):
-        level = list(frontier)
-        frontier.clear()
-        queued: set[str] = set()
-        if not level:
+        if not frontier:
             break
-        for dependent, dependency in await _dependents_of(session, repo_id, level):
+        level, frontier = frontier, []
+        queued: set[str] = set()
+        for dependent, dependency in await _edges_into(
+            session, repo_id, level, sorted(FILE_DEPENDENCY_EDGE_TYPES), frozenset()
+        ):
             carried = origins.get(dependency, frozenset())
             if not carried:
                 continue
             if dependent in test_files:
                 for seed in carried:
                     found.setdefault(seed, set()).add(dependent)
-                # A test file is a leaf for this walk. Nothing imports a test,
-                # and treating one as an intermediary would let "test A imports
-                # test helper B" drag B's unrelated targets in.
                 continue
             if dependent in seed_set:
                 continue
@@ -244,35 +467,68 @@ async def tests_reaching(
             if dependent not in queued:
                 queued.add(dependent)
                 frontier.append(dependent)
+    return found
 
-    return {seed: sorted(tests)[:MAX_TESTS_PER_TARGET] for seed, tests in found.items() if tests}
+
+def _in_clause(prefix: str, values: list[str], params: dict[str, Any]) -> str:
+    """Bind *values* as ``:prefix0, :prefix1, ...`` and return the clause body."""
+    params.update({f"{prefix}{i}": v for i, v in enumerate(values)})
+    return ",".join(f":{prefix}{i}" for i in range(len(values)))
 
 
-async def _dependents_of(
-    session: AsyncSession, repo_id: str, paths: list[str]
+async def _edges_from(
+    session: AsyncSession, repo_id: str, sources: list[str], edge_types: list[str]
 ) -> list[tuple[str, str]]:
-    """``(dependent, dependency)`` pairs for every file that depends on *paths*.
+    """``(source, target)`` pairs leaving *sources* along *edge_types*."""
+    if not sources:
+        return []
+    params: dict[str, Any] = {"repo_id": repo_id}
+    src = _in_clause("s", sources, params)
+    ets = _in_clause("e", edge_types, params)
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+            "WHERE repository_id = :repo_id "
+            f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
+        ),
+        params,
+    )
+    return [(s, t) for s, t in rows]
+
+
+async def _edges_into(
+    session: AsyncSession,
+    repo_id: str,
+    targets: list[str],
+    edge_types: list[str],
+    excluded_origins: frozenset[str],
+) -> list[tuple[str, str]]:
+    """``(source, target)`` pairs arriving at *targets* along *edge_types*.
 
     Raw text SQL with an ``IN`` list, matching ``pr_blast._transitive_affected``:
     the edge table is the one place a per-level parameterised ``IN`` beats
     loading every row, and the two walks should not disagree about how they read
     it.
     """
-    if not paths:
+    if not targets:
         return []
-    dep_types = sorted(FILE_DEPENDENCY_EDGE_TYPES)
-    ph = ",".join(f":p{i}" for i in range(len(paths)))
-    et = ",".join(f":e{i}" for i in range(len(dep_types)))
     params: dict[str, Any] = {"repo_id": repo_id}
-    params.update({f"p{i}": v for i, v in enumerate(paths)})
-    params.update({f"e{i}": v for i, v in enumerate(dep_types)})
+    tgt = _in_clause("p", targets, params)
+    ets = _in_clause("e", edge_types, params)
+    origin_filter = ""
+    if excluded_origins:
+        # NULL means the row predates the vocabulary, not "unknown", so it has
+        # to survive the filter, and a bare NOT IN would drop it.
+        bad = _in_clause("o", sorted(excluded_origins), params)
+        origin_filter = (
+            f" AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad}))"
+        )
     rows = await session.execute(
         text(
-            f"SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
-            f"WHERE repository_id = :repo_id "
-            f"AND target_node_id IN ({ph}) "
-            f"AND edge_type IN ({et})"
+            "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
+            "WHERE repository_id = :repo_id "
+            f"AND target_node_id IN ({tgt}) AND edge_type IN ({ets}){origin_filter}"
         ),
         params,
     )
-    return [(src, tgt) for src, tgt in rows]
+    return [(s, t) for s, t in rows]
