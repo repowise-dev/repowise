@@ -43,8 +43,14 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         # TypeScript/JavaScript class method
         return f"{name}{params_text}{_ret(('return_type',))}"
     if node_type == "method_declaration":
-        # Go method: include receiver text and result type
         recv_node = def_node.child_by_field_name("receiver")
+        declared_type_fields = ("type", "returns")
+        if recv_node is None and any(
+            def_node.child_by_field_name(field) is not None for field in declared_type_fields
+        ):
+            # Java/C#: the declared type is the return type; there is no method keyword.
+            return f"{name}{params_text}{_ret(declared_type_fields)}"
+        # Go method: include receiver text and result type.
         recv_text = node_text(recv_node, src) if recv_node else ""
         recv_prefix = f"{recv_text} " if recv_text else ""
         return f"func {recv_prefix}{name}{params_text}{_ret(('result',))}"
