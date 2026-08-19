@@ -29,10 +29,10 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from .callgraph import CallGraphIndex
-from .reachability import path_to_sink, reachable_to_sink
+from .sink_reach import collect_sink_reaching_hits
 
 if TYPE_CHECKING:
-    from ..complexity import FileComplexity, PerfFnFacts, PerfHit
+    from ..complexity import FileComplexity, PerfHit
     from .ranking import PerfRanker
 
 # The boundary-kind detail convention shared with the cross-function N+1 pass.
@@ -98,105 +98,22 @@ def collect_blocking_io_under_lock(
     """Cross-function ``blocking_io_under_lock`` hits, keyed by the lock-owning file.
 
     A function acquires a lock and, while holding it, calls a helper that reaches
-    an I/O boundary within ``max_depth`` hops — the I/O round-trip runs under the
-    lock, serializing every thread on a network/db/fs wait. Mirrors
-    ``crossfn.collect_crossfn_io_in_loop`` exactly: the only difference is the
-    entry set is ``PerfFnFacts.lock_call_targets`` (callees invoked under a held
-    lock) instead of loop-nested callees. The same-function case (an I/O sink
-    lexically inside a ``lock``/``synchronized`` block) is emitted directly by
-    the walker.
+    an I/O boundary within ``max_depth`` hops -- the I/O round-trip runs under the
+    lock, serializing every thread on a network/db/fs wait. The same-function case
+    (an I/O sink lexically inside a ``lock``/``synchronized`` block) is emitted
+    directly by the walker.
+
+    The walk is :func:`.sink_reach.collect_sink_reaching_hits`, shared with
+    ``crossfn.collect_crossfn_io_in_loop``: the only difference is the entry set
+    is ``PerfFnFacts.lock_call_targets`` (callees invoked under a held lock)
+    instead of loop-nested callees.
     """
-    from ..complexity import PerfHit
-
-    walked_list = list(walked)
-    if graph is None or not walked_list:
-        return {}
-
-    has_sink = any(
-        fact.bare_sink_kind is not None for _pf, fcx in walked_list for fact in fcx.perf_fn_facts
-    )
-    has_entry = any(
-        fact.lock_call_targets for _pf, fcx in walked_list for fact in fcx.perf_fn_facts
-    )
-    if not (has_sink and has_entry):
-        return {}
-
-    if index is None:
-        index = CallGraphIndex(graph)
-    if not index.forward:
-        return {}
-
-    sink_kind: dict[str, str] = {}
-    for pf, fcx in walked_list:
-        path = pf.file_info.path
-        for fact in fcx.perf_fn_facts:
-            if fact.bare_sink_kind is None:
-                continue
-            sid = index.resolve_function(path, fact.func_start)
-            if sid is not None:
-                sink_kind.setdefault(sid, fact.bare_sink_kind)
-    if not sink_kind:
-        return {}
-
-    reach = reachable_to_sink(
-        sink_kind.keys(),
-        lambda node: index.reverse.get(node, ()),
+    return collect_sink_reaching_hits(
+        walked,
+        graph,
+        entries=lambda fact: fact.lock_call_targets,
+        kind=LOCK_IO_KIND,
+        index=index,
         max_depth=max_depth,
+        carry_func_start=True,
     )
-
-    out: dict[str, list[PerfHit]] = {}
-    for pf, fcx in walked_list:
-        path = pf.file_info.path
-        for fact in fcx.perf_fn_facts:
-            if not fact.lock_call_targets:
-                continue
-            hits = _lock_hits_for_function(path, fact, index, reach, sink_kind, PerfHit)
-            if hits:
-                out.setdefault(path, []).extend(hits)
-    return out
-
-
-def _lock_hits_for_function(
-    path: str,
-    fact: PerfFnFacts,
-    index: CallGraphIndex,
-    reach: dict[str, Any],
-    sink_kind: dict[str, str],
-    perf_hit_cls: type,
-) -> list[PerfHit]:
-    a_sid = index.resolve_function(path, fact.func_start)
-    if a_sid is None:
-        return []
-    callees = index.forward.get(a_sid)
-    if not callees:
-        return []
-    callees_by_name: dict[str, list[str]] = {}
-    for c in callees:
-        callees_by_name.setdefault(index.name.get(c, ""), []).append(c)
-
-    hits: list[PerfHit] = []
-    seen: set[str] = set()
-    for target_name, call_line in fact.lock_call_targets:
-        if target_name in seen:
-            continue
-        for callee in callees_by_name.get(target_name, ()):
-            info = reach.get(callee)
-            if info is None:
-                continue
-            chain = path_to_sink(callee, reach)
-            if not chain:
-                continue
-            seen.add(target_name)
-            kind = sink_kind.get(info.sink, "")
-            hits.append(
-                perf_hit_cls(
-                    kind=LOCK_IO_KIND,
-                    line=call_line,
-                    function=fact.function,
-                    detail=kind,
-                    func_start=fact.func_start,
-                    path=(a_sid, *chain),
-                )
-            )
-            break
-    return hits
