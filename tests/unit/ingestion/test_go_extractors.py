@@ -46,6 +46,28 @@ class TestGoHeritage:
         parents = {r.parent_name for r in result.heritage}
         assert "Base" in parents
 
+    def test_qualified_embed_keeps_package_qualifier(self, parser: ASTParser) -> None:
+        """``io.Reader`` must stay ``io.Reader``, not ``Reader``.
+
+        Stripping the qualifier lets an embed of a stdlib type bind to whatever
+        repo-local type shares the short name — and when the enclosing type
+        has that same name, the type inherits from itself.
+        """
+        src = b"package x\n\ntype Reader struct{}\n\ntype Foo struct {\n  io.Reader\n}\n"
+        result = parser.parse_file(_file(), src)
+        parents = {r.parent_name for r in result.heritage}
+        assert "io.Reader" in parents
+        assert "Reader" not in parents
+
+    def test_qualified_interface_embed_keeps_package_qualifier(
+        self, parser: ASTParser
+    ) -> None:
+        src = b"package x\n\ntype Reader interface{}\n\ntype Foo interface {\n  io.Reader\n}\n"
+        result = parser.parse_file(_file(), src)
+        parents = {r.parent_name for r in result.heritage}
+        assert "io.Reader" in parents
+        assert "Reader" not in parents
+
 
 class TestGoBindings:
     def test_imports(self, parser: ASTParser) -> None:
