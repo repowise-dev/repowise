@@ -59,6 +59,8 @@ export interface CodeHealthAdapter {
     file_path?: string;
     limit?: number;
     module_limit?: number;
+    /** False declines the graph-inferred fallback. For cheap summary reads. */
+    include_inferred?: boolean;
   }): Promise<HealthCoverageResponse>;
 
   /**
