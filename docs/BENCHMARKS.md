@@ -6,8 +6,10 @@ pre-registrations and every graded cell live in
 **[repowise-bench](https://github.com/repowise-dev/repowise-bench)**, which is also
 where the depth is: this page is the summary, that repository is the evidence.
 
-**Read this page in one minute:** the two charts below are the two results that
-matter. Everything after them is the sample size, the caveat and the row we lose.
+**Read this page in one minute:** the two charts below are the two retrieval
+results, and [§8](#8-the-same-question-against-an-answer-key-we-do-not-control)
+is the graph result, where a compiler rather than we decided who was right.
+Everything else is the sample size, the caveat and the row we lose.
 
 | Layer | Measured against | Result |
 |---|---|---|
@@ -509,6 +511,10 @@ TypeScript it is the **`tsc` type checker's own resolution** of every call site.
 We did not write either one, we cannot tune either one, and anyone with the
 toolchain can regenerate both.
 
+The field gains a third arm here. **codebase-memory-mcp** is not in the retrieval
+sections above because it is not that kind of tool; it is in this one because it
+builds a call graph, and because it is the arm that beats us on coverage.
+
 **Precision: of the call edges a tool emits, the share the compiler confirms.**
 
 | cell | repowise | CodeGraph 1.5.0 | codebase-memory-mcp 0.10.8 |
@@ -640,6 +646,11 @@ Beyond the ones stated in each section:
 - **§4 has no head-to-head and one row that needs re-measuring.**
 - **§5's signal is weak among files of similar size**, and a prior-defects baseline
   still beats us on Popt by 0.085 even while losing on AUC.
+- **§7 was graded by us on both sides.** That is what §8 exists to check, and the two
+  agree where both exist, but only §8 has an answer key we did not produce.
+- **§7 and §8 measure precision, which is one of two halves.** We lead no recall cell
+  in §8 and lose cross-file coverage on 15 of 35 repositories in the same bench. A
+  precision win is a claim about the edges a tool draws, never about how many.
 
 ---
 
@@ -696,7 +707,7 @@ one above it.
 | Level | What is there |
 |---|---|
 | **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Who wins what, the build-cost curve, and what each index can rank at all |
-| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | The graph-quality bench: edge precision hand-graded on both sides across five tools and nine languages, precision and recall against a compiler oracle on Go and TypeScript, cross-file coverage, adversarial invariance and build cost |
+| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | The graph-quality bench: edge precision hand-graded on both sides across nine languages against one competitor, precision and recall against a compiler oracle on Go and TypeScript against two, and cross-file coverage, adversarial invariance and build cost across five |
 | **[arms/](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head/arms)** | One page per competitor: what it is, what it serves, and every setup trap. Four of six have a step that produces a clean zero when missed |
 | **[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)** | The method and all nine gates, each named with the failure that created it |
 | **[configs/arms.yaml](https://github.com/repowise-dev/repowise-bench/blob/master/configs/arms.yaml)** | Every launch command, allowlisted tool and exclusion with its reason. Read this if you think an arm was set up unfairly |
@@ -709,7 +720,7 @@ a competitor is a YAML block, no Python and no runner change. See
 [CONTRIBUTING.md](https://github.com/repowise-dev/repowise-bench/blob/master/CONTRIBUTING.md).
 
 Tool versions as measured: CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
-code-review-graph 2.3.7, cocoindex as of 2026-08-09.
+code-review-graph 2.3.7, cocoindex as of 2026-08-09, codebase-memory-mcp 0.10.8.
 
 ## See also
 
