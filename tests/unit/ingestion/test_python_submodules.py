@@ -37,7 +37,7 @@ def _resolve(parsed, tmp_path, import_targets):
     edges = []
     for path, pf in parsed.items():
         for rc in resolver.resolve_file(path, pf.calls):
-            edges.append((rc.caller_id, rc.callee_id, rc.confidence))
+            edges.append((rc.caller_id, rc.callee_id, rc.confidence, rc.origin))
     return edges
 
 
@@ -61,4 +61,5 @@ def test_python_submodule_resolution(tmp_path: Path):
         "pkg/submod.py": set()
     })
     
-    assert ("caller.py::run", "pkg/submod.py::helper", 0.88) in edges, edges
+    edge_triples = [(c1, c2, conf) for c1, c2, conf, *_ in edges]
+    assert ("caller.py::run", "pkg/submod.py::helper", 0.88) in edge_triples, edge_triples
