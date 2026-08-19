@@ -14,7 +14,7 @@ that **every edge carries its own evidence**.
   <img src="https://img.shields.io/badge/19-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="19 languages" />
   <img src="https://img.shields.io/badge/22-framework_detectors-7F52FF?style=flat-square&labelColor=0A0A0A" alt="22 framework detectors" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
-  <img src="https://img.shields.io/badge/most_precise-in_7_of_7_compiler_graded_cells-DC2626?style=flat-square&labelColor=0A0A0A" alt="most precise arm in 7 of 7 compiler-graded cells" />
+  <img src="https://img.shields.io/badge/compiler_graded-7_of_7_cells_undominated-DC2626?style=flat-square&labelColor=0A0A0A" alt="no tool is both more precise and more complete, in 7 of 7 compiler-graded cells" />
 </p>
 
 **Contents:** [The problem with a plain arrow](#the-problem-with-a-plain-arrow) ·
@@ -123,11 +123,31 @@ On Go the answer key is the **Go team's own RTA call graph** from
 it is the **`tsc` checker's own resolution** of every call site. We wrote
 neither, we can tune neither, and anyone with the toolchain can regenerate both.
 
-Seven cells, five repositories, three tools, **37,853 oracle edges**. Of the call
-edges we emit, the share the compiler confirms runs **0.943 to 0.992** per cell,
-and we are **the most precise of the three tools in all seven**. In three cells
-our interval clears both competitors at once; against each competitor taken
-singly it is five of seven. The rest are ties and are published as ties.
+Seven cells, five repositories, **five tools**, 37,853 oracle edges. Of the call
+edges we emit, the share the compiler confirms runs **0.943 to 0.992** per cell.
+
+That number on its own is not the claim, because precision on its own has a cheap
+way to win: draw one edge you are certain of and you score 1.000. Two of the five
+tools do a version of exactly that. One scores 0.997 on cobra, the highest figure
+in the whole experiment, from a graph holding **17% of the calls in the
+repository**. Another takes both gitleaks cells from a graph that
+finds 89% of the calls where we find 95%. Meanwhile the tool with the best recall emits, on the largest
+repository measured, more than a third of its edges as calls the compiler says do
+not exist.
+
+**Recall alone is gameable in the other direction and precision alone in this
+one, so the claim is the pair:**
+
+> In all seven cells, **no tool that recovers as much of the call graph as we do
+> gets more of it right.**
+
+It names no threshold, so it cannot be tuned, and a new competitor can only break
+it. Two were added after it was written and it held in all seven cells.
+
+The weaker readings, so nobody has to infer them: most precise outright in one
+cell, tied in one more, beaten in five by tools drawing much smaller graphs. And
+against the two tools the experiment started with, most precise in seven of
+seven, which is the narrower claim it should always be labelled as.
 
 **Two languages, and only two.** C#, Java, Kotlin and C++ each need a toolchain
 installed and a working build per repository, and nobody has done that here.
@@ -165,7 +185,9 @@ Recall is the other half of the same question, and we do not lead it.
 Across the five Go cells our recall runs 0.32 to 0.96 and **we lead none of
 them**; codebase-memory-mcp leads four and CodeGraph the fifth. On cross-file
 coverage over 35 repositories the same tool separates from us on 15 and we
-separate on none.
+separate on none. We do lead recall in both TypeScript cells, and we lead it over
+the two tools that beat us on precision in every cell, which is the same trade
+seen from the other side.
 
 The oracle explains the trade rather than excusing it. **That tool recovers more
 of the true call graph and emits far more that is not in it**: on the largest Go
@@ -404,9 +426,13 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
 - **Method-level dead-code detection is not shipped**, for any language. It was
   measured, precision failed, and shipping it would have meant confidently
   recommending deletions that were wrong.
-- **Roughly fifteen percent of our call edges are wrong**, and **we lead no
+- **Roughly fifteen percent of our call edges are wrong**, and **we lead no Go
   recall cell**. Both are measured, both are above under [how good is it, and how
   we know](#how-good-is-it-and-how-we-know), and neither is buried down here.
+- **Two competing tools are more precise than us in five of seven oracle cells.**
+  Each of them draws a much smaller graph, which is the whole reason, and it is
+  stated above rather than left out. A precision figure quoted without the recall
+  beside it is a misuse of this data, including by us.
 - **The compiler-graded reading covers two languages.** Go and TypeScript are the
   only ones with an oracle, so on the other seventeen the precision figure is the
   hand-graded one, at 30 rows per language. That is a smaller n and a method we
